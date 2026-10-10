@@ -10,6 +10,7 @@ import (
 
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/kya"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/workspace"
 )
 
@@ -49,6 +50,7 @@ type WalletBank interface {
 	OpenCurrencyAccount(ctx context.Context, workspaceID, agentID, currency, funding string) (economy.CurrencyAccount, error)
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
+	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
 	OpenPortfolio(ctx context.Context, workspaceID, agentID, name string, cashUUSD int64) (economy.Portfolio, error)
 	ListPortfolios(ctx context.Context, workspaceID, agentID string) ([]economy.Portfolio, error)
 	PlaceSimOrder(ctx context.Context, workspaceID, agentID, portfolioID string, in economy.SimOrderInput) (economy.SimOrder, error)
@@ -73,6 +75,8 @@ var walletRefusals = []error{
 	economy.ErrPortfolioNotFound, economy.ErrSimOrderNotFound, economy.ErrSimOrder, economy.ErrSimHoldings,
 	economy.ErrCurrencyAccount, economy.ErrCurrencyAccountExists, economy.ErrCompanyAccountNeeded, economy.ErrAccountNotOpened,
 	economy.ErrMoneyAccountNotFound, economy.ErrMoneyAccountNotOpen, economy.ErrNoAccountDetails,
+	economy.ErrOutsidePayment, economy.ErrPayeeNotFound, economy.ErrPayeeUnconfirmed, economy.ErrIdempotencyKeyReused,
+	screening.ErrBlocked, screening.ErrHeld, screening.ErrListsStale, screening.ErrRefused, screening.ErrNotWhatWasReleased,
 	workspace.ErrMoneyWall,
 }
 
@@ -142,6 +146,13 @@ func walletToolDefinitions() []map[string]any {
 		tool("wallet_account_details", "The details a payer pays into your account in GBP, EUR or USD: your company's account details and "+
 			"your payment reference, which the payer quotes so the money reaches you. Mode TEST details are made up and reach no bank.",
 			map[string]any{"currency": str("GBP, EUR or USD")}, "currency"),
+		tool("wallet_pay_external", "Pay a person or company outside Talyvor, saved by your owner as a payee, from your account in the "+
+			"currency, within your spending rules: one above your approval amount waits for your owner's approval, then ask again with the "+
+			"same idempotency_key. The payment is pending, sent, completed, or failed or returned with the money back to you.",
+			map[string]any{"payee_id": str("the saved payee (payee_…)"), "amount_minor": num("the amount in pence or cents"),
+				"currency": str("GBP, EUR or USD"), "reference": str("what the payee sees, up to 140 characters"),
+				"idempotency_key": str("your own unique id for this payment: the same id again never pays twice"),
+				"funding":         str("test (the default) or live")}, "payee_id", "amount_minor", "currency", "idempotency_key"),
 		tool("wallet_credential", "Your Know Your Agent credential: a signed token any platform can check against Talyvor's published keys. "+
 			"It says who you are, who answers for you and how far they are verified, what you may do with live money and your limits.", none),
 	}
@@ -181,6 +192,10 @@ type walletArgs struct {
 	Mode           string `json:"mode"`
 	Currency       string `json:"currency"`
 	Funding        string `json:"funding"`
+	PayeeID        string `json:"payee_id"`
+	AmountMinor    int64  `json:"amount_minor"`
+	Reference      string `json:"reference"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 func (s *Server) runWalletTool(ctx context.Context, name, workspaceID, agentID string, raw json.RawMessage) (any, error) {
@@ -364,6 +379,9 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 			}
 		}
 		return nil, fmt.Errorf("%w: you have no open %s account; open it with wallet_account_open", economy.ErrMoneyAccountNotFound, a.Currency)
+	case "wallet_pay_external": // B30.17
+		return bank.PayOutside(ctx, ws, economy.OutsidePayment{AgentID: agent, PayeeID: a.PayeeID, AmountMinor: a.AmountMinor,
+			Currency: a.Currency, Funding: a.Funding, Reference: a.Reference, IdempotencyKey: a.IdempotencyKey})
 	case "wallet_credential": // B30.5
 		if s.credentials == nil {
 			return nil, errors.New("the Know Your Agent credentials are not configured")

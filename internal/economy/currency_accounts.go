@@ -26,9 +26,11 @@ import (
 // capability's terms, opens nothing, and an account opened for live money is refused, naming the class, until the
 // capability is cleared.
 
-// AccountPartners hands out the account partner for a capability: *partners.Registry.
+// AccountPartners hands out the account partner for a capability, and the conversion partner that values a payment
+// out for an agent's rules (B30.17): *partners.Registry.
 type AccountPartners interface {
 	Account(ctx context.Context, capability string) (partners.AccountPartner, error)
+	FX(ctx context.Context, capability string) (partners.FXPartner, error)
 }
 
 // SetAccountPartners is where a company's currency accounts are opened (B30.13). Until it is set, none opens.
