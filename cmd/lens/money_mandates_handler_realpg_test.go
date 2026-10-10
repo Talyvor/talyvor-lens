@@ -175,4 +175,39 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 	if got := postings(); len(got) != 6 || got[4] != agentGBP.ID+" -1000 test" || got[5] != biz["hold_account_id"].(string)+" 1000 test" {
 		t.Fatalf("the business's pull posted %v; want the agent's account to the hold account", got)
 	}
+
+	// Six pulls of £10.00 at once under £25.00 a month, from an account holding £50.00: two fit, and only two post. The
+	// mandate is held until at least three pulls wait for it, so each must count what those before it pulled meanwhile.
+	_, race := call(ws, "", http.MethodPost, "/v1/money/mandates", `{"account_id":"`+agentGBP.ID+`","payee_workspace_id":"`+payeeWS+
+		`","max_per_pull_minor":1000,"max_per_month_minor":2500,"expires_at":"`+expires+`"}`)
+	hold, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM money_mandates WHERE id = $1 FOR UPDATE`, race["id"]); err != nil {
+		t.Fatal(err)
+	}
+	codes := make(chan int, 6)
+	for i := range 6 {
+		go func() {
+			code, _ := call(payeeWS, "", http.MethodPost, "/v1/money/mandates/"+race["id"].(string)+"/pull",
+				fmt.Sprintf(`{"amount_minor":1000,"idempotency_key":"race-%d"}`, i))
+			codes <- code
+		}()
+	}
+	for waiting, deadline := 0, time.Now().Add(10*time.Second); waiting < 3 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if err := hold.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = hold.Rollback(ctx)
+	posted := 0
+	for range 6 {
+		if <-codes == http.StatusCreated {
+			posted++
+		}
+	}
+	if got := postings(); posted != 2 || len(got) != 10 {
+		t.Fatalf("%d of six concurrent pulls posted, %d postings in all; want 2 pulls and 10 postings", posted, len(got))
+	}
 }

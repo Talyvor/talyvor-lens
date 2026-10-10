@@ -234,11 +234,13 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// The mandate's row is held until the pull commits, so two pulls at once cannot both fit under one maximum.
+	// The mandate's row is held until the pull commits, so two pulls at once cannot both fit under one maximum. It is
+	// read after the lock, in a statement of its own: one that waited for the lock counts the pulls committed meanwhile.
 	var keySHA string
-	m, err := scanMandate(tx.QueryRow(ctx, `SELECT `+mandateColumns+` FROM money_mandates m WHERE m.id = $1 FOR UPDATE`, mandateID))
+	var m Mandate
+	err = tx.QueryRow(ctx, `SELECT pull_key_sha256 FROM money_mandates WHERE id = $1 FOR UPDATE`, mandateID).Scan(&keySHA)
 	if err == nil {
-		err = tx.QueryRow(ctx, `SELECT pull_key_sha256 FROM money_mandates WHERE id = $1`, mandateID).Scan(&keySHA)
+		m, err = scanMandate(tx.QueryRow(ctx, `SELECT `+mandateColumns+` FROM money_mandates m WHERE m.id = $1`, mandateID))
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MandatePull{}, ErrMandateNotFound
@@ -291,10 +293,14 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	if paused {
 		return MandatePull{}, ErrMandatePayerPaused
 	}
-	// The account is held too, so no other movement spends the same money while this one is judged.
+	// The account is held too, so no other movement spends the same money while this one is judged, and its balance is
+	// read after the lock, as the mandate is.
 	var held int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT balance_minor FROM money_account_balances WHERE account_id = a.id AND funding = $2), 0)
-		FROM money_accounts a WHERE a.id = $1 FOR UPDATE`, m.AccountID, funding).Scan(&held); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = $1 FOR UPDATE`, m.AccountID); err != nil {
+		return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT balance_minor FROM money_account_balances WHERE account_id = $1 AND funding = $2), 0)`,
+		m.AccountID, funding).Scan(&held); err != nil {
 		return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
 	}
 	if held < amountMinor {
