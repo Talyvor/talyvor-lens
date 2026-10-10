@@ -2777,6 +2777,11 @@ func run() error {
 			runSyntheticPurge(lctx, wsManager, syntheticAnswers)
 		})
 	}
+	// B30.19 — a mandate's payee pulls: an outside business with its mandate's key, a Talyvor company with its own,
+	// through the authed group's auth and rate limit.
+	mountMandatePullRoute(r, dualToken, func(h http.Handler) http.Handler {
+		return auth.AuthMiddleware(keyStore, authManager)(ratelimit.RateLimitMiddleware(rateLimiter)(h))
+	})
 
 	r.Group(func(authed chi.Router) {
 		// Helicone-compat translates Helicone-* headers and rewrites
@@ -4643,6 +4648,7 @@ func run() error {
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
+		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38
