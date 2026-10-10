@@ -338,6 +338,8 @@ type DualTokenStore struct {
 	monitor MoneyMonitor
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
+	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
+	payeeScreener PayeeScreener
 	// B19.17: the marketplace a schedule pays a listing through.
 	listings ListingCharger
 	// B19.15: the marketplace a payment to another company's agent goes through.

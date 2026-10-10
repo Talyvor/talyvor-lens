@@ -67,7 +67,7 @@ CONTROLS = [
      HEAD, GHOST, "a named surface with nothing behind it is caught"),
 
     ("W9 the undocumented count drifts", TEST,
-     "const undocumentedNonAdminV1Routes = 268", "const undocumentedNonAdminV1Routes = 60",
+     "const undocumentedNonAdminV1Routes = 272", "const undocumentedNonAdminV1Routes = 60",
      CNT, GHOST, "the undocumented surface cannot change by fifty in silence"),
 
     ("W10 a Mount appears in main.go", TEST,

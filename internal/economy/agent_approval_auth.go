@@ -171,17 +171,26 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 	if a == nil {
 		return ErrPasskeyRequired
 	}
-	if s.approvalRP == nil {
-		return fmt.Errorf("%w: passkeys are not configured on this server", passkey.ErrInvalid)
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, *a); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// spendAssertion checks a, by one of workspaceID's passkeys, over an open challenge for purpose, and spends the
+// challenge, inside tx.
+func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspaceID, purpose string, a passkey.Assertion) error {
+	if s.approvalRP == nil {
+		return fmt.Errorf("%w: passkeys are not configured on this server", passkey.ErrInvalid)
+	}
 	var spki []byte
 	var count int64
-	err = tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
@@ -194,18 +203,18 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 		return fmt.Errorf("%w: clientDataJSON is not base64url", passkey.ErrInvalid)
 	}
 	challenge := passkey.ChallengeOf(cdj)
-	next, err := s.approvalRP.VerifyAssertion(*a, challenge, spki, uint32(count))
+	next, err := s.approvalRP.VerifyAssertion(a, challenge, spki, uint32(count))
 	if err != nil {
 		return err
 	}
-	if err := useChallenge(ctx, tx, workspaceID, "approval:"+approvalID, challenge); err != nil {
+	if err := useChallenge(ctx, tx, workspaceID, purpose, challenge); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET sign_count = $2, last_used_at = now() WHERE credential_id = $1`,
 		a.CredentialID, int64(next)); err != nil {
 		return fmt.Errorf("economy: passkey: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // PushPublicKey is the VAPID public key a browser subscribes with; ok is false when push is off.

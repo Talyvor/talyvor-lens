@@ -121,6 +121,10 @@ func (o observedAccount) PayByBank(ctx context.Context, req PayByBankRequest) (_
 	defer o.call(ctx, "PayByBank", req.ID)(&err)
 	return o.AccountPartner.PayByBank(ctx, req)
 }
+func (o observedAccount) CheckPayee(ctx context.Context, p Payee) (_ PayeeCheck, err error) {
+	defer o.call(ctx, "CheckPayee", "")(&err)
+	return o.AccountPartner.CheckPayee(ctx, p)
+}
 
 type observedFX struct {
 	FXPartner
