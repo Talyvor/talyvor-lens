@@ -365,8 +365,11 @@ func TestTheHeaderNamesOnlySurfacesTheDocumentCovers(t *testing.T) {
 // 266 → 267 (B30.14): GET /v1/money/accounts/{id}/details.
 // 267 → 268 (B27.36): PUT /v1/workspaces/{wsID}/tare-training, the opt-in to Tare's training set, beside tare-model.
 // 268 → 272 (B30.16): POST and GET /v1/money/payees, POST /v1/money/payees/{id}/challenge and .../confirm.
-// 272 → 276 (B30.19): POST and GET /v1/money/mandates, POST /v1/money/mandates/{id}/revoke and /pull.
-const undocumentedNonAdminV1Routes = 276
+const undocumentedNonAdminV1Routes = 272
+
+// 272 → 276 (B30.19): POST and GET /v1/money/mandates, POST /v1/money/mandates/{id}/revoke and /pull — counted on a
+// line of their own, so a branch adding routes beside another's adds a line rather than rewriting the other's.
+const undocumentedB3019Routes = 4
 
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
@@ -381,10 +384,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes)
 	}
 }
