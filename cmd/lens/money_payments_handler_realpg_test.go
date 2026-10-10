@@ -88,7 +88,7 @@ func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T
 	postings := func(key string) string {
 		t.Helper()
 		rows, err := pool.Query(ctx, `SELECT e.kind, p.account_id, p.amount_minor FROM money_entries e JOIN money_postings p ON p.entry_id = e.id
-			WHERE e.workspace_id = $1 AND e.idempotency_key LIKE 'payment_out:' || $2 || '%' ORDER BY e.created_at, p.line`, ws, key)
+			WHERE e.workspace_id = $1 AND e.idempotency_key LIKE 'payment_out%:' || $2 ORDER BY e.created_at, p.line`, ws, key)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -74,9 +74,10 @@ type OutsidePayment struct {
 }
 
 // key is the idempotency key of the payment's money entry for step: the hold, the failure or the return. The entry
-// that moves the money out takes the screening key, so its screening is the payment's own.
+// that moves the money out takes the screening key, so its screening is the payment's own. Each step's prefix is its
+// own, so no caller's key makes one payment's entry another's.
 func (p OutsidePayment) key(step string) string {
-	return "payment_out:" + p.IdempotencyKey + ":" + step
+	return "payment_out_" + step + ":" + p.IdempotencyKey
 }
 
 func (p OutsidePayment) screenKey() string { return "payment_out:" + p.IdempotencyKey }
@@ -176,11 +177,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		if p.ValueULXC, err = s.paymentValue(ctx, p); err != nil {
 			return OutsidePayment{}, err
 		}
-		fp := sha256.Sum256([]byte("payment_out\x00" + p.AgentID + "\x00" + p.PayeeID + "\x00" + strconv.FormatInt(p.AmountMinor, 10) +
-			"\x00" + p.Currency + "\x00" + p.Reference))
+		fp := sha256.Sum256([]byte("payment_out\x00" + p.AgentID + "\x00" + p.AccountID + "\x00" + p.PayeeID + "\x00" +
+			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
 		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
 			Payee: Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
-			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" — "+p.Reference, " — ")})
+			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
 
 	tx, err := s.pool.Begin(ctx)
