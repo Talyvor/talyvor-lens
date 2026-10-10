@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/workspace"
 )
@@ -501,7 +502,9 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 		errors.Is(perr, ErrAgentOwnerless), errors.Is(perr, ErrListingPayee), errors.Is(perr, ErrOwnerUnverified),
 		errors.Is(perr, ErrCapabilityNotCleared), errors.Is(perr, workspace.ErrMoneyWall),
 		errors.Is(perr, ErrOutsidePayment), errors.Is(perr, ErrPayeeNotFound), errors.Is(perr, ErrPayeeUnconfirmed), errors.Is(perr, ErrMoneyAccountNotFound),
-		errors.Is(perr, ErrMoneyAccountNotOpen), errors.As(perr, new(*screening.Refusal)):
+		errors.Is(perr, ErrMoneyAccountNotOpen), errors.As(perr, new(*screening.Refusal)),
+		// a tick's key a caller used first, or no partner or screener: refused and advanced, never a tick that stalls every schedule
+		errors.Is(perr, ErrIdempotencyKeyReused), errors.Is(perr, ErrAccountNotOpened), errors.Is(perr, partners.ErrScreeningUnavailable):
 		if err := sp.Rollback(ctx); err != nil {
 			return "", err
 		}
