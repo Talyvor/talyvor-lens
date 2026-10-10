@@ -51,6 +51,9 @@ type WalletBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
+	CreateInvoice(ctx context.Context, workspaceID, agentID string, r economy.InvoiceRequest) (economy.Invoice, error)
+	Invoices(ctx context.Context, workspaceID, agentID string) ([]economy.Invoice, error)
+	PayInvoiceByAgent(ctx context.Context, token, workspaceID, agentID, funding string) (economy.PaidInvoice, error)
 	OpenPortfolio(ctx context.Context, workspaceID, agentID, name string, cashUUSD int64) (economy.Portfolio, error)
 	ListPortfolios(ctx context.Context, workspaceID, agentID string) ([]economy.Portfolio, error)
 	PlaceSimOrder(ctx context.Context, workspaceID, agentID, portfolioID string, in economy.SimOrderInput) (economy.SimOrder, error)
@@ -77,6 +80,7 @@ var walletRefusals = []error{
 	economy.ErrMoneyAccountNotFound, economy.ErrMoneyAccountNotOpen, economy.ErrNoAccountDetails,
 	economy.ErrOutsidePayment, economy.ErrPayeeNotFound, economy.ErrPayeeUnconfirmed, economy.ErrIdempotencyKeyReused,
 	screening.ErrBlocked, screening.ErrHeld, screening.ErrListsStale, screening.ErrRefused, screening.ErrNotWhatWasReleased,
+	economy.ErrInvoice, economy.ErrInvoiceNotFound, economy.ErrInvoiceState, economy.ErrInvoiceShort, economy.ErrInvoicePayerPaused,
 	workspace.ErrMoneyWall,
 }
 
@@ -153,6 +157,23 @@ func walletToolDefinitions() []map[string]any {
 				"currency": str("GBP, EUR or USD"), "reference": str("what the payee sees, up to 140 characters"),
 				"idempotency_key": str("your own unique id for this payment: the same id again never pays twice"),
 				"funding":         str("test (the default) or live")}, "payee_id", "amount_minor", "currency", "idempotency_key"),
+		tool("wallet_invoice_create", "Issue an invoice, paid into your account in its currency: lines, a due date and optional VAT. "+
+			"It answers a pay_url the customer pays by card, by transfer or from their own agent; send true sends it at once, "+
+			"otherwise it waits as a draft. Preview — test money only.",
+			map[string]any{"currency": str("GBP, EUR or USD: your account it is paid into"), "customer_name": str("who it is to"),
+				"customer_email": str("where its reminders go"), "customer_address": str("the customer's address"),
+				"customer_vat_number": str("the customer's VAT number"), "seller_vat_number": str("your company's VAT number"),
+				"lines": map[string]any{"type": "array", "description": "what is charged", "items": map[string]any{"type": "object",
+					"properties": map[string]any{"description": str("what it is"), "quantity": num("how many"),
+						"unit_amount_minor": num("the price of one, in minor units (pence, cents), before VAT"),
+						"vat_rate_bps":      num("VAT on it in basis points: 2000 is 20%; 0 or none for no VAT")},
+					"required": []string{"description", "quantity", "unit_amount_minor"}}},
+				"due_date": str("YYYY-MM-DD"), "remind_days_before": num("a reminder this many days before the due date; 0 sends none"),
+				"memo": str("a note on the invoice"), "send": map[string]any{"type": "boolean", "description": "send it now"}},
+			"currency", "customer_name", "lines", "due_date"),
+		tool("wallet_invoices", "The invoices you issued: draft, sent, overdue, paid or void, what is paid and due, and the reminders sent.", none),
+		tool("wallet_invoice_pay", "Pay an invoice from your account in its currency, with its pay link or the token at its end. Preview — test money only.",
+			map[string]any{"pay_token": str("the invoice's pay link, or its token"), "funding": str("test (the default) or live")}, "pay_token"),
 		tool("wallet_credential", "Your Know Your Agent credential: a signed token any platform can check against Talyvor's published keys. "+
 			"It says who you are, who answers for you and how far they are verified, what you may do with live money and your limits.", none),
 	}
@@ -196,6 +217,9 @@ type walletArgs struct {
 	AmountMinor    int64  `json:"amount_minor"`
 	Reference      string `json:"reference"`
 	IdempotencyKey string `json:"idempotency_key"`
+	PayToken       string `json:"pay_token"`
+
+	raw json.RawMessage // the arguments as sent, for a tool that reads its own
 }
 
 func (s *Server) runWalletTool(ctx context.Context, name, workspaceID, agentID string, raw json.RawMessage) (any, error) {
@@ -209,6 +233,7 @@ func (s *Server) runWalletTool(ctx context.Context, name, workspaceID, agentID s
 			return nil, &toolRefusal{"invalid arguments: " + err.Error()}
 		}
 	}
+	a.raw = raw
 	res, err := s.walletTool(ctx, bank, name, workspaceID, agentID, a)
 	if err != nil {
 		for _, e := range walletRefusals {
@@ -382,6 +407,17 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 	case "wallet_pay_external": // B30.17
 		return bank.PayOutside(ctx, ws, economy.OutsidePayment{AgentID: agent, PayeeID: a.PayeeID, AmountMinor: a.AmountMinor,
 			Currency: a.Currency, Funding: a.Funding, Reference: a.Reference, IdempotencyKey: a.IdempotencyKey})
+	case "wallet_invoice_create": // B30.20
+		var r economy.InvoiceRequest
+		if err := json.Unmarshal(a.raw, &r); err != nil {
+			return nil, &toolRefusal{"invalid arguments: " + err.Error()}
+		}
+		return bank.CreateInvoice(ctx, ws, agent, r)
+	case "wallet_invoices":
+		invoices, err := bank.Invoices(ctx, ws, agent)
+		return map[string]any{"invoices": invoices}, err
+	case "wallet_invoice_pay":
+		return bank.PayInvoiceByAgent(ctx, a.PayToken[strings.LastIndex(a.PayToken, "/")+1:], ws, agent, a.Funding)
 	case "wallet_credential": // B30.5
 		if s.credentials == nil {
 			return nil, errors.New("the Know Your Agent credentials are not configured")

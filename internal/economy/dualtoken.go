@@ -338,6 +338,8 @@ type DualTokenStore struct {
 	monitor MoneyMonitor
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
+	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
+	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
 	payeeScreener PayeeScreener
 	// B19.17: the marketplace a schedule pays a listing through.

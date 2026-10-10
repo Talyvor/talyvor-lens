@@ -118,7 +118,7 @@ type MoneyEntry struct {
 	CreatedAt      time.Time      `json:"created_at"`
 	Postings       []MoneyPosting `json:"postings"`
 
-	payeeWorkspaceID string // a mandate pull's payee company (B30.19): its account may be credited too
+	payeeWorkspaceID string // a mandate pull's payee company (B30.19), or an invoice's issuer (B30.20): its account may be credited too
 }
 
 // PaymentScreener screens an outside payment before its money moves: *screening.Screener.
@@ -295,10 +295,11 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 		}
 	}
 
-	// Each account is the entry's workspace's — another's is not found, but for a mandate pull's payee's — and is held
-	// open until tx ends: a freeze or a close waits for the money already moving.
+	// Each account is the entry's workspace's — another's is not found, but for a mandate pull's payee's company account
+	// or an invoice issuer's agent account — and is held open until tx ends: a freeze or a close waits for the money
+	// already moving.
 	rows, err := tx.Query(ctx, `SELECT id, currency, status, purpose FROM money_accounts
-		WHERE id = ANY($1) AND (workspace_id = $2 OR (workspace_id = $3 AND purpose = 'company')) FOR SHARE`,
+		WHERE id = ANY($1) AND (workspace_id = $2 OR (workspace_id = $3 AND purpose IN ('company', 'agent'))) FOR SHARE`,
 		ids, e.WorkspaceID, e.payeeWorkspaceID)
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
