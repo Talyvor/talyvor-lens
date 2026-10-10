@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/workspace"
 )
 
@@ -20,6 +22,10 @@ import (
 // ordinary agent payment (B19.3), judged by the payer's rules; a tick they refuse is recorded as refused
 // and not retried. A top-up fires once per crossing: under the agent's row lock it brings the balance
 // back up to its target, so the next run finds it above the threshold.
+//
+// B30.18: a STANDING ORDER is a schedule that pays a saved outside payee (B30.16): each tick is one payment out
+// (B30.17) of amount_minor in its currency, judged by the agent's rules when it runs, under the tick's own idempotency
+// key so a tick run twice pays once. It may end at end_at, and the owner may skip its next tick.
 
 // ErrScheduleNotFound: no such payment schedule in this workspace.
 var ErrScheduleNotFound = errors.New("economy: no such payment schedule in this workspace")
@@ -30,25 +36,30 @@ const maxTicksPerRun = 1000
 // AgentSchedule is a recurring payment from one of a workspace's agents to another, or to a marketplace
 // listing (B19.17) — exactly one of ToAgentID and ToListingID is set.
 type AgentSchedule struct {
-	ID          string    `json:"id"`
-	FromAgentID string    `json:"from_agent_id"`
-	ToAgentID   string    `json:"to_agent_id"`
-	ToListingID string    `json:"to_listing_id,omitempty"`
-	AmountULXC  int64     `json:"amount_ulxc"`
-	Memo        string    `json:"memo,omitempty"`
-	Every       string    `json:"every"` // hour | day | week | month
-	NextRunAt   time.Time `json:"next_run_at"`
-	Active      bool      `json:"active"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	FromAgentID string     `json:"from_agent_id"`
+	ToAgentID   string     `json:"to_agent_id"`
+	ToListingID string     `json:"to_listing_id,omitempty"`
+	ToPayeeID   string     `json:"to_payee_id,omitempty"` // B30.18: an outside payee, paid AmountMinor of Currency a tick
+	AmountULXC  int64      `json:"amount_ulxc"`
+	AmountMinor int64      `json:"amount_minor,omitempty"`
+	Currency    string     `json:"currency,omitempty"`
+	Memo        string     `json:"memo,omitempty"`
+	Every       string     `json:"every"` // hour | day | week | month
+	NextRunAt   time.Time  `json:"next_run_at"`
+	EndAt       *time.Time `json:"end_at,omitempty"` // no tick after it
+	Active      bool       `json:"active"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
-// AgentScheduleRun is one tick of a schedule: paid (EntryID is the payment's entry, or UseID the listing's
-// billed use) or refused (Detail says why).
+// AgentScheduleRun is one tick of a schedule: paid (EntryID is the payment's entry, UseID the listing's billed use,
+// or PaymentID the payment out, whose status Detail then is), refused (Detail says why) or skipped by the owner.
 type AgentScheduleRun struct {
 	TickAt    time.Time `json:"tick_at"`
-	Outcome   string    `json:"outcome"` // paid | refused
+	Outcome   string    `json:"outcome"` // paid | refused | skipped
 	EntryID   string    `json:"entry_id,omitempty"`
 	UseID     string    `json:"use_id,omitempty"`
+	PaymentID string    `json:"payment_id,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -79,13 +90,83 @@ func nextTick(t time.Time, every string) time.Time {
 	}
 }
 
-const agentScheduleColumns = `id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), amount_ulxc, memo, every,
-	next_run_at, active, created_at`
+const agentScheduleColumns = `id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''), amount_ulxc,
+	amount_minor, currency, memo, every, next_run_at, end_at, active, created_at`
 
 func scanAgentSchedule(row pgx.Row) (AgentSchedule, error) {
 	var sc AgentSchedule
-	err := row.Scan(&sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.AmountULXC, &sc.Memo, &sc.Every, &sc.NextRunAt, &sc.Active, &sc.CreatedAt)
+	err := row.Scan(&sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.ToPayeeID, &sc.AmountULXC, &sc.AmountMinor, &sc.Currency, &sc.Memo,
+		&sc.Every, &sc.NextRunAt, &sc.EndAt, &sc.Active, &sc.CreatedAt)
 	return sc, err
+}
+
+// CreateStandingOrder schedules fromAgentID to pay workspaceID's saved outside payee payeeID amountMinor of currency
+// every hour, day, week or month, the first time at firstRunAt and the last on or before endAt (nil: until cancelled).
+// Each tick is a payment out (B30.17), judged by the agent's rules when it runs.
+func (s *DualTokenStore) CreateStandingOrder(ctx context.Context, workspaceID, fromAgentID, payeeID string, amountMinor int64, currency,
+	memo, every string, firstRunAt time.Time, endAt *time.Time) (AgentSchedule, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	switch {
+	case amountMinor <= 0:
+		return AgentSchedule{}, fmt.Errorf("%w: amount_minor is a positive number of pence or cents", ErrAgentRule)
+	case currency != CurrencyGBP && currency != CurrencyEUR && currency != CurrencyUSD:
+		return AgentSchedule{}, fmt.Errorf("%w: a standing order is in GBP, EUR or USD, not %q", ErrAgentRule, currency)
+	case every != "hour" && every != "day" && every != "week" && every != "month":
+		return AgentSchedule{}, fmt.Errorf("%w: every must be hour, day, week or month", ErrAgentRule)
+	case endAt != nil && endAt.Before(firstRunAt):
+		return AgentSchedule{}, fmt.Errorf("%w: end_at is before the first run", ErrAgentRule)
+	}
+	if _, err := s.PayableOutsidePayee(ctx, workspaceID, payeeID); err != nil {
+		return AgentSchedule{}, err
+	}
+	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `
+		INSERT INTO agent_payment_schedules (id, workspace_id, from_agent_id, to_payee_id, amount_ulxc, amount_minor, currency, memo, every, next_run_at, end_at)
+		SELECT $1, $2, f.id, $4, 0, $5, $6, $7, $8, $9, $10 FROM agent_accounts f WHERE f.id = $3 AND f.workspace_id = $2
+		RETURNING `+agentScheduleColumns,
+		"sch_"+uuid.NewString(), workspaceID, fromAgentID, payeeID, amountMinor, currency, memo, every, firstRunAt.UTC(), endAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sc, ErrAgentNotFound
+	}
+	if err != nil {
+		return sc, fmt.Errorf("economy: create standing order: %w", err)
+	}
+	return sc, nil
+}
+
+// SkipAgentScheduleTick skips a schedule's next tick: it is recorded as a skipped run and the schedule moves on to
+// the tick after it.
+func (s *DualTokenStore) SkipAgentScheduleTick(ctx context.Context, workspaceID, scheduleID string) (AgentSchedule, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AgentSchedule{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sc, err := scanAgentSchedule(tx.QueryRow(ctx, `SELECT `+agentScheduleColumns+` FROM agent_payment_schedules
+		WHERE id = $1 AND workspace_id = $2 AND active FOR UPDATE`, scheduleID, workspaceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sc, ErrScheduleNotFound
+	}
+	if err != nil {
+		return sc, fmt.Errorf("economy: skip schedule tick: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_schedule_runs (schedule_id, tick_at, outcome, detail) VALUES ($1, $2, 'skipped', 'skipped by the owner')`,
+		sc.ID, sc.NextRunAt); err != nil {
+		return sc, fmt.Errorf("economy: skip schedule tick: %w", err)
+	}
+	if sc, err = advanceSchedule(ctx, tx, sc); err != nil {
+		return sc, err
+	}
+	return sc, tx.Commit(ctx)
+}
+
+// advanceSchedule moves sc on to its next tick; one past end_at ends it.
+func advanceSchedule(ctx context.Context, tx pgx.Tx, sc AgentSchedule) (AgentSchedule, error) {
+	sc, err := scanAgentSchedule(tx.QueryRow(ctx, `UPDATE agent_payment_schedules SET next_run_at = $2, active = active AND (end_at IS NULL OR $2 <= end_at)
+		WHERE id = $1 RETURNING `+agentScheduleColumns, sc.ID, nextTick(sc.NextRunAt.UTC(), sc.Every)))
+	if err != nil {
+		return sc, fmt.Errorf("economy: advance schedule: %w", err)
+	}
+	return sc, nil
 }
 
 // ListingCharger is what a schedule paying a marketplace listing needs of the marketplace (B19.17).
@@ -221,7 +302,7 @@ func (s *DualTokenStore) ListAgentScheduleRuns(ctx context.Context, workspaceID,
 	if !exists {
 		return nil, ErrScheduleNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT tick_at, outcome, COALESCE(entry_id::text, ''), COALESCE(use_id, ''), detail, created_at
+	rows, err := s.pool.Query(ctx, `SELECT tick_at, outcome, COALESCE(entry_id::text, ''), COALESCE(use_id, ''), COALESCE(payment_id, ''), detail, created_at
 		FROM agent_schedule_runs WHERE schedule_id = $1 ORDER BY tick_at DESC LIMIT 500`, scheduleID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: schedule runs: %w", err)
@@ -230,7 +311,7 @@ func (s *DualTokenStore) ListAgentScheduleRuns(ctx context.Context, workspaceID,
 	out := []AgentScheduleRun{}
 	for rows.Next() {
 		var r AgentScheduleRun
-		if err := rows.Scan(&r.TickAt, &r.Outcome, &r.EntryID, &r.UseID, &r.Detail, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.TickAt, &r.Outcome, &r.EntryID, &r.UseID, &r.PaymentID, &r.Detail, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -356,10 +437,11 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 	defer func() { _ = tx.Rollback(ctx) }()
 	var workspaceID string
 	var sc AgentSchedule
-	err = tx.QueryRow(ctx, `SELECT workspace_id, id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), amount_ulxc,
-		memo, every, next_run_at
+	err = tx.QueryRow(ctx, `SELECT workspace_id, id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''),
+		amount_ulxc, amount_minor, currency, memo, every, next_run_at
 		FROM agent_payment_schedules WHERE active AND next_run_at <= $1 ORDER BY next_run_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`, now).
-		Scan(&workspaceID, &sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.AmountULXC, &sc.Memo, &sc.Every, &sc.NextRunAt)
+		Scan(&workspaceID, &sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.ToPayeeID, &sc.AmountULXC, &sc.AmountMinor, &sc.Currency,
+			&sc.Memo, &sc.Every, &sc.NextRunAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -377,7 +459,7 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 	if err != nil {
 		return "", err
 	}
-	outcome, entryID, useID, detail := "paid", any(nil), any(nil), ""
+	outcome, entryID, useID, paymentID, detail := "paid", any(nil), any(nil), any(nil), ""
 	entry := uuid.New()
 	var perr error
 	var payeeWS string
@@ -387,6 +469,13 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 		}
 	}
 	switch {
+	case sc.ToPayeeID != "": // B30.18: a payment out in its own transactions, under the tick's key, so a tick run twice pays once
+		var p OutsidePayment
+		p, perr = s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: sc.FromAgentID, PayeeID: sc.ToPayeeID, AmountMinor: sc.AmountMinor,
+			Currency: sc.Currency, Reference: sc.Memo, IdempotencyKey: "schedule:" + sc.ID + ":" + sc.NextRunAt.UTC().Format(time.RFC3339), at: now})
+		if perr == nil {
+			paymentID, detail = p.ID, p.Status
+		}
 	case sc.ToListingID != "":
 		useID, perr = s.payListingTx(payCtx, sp, workspaceID, sc)
 	case payeeWS != workspaceID: // B22.3: another workspace's agent is paid by a transfer
@@ -405,12 +494,14 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 		if err := sp.Commit(ctx); err != nil {
 			return "", err
 		}
-		if sc.ToListingID == "" {
+		if sc.ToListingID == "" && sc.ToPayeeID == "" {
 			entryID = entry
 		}
 	case errors.Is(perr, ErrAgentFunds), errors.Is(perr, ErrAgentRule), errors.Is(perr, ErrApprovalRequired), errors.Is(perr, ErrAgentNotFound),
 		errors.Is(perr, ErrAgentOwnerless), errors.Is(perr, ErrListingPayee), errors.Is(perr, ErrOwnerUnverified),
-		errors.Is(perr, ErrCapabilityNotCleared), errors.Is(perr, workspace.ErrMoneyWall):
+		errors.Is(perr, ErrCapabilityNotCleared), errors.Is(perr, workspace.ErrMoneyWall),
+		errors.Is(perr, ErrOutsidePayment), errors.Is(perr, ErrPayeeNotFound), errors.Is(perr, ErrPayeeUnconfirmed), errors.Is(perr, ErrMoneyAccountNotFound),
+		errors.Is(perr, ErrMoneyAccountNotOpen), errors.As(perr, new(*screening.Refusal)):
 		if err := sp.Rollback(ctx); err != nil {
 			return "", err
 		}
@@ -418,12 +509,12 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 	default:
 		return "", perr
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_schedule_runs (schedule_id, tick_at, outcome, entry_id, use_id, detail) VALUES ($1, $2, $3, $4, $5, $6)`,
-		sc.ID, sc.NextRunAt, outcome, entryID, useID, detail); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_schedule_runs (schedule_id, tick_at, outcome, entry_id, use_id, payment_id, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		sc.ID, sc.NextRunAt, outcome, entryID, useID, paymentID, detail); err != nil {
 		return "", fmt.Errorf("economy: record schedule run: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_payment_schedules SET next_run_at = $2 WHERE id = $1`, sc.ID, nextTick(sc.NextRunAt.UTC(), sc.Every)); err != nil {
-		return "", fmt.Errorf("economy: advance schedule: %w", err)
+	if _, err := advanceSchedule(ctx, tx, sc); err != nil {
+		return "", err
 	}
 	return outcome, tx.Commit(ctx)
 }
