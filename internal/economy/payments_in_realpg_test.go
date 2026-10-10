@@ -89,8 +89,26 @@ func TestPaymentsIn_MatchedMoneyPostsToTheAgentAndUnmatchedMoneyIsReturnedFromSu
 	if n, err := s.ReturnDueSuspense(ctx, time.Now(), 5); err != nil || n != 0 {
 		t.Fatalf("a return run on the day it arrived returned %d (%v); want none", n, err)
 	}
-	// Lens restarts: the Test partner has forgotten the account the money came to, and the job still pays it back.
-	s.SetAccountPartners(partners.NewRegistry(nil))
+	// Lens restarts: the Test partner has forgotten the account the money came to, and the job still pays it back —
+	// but not while the ledger would refuse the return: then the partner pays nothing.
+	reg := partners.NewRegistry(nil)
+	s.SetAccountPartners(reg)
+	if _, err := pool.Exec(ctx, `UPDATE money_accounts SET status = 'frozen' WHERE id = $1`, suspenseID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.ReturnDueSuspense(ctx, held[0].ReturnAfter, 5); n != 0 {
+		t.Fatalf("a return from a frozen suspense account went back (%d)", n)
+	}
+	p, err := reg.Account(ctx, CapabilityPaymentsIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines, _ := p.StatementLines(ctx, company.PartnerAccountRef, time.Time{}); len(lines) != 0 {
+		t.Fatalf("the partner paid %+v while the ledger refused the return", lines)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE money_accounts SET status = 'open' WHERE id = $1`, suspenseID); err != nil {
+		t.Fatal(err)
+	}
 	if n, err := s.ReturnDueSuspense(ctx, held[0].ReturnAfter, 5); err != nil || n != 1 {
 		t.Fatalf("a return run once it was due returned %d (%v); want 1", n, err)
 	}
@@ -108,9 +126,14 @@ func TestPaymentsIn_MatchedMoneyPostsToTheAgentAndUnmatchedMoneyIsReturnedFromSu
 
 	// The operator assigns the next one to the company; then it is not in suspense to go back.
 	assigned := receive("test_in_b3015_3", "for agent TLV00000000000F", 30_00)
-	e, err := s.AssignSuspense(ctx, assigned.ID, company.ID)
+	e, err := s.AssignSuspense(ctx, assigned.ID, company.ID, "ops@talyvor")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var audited int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM operator_audit WHERE actor = 'ops@talyvor' AND action = 'suspense_assign' AND target = $1`,
+		assigned.ID).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("operator_audit rows for the assignment = %d (%v); want 1", audited, err)
 	}
 	if got, want := postings(e.ID), suspenseID+" -3000 GBP test; "+company.ID+" 3000 GBP test"; got != want {
 		t.Fatalf("the assignment posted %s; want %s", got, want)

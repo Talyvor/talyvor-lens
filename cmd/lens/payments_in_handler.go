@@ -34,7 +34,7 @@ import (
 type paymentsInStore interface {
 	ReceivePayment(ctx context.Context, in economy.InboundPayment) (economy.MoneyEntry, error)
 	SuspenseItems(ctx context.Context, days int) ([]economy.SuspenseItem, error)
-	AssignSuspense(ctx context.Context, entryID, accountID string) (economy.MoneyEntry, error)
+	AssignSuspense(ctx context.Context, entryID, accountID, by string) (economy.MoneyEntry, error)
 }
 
 // newPaymentsInWebhook posts each signed payment in. Money the Test partner reports is test money; any other
@@ -102,7 +102,9 @@ func newSuspenseAssignHandler(store paymentsInStore) http.Handler {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"account_id": "<the company or agent account it was for>"}`)
 			return
 		}
-		e, err := store.AssignSuspense(req.Context(), chi.URLParam(req, "entryID"), in.AccountID)
+		// requireStepUp has checked the operator X-Talyvor-Operator names: the audit row's who.
+		by := strings.TrimSpace(req.Header.Get(moderatorOperatorHeader))
+		e, err := store.AssignSuspense(req.Context(), chi.URLParam(req, "entryID"), in.AccountID, by)
 		switch {
 		case errors.Is(err, economy.ErrSuspenseNotHeld):
 			writeJSONErr(w, http.StatusNotFound, err.Error())

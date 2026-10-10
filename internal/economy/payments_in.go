@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/partners"
@@ -108,10 +109,10 @@ func (s *DualTokenStore) SuspenseItems(ctx context.Context, days int) ([]Suspens
 	return heldSuspense(ctx, s.pool, days, "true")
 }
 
-// leaveSuspense moves the payment in entryID out of suspense by the entry move builds from it, on a transaction that
-// holds the payment's lock, so a return and an assignment cannot both happen. send, when set, runs once the entry
-// has been screened and before it is written — the partner's payment — and may set its partner reference.
-func (s *DualTokenStore) leaveSuspense(ctx context.Context, entryID string, move func(SuspenseItem) (MoneyEntry, error),
+// leaveSuspense moves the payment in entryID out of suspense by the entry move builds from it on tx, a transaction
+// that holds the payment's lock, so a return and an assignment cannot both happen. send, when set, is the partner's
+// payment: it runs only once the ledger would take the entry, and sets the entry's partner reference.
+func (s *DualTokenStore) leaveSuspense(ctx context.Context, entryID string, move func(pgx.Tx, SuspenseItem) (MoneyEntry, error),
 	send func(SuspenseItem, *MoneyEntry) error) (MoneyEntry, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -130,14 +131,22 @@ func (s *DualTokenStore) leaveSuspense(ctx context.Context, entryID string, move
 		return MoneyEntry{}, ErrSuspenseNotHeld
 	}
 	it := held[0]
-	e, err := move(it)
+	e, err := move(tx, it)
 	if err != nil {
 		return MoneyEntry{}, err
 	}
 	e.WorkspaceID, e.Capability, e.IdempotencyKey, e.Funding = it.WorkspaceID, CapabilityPaymentsIn, "suspense:"+it.EntryID, it.Funding
 	if send != nil {
-		// Screened before the partner pays anything; postMoneyTx screens the same payment again and finds it so.
-		if err := screenOutside(ctx, e, e.Postings, func(id string) bool { return id == it.partnerAccountID }, s.screener); err != nil {
+		// Every gate the ledger asks — screening, a freeze, the terms, the accounts open — is asked before the partner
+		// pays anything: the entry is written on a savepoint and undone, then written for good with the partner's
+		// reference, which an entry cannot be given later.
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return MoneyEntry{}, fmt.Errorf("economy: leave suspense: %w", err)
+		}
+		_, err = postMoneyTx(ctx, sp, e, s.screener)
+		_ = sp.Rollback(ctx)
+		if err != nil {
 			return MoneyEntry{}, err
 		}
 		if err := send(it, &e); err != nil {
@@ -146,6 +155,11 @@ func (s *DualTokenStore) leaveSuspense(ctx context.Context, entryID string, move
 	}
 	out, err := postMoneyTx(ctx, tx, e, s.screener)
 	if err != nil {
+		if send != nil {
+			// The partner has paid. The payment stays held, and the next run's send is the same payment, not another.
+			slog.Error("economy: a payment in went back at the partner and is not yet posted out of suspense",
+				"workspace_id", it.WorkspaceID, "entry_id", it.EntryID, "partner_ref", e.PartnerRef, "err", err)
+		}
 		return MoneyEntry{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -159,17 +173,22 @@ func (s *DualTokenStore) leaveSuspense(ctx context.Context, entryID string, move
 }
 
 // AssignSuspense moves the payment in entryID out of suspense into accountID, an open company or agent account of the
-// same workspace in the same currency: the operator has found whose it is. It keeps the payer and reference.
-func (s *DualTokenStore) AssignSuspense(ctx context.Context, entryID, accountID string) (MoneyEntry, error) {
-	return s.leaveSuspense(ctx, entryID, func(it SuspenseItem) (MoneyEntry, error) {
+// same workspace in the same currency: the operator by has found whose it is. It keeps the payer and reference, and
+// writes the operator_audit row in the same transaction.
+func (s *DualTokenStore) AssignSuspense(ctx context.Context, entryID, accountID, by string) (MoneyEntry, error) {
+	return s.leaveSuspense(ctx, entryID, func(tx pgx.Tx, it SuspenseItem) (MoneyEntry, error) {
 		var ok bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts WHERE id = $1 AND workspace_id = $2 AND currency = $3
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts WHERE id = $1 AND workspace_id = $2 AND currency = $3
 			AND purpose IN ('company', 'agent') AND status = 'open')`, accountID, it.WorkspaceID, it.Currency).Scan(&ok); err != nil {
 			return MoneyEntry{}, fmt.Errorf("economy: assign from suspense: %w", err)
 		}
 		if !ok {
 			return MoneyEntry{}, fmt.Errorf("%w: %s is not an open %s company or agent account of the workspace the money came to",
 				ErrMoneyAccountNotFound, accountID, it.Currency)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO operator_audit (actor, action, target, detail) VALUES ($1, 'suspense_assign', $2, $3)`,
+			by, it.EntryID, fmt.Sprintf("%d %s from %s to %s", it.AmountMinor, it.Currency, it.AccountID, accountID)); err != nil {
+			return MoneyEntry{}, fmt.Errorf("economy: assign from suspense: %w", err)
 		}
 		return MoneyEntry{Kind: "suspense_assigned", Memo: it.Reference, Counterparty: it.Payer, Postings: []MoneyPosting{
 			{AccountID: it.AccountID, AmountMinor: -it.AmountMinor, Currency: it.Currency},
@@ -207,7 +226,7 @@ func (s *DualTokenStore) ReturnDueSuspense(ctx context.Context, now time.Time, d
 // returnSuspense pays the payment in entryID back to its payer from the account it arrived in, and posts it out of
 // suspense through the partner account. The partner's payment is keyed by the entry, so a retry never pays twice.
 func (s *DualTokenStore) returnSuspense(ctx context.Context, entryID string) (MoneyEntry, error) {
-	return s.leaveSuspense(ctx, entryID, func(it SuspenseItem) (MoneyEntry, error) {
+	return s.leaveSuspense(ctx, entryID, func(_ pgx.Tx, it SuspenseItem) (MoneyEntry, error) {
 		return MoneyEntry{Kind: "payment_in_returned", Memo: it.Reference, Counterparty: it.Payer, Postings: []MoneyPosting{
 			{AccountID: it.AccountID, AmountMinor: -it.AmountMinor, Currency: it.Currency},
 			{AccountID: it.partnerAccountID, AmountMinor: it.AmountMinor, Currency: it.Currency},

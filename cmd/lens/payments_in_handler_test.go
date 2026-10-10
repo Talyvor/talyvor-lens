@@ -23,7 +23,7 @@ func (f *fakePaymentsIn) ReceivePayment(_ context.Context, in economy.InboundPay
 func (f *fakePaymentsIn) SuspenseItems(context.Context, int) ([]economy.SuspenseItem, error) {
 	return nil, nil
 }
-func (f *fakePaymentsIn) AssignSuspense(context.Context, string, string) (economy.MoneyEntry, error) {
+func (f *fakePaymentsIn) AssignSuspense(context.Context, string, string, string) (economy.MoneyEntry, error) {
 	return economy.MoneyEntry{}, nil
 }
 
