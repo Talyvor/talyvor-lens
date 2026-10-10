@@ -372,6 +372,10 @@ const undocumentedNonAdminV1Routes = 275
 // line of their own, so a branch adding routes beside another's adds a line rather than rewriting the other's.
 const undocumentedB3019Routes = 4
 
+// 276 → 283 (B30.20): POST and GET /v1/money/invoices, POST /v1/money/invoices/{id}/send and /void, and the pay link's
+// GET /v1/pay/{token}, POST /v1/pay/{token}/card and /agent — on a line of their own, as B30.19's are.
+const undocumentedB3020Routes = 7
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -385,10 +389,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes)
 	}
 }

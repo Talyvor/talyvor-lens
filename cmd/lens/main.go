@@ -1898,6 +1898,11 @@ func run() error {
 			testBillingSvc = testBillingSvc.WithAgentCards(dualToken)
 		}
 	}
+	// B30.20 — an invoice's card payment posts to the issuing agent, from whichever webhook its Stripe key calls.
+	billingSvc = billingSvc.WithInvoices(dualToken)
+	if testBillingSvc != nil {
+		testBillingSvc = testBillingSvc.WithInvoices(dualToken)
+	}
 	// B22.4 — company credit lines: each month's draws go on one Stripe invoice; paying it repays the line.
 	// B26.4 — a test company's goes on a Stripe test-mode invoice, from the test workspaces' Service.
 	if cfg.BillingEnabled {
@@ -1974,6 +1979,19 @@ func run() error {
 	sellerTax.SetReminderEvery(time.Duration(cfg.SellerTaxReminderDays) * 24 * time.Hour)
 	go haComps.leader.Run(ctx, "seller-tax-reminders", 30*time.Second, func(lctx context.Context) {
 		remindSellersOfTaxDetails(lctx, sellerTax)
+	})
+	// B30.20 — invoices: a pay link points at the web app, and a card pays through Stripe test mode only — the test-mode
+	// key, or the main key while it is a test one. Each minute, transfers are matched to invoices and reminders sent.
+	dualToken.SetInvoicePayBase(originOf(cfg.BillingSuccessURL))
+	var invoiceCards invoiceCardCheckout
+	switch {
+	case testStripe != nil:
+		invoiceCards = testStripe
+	case cfg.BillingEnabled && !billing.LiveKey(cfg.StripeSecretKey):
+		invoiceCards = liveStripe
+	}
+	go haComps.leader.Run(ctx, "invoice-sweep", 30*time.Second, func(lctx context.Context) {
+		sweepInvoices(lctx, dualToken)
 	})
 	// B32.39 — every billed marketplace use carries its buyer's tax, worked out when it is metered; while the key is
 	// live, a real buyer's sale Talyvor cannot account for the tax on is refused before it runs.
@@ -2456,6 +2474,8 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		// B30.20: an invoice's pay link — the page, and its card button.
+		mountInvoicePayRoutes(pub, dualToken, invoiceCards)
 	})
 
 	// /metrics exposes Prometheus telemetry — gated to admin key so internal
@@ -4650,6 +4670,7 @@ func run() error {
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38

@@ -133,6 +133,8 @@ type Service struct {
 	marketPayouts MarketPayouts
 	// B19.25 — agent card purchases settle (agent_cards.go). Unset ⇒ Issuing events are acknowledged and ignored.
 	agentCards AgentCardSettler
+	// B30.20 — an invoice's card payment posts to the issuing agent (invoices.go). Unset ⇒ acked and logged.
+	invoices InvoicePayer
 	// B22.4 — company credit lines are invoiced monthly (credit_line.go). Unset ⇒ their draws are not invoiced.
 	creditLineStripe creditLineStripeAPI
 	// B26.4 — set, a test company's credit line is refused, naming these test-mode variables (RefuseTestCreditLines).
@@ -349,6 +351,12 @@ func (s *Service) handleSessionCredit(w http.ResponseWriter, ctx context.Context
 		// Signed but unparseable — it will never parse; ack so Stripe stops retrying.
 		s.log.Warn("billing webhook: unparseable checkout session", "event", event.ID)
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// B30.20 — an invoice's card payment is the issuing agent's, whatever kind of workspace it is.
+	if sess.Metadata["talyvor_invoice_id"] != "" {
+		s.handleInvoiceCard(w, ctx, event, &sess)
 		return
 	}
 
