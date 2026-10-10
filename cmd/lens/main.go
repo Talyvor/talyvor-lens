@@ -1942,6 +1942,8 @@ func run() error {
 	screener.HoldWhenListsStale(screeningLists)
 	statusPage.UseScreeningLists(screeningLists)
 	dualToken.SetScreener(screener)
+	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
+	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
 	dualToken.SetAccountPartners(partnerRegistry)
 	// B30.9 — each capability's terms, accepted before first use: version 1 of every text Lens carries
@@ -4640,6 +4642,7 @@ func run() error {
 		mountSimTradingRoutes(authed, dualToken)                                        // B22.8
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
+		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38

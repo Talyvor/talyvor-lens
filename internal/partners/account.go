@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,8 @@ type AccountPartner interface {
 	// PayByBank asks a payer to pay req.Amount into an account from their own bank: the payer authorises it at
 	// the returned URL. Idempotent on req.ID.
 	PayByBank(ctx context.Context, req PayByBankRequest) (PayByBank, error)
+	// CheckPayee asks the payee's bank whether the name is the account's: confirmation of payee (B30.16).
+	CheckPayee(ctx context.Context, p Payee) (PayeeCheck, error)
 }
 
 // AccountRequest asks for an account in one currency.
@@ -63,6 +67,19 @@ type Payee struct {
 	IBAN          string `json:"iban,omitempty"`
 	BIC           string `json:"bic,omitempty"`
 	RoutingNumber string `json:"routing_number,omitempty"`
+}
+
+// The answers to a confirmation of payee.
+const (
+	PayeeExactMatch = "exact_match" // the name is the account holder's
+	PayeeCloseMatch = "close_match" // the name is close to the holder's, which SuggestedName is
+	PayeeNoMatch    = "no_match"    // the name is not the account holder's
+)
+
+// PayeeCheck is what the payee's bank said of a payee's name and account.
+type PayeeCheck struct {
+	Result        string `json:"result"`
+	SuggestedName string `json:"suggested_name,omitempty"`
 }
 
 // PaymentRequest pays money out of an account.
@@ -244,6 +261,21 @@ func (p *TestAccountPartner) post(accountRef string, op *testOp, minor int64, cu
 		line.Amount.Minor, line.Description = -minor, "Returned: "+description
 		p.lines[accountRef] = append(p.lines[accountRef], line)
 	}
+}
+
+// testCloseWord is the test word that makes a payee's name a close match.
+var testCloseWord = regexp.MustCompile(`(?i)TESTCLOSE`)
+
+// CheckPayee answers by the name: one containing TESTNOMATCH matches no account; TESTCLOSE is a close match, whose
+// holder is the name without the word; any other name matches exactly.
+func (*TestAccountPartner) CheckPayee(_ context.Context, p Payee) (PayeeCheck, error) {
+	switch {
+	case strings.Contains(strings.ToUpper(p.Name), "TESTNOMATCH"):
+		return PayeeCheck{Result: PayeeNoMatch}, nil
+	case testCloseWord.MatchString(p.Name):
+		return PayeeCheck{Result: PayeeCloseMatch, SuggestedName: strings.Join(strings.Fields(testCloseWord.ReplaceAllString(p.Name, " ")), " ")}, nil
+	}
+	return PayeeCheck{Result: PayeeExactMatch}, nil
 }
 
 // PaymentStatus is where a payment stands now: a returned one reads returned from the first read after it was

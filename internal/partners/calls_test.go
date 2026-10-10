@@ -149,7 +149,7 @@ func auditProblems(s Service, rl rail, log *callRecorder) []string {
 // notMoney is every call that neither moves nor commits money. Every other call is held to the id rules, so a
 // method added later is held to them unless it is put here.
 var notMoney = map[string]bool{
-	"account.OpenAccount": true, "account.AccountDetails": true, "account.PaymentStatus": true, "account.StatementLines": true,
+	"account.OpenAccount": true, "account.AccountDetails": true, "account.PaymentStatus": true, "account.StatementLines": true, "account.CheckPayee": true,
 	"fx.Quote": true, "fx.Status": true,
 	"broker.OpenAccount": true, "broker.Quote": true, "broker.OrderStatus": true, "broker.Cancel": true,
 	"broker.Positions": true, "broker.Fills": true,
