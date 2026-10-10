@@ -140,6 +140,7 @@ var Manifest = map[string]Entry{
 	"compliance_freezes":        {Retain, "B30.8: the operator's freeze on the workspace's money capabilities, while it stands — the case it is on, why, who and when; a deletion request does not lift a freeze, and the audit trail keeps its history"},
 	"workspace_verifications":   {Retain, "B30.4: audit-guarded (0230, append-only): each verification check — level, method, status, date and the provider's evidence reference, never a document; customer due-diligence record retention"},
 	"money_accounts":            {Retain, "B30.2: each account in pounds, euros, dollars or USDC; the append-only money_postings reference it by foreign key, so an account with money moved is closed, never deleted; financial-record retention"},
+	"money_mandates":            {Retain, "B30.19: keys `workspace_id`+`payee_workspace_id`: each mandate an agent's account granted a payee — the limits, the expiry, the revocation, and an outside business's key only as its SHA-256; its money_mandate_pulls name the money_entries each pull posted; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},

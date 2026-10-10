@@ -117,6 +117,8 @@ type MoneyEntry struct {
 	PartnerRef     string         `json:"partner_ref,omitempty"`  // the partner's reference for that payment, reconciled daily (B30.11)
 	CreatedAt      time.Time      `json:"created_at"`
 	Postings       []MoneyPosting `json:"postings"`
+
+	payeeWorkspaceID string // a mandate pull's payee company (B30.19): its account may be credited too
 }
 
 // PaymentScreener screens an outside payment before its money moves: *screening.Screener.
@@ -273,6 +275,11 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	if err := refuseUnaccepted(ctx, tx, e.WorkspaceID, c); err != nil {
 		return MoneyEntry{}, err
 	}
+	if e.payeeWorkspaceID != "" {
+		if err := refuseFrozen(ctx, tx, e.payeeWorkspaceID, c); err != nil {
+			return MoneyEntry{}, err
+		}
+	}
 	if e.Funding == FundingLive {
 		refusal, err := capabilityLive(ctx, tx, e.WorkspaceID, c)
 		if err != nil {
@@ -283,10 +290,11 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 		}
 	}
 
-	// Each account is the entry's workspace's — another's is not found — and is held open until tx ends: a freeze
-	// or a close waits for the money already moving.
-	rows, err := tx.Query(ctx, `SELECT id, currency, status, purpose FROM money_accounts WHERE id = ANY($1) AND workspace_id = $2 FOR SHARE`,
-		ids, e.WorkspaceID)
+	// Each account is the entry's workspace's — another's is not found, but for a mandate pull's payee's — and is held
+	// open until tx ends: a freeze or a close waits for the money already moving.
+	rows, err := tx.Query(ctx, `SELECT id, currency, status, purpose FROM money_accounts
+		WHERE id = ANY($1) AND (workspace_id = $2 OR (workspace_id = $3 AND purpose = 'company')) FOR SHARE`,
+		ids, e.WorkspaceID, e.payeeWorkspaceID)
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 	}
