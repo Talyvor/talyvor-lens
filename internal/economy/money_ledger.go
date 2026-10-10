@@ -211,17 +211,22 @@ func (s *DualTokenStore) PostMoney(ctx context.Context, e MoneyEntry) (MoneyEntr
 		}
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 	}
-	// B30.7: the payment has moved, and is monitored. Monitoring never undoes it, so a monitor that fails is logged and
-	// the nightly run judges the payment again.
-	if s.monitor != nil && out.Counterparty != "" {
-		mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		if err := s.monitor.MoneyMoved(mctx, out.WorkspaceID, out.ID); err != nil {
-			slog.Warn("economy: transaction monitoring did not judge a payment; the nightly run will",
-				"workspace_id", out.WorkspaceID, "entry_id", out.ID, "err", err)
-		}
-		cancel()
-	}
+	s.monitorMoved(ctx, out)
 	return out, nil
+}
+
+// monitorMoved runs transaction monitoring on e once it has moved, when it is a payment through a partner (B30.7).
+// Monitoring never undoes it, so a monitor that fails is logged and the nightly run judges the payment again.
+func (s *DualTokenStore) monitorMoved(ctx context.Context, e MoneyEntry) {
+	if s.monitor == nil || e.Counterparty == "" {
+		return
+	}
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := s.monitor.MoneyMoved(mctx, e.WorkspaceID, e.ID); err != nil {
+		slog.Warn("economy: transaction monitoring did not judge a payment; the nightly run will",
+			"workspace_id", e.WorkspaceID, "entry_id", e.ID, "err", err)
+	}
 }
 
 // postMoneyTx is PostMoney on tx, the caller's transaction, so the movement commits or rolls back with the rows
