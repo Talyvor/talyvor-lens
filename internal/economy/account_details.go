@@ -130,9 +130,10 @@ var paymentReference = regexp.MustCompile(`TLV[0-9A-F]{12}`)
 
 // ReceivePayment posts money that arrived at a company account's details: into the open agent account under it whose
 // payment reference the payer quoted, or else into the company account. Money that arrived at an agent's wallet
-// (B46.4) goes into the wallet. It is one entry from the partner account
-// that mirrors the company's, screened against the payer first (B30.6), and the partner's reference for the payment
-// is its idempotency key, so a payment reported twice posts once.
+// (B46.4) goes into the wallet. Money they do not match — a quoted agent payment reference that names no open agent
+// account, or details whose account is no longer open — goes to the workspace's suspense account in its currency
+// (B30.15). It is one entry from the partner account that mirrors the company's, screened against the payer first
+// (B30.6), and the partner's reference for the payment is its idempotency key, so a payment reported twice posts once.
 func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) (MoneyEntry, error) {
 	switch {
 	case in.PartnerAccountRef == "" || in.PartnerRef == "":
@@ -143,33 +144,44 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 	if in.Funding == "" {
 		in.Funding = FundingTest
 	}
-	var ws, companyID, partnerID string
-	err := s.pool.QueryRow(ctx, `SELECT c.workspace_id, c.id, p.id FROM money_accounts c
+	var ws, companyID, purpose, status, currency, partnerID string
+	err := s.pool.QueryRow(ctx, `SELECT c.workspace_id, c.id, c.purpose, c.status, c.currency, p.id FROM money_accounts c
 		JOIN money_accounts p ON p.workspace_id = c.workspace_id AND p.partner_account_ref = c.partner_account_ref AND p.purpose = 'partner'
-		WHERE c.partner_account_ref = $1 AND c.purpose IN ('company', 'agent') AND c.status = 'open'
-		  AND ($2 = '' OR p.name = $2 OR ($2 = $3 AND p.name = 'test'))`, in.PartnerAccountRef, in.Partner, money.SandboxName).Scan(&ws, &companyID, &partnerID)
+		WHERE c.partner_account_ref = $1 AND c.purpose IN ('company', 'agent')
+		  AND ($2 = '' OR p.name = $2 OR ($2 = $3 AND p.name = 'test'))
+		ORDER BY c.status = 'open' DESC LIMIT 1`, in.PartnerAccountRef, in.Partner, money.SandboxName).Scan(&ws, &companyID, &purpose, &status, &currency, &partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MoneyEntry{}, fmt.Errorf("%w: no open company account is at the partner's %s", ErrMoneyAccountNotFound, in.PartnerAccountRef)
+		return MoneyEntry{}, fmt.Errorf("%w: no company account is at the partner's %s", ErrMoneyAccountNotFound, in.PartnerAccountRef)
 	}
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: receive payment: %w", err)
 	}
-	to := companyID
+	if in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency)); in.Currency != currency {
+		return MoneyEntry{}, fmt.Errorf("economy: the account at the partner's %s holds %s, not %q", in.PartnerAccountRef, currency, in.Currency)
+	}
+	to, matched := companyID, status == MoneyOpen
 	quoted := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return unicode.ToUpper(r)
 		}
 		return -1
 	}, in.Reference)
-	if ref := paymentReference.FindString(quoted); ref != "" {
+	if ref := paymentReference.FindString(quoted); ref != "" && matched && purpose == MoneyCompany {
 		var agentAccount string
 		err := s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE parent_account_id = $1 AND payment_reference = $2 AND status = 'open'`,
 			companyID, ref).Scan(&agentAccount)
 		switch {
 		case err == nil:
 			to = agentAccount
-		case !errors.Is(err, pgx.ErrNoRows):
+		case errors.Is(err, pgx.ErrNoRows):
+			matched = false
+		default:
 			return MoneyEntry{}, fmt.Errorf("economy: receive payment: %w", err)
+		}
+	}
+	if !matched {
+		if to, err = s.suspenseAccount(ctx, ws, currency); err != nil {
+			return MoneyEntry{}, err
 		}
 	}
 	return s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsIn, Kind: "payment_in",

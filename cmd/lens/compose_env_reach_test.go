@@ -254,6 +254,9 @@ var credentialExemptions = map[string]string{
 	"LENS_MONEY_SANDBOX_WEBHOOK_SECRET": "B46.3's money-layer sandbox webhook secret reaches the process through " +
 		"env_file: lens.env, like LENS_STRIPE_ISSUING_WEBHOOK_SECRET and for the same reason: an environment: entry " +
 		"would arrive as \"\" and override the lens.env value, so the sandbox would take no webhook.",
+	"LENS_ACCOUNT_PARTNER_WEBHOOK_SECRET": "B30.15's payments-in webhook secret reaches the process through env_file: " +
+		"lens.env, like LENS_STRIPE_ISSUING_WEBHOOK_SECRET and for the same reason: an environment: entry would arrive " +
+		"as \"\" and override the lens.env value, so the webhook would be unregistered and no payment in would post.",
 
 	// ⚠ FOUR MORE EXEMPTIONS WERE WRITTEN HERE AND REMOVED, because
 	// TestCredentialExemptionsAreStillRead refused them: LENS_TEST_NVIDIA_EAT{,_NONCE},
