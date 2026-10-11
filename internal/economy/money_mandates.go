@@ -241,8 +241,8 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	switch {
 	case amountMinor <= 0:
 		return MandatePull{}, fmt.Errorf("%w: a pull takes some money, not %d", ErrMandate, amountMinor)
-	case strings.TrimSpace(idempotencyKey) == "":
-		return MandatePull{}, fmt.Errorf("%w: a pull needs an idempotency key", ErrMandate)
+	case strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 200:
+		return MandatePull{}, fmt.Errorf("%w: a pull needs an idempotency key of up to 200 characters", ErrMandate)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -353,7 +353,7 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		// An outside business's pull waits in the mandate's hold account only until the partner has it: a payment out
 		// of the hold account to the business's saved payee, written pending with the pull and sent once it commits.
 		e.Capability = CapabilityPaymentsOut
-		if payout, err = s.mandatePayout(ctx, tx, m, e, amountMinor); err != nil {
+		if payout, err = s.mandatePayout(ctx, tx, m, e, amountMinor, memo); err != nil {
 			return MandatePull{}, err
 		}
 	}
@@ -405,10 +405,14 @@ type mandatePayout struct {
 
 // mandatePayout prepares the payment out of a pull of amountMinor under m, whose entry is e: the payee is payable, the
 // payment is screened (B30.6), and it is written pending on tx — under the pull's key, so a retried pull finds it —
-// with the mandate's hold account as its hold. The caller sends it once the pull commits.
-func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate, e MoneyEntry, amountMinor int64) (mandatePayout, error) {
+// with the mandate's hold account as its hold. The business's memo is the bank reference it sees, or the mandate's id
+// without one. The caller sends it once the pull commits.
+func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate, e MoneyEntry, amountMinor int64, memo string) (mandatePayout, error) {
 	var out mandatePayout
+	ref := cmp.Or(strings.Join(strings.Fields(memo), " "), "Mandate "+m.ID)
 	switch {
+	case len(ref) > 140:
+		return out, fmt.Errorf("%w: a pull's memo is its bank reference, up to 140 characters", ErrMandate)
 	case m.PayeeID == "":
 		return out, fmt.Errorf("%w: the mandate names no saved payee to pay out to — grant a new one with payee_id", ErrMandate)
 	case s.accountPartners == nil:
@@ -428,7 +432,7 @@ func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate
 	}
 	p := OutsidePayment{ID: "mpay_" + uuid.NewString(), WorkspaceID: m.WorkspaceID, IdempotencyKey: e.IdempotencyKey, AccountID: m.AccountID,
 		holdAccountID: m.HoldAccountID, AgentID: m.AgentID, PayeeID: out.payee.ID, PayeeName: out.payee.Name, AmountMinor: amountMinor,
-		Currency: m.Currency, Funding: e.Funding, Reference: e.Memo, Status: PaymentPending, Partner: out.partner.Name()}
+		Currency: m.Currency, Funding: e.Funding, Reference: ref, Status: PaymentPending, Partner: out.partner.Name()}
 	if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: p.screenKey(), Capability: CapabilityPaymentsOut,
 		Direction: "out", Counterparty: p.PayeeName, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
 		return out, err

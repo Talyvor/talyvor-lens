@@ -188,7 +188,7 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND purpose = 'partner' AND currency = 'GBP'`, ws).Scan(&partnerAccount); err != nil {
 		t.Fatal(err)
 	}
-	// payouts is every posting of the payments out of the holdAcct account, in order: "kind account amount partner_ref?".
+	// payouts is every posting of the payments out of the hold account, in order: "kind account amount partner_ref?".
 	payouts := func() []string {
 		t.Helper()
 		rows, err := pool.Query(ctx, `SELECT e.kind, p.account_id, p.amount_minor, e.partner_ref <> '' FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
@@ -218,27 +218,31 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 		return b
 	}
 	for range 2 { // the pull, and its retry: the same pull, the same payment
-		code, out := call("", key, http.MethodPost, bizPull, `{"amount_minor":1000,"idempotency_key":"acme-1"}`)
+		code, out := call("", key, http.MethodPost, bizPull, `{"amount_minor":1000,"idempotency_key":"acme-1","memo":"ACME  INV-7\n"}`)
 		payment, _ := out["payment"].(map[string]any)
-		if code != http.StatusCreated || payment["status"] != "completed" || payment["partner_ref"] == "" || payment["payee_id"] != acme.ID {
-			t.Fatalf("the business's pull = %d %v, want 201 with its payment out completed at the partner", code, out)
+		if code != http.StatusCreated || payment["status"] != "completed" || payment["partner_ref"] == "" || payment["payee_id"] != acme.ID ||
+			payment["reference"] != "ACME INV-7" {
+			t.Fatalf("the business's pull = %d %v, want 201 with its payment out completed at the partner under the memo as reference", code, out)
 		}
 	}
 	if got := postings(); len(got) != 6 || got[4] != agentGBP.ID+" -1000 test" || got[5] != holdAcct+" 1000 test" {
-		t.Fatalf("the business's pull posted %v; want the agent's account to the holdAcct account", got)
+		t.Fatalf("the business's pull posted %v; want the agent's account to the hold account", got)
 	}
 	want = []string{"payment_out " + holdAcct + " -1000 true", "payment_out " + partnerAccount + " 1000 true"}
 	if got := payouts(); strings.Join(got, "; ") != strings.Join(want, "; ") || holdBalance() != 0 {
-		t.Fatalf("the payout posted %v with the holdAcct account at %d; want %v, the holdAcct account at zero", got, holdBalance(), want)
+		t.Fatalf("the payout posted %v with the hold account at %d; want %v, the hold account at zero", got, holdBalance(), want)
 	}
-	// A pull whose payment fails at the partner (£10.13) comes back from the holdAcct account to the agent's account.
+	if code, out := call("", key, http.MethodPost, bizPull, `{"amount_minor":100,"idempotency_key":"acme-long","memo":"`+strings.Repeat("x", 141)+`"}`); code != http.StatusBadRequest {
+		t.Errorf("a pull with a 141-character memo = %d %v, want 400: it is the bank reference", code, out)
+	}
+	// A pull whose payment fails at the partner (£10.13) comes back from the hold account to the agent's account.
 	if code, out := call("", key, http.MethodPost, bizPull, `{"amount_minor":1013,"idempotency_key":"acme-2"}`); code != http.StatusCreated ||
 		out["payment"].(map[string]any)["status"] != "failed" {
 		t.Fatalf("a pull of £10.13 = %d %v, want 201 with its payment out failed", code, out)
 	}
 	want = append(want, "payment_out_failed "+holdAcct+" -1013 false", "payment_out_failed "+agentGBP.ID+" 1013 false")
 	if got := payouts(); strings.Join(got, "; ") != strings.Join(want, "; ") || holdBalance() != 0 {
-		t.Fatalf("after the failed payout the payouts posted %v with the holdAcct account at %d; want %v, the holdAcct account at zero", got, holdBalance(), want)
+		t.Fatalf("after the failed payout the payouts posted %v with the hold account at %d; want %v, the hold account at zero", got, holdBalance(), want)
 	}
 	if b, _ := store.Balance(ctx, ws, agentGBP.ID); b.TestMinor != 5000 {
 		t.Errorf("the agent's balance = %+v; want 5000 test pence: £100 in, £40 to the company, £10 to the business, £10.13 back", b)
