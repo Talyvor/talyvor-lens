@@ -34,25 +34,30 @@ type moneyPaymentBank interface {
 	RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (economy.OutsidePayment, error)
 }
 
+// moneyCaller is the key's workspace and the agent it may act for: "" for the owner or an admin, who may act for any.
+// agentOf is bank.AgentOfKey. It writes the refusal and answers ok false when the key may not make payments.
+func moneyCaller(w http.ResponseWriter, req *http.Request, agentOf func(context.Context, string) (string, string, error)) (ws, agentID string, ok bool) {
+	ws, _ = auth.WorkspaceIdentity(req.Context())
+	if ws == "" {
+		writeJSONErr(w, http.StatusBadRequest, "payments are a workspace's: use a workspace's key")
+		return "", "", false
+	}
+	if _, owner := storedanswers.OwnerOrAdmin(req.Context()); owner {
+		return ws, "", true
+	}
+	if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
+		agentID, _, _ = agentOf(req.Context(), actx.APIKeyID)
+	}
+	if agentID == "" {
+		writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, an admin or an agent's own key may make payments")
+		return "", "", false
+	}
+	return ws, agentID, true
+}
+
 func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
-	// caller is the key's workspace and the agent it may act for: "" for the owner or an admin, who may act for any.
 	caller := func(w http.ResponseWriter, req *http.Request) (ws, agentID string, ok bool) {
-		ws, _ = auth.WorkspaceIdentity(req.Context())
-		if ws == "" {
-			writeJSONErr(w, http.StatusBadRequest, "payments are a workspace's: use a workspace's key")
-			return "", "", false
-		}
-		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); owner {
-			return ws, "", true
-		}
-		if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
-			agentID, _, _ = bank.AgentOfKey(req.Context(), actx.APIKeyID)
-		}
-		if agentID == "" {
-			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, an admin or an agent's own key may make payments")
-			return "", "", false
-		}
-		return ws, agentID, true
+		return moneyCaller(w, req, bank.AgentOfKey)
 	}
 	r.Post("/v1/money/payments", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)

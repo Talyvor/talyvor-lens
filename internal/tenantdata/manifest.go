@@ -143,6 +143,7 @@ var Manifest = map[string]Entry{
 	"money_invoices":            {Retain, "B30.20: each invoice an agent's account issued — the customer, the lines and VAT, the pay link's token; its money_invoice_payments name the money_entries that paid it, and its money_invoice_reminders what was sent; financial-record retention"},
 	"money_mandates":            {Retain, "B30.19: keys `workspace_id`+`payee_workspace_id`: each mandate an agent's account granted a payee — the limits, the expiry, the revocation, and an outside business's key only as its SHA-256; its money_mandate_pulls name the money_entries each pull posted; financial-record retention"},
 	"money_payments":            {Retain, "B30.17: each payment out to a payee outside Talyvor — amount, reference, the payee's name as paid, and where it stood with the partner; it explains money_entries; financial-record retention"},
+	"money_payout_batches":      {Retain, "B30.21: each bulk payout uploaded — every row as validated, with why it was refused or the money_payments row it became and where that stood when sent; who approved it and when; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
