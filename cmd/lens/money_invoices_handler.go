@@ -206,7 +206,7 @@ func writeInvoiceErr(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrInvoiceNotFound), errors.Is(err, economy.ErrMoneyAccountNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
-	case errors.As(err, &refusal):
+	case errors.As(err, &refusal), errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, economy.ErrInvoiceState), errors.Is(err, economy.ErrInvoiceShort), errors.Is(err, economy.ErrInvoicePayerPaused),
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrIdempotencyKeyReused):

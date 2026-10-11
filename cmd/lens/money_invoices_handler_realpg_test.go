@@ -150,8 +150,31 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 		t.Fatalf("%d card postings of +12000 GBP test to the seller (%v); want 1", postings, err)
 	}
 
-	// By another company's agent.
+	// By another company's agent, whose rules judge it (B30.131): £30.00 is $37.50 at the Test rate, 375 LXC. Capped at
+	// 300 LXC a month the buyer is refused and posts nothing; at 700 LXC it pays, and a second £30.00 is refused because
+	// the first counts toward the month.
 	byAgent := issue(`[{"description":"Report","quantity":1,"unit_amount_minor":3000}]`)
+	rules := func(monthlyULXC int64) {
+		t.Helper()
+		if _, err := store.SetAgentRules(ctx, payerWS, buyer.ID, economy.AgentRules{MonthlyLimitULXC: monthlyULXC}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(inv map[string]any, wantPostings int) {
+		t.Helper()
+		code, out := call(payerWS, http.MethodPost, "/v1/pay/"+token(inv)+"/agent", `{"agent_id":"`+buyer.ID+`"}`)
+		if msg, _ := out["error"].(string); code != http.StatusForbidden || !strings.Contains(msg, "monthly limit") {
+			t.Fatalf("the buyer pays past its monthly limit = %d %v; want 403 naming the limit", code, out)
+		}
+		var postings int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
+			WHERE e.kind = 'invoice_payment' AND p.account_id = $1`, buyerGBP.ID).Scan(&postings); err != nil || postings != wantPostings {
+			t.Fatalf("%d invoice postings on the buyer's account after a refusal (%v); want %d", postings, err, wantPostings)
+		}
+	}
+	rules(300_000_000)
+	refused(byAgent, 0)
+	rules(700_000_000)
 	for range 2 { // a retry pays nothing more
 		code, out := call(payerWS, http.MethodPost, "/v1/pay/"+token(byAgent)+"/agent", `{"agent_id":"`+buyer.ID+`"}`)
 		if code != http.StatusOK || out["invoice"].(map[string]any)["status"] != economy.InvoicePaid {
@@ -163,6 +186,11 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	}
 	if code, _ := call(payerWS, http.MethodPost, "/v1/pay/"+token(byCard)+"/agent", `{"agent_id":"`+buyer.ID+`"}`); code != http.StatusConflict {
 		t.Fatalf("paying a paid invoice = %d; want 409", code)
+	}
+	secondThisMonth := issue(`[{"description":"Report, again","quantity":1,"unit_amount_minor":3000}]`)
+	refused(secondThisMonth, 1)
+	if b := held(payerWS, buyerGBP.ID); b != 7000 {
+		t.Fatalf("the buyer holds %d after the refused second invoice; want 7000", b)
 	}
 
 	// By transfer, and overdue.
@@ -191,7 +219,8 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	}
 	_, list := call(ws, http.MethodGet, "/v1/money/invoices", "")
 	want := map[string]string{byCard["id"].(string): economy.InvoicePaid, byAgent["id"].(string): economy.InvoicePaid,
-		byTransfer["id"].(string): economy.InvoicePaid, overdue["id"].(string): economy.InvoiceOverdue}
+		byTransfer["id"].(string): economy.InvoicePaid, overdue["id"].(string): economy.InvoiceOverdue,
+		secondThisMonth["id"].(string): economy.InvoiceSent}
 	for _, v := range list["invoices"].([]any) {
 		inv := v.(map[string]any)
 		if inv["status"] != want[inv["id"].(string)] {
