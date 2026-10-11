@@ -109,15 +109,8 @@ func (s *DualTokenStore) QuoteInternational(ctx context.Context, workspaceID str
 		return InternationalQuote{}, fmt.Errorf("%w: no international payment fee is set for %s (LENS_INTL_PAYMENT_FEE_MINOR), and one is never sent free",
 			ErrOutsidePayment, in.Currency)
 	}
-	if in.Funding == FundingLive {
-		countries, err := clearanceCountries(ctx, s.pool, CapabilityPaymentsOut)
-		if err != nil {
-			return InternationalQuote{}, err
-		}
-		if !slices.Contains(countries, payee.Country) {
-			return InternationalQuote{}, fmt.Errorf("%w: live payments out reach %s, not a payee in %s", ErrCapabilityNotCleared,
-				strings.Join(append([]string{}, countries...), ", "), payee.Country)
-		}
+	if err := s.destinationAllowed(ctx, in.Funding, payee); err != nil {
+		return InternationalQuote{}, err
 	}
 	if s.accountPartners == nil {
 		return InternationalQuote{}, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)
@@ -152,9 +145,28 @@ func (s *DualTokenStore) QuoteInternational(ctx context.Context, workspaceID str
 	return q, nil
 }
 
+// destinationAllowed refuses live money to a payee in a country the payments_out clearance does not list. Test money
+// reaches any country.
+func (s *DualTokenStore) destinationAllowed(ctx context.Context, funding string, payee OutsidePayee) error {
+	if funding != FundingLive {
+		return nil
+	}
+	countries, err := clearanceCountries(ctx, s.pool, CapabilityPaymentsOut)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(countries, payee.Country) {
+		return fmt.Errorf("%w: live payments out reach %s, not a payee in %s", ErrCapabilityNotCleared, strings.Join(countries, ", "), payee.Country)
+	}
+	return nil
+}
+
 // usableQuote is workspaceID's quote in.QuoteID when in is the payment it priced — the same account, payee, amount,
 // currency and funding — and it has not expired.
-func (s *DualTokenStore) usableQuote(ctx context.Context, workspaceID string, in OutsidePayment, from payingAccount) (InternationalQuote, error) {
+func (s *DualTokenStore) usableQuote(ctx context.Context, workspaceID string, in OutsidePayment, from payingAccount, payee OutsidePayee) (InternationalQuote, error) {
+	if err := s.destinationAllowed(ctx, in.Funding, payee); err != nil {
+		return InternationalQuote{}, err
+	}
 	q, err := scanQuote(s.pool.QueryRow(ctx, `SELECT `+quoteCols+` FROM money_payment_quotes WHERE id = $1 AND workspace_id = $2`, in.QuoteID, workspaceID))
 	switch {
 	case err != nil:

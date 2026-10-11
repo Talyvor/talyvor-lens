@@ -200,8 +200,12 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	p.ID, p.WorkspaceID, p.AccountID, p.AgentID, p.PayeeName, p.Status, p.Partner =
 		"mpay_"+uuid.NewString(), workspaceID, from.id, from.agentID, payee.Name, PaymentPending, partner.Name()
 	var payer string
+	if p.QuoteID == "" && payeeCurrency(payee) != p.Currency { // B30.22: never sent without its fee and rate shown first
+		return OutsidePayment{}, fmt.Errorf("%w: %s's account is in %s: an international payment is made at a quote — POST /v1/money/payments/quote first, then pay with its quote_id",
+			ErrOutsidePayment, payee.Name, payeeCurrency(payee))
+	}
 	if p.QuoteID != "" {
-		q, err := s.usableQuote(ctx, workspaceID, in, from)
+		q, err := s.usableQuote(ctx, workspaceID, in, from, payee)
 		if err != nil {
 			return OutsidePayment{}, err
 		}

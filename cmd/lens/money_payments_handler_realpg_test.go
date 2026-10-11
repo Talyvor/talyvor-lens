@@ -188,7 +188,8 @@ func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T
 // B30.22 — an international payment from a GBP account to an EUR IBAN: the quote shows the partner's cost, Talyvor's
 // fee for pounds (£5.00), the total that leaves the account, the rate and what arrives; the payment at the quote holds
 // the amount with the fee, sends, and posts one entry balanced in both currencies; a payment that is not the quote's
-// is refused, and so is a quote for a payee in the account's own currency.
+// is refused, so is one to a payee in another currency without a quote, and so is a quote for a payee in the account's
+// own currency.
 func TestMoneyPaymentRoutes_InternationalQuoteThenPay(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -256,6 +257,9 @@ func TestMoneyPaymentRoutes_InternationalQuoteThenPay(t *testing.T) {
 	}
 	if code, out := pay("other", 10001); code != http.StatusConflict {
 		t.Errorf("a payment of another amount at the quote = %d %v, want 409", code, out)
+	}
+	if code, out := call(http.MethodPost, "/v1/money/payments", `{"payee_id":"`+payee.ID+`","currency":"GBP","amount_minor":10000,"idempotency_key":"no-quote"}`); code != http.StatusBadRequest {
+		t.Errorf("paying a payee in euros without a quote = %d %v, want 400", code, out)
 	}
 	code, out := pay("intl", 10000)
 	if code != http.StatusCreated || out["status"] != "completed" || out["fee_minor"] != float64(500) || out["arrives_minor"] != float64(11363) ||
