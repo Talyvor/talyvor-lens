@@ -125,6 +125,10 @@ func (o observedAccount) CheckPayee(ctx context.Context, p Payee) (_ PayeeCheck,
 	defer o.call(ctx, "CheckPayee", "")(&err)
 	return o.AccountPartner.CheckPayee(ctx, p)
 }
+func (o observedAccount) QuoteInternational(ctx context.Context, req InternationalQuoteRequest) (_ InternationalQuote, err error) {
+	defer o.call(ctx, "QuoteInternational", req.ID)(&err)
+	return o.AccountPartner.QuoteInternational(ctx, req)
+}
 
 type observedFX struct {
 	FXPartner

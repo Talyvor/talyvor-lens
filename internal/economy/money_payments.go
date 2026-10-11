@@ -69,9 +69,51 @@ type OutsidePayment struct {
 	Detail         string    `json:"detail,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// B30.22: an international payment is made at a quote (QuoteInternational), and keeps its figures: the partner's
+	// cost and Talyvor's fee, both in Currency and taken on top of AmountMinor; what arrives, in the payee's currency;
+	// and the rate.
+	QuoteID          string `json:"quote_id,omitempty"`
+	PartnerCostMinor int64  `json:"partner_cost_minor,omitempty"`
+	FeeMinor         int64  `json:"fee_minor,omitempty"`
+	ArrivesMinor     int64  `json:"arrives_minor,omitempty"`
+	ArrivesCurrency  string `json:"arrives_currency,omitempty"`
+	Rate             string `json:"rate,omitempty"`
 
 	holdAccountID string
+	quoteRef      string    // the partner's reference for the quote
 	at            time.Time // when the agent's rules judge it (B30.18: a standing order's run); zero means now
+}
+
+// debit is what leaves the account: the amount, and an international payment's partner cost and fee.
+func (p OutsidePayment) debit() int64 { return p.AmountMinor + p.PartnerCostMinor + p.FeeMinor }
+
+func (p OutsidePayment) international() bool { return p.ArrivesCurrency != "" }
+
+// normalise trims and checks what a payment or a quote is asked for; withKey, the idempotency key too.
+func (in *OutsidePayment) normalise(withKey bool) error {
+	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
+	in.Reference = strings.Join(strings.Fields(in.Reference), " ")
+	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
+	in.QuoteID = strings.TrimSpace(in.QuoteID)
+	if in.Funding == "" {
+		in.Funding = FundingTest
+	}
+	bad := func(msg string) error { return fmt.Errorf("%w: %s", ErrOutsidePayment, msg) }
+	switch {
+	case in.PayeeID == "":
+		return bad("a payment names its payee (payee_id): save one at /v1/money/payees first")
+	case in.Currency != CurrencyGBP && in.Currency != CurrencyEUR && in.Currency != CurrencyUSD:
+		return bad(fmt.Sprintf("a payment is in GBP, EUR or USD, not %q", in.Currency))
+	case in.AmountMinor <= 0:
+		return bad("a payment's amount_minor is a positive number of pence or cents")
+	case in.Funding != FundingTest && in.Funding != FundingLive:
+		return bad(fmt.Sprintf("funding is test or live, not %q", in.Funding))
+	case withKey && (in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200):
+		return bad("a payment carries an idempotency key (the Idempotency-Key header, or idempotency_key), up to 200 characters")
+	case len(in.Reference) > 140:
+		return bad("a payment's reference is up to 140 characters")
+	}
+	return nil
 }
 
 // key is the idempotency key of the payment's money entry for step: the hold, the failure or the return. The entry
@@ -85,7 +127,8 @@ func (p OutsidePayment) screenKey() string { return "payment_out:" + p.Idempoten
 
 func (p OutsidePayment) same(q OutsidePayment) bool {
 	return p.PayeeID == q.PayeeID && p.AmountMinor == q.AmountMinor && p.Currency == q.Currency && p.Funding == q.Funding &&
-		p.Reference == q.Reference && (q.AccountID == "" || p.AccountID == q.AccountID) && (q.AgentID == "" || p.AgentID == q.AgentID)
+		p.Reference == q.Reference && (q.AccountID == "" || p.AccountID == q.AccountID) && (q.AgentID == "" || p.AgentID == q.AgentID) &&
+		p.QuoteID == q.QuoteID
 }
 
 // minorString is minor units as a decimal amount with the currency: "GBP 12.34".
@@ -96,13 +139,14 @@ func minorString(minor int64, currency string) string {
 }
 
 const outsidePaymentCols = `id, workspace_id, account_id, hold_account_id, agent_id, payee_id, payee_name, amount_minor, currency, funding,
-	reference, idempotency_key, value_ulxc, status, partner, partner_ref, detail, created_at, updated_at`
+	reference, idempotency_key, value_ulxc, status, partner, partner_ref, detail, created_at, updated_at,
+	quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate`
 
 func scanOutsidePayment(row pgx.Row) (OutsidePayment, error) {
 	var p OutsidePayment
 	err := row.Scan(&p.ID, &p.WorkspaceID, &p.AccountID, &p.holdAccountID, &p.AgentID, &p.PayeeID, &p.PayeeName, &p.AmountMinor,
 		&p.Currency, &p.Funding, &p.Reference, &p.IdempotencyKey, &p.ValueULXC, &p.Status, &p.Partner, &p.PartnerRef, &p.Detail,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.QuoteID, &p.quoteRef, &p.PartnerCostMinor, &p.FeeMinor, &p.ArrivesMinor, &p.ArrivesCurrency, &p.Rate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrOutsidePaymentNotFound
 	}
@@ -117,30 +161,11 @@ type payingAccount struct {
 
 // PayOutside pays in.AmountMinor of in.Currency to workspaceID's saved payee in.PayeeID, under in.IdempotencyKey: from
 // the account in.AccountID, or with in.AgentID set from that agent's account in the currency, or else from the
-// company's. The same key again answers the payment it first made; with a different payment, ErrIdempotencyKeyReused.
+// company's. With in.QuoteID it is an international payment at that quote (B30.22). The same key again answers the
+// payment it first made; with a different payment, ErrIdempotencyKeyReused.
 func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in OutsidePayment) (OutsidePayment, error) {
-	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
-	in.Reference = strings.Join(strings.Fields(in.Reference), " ")
-	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
-	if in.Funding == "" {
-		in.Funding = FundingTest
-	}
-	bad := func(msg string) (OutsidePayment, error) {
-		return OutsidePayment{}, fmt.Errorf("%w: %s", ErrOutsidePayment, msg)
-	}
-	switch {
-	case in.PayeeID == "":
-		return bad("a payment names its payee (payee_id): save one at /v1/money/payees first")
-	case in.Currency != CurrencyGBP && in.Currency != CurrencyEUR && in.Currency != CurrencyUSD:
-		return bad(fmt.Sprintf("a payment is in GBP, EUR or USD, not %q", in.Currency))
-	case in.AmountMinor <= 0:
-		return bad("a payment's amount_minor is a positive number of pence or cents")
-	case in.Funding != FundingTest && in.Funding != FundingLive:
-		return bad(fmt.Sprintf("funding is test or live, not %q", in.Funding))
-	case in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200:
-		return bad("a payment carries an idempotency key (the Idempotency-Key header, or idempotency_key), up to 200 characters")
-	case len(in.Reference) > 140:
-		return bad("a payment's reference is up to 140 characters")
+	if err := in.normalise(true); err != nil {
+		return OutsidePayment{}, err
 	}
 	prior, err := scanOutsidePayment(s.pool.QueryRow(ctx, `SELECT `+outsidePaymentCols+` FROM money_payments
 		WHERE workspace_id = $1 AND idempotency_key = $2`, workspaceID, in.IdempotencyKey))
@@ -174,6 +199,17 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	p := in
 	p.ID, p.WorkspaceID, p.AccountID, p.AgentID, p.PayeeName, p.Status, p.Partner =
 		"mpay_"+uuid.NewString(), workspaceID, from.id, from.agentID, payee.Name, PaymentPending, partner.Name()
+	var payer string
+	if p.QuoteID != "" {
+		q, err := s.usableQuote(ctx, workspaceID, in, from)
+		if err != nil {
+			return OutsidePayment{}, err
+		}
+		p.quoteRef, p.PartnerCostMinor, p.FeeMinor, p.ArrivesMinor, p.ArrivesCurrency, p.Rate = q.PartnerRef, q.PartnerCostMinor, q.FeeMinor, q.ArrivesMinor, q.ArrivesCurrency, q.Rate
+		if payer, err = s.payerName(ctx, workspaceID); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	if p.AgentID != "" {
 		if p.ValueULXC, err = s.paymentValue(ctx, p); err != nil {
 			return OutsidePayment{}, err
@@ -205,9 +241,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		from.id, p.Funding).Scan(&held); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
-	if held < p.AmountMinor {
-		return OutsidePayment{}, fmt.Errorf("%w: the account holds %s of %s money, and this payment is %s", ErrAgentFunds,
-			minorString(held, p.Currency), p.Funding, minorString(p.AmountMinor, p.Currency))
+	if held < p.debit() {
+		return OutsidePayment{}, fmt.Errorf("%w: the account holds %s of %s money, and this payment is %s with its fee", ErrAgentFunds,
+			minorString(held, p.Currency), p.Funding, minorString(p.debit(), p.Currency))
 	}
 	if p.AgentID != "" {
 		if err := enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
@@ -218,14 +254,22 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
 		return OutsidePayment{}, err
 	}
+	if payer != "" { // B30.22: an international payment screens its payer too
+		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.key("payer"), Capability: CapabilityPaymentsOut,
+			Direction: "out", Counterparty: payer, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	if p.holdAccountID, err = holdAccount(ctx, tx, workspaceID, p.Currency); err != nil {
 		return OutsidePayment{}, err
 	}
 	if p, err = scanOutsidePayment(tx.QueryRow(ctx, `INSERT INTO money_payments (id, workspace_id, idempotency_key, account_id, hold_account_id,
-		agent_id, payee_id, payee_name, amount_minor, currency, funding, reference, value_ulxc, status, partner)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING `+outsidePaymentCols,
+		agent_id, payee_id, payee_name, amount_minor, currency, funding, reference, value_ulxc, status, partner,
+		quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING `+outsidePaymentCols,
 		p.ID, workspaceID, p.IdempotencyKey, p.AccountID, p.holdAccountID, p.AgentID, p.PayeeID, p.PayeeName, p.AmountMinor, p.Currency,
-		p.Funding, p.Reference, p.ValueULXC, p.Status, p.Partner)); err != nil {
+		p.Funding, p.Reference, p.ValueULXC, p.Status, p.Partner, p.QuoteID, p.quoteRef, p.PartnerCostMinor, p.FeeMinor, p.ArrivesMinor,
+		p.ArrivesCurrency, p.Rate)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the same key, paid at the same moment: answer as that one did
 			_ = tx.Rollback(ctx)
@@ -235,16 +279,14 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "payment_out_hold",
 		IdempotencyKey: p.key("hold"), Funding: p.Funding, Memo: p.Reference, Postings: []MoneyPosting{
-			{AccountID: p.AccountID, AmountMinor: -p.AmountMinor}, {AccountID: p.holdAccountID, AmountMinor: p.AmountMinor}}}, s.screener); err != nil {
+			{AccountID: p.AccountID, AmountMinor: -p.debit()}, {AccountID: p.holdAccountID, AmountMinor: p.debit()}}}, s.screener); err != nil {
 		return OutsidePayment{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
 
-	res, err := partner.SendPayment(partners.WithWorkspace(ctx, workspaceID), partners.PaymentRequest{ID: p.ID, AccountRef: from.partnerRef,
-		Amount: partners.Money{Minor: p.AmountMinor, Currency: p.Currency}, Reference: p.Reference, Payee: partners.Payee{Name: payee.Name,
-			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, IBAN: payee.IBAN, BIC: payee.BIC, RoutingNumber: payee.RoutingNumber}})
+	res, err := partner.SendPayment(partners.WithWorkspace(ctx, workspaceID), p.sendRequest(from, payee))
 	switch {
 	case errors.Is(err, partners.ErrInvalid), errors.Is(err, partners.ErrNotFound), errors.Is(err, partners.ErrIDReused):
 		res = partners.Result{Status: partners.StatusFailed, Detail: err.Error()}
@@ -252,6 +294,13 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		return p, nil
 	}
 	return s.applyPartnerResult(ctx, p, from.partnerID, res)
+}
+
+// sendRequest is p as the partner is asked to send it, from from's account at the partner, to payee.
+func (p OutsidePayment) sendRequest(from payingAccount, payee OutsidePayee) partners.PaymentRequest {
+	return partners.PaymentRequest{ID: p.ID, AccountRef: from.partnerRef, Amount: partners.Money{Minor: p.AmountMinor, Currency: p.Currency},
+		Reference: p.Reference, QuoteRef: p.quoteRef, Payee: partners.Payee{Name: payee.Name, SortCode: payee.SortCode,
+			AccountNumber: payee.AccountNumber, IBAN: payee.IBAN, BIC: payee.BIC, RoutingNumber: payee.RoutingNumber}}
 }
 
 // payingAccount finds the account in pays from, which must be open in in.Currency: in.AccountID, which is in.AgentID's
@@ -286,14 +335,14 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 // paymentValue is what p is worth in µLXC, as the agent's rules count it: dollars at the peg, pounds and euros at the
 // conversion partner's rate for dollars.
 func (s *DualTokenStore) paymentValue(ctx context.Context, p OutsidePayment) (int64, error) {
-	cents := p.AmountMinor
+	cents := p.debit()
 	if p.Currency != CurrencyUSD {
 		conv, err := s.accountPartners.FX(ctx, CapabilityPaymentsOut)
 		if err != nil {
 			return 0, fmt.Errorf("economy: value the payment: %w", err)
 		}
 		q, err := conv.Quote(partners.WithWorkspace(ctx, p.WorkspaceID), partners.FXQuoteRequest{
-			ID: "value:" + p.screenKey() + ":" + strconv.FormatInt(p.AmountMinor, 10) + p.Currency, Sell: partners.Money{Minor: p.AmountMinor, Currency: p.Currency},
+			ID: "value:" + p.screenKey() + ":" + strconv.FormatInt(cents, 10) + p.Currency, Sell: partners.Money{Minor: cents, Currency: p.Currency},
 			Buy: CurrencyUSD})
 		if err != nil {
 			return 0, fmt.Errorf("economy: value the payment: %w", err)
@@ -324,8 +373,8 @@ func holdAccount(ctx context.Context, tx pgx.Tx, workspaceID, currency string) (
 }
 
 // applyPartnerResult moves p to where the partner says it stands, with the money entries that take it there: sent
-// moves nothing; completed moves the held money out; failed gives it back; returned moves it out and back. A state
-// already reached moves nothing again.
+// moves nothing; completed moves the held money out (movements); failed gives it back; returned moves it out and back.
+// A state already reached moves nothing again.
 func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePayment, partnerAccountID string, res partners.Result) (OutsidePayment, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -338,10 +387,14 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 	if res.Ref != "" {
 		p.PartnerRef = res.Ref
 	}
+	out, back, err := s.movements(ctx, tx, p, partnerAccountID)
+	if err != nil {
+		return p, err
+	}
 	var moved []MoneyEntry // what moved money through the partner, monitored once committed
-	post := func(kind, key string, outside bool, from, to string) error {
+	post := func(kind, key string, outside bool, postings []MoneyPosting) error {
 		e := MoneyEntry{WorkspaceID: p.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: kind, IdempotencyKey: key, Funding: p.Funding,
-			Memo: p.Reference, Postings: []MoneyPosting{{AccountID: from, AmountMinor: -p.AmountMinor}, {AccountID: to, AmountMinor: p.AmountMinor}}}
+			Memo: p.Reference, Postings: postings}
 		if outside {
 			e.Counterparty, e.PartnerRef = p.PayeeName, p.PartnerRef
 		}
@@ -359,20 +412,21 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		}
 	case partners.StatusFailed:
 		if status == PaymentPending || status == PaymentSent {
-			if err := post("payment_out_failed", p.key("failed"), false, p.holdAccountID, p.AccountID); err != nil {
+			if err := post("payment_out_failed", p.key("failed"), false, []MoneyPosting{{AccountID: p.holdAccountID, AmountMinor: -p.debit()},
+				{AccountID: p.AccountID, AmountMinor: p.debit()}}); err != nil {
 				return p, err
 			}
 			status = PaymentFailed
 		}
 	case partners.StatusCompleted, partners.StatusReturned:
 		if status == PaymentPending || status == PaymentSent {
-			if err := post("payment_out", p.screenKey(), true, p.holdAccountID, partnerAccountID); err != nil {
+			if err := post("payment_out", p.screenKey(), true, out); err != nil {
 				return p, err
 			}
 			status = PaymentCompleted
 		}
 		if res.Status == partners.StatusReturned && status == PaymentCompleted {
-			if err := post("payment_out_returned", p.key("returned"), true, partnerAccountID, p.AccountID); err != nil {
+			if err := post("payment_out_returned", p.key("returned"), true, back); err != nil {
 				return p, err
 			}
 			status = PaymentReturned
@@ -419,9 +473,7 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 		if err != nil {
 			return p, err
 		}
-		res, err = partner.SendPayment(pctx, partners.PaymentRequest{ID: p.ID, AccountRef: from.partnerRef,
-			Amount: partners.Money{Minor: p.AmountMinor, Currency: p.Currency}, Reference: p.Reference, Payee: partners.Payee{Name: payee.Name,
-				SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, IBAN: payee.IBAN, BIC: payee.BIC, RoutingNumber: payee.RoutingNumber}})
+		res, err = partner.SendPayment(pctx, p.sendRequest(from, payee))
 		if errors.Is(err, partners.ErrInvalid) || errors.Is(err, partners.ErrNotFound) || errors.Is(err, partners.ErrIDReused) {
 			res, err = partners.Result{Status: partners.StatusFailed, Detail: err.Error()}, nil
 		}

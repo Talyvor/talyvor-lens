@@ -184,3 +184,110 @@ func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T
 		t.Errorf("list = %d %v, want the four payments made", code, out)
 	}
 }
+
+// B30.22 — an international payment from a GBP account to an EUR IBAN: the quote shows the partner's cost, Talyvor's
+// fee for pounds (£5.00), the total that leaves the account, the rate and what arrives; the payment at the quote holds
+// the amount with the fee, sends, and posts one entry balanced in both currencies; a payment that is not the quote's
+// is refused, and so is a quote for a payee in the account's own currency.
+func TestMoneyPaymentRoutes_InternationalQuoteThenPay(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b3022-intl"
+	registry := partners.NewRegistry(nil)
+	screener := screening.NewScreener(pool, registry)
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetAccountPartners(registry)
+	store.SetPayeeScreener(screener)
+	store.SetScreener(screener)
+	acct, err := store.OpenCurrencyAccount(ctx, ws, "", "GBP", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payee, err := store.CreateOutsidePayee(ctx, ws, economy.OutsidePayee{Name: "Grace Hopper", Country: "DE", IBAN: "DE89370400440532013000", BIC: "COBADEFFXXX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := store.CreateOutsidePayee(ctx, ws, economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var partnerAccount string
+	if err := pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND purpose = 'partner'`, ws).Scan(&partnerAccount); err != nil {
+		t.Fatal(err)
+	}
+	// £500.00 of test money in, from outside, to the company's account.
+	if _, err := store.PostMoney(ctx, economy.MoneyEntry{WorkspaceID: ws, Capability: economy.CapabilityPaymentsIn, Kind: "test_top_up",
+		IdempotencyKey: "top-up", Funding: economy.FundingTest, Counterparty: "Test payer", Postings: []economy.MoneyPosting{
+			{AccountID: partnerAccount, AmountMinor: -50000}, {AccountID: acct.ID, AmountMinor: 50000}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := chi.NewRouter()
+	mountMoneyPaymentRoutes(r, store)
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	call := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	// The quote first: £100.00 to Germany costs the partner's £1.00 and Talyvor's £5.00 on top, and €113.63 arrives.
+	code, q := call(http.MethodPost, "/v1/money/payments/quote", `{"payee_id":"`+payee.ID+`","currency":"GBP","amount_minor":10000}`)
+	want := map[string]any{"partner_cost_minor": float64(100), "fee_minor": float64(500), "total_minor": float64(10600), "arrives_minor": float64(11363),
+		"arrives_currency": "EUR", "rate": "1.13636364", "destination_country": "DE", "currency": "GBP", "funding": "test"}
+	for k, v := range want {
+		if code != http.StatusCreated || q[k] != v {
+			t.Fatalf("quote = %d %v, want 201 with %s = %v", code, q, k, v)
+		}
+	}
+	quoteID, _ := q["id"].(string)
+	if code, out := call(http.MethodPost, "/v1/money/payments/quote", `{"payee_id":"`+local.ID+`","currency":"GBP","amount_minor":10000}`); code != http.StatusBadRequest {
+		t.Errorf("a quote for a payee in pounds = %d %v, want 400", code, out)
+	}
+
+	pay := func(key string, minor int) (int, map[string]any) {
+		return call(http.MethodPost, "/v1/money/payments", `{"payee_id":"`+payee.ID+`","currency":"GBP","amount_minor":`+jsonOf(minor)+
+			`,"quote_id":"`+quoteID+`","reference":"Rechnung 7","idempotency_key":"`+key+`"}`)
+	}
+	if code, out := pay("other", 10001); code != http.StatusConflict {
+		t.Errorf("a payment of another amount at the quote = %d %v, want 409", code, out)
+	}
+	code, out := pay("intl", 10000)
+	if code != http.StatusCreated || out["status"] != "completed" || out["fee_minor"] != float64(500) || out["arrives_minor"] != float64(11363) ||
+		out["arrives_currency"] != "EUR" || out["quote_id"] != quoteID {
+		t.Fatalf("pay at the quote = %d %v, want 201 completed with the quote's figures", code, out)
+	}
+	// Every posting of the payment, in order, as "kind purpose currency amount".
+	rows, err := pool.Query(ctx, `SELECT e.kind, a.purpose, p.currency, p.amount_minor FROM money_entries e JOIN money_postings p ON p.entry_id = e.id
+		JOIN money_accounts a ON a.id = p.account_id WHERE e.workspace_id = $1 AND e.idempotency_key LIKE 'payment_out%:intl' ORDER BY e.created_at, p.line`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var posted []string
+	sums := map[string]int64{}
+	for rows.Next() {
+		var kind, purpose, currency string
+		var amount int64
+		_ = rows.Scan(&kind, &purpose, &currency, &amount)
+		posted = append(posted, kind+" "+purpose+" "+currency+" "+jsonOf(amount))
+		if kind == "payment_out" {
+			sums[currency] += amount
+		}
+	}
+	rows.Close()
+	if got, want := strings.Join(posted, "; "), "payment_out_hold company GBP -10600; payment_out_hold hold GBP 10600; "+
+		"payment_out hold GBP -10600; payment_out partner GBP 10100; payment_out revenue GBP 500; payment_out partner EUR -11363; payment_out partner EUR 11363"; got != want {
+		t.Errorf("posted %q,\n want %q", got, want)
+	}
+	if sums["GBP"] != 0 || sums["EUR"] != 0 || len(sums) != 2 {
+		t.Errorf("the payment's entry sums to %v per currency, want 0 in GBP and in EUR", sums)
+	}
+	if b, err := store.Balance(ctx, ws, acct.ID); err != nil || b.TestMinor != 39400 {
+		t.Fatalf("the company's account holds %+v (%v), want £394.00 of test money", b, err)
+	}
+}

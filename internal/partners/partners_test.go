@@ -116,6 +116,34 @@ func TestAccountPartner_SuccessFailureReturnAndPending(t *testing.T) {
 	}
 }
 
+// B30.22 — the Test partner quotes an international payment at its test rates and cost, pays at the quote within its
+// life, and refuses a payment that is not the quote's or whose quote has expired.
+func TestAccountPartner_InternationalQuoteThenPay(t *testing.T) {
+	ctx := context.Background()
+	p := &TestAccountPartner{}
+	gbp := must(p.OpenAccount(ctx, AccountRequest{ID: "acme-gbp", Holder: "Acme Ltd", Currency: "GBP"}))
+	q := must(p.QuoteInternational(ctx, InternationalQuoteRequest{ID: "q1", AccountRef: gbp.Ref, Amount: Money{10_000, "GBP"}, Deliver: "EUR",
+		Country: "DE", Payee: Payee{Name: "Bob", IBAN: "DE89370400440532013000"}}))
+	// £100.00 at 1.25 / 1.10 dollars a unit is €113.63, rounded down.
+	if q.Cost != (Money{testIntlCost, "GBP"}) || q.Delivers != (Money{11_363, "EUR"}) || q.Rate != "1.13636364" || q.ExpiresAt.IsZero() {
+		t.Fatalf("quote = %+v", q)
+	}
+	if _, err := p.SendPayment(ctx, PaymentRequest{ID: "ip-other", AccountRef: gbp.Ref, Amount: Money{10_001, "GBP"}, QuoteRef: q.Ref}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a payment of another amount at the quote: %v", err)
+	}
+	r := must(p.SendPayment(ctx, PaymentRequest{ID: "ip1", AccountRef: gbp.Ref, Amount: Money{10_000, "GBP"}, QuoteRef: q.Ref, Payee: Payee{Name: "Bob"}}))
+	if r.Status != StatusCompleted {
+		t.Fatalf("paid at the quote: %+v", r)
+	}
+	if lines := must(p.StatementLines(ctx, gbp.Ref, time.Time{})); len(lines) != 1 || lines[0].Amount != (Money{-10_100, "GBP"}) {
+		t.Fatalf("statement = %+v, want the amount and the cost out", lines)
+	}
+	p.book.now = func() time.Time { return time.Now().Add(2 * testQuoteLife) }
+	if _, err := p.SendPayment(ctx, PaymentRequest{ID: "ip2", AccountRef: gbp.Ref, Amount: Money{10_000, "GBP"}, QuoteRef: q.Ref}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a payment at an expired quote: %v", err)
+	}
+}
+
 func validIBAN(iban string) bool {
 	digits := ""
 	for _, r := range iban[4:] + iban[:4] {

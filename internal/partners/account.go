@@ -31,6 +31,10 @@ type AccountPartner interface {
 	PayByBank(ctx context.Context, req PayByBankRequest) (PayByBank, error)
 	// CheckPayee asks the payee's bank whether the name is the account's: confirmation of payee (B30.16).
 	CheckPayee(ctx context.Context, p Payee) (PayeeCheck, error)
+	// QuoteInternational prices paying req.Amount out of an account to a payee in another currency, through the
+	// international route (B30.22): the partner's cost, the rate, what arrives, and until when a payment may be made
+	// at it (SendPayment with the quote's Ref). Idempotent on req.ID.
+	QuoteInternational(ctx context.Context, req InternationalQuoteRequest) (InternationalQuote, error)
 }
 
 // AccountRequest asks for an account in one currency.
@@ -82,13 +86,39 @@ type PayeeCheck struct {
 	SuggestedName string `json:"suggested_name,omitempty"`
 }
 
-// PaymentRequest pays money out of an account.
+// PaymentRequest pays money out of an account. With QuoteRef set it is an international payment at that quote
+// (QuoteInternational): Amount is the quote's Sell, the partner takes its cost on top, converts, and pays the payee what
+// the quote said arrives.
 type PaymentRequest struct {
 	ID         string `json:"id"` // the caller's id for the payment
 	AccountRef string `json:"account_ref"`
 	Amount     Money  `json:"amount"`
 	Payee      Payee  `json:"payee"`
 	Reference  string `json:"reference"` // what the payee sees
+	QuoteRef   string `json:"quote_ref,omitempty"`
+}
+
+// InternationalQuoteRequest asks what paying Amount out of an account to a payee whose account is in another
+// currency costs, and what arrives.
+type InternationalQuoteRequest struct {
+	ID         string `json:"id"` // the caller's id for the quote
+	AccountRef string `json:"account_ref"`
+	Amount     Money  `json:"amount"`           // what is sent, in the account's currency, before the partner's cost
+	Deliver    string `json:"deliver_currency"` // the payee's currency
+	Country    string `json:"country"`          // the payee's, ISO 3166-1 alpha-2
+	Payee      Payee  `json:"payee"`
+}
+
+// InternationalQuote prices an international payment: the partner's cost on top of Sell, in Sell's currency; the
+// rate, Delivers per Sell in whole units, as a decimal string for display; what the payee receives, rounded down to
+// its minor unit; and until when the payment may be made at it.
+type InternationalQuote struct {
+	Ref       string    `json:"partner_ref"`
+	Sell      Money     `json:"sell"`
+	Cost      Money     `json:"cost"`
+	Delivers  Money     `json:"delivers"`
+	Rate      string    `json:"rate"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // PayByBankRequest asks a payer to pay into an account from their own bank.
@@ -192,7 +222,9 @@ func (p *TestAccountPartner) open(accountRef string) (*testOp, error) {
 	return acct, nil
 }
 
-// SendPayment moves no money: it answers by the amount, and puts what moved on the statement.
+// SendPayment moves no money: it answers by the amount, and puts what moved on the statement. An international
+// payment (req.QuoteRef) is at its quote — the same account and amount, within the quote's life — and its statement
+// line takes the partner's cost too.
 func (p *TestAccountPartner) SendPayment(_ context.Context, req PaymentRequest) (Result, error) {
 	if err := checkMoney(req.Amount); err != nil {
 		return Result{}, err
@@ -202,14 +234,57 @@ func (p *TestAccountPartner) SendPayment(_ context.Context, req PaymentRequest) 
 	if err := p.sameCurrency(req.AccountRef, req.Amount); err != nil {
 		return Result{}, err
 	}
+	out, what := req.Amount.Minor, "Payment to "+req.Payee.Name
+	if req.QuoteRef != "" {
+		q, err := p.book.get("iq", req.QuoteRef)
+		if err != nil {
+			return Result{}, err
+		}
+		quote := q.request.(InternationalQuoteRequest)
+		if quote.AccountRef != req.AccountRef || quote.Amount != req.Amount {
+			return Result{}, fmt.Errorf("%w: quote %s is for %s from another account or amount", ErrInvalid, req.QuoteRef, quote.Amount)
+		}
+		if _, retry := p.book.ops[testRef("pay", req.ID)]; !retry && p.book.clock().After(q.at.Add(testQuoteLife)) {
+			return Result{}, fmt.Errorf("%w: quote %s has expired", ErrInvalid, req.QuoteRef)
+		}
+		out, what = out+testIntlCost, "International payment to "+req.Payee.Name
+	}
 	op, fresh, err := p.book.record("pay", req.ID, req, byAmount(req.Amount))
 	if err != nil {
 		return Result{}, err
 	}
 	if fresh {
-		p.post(req.AccountRef, op, -req.Amount.Minor, req.Amount.Currency, "Payment to "+req.Payee.Name)
+		p.post(req.AccountRef, op, -out, req.Amount.Currency, what)
 	}
 	return op.result, nil
+}
+
+// testIntlCost is the Test partner's cost for an international payment, in minor units of the sending currency: a
+// test figure, never a partner's price.
+const testIntlCost = 100
+
+// QuoteInternational prices an international payment at the Test rates (testUSDPerUnit) and cost.
+func (p *TestAccountPartner) QuoteInternational(_ context.Context, req InternationalQuoteRequest) (InternationalQuote, error) {
+	if err := checkMoney(req.Amount); err != nil {
+		return InternationalQuote{}, err
+	}
+	rate, delivers, err := testConvert(req.Amount, req.Deliver)
+	if err != nil {
+		return InternationalQuote{}, err
+	}
+	p.book.mu.Lock()
+	defer p.book.mu.Unlock()
+	if err := p.sameCurrency(req.AccountRef, req.Amount); err != nil {
+		return InternationalQuote{}, err
+	}
+	op, _, err := p.book.record("iq", req.ID, req, func(string) (Result, Status) {
+		return Result{Status: StatusCompleted}, StatusCompleted
+	})
+	if err != nil {
+		return InternationalQuote{}, err
+	}
+	return InternationalQuote{Ref: op.result.Ref, Sell: req.Amount, Cost: Money{testIntlCost, req.Amount.Currency}, Delivers: delivers,
+		Rate: rate, ExpiresAt: op.at.Add(testQuoteLife)}, nil
 }
 
 // PayByBank moves no money: it answers by the amount, and puts what arrived on the statement. Its URL is on a
