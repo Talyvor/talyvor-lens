@@ -15,9 +15,10 @@ import (
 
 // B30.19 — mandates: a payee may pull money within limits the owner set (economy/money_mandates.go).
 //
-//	POST /v1/money/mandates              {account_id, payee_workspace_id | payee_business_id, payee_name,
+//	POST /v1/money/mandates              {account_id, payee_workspace_id | payee_business_id + payee_id, payee_name,
 //	                                     max_per_pull_minor, max_per_month_minor, expires_at} — an agent's account
-//	                                     grants a payee a mandate; an outside business's pull_key is answered once
+//	                                     grants a payee a mandate; an outside business's pull_key is answered once,
+//	                                     and what it pulls is paid out to its saved payee (B30.129)
 //	GET  /v1/money/mandates              the mandates granted and, for the owner, those received from other companies
 //	POST /v1/money/mandates/{id}/revoke  the owner or the agent revokes it, for good
 //	POST /v1/money/mandates/{id}/pull    {amount_minor, idempotency_key, funding, memo} — the payee pulls within it: a
@@ -57,7 +58,7 @@ func mountMandateRoutes(r chi.Router, bank moneyMandateBank) {
 	r.Post("/v1/money/mandates", func(w http.ResponseWriter, req *http.Request) {
 		var g economy.MandateGrant
 		if err := json.NewDecoder(req.Body).Decode(&g); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"account_id", "payee_workspace_id" or "payee_business_id", "payee_name", "max_per_pull_minor", "max_per_month_minor", "expires_at": RFC 3339}`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"account_id", "payee_workspace_id" or "payee_business_id" with "payee_id", "payee_name", "max_per_pull_minor", "max_per_month_minor", "expires_at": RFC 3339}`)
 			return
 		}
 		ws, agentID, _, ok := caller(w, req)
@@ -149,7 +150,7 @@ func writeMandateErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMandatePayerPaused), errors.Is(err, economy.ErrMandatePayeeAccount),
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrIdempotencyKeyReused):
 		writeJSONErr(w, http.StatusConflict, err.Error())
-	default:
-		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+	default: // an outside business's payee and its payment out answer as a payment out does
+		writePaymentErr(w, err)
 	}
 }
