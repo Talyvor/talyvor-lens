@@ -15,6 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 )
 
 // money_mandates.go — B30.19: MANDATES: A PAYEE MAY PULL MONEY WITHIN LIMITS THE OWNER SET.
@@ -27,9 +30,11 @@ import (
 // A pull is one money entry. To a Talyvor company it moves the money from the agent's account straight into the
 // company's open account in the same currency, so the one entry is on both statements; it moves for
 // currency_accounts. An outside business pulls with the mandate's key, shown once when the mandate is granted, and
-// what it pulls moves for payments_out into the mandate's hold account, to be paid out to it. Both are RED: test money
-// only until a clearance, asked by PostMoney. A pull never takes the agent's account below zero, and the payee's
-// idempotency key makes a retried pull the same pull.
+// what it pulls moves for payments_out into the mandate's hold account and from there, as a payment out (B30.17,
+// B30.129) to the saved payee the mandate names, through the account partner: screened first, with the partner's
+// reference on the entry, and back to the agent's account if it fails or comes back. Both are RED: test money only
+// until a clearance, asked by PostMoney. A pull never takes the agent's account below zero, and the payee's idempotency
+// key makes a retried pull the same pull.
 
 var (
 	// ErrMandate: a mandate asked for with a payee, limits or an expiry it cannot have, or a pull of nothing.
@@ -67,6 +72,7 @@ type Mandate struct {
 	PayeeWorkspaceID     string     `json:"payee_workspace_id,omitempty"`
 	PayeeBusinessID      string     `json:"payee_business_id,omitempty"`
 	PayeeName            string     `json:"payee_name"`
+	PayeeID              string     `json:"payee_id,omitempty"`        // an outside business's saved payee (B30.16), paid what it pulls
 	HoldAccountID        string     `json:"hold_account_id,omitempty"` // an outside business's: where its pulls wait to be paid out
 	MaxPerPullMinor      int64      `json:"max_per_pull_minor"`
 	MaxPerMonthMinor     int64      `json:"max_per_month_minor"`
@@ -84,6 +90,7 @@ type MandateGrant struct {
 	AccountID        string    `json:"account_id"`
 	PayeeWorkspaceID string    `json:"payee_workspace_id"`
 	PayeeBusinessID  string    `json:"payee_business_id"`
+	PayeeID          string    `json:"payee_id"` // for an outside business: the saved payee its pulls are paid out to
 	PayeeName        string    `json:"payee_name"`
 	MaxPerPullMinor  int64     `json:"max_per_pull_minor"`
 	MaxPerMonthMinor int64     `json:"max_per_month_minor"`
@@ -103,20 +110,22 @@ type MandatePull struct {
 	Currency             string     `json:"currency"`
 	PulledThisMonthMinor int64      `json:"pulled_this_month_minor"`
 	Entry                MoneyEntry `json:"entry"`
+	// Payment is an outside business's payment out of what it pulled, and where it stands.
+	Payment *OutsidePayment `json:"payment,omitempty"`
 }
 
 // mandateMonth is the start of this calendar month, UTC: the monthly maximum counts pulls since then.
 const mandateMonth = `date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
 
 const mandateColumns = `m.id, m.workspace_id, m.agent_id, m.account_id, m.currency, COALESCE(m.payee_workspace_id, ''),
-	COALESCE(m.payee_business_id, ''), m.payee_name, COALESCE(m.hold_account_id, ''), m.max_per_pull_minor, m.max_per_month_minor,
+	COALESCE(m.payee_business_id, ''), m.payee_name, COALESCE(m.payee_id, ''), COALESCE(m.hold_account_id, ''), m.max_per_pull_minor, m.max_per_month_minor,
 	m.expires_at, m.revoked_at, m.revoked_by, m.created_at,
 	COALESCE((SELECT sum(p.amount_minor) FROM money_mandate_pulls p WHERE p.mandate_id = m.id AND p.pulled_at >= ` + mandateMonth + `), 0)::bigint`
 
 func scanMandate(row pgx.Row) (Mandate, error) {
 	var m Mandate
 	err := row.Scan(&m.ID, &m.WorkspaceID, &m.AgentID, &m.AccountID, &m.Currency, &m.PayeeWorkspaceID, &m.PayeeBusinessID, &m.PayeeName,
-		&m.HoldAccountID, &m.MaxPerPullMinor, &m.MaxPerMonthMinor, &m.ExpiresAt, &m.RevokedAt, &m.RevokedBy, &m.CreatedAt, &m.PulledThisMonthMinor)
+		&m.PayeeID, &m.HoldAccountID, &m.MaxPerPullMinor, &m.MaxPerMonthMinor, &m.ExpiresAt, &m.RevokedAt, &m.RevokedBy, &m.CreatedAt, &m.PulledThisMonthMinor)
 	switch {
 	case m.RevokedAt != nil:
 		m.Status = MandateRevoked
@@ -131,10 +140,12 @@ func scanMandate(row pgx.Row) (Mandate, error) {
 // GrantMandate grants g on one of workspaceID's agent accounts — with agentID, only that agent's.
 func (s *DualTokenStore) GrantMandate(ctx context.Context, workspaceID, agentID string, g MandateGrant) (Mandate, error) {
 	g.PayeeWorkspaceID, g.PayeeBusinessID = strings.TrimSpace(g.PayeeWorkspaceID), strings.TrimSpace(g.PayeeBusinessID)
-	g.PayeeName = strings.TrimSpace(g.PayeeName)
+	g.PayeeName, g.PayeeID = strings.TrimSpace(g.PayeeName), strings.TrimSpace(g.PayeeID)
 	switch {
 	case (g.PayeeWorkspaceID == "") == (g.PayeeBusinessID == ""):
 		return Mandate{}, fmt.Errorf("%w: name one payee: payee_workspace_id for a Talyvor company, or payee_business_id for an outside business", ErrMandate)
+	case g.PayeeBusinessID != "" && g.PayeeID == "":
+		return Mandate{}, fmt.Errorf("%w: a mandate to an outside business names the saved payee (payee_id) its pulls are paid out to — save one at /v1/money/payees first", ErrMandate)
 	case g.PayeeWorkspaceID == workspaceID:
 		return Mandate{}, fmt.Errorf("%w: a mandate is for another company to pull, not this one", ErrMandate)
 	case len(g.PayeeBusinessID) > 200 || len(g.PayeeName) > 200:
@@ -182,15 +193,20 @@ func (s *DualTokenStore) GrantMandate(ctx context.Context, workspaceID, agentID 
 			m.PayeeName = cmp.Or(name, m.PayeeWorkspaceID)
 		}
 	} else {
+		payee, err := s.PayableOutsidePayee(ctx, workspaceID, g.PayeeID)
+		if err != nil {
+			return Mandate{}, err
+		}
+		m.PayeeID = payee.ID
+		if m.PayeeName == "" {
+			m.PayeeName = payee.Name
+		}
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {
 			return Mandate{}, fmt.Errorf("economy: grant mandate: %w", err)
 		}
 		m.PullKey = "mdk_" + hex.EncodeToString(raw)
 		keySHA = mandateKeySHA(m.PullKey)
-		if m.PayeeName == "" {
-			m.PayeeName = m.PayeeBusinessID
-		}
 		m.HoldAccountID = "macc_" + uuid.NewString()
 		hold = m.HoldAccountID
 		if _, err := tx.Exec(ctx, `INSERT INTO money_accounts (id, workspace_id, agent_id, currency, purpose, name) VALUES ($1, $2, $3, $4, 'hold', $5)`,
@@ -199,10 +215,10 @@ func (s *DualTokenStore) GrantMandate(ctx context.Context, workspaceID, agentID 
 		}
 	}
 	if err := tx.QueryRow(ctx, `INSERT INTO money_mandates (id, workspace_id, agent_id, account_id, currency, payee_workspace_id, payee_business_id,
-		payee_name, pull_key_sha256, hold_account_id, max_per_pull_minor, max_per_month_minor, expires_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, COALESCE($9::text, ''), $10, $11, $12, $13) RETURNING created_at`,
+		payee_name, pull_key_sha256, hold_account_id, max_per_pull_minor, max_per_month_minor, expires_at, payee_id)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, COALESCE($9::text, ''), $10, $11, $12, $13, NULLIF($14, '')) RETURNING created_at`,
 		m.ID, workspaceID, m.AgentID, m.AccountID, m.Currency, m.PayeeWorkspaceID, m.PayeeBusinessID, m.PayeeName, keySHA, hold,
-		m.MaxPerPullMinor, m.MaxPerMonthMinor, m.ExpiresAt).Scan(&m.CreatedAt); err != nil {
+		m.MaxPerPullMinor, m.MaxPerMonthMinor, m.ExpiresAt, m.PayeeID).Scan(&m.CreatedAt); err != nil {
 		return Mandate{}, fmt.Errorf("economy: grant mandate: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -225,8 +241,8 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	switch {
 	case amountMinor <= 0:
 		return MandatePull{}, fmt.Errorf("%w: a pull takes some money, not %d", ErrMandate, amountMinor)
-	case strings.TrimSpace(idempotencyKey) == "":
-		return MandatePull{}, fmt.Errorf("%w: a pull needs an idempotency key", ErrMandate)
+	case strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 200:
+		return MandatePull{}, fmt.Errorf("%w: a pull needs an idempotency key of up to 200 characters", ErrMandate)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -257,6 +273,7 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		return MandatePull{}, ErrMandateNotFound
 	}
 	pull := MandatePull{MandateID: m.ID, AmountMinor: amountMinor, Currency: m.Currency}
+	entryKey := "mandate_pull:" + m.ID + ":" + idempotencyKey
 
 	var entryID string
 	var first int64
@@ -268,6 +285,15 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	case err == nil:
 		if pull.Entry, err = readMoneyEntry(ctx, tx, `e.id = $1`, entryID); err != nil {
 			return MandatePull{}, err
+		}
+		if m.PayeeBusinessID != "" {
+			p, err := scanOutsidePayment(tx.QueryRow(ctx, `SELECT `+outsidePaymentCols+` FROM money_payments WHERE workspace_id = $1 AND idempotency_key = $2`,
+				m.WorkspaceID, entryKey))
+			if err != nil && !errors.Is(err, ErrOutsidePaymentNotFound) {
+				return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
+			} else if err == nil {
+				pull.Payment = &p
+			}
 		}
 		pull.PulledThisMonthMinor = m.PulledThisMonthMinor
 		return pull, nil
@@ -307,12 +333,12 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		return MandatePull{}, fmt.Errorf("%w: it holds %d %s %s", ErrMandateShort, held, funding, m.Currency)
 	}
 
-	e := MoneyEntry{WorkspaceID: m.WorkspaceID, Kind: "mandate_pull", IdempotencyKey: "mandate_pull:" + m.ID + ":" + idempotencyKey,
-		Funding: funding, Memo: strings.TrimSpace(memo)}
+	e := MoneyEntry{WorkspaceID: m.WorkspaceID, Kind: "mandate_pull", IdempotencyKey: entryKey, Funding: funding, Memo: strings.TrimSpace(memo)}
 	if e.Memo == "" {
 		e.Memo = "Pulled by " + m.PayeeName + " under mandate " + m.ID
 	}
 	to := m.HoldAccountID
+	var payout mandatePayout
 	if m.PayeeWorkspaceID != "" {
 		e.Capability, e.payeeWorkspaceID = CapabilityCurrencyAccounts, m.PayeeWorkspaceID
 		err := tx.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND currency = $2 AND purpose = 'company' AND status = 'open'`,
@@ -324,8 +350,12 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 			return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
 		}
 	} else {
-		// shortcut: an outside business's pulls wait in the hold account; paying them out to it is payments out (B30.17).
+		// An outside business's pull waits in the mandate's hold account only until the partner has it: a payment out
+		// of the hold account to the business's saved payee, written pending with the pull and sent once it commits.
 		e.Capability = CapabilityPaymentsOut
+		if payout, err = s.mandatePayout(ctx, tx, m, e, amountMinor, memo); err != nil {
+			return MandatePull{}, err
+		}
 	}
 	e.Postings = []MoneyPosting{{AccountID: m.AccountID, AmountMinor: -amountMinor}, {AccountID: to, AmountMinor: amountMinor}}
 	if pull.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
@@ -343,7 +373,79 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
 	}
 	pull.PulledThisMonthMinor = m.PulledThisMonthMinor + amountMinor
+	if payout.payment == nil {
+		return pull, nil
+	}
+	p, dest := *payout.payment, payout.payee
+	res, err := payout.partner.SendPayment(partners.WithWorkspace(ctx, m.WorkspaceID), partners.PaymentRequest{ID: p.ID, AccountRef: payout.from.partnerRef,
+		Amount: partners.Money{Minor: p.AmountMinor, Currency: p.Currency}, Reference: p.Reference, Payee: partners.Payee{Name: dest.Name,
+			SortCode: dest.SortCode, AccountNumber: dest.AccountNumber, IBAN: dest.IBAN, BIC: dest.BIC, RoutingNumber: dest.RoutingNumber}})
+	switch {
+	case errors.Is(err, partners.ErrInvalid), errors.Is(err, partners.ErrNotFound), errors.Is(err, partners.ErrIDReused):
+		res = partners.Result{Status: partners.StatusFailed, Detail: err.Error()}
+	case err != nil: // the partner did not answer: the money stays held, and the payment is sent again when the owner reads it
+		pull.Payment = &p
+		return pull, nil
+	}
+	if p, err = s.applyPartnerResult(ctx, p, payout.from.partnerID, res); err != nil {
+		return MandatePull{}, err
+	}
+	pull.Payment = &p
 	return pull, nil
+}
+
+// mandatePayout is the payment out of what a pull takes under m: to the business's saved payee, from the mandate's
+// hold account, through the account partner.
+type mandatePayout struct {
+	payment *OutsidePayment
+	payee   OutsidePayee
+	from    payingAccount
+	partner partners.AccountPartner
+}
+
+// mandatePayout prepares the payment out of a pull of amountMinor under m, whose entry is e: the payee is payable, the
+// payment is screened (B30.6), and it is written pending on tx — under the pull's key, so a retried pull finds it —
+// with the mandate's hold account as its hold. The business's memo is the bank reference it sees, or the mandate's id
+// without one. The caller sends it once the pull commits.
+func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate, e MoneyEntry, amountMinor int64, memo string) (mandatePayout, error) {
+	var out mandatePayout
+	ref := cmp.Or(strings.Join(strings.Fields(memo), " "), "Mandate "+m.ID)
+	switch {
+	case len(ref) > 140:
+		return out, fmt.Errorf("%w: a pull's memo is its bank reference, up to 140 characters", ErrMandate)
+	case m.PayeeID == "":
+		return out, fmt.Errorf("%w: the mandate names no saved payee to pay out to — grant a new one with payee_id", ErrMandate)
+	case s.accountPartners == nil:
+		return out, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)
+	case s.screener == nil:
+		return out, fmt.Errorf("%w: no screener is set, so no money moves out", partners.ErrScreeningUnavailable)
+	}
+	var err error
+	if out.partner, err = s.accountPartners.Account(ctx, CapabilityPaymentsOut); err != nil {
+		return out, fmt.Errorf("economy: pull mandate: %w", err)
+	}
+	if out.from, err = s.payingAccount(ctx, m.WorkspaceID, OutsidePayment{AccountID: m.AccountID, AgentID: m.AgentID, Currency: m.Currency}); err != nil {
+		return out, err
+	}
+	if out.payee, err = s.PayableOutsidePayee(ctx, m.WorkspaceID, m.PayeeID); err != nil {
+		return out, err
+	}
+	p := OutsidePayment{ID: "mpay_" + uuid.NewString(), WorkspaceID: m.WorkspaceID, IdempotencyKey: e.IdempotencyKey, AccountID: m.AccountID,
+		holdAccountID: m.HoldAccountID, AgentID: m.AgentID, PayeeID: out.payee.ID, PayeeName: out.payee.Name, AmountMinor: amountMinor,
+		Currency: m.Currency, Funding: e.Funding, Reference: ref, Status: PaymentPending, Partner: out.partner.Name()}
+	if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: p.screenKey(), Capability: CapabilityPaymentsOut,
+		Direction: "out", Counterparty: p.PayeeName, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
+		return out, err
+	}
+	if p, err = scanOutsidePayment(tx.QueryRow(ctx, `INSERT INTO money_payments (id, workspace_id, idempotency_key, account_id, hold_account_id,
+		agent_id, payee_id, payee_name, amount_minor, currency, funding, reference, value_ulxc, status, partner)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13, $14) RETURNING `+outsidePaymentCols,
+		p.ID, p.WorkspaceID, p.IdempotencyKey, p.AccountID, p.holdAccountID, p.AgentID, p.PayeeID, p.PayeeName, p.AmountMinor, p.Currency,
+		p.Funding, p.Reference, p.Status, p.Partner)); err != nil {
+		return out, fmt.Errorf("economy: pull mandate: %w", err)
+	}
+	out.payment = &p
+	return out, nil
 }
 
 // RevokeMandate revokes workspaceID's mandate mandateID — with agentID, only that agent's — for good. Revoking it again
