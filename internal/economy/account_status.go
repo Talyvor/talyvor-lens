@@ -93,10 +93,11 @@ func (s *DualTokenStore) setAccountStatus(ctx context.Context, workspaceID, acco
 	return currencyAccount(ctx, s.pool, workspaceID, accountID)
 }
 
-// CloseCurrencyAccount closes workspaceID's open account accountID at zero. What an agent's account holds goes into
-// the company's account in its currency; what the company's holds goes to the saved payee payeeID through PayOutside,
-// and the account closes once that payment has completed. A frozen account is unfrozen first, and a company account
-// closes only after its agents' sub-accounts have.
+// CloseCurrencyAccount closes workspaceID's open account accountID at zero. What the company's account holds goes to
+// the saved payee payeeID first, through PayOutside, under its own lock; then, with the account's row locked, what an
+// agent's account holds goes into the company's account in its currency, and the account closes in the same
+// transaction. A frozen account is unfrozen first, and a company account closes only after its agents' sub-accounts
+// have and no payment from it is still with the partner.
 func (s *DualTokenStore) CloseCurrencyAccount(ctx context.Context, workspaceID, accountID, payeeID string) (CurrencyAccount, error) {
 	a, err := currencyAccount(ctx, s.pool, workspaceID, accountID)
 	if err != nil {
@@ -110,47 +111,36 @@ func (s *DualTokenStore) CloseCurrencyAccount(ctx context.Context, workspaceID, 
 	case a.Purpose == MoneyAgent && payeeID != "":
 		return a, fmt.Errorf("%w: an agent's account closes into the company's %s account; pay a payee from there", ErrAccountStatus, a.Currency)
 	}
-	var open, pending int
-	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM money_accounts WHERE parent_account_id = $1 AND status <> 'closed'),
-		(SELECT count(*) FROM money_payments WHERE account_id = $1 AND status IN ('pending', 'sent'))`, accountID).Scan(&open, &pending); err != nil {
-		return a, fmt.Errorf("economy: close account: %w", err)
+	if err := closeBlockers(ctx, s.pool, accountID); err != nil {
+		return a, err
 	}
-	switch {
-	case open > 0:
-		return a, fmt.Errorf("%w: %d of its agents' accounts are open: close them first", ErrAccountNotEmpty, open)
-	case pending > 0:
-		return a, fmt.Errorf("%w: %d payments from it are still with the partner: close it once they have completed", ErrAccountNotEmpty, pending)
-	}
-	for _, held := range []struct {
-		funding string
-		minor   int64
-	}{{FundingTest, a.TestMinor}, {FundingLive, a.LiveMinor}} {
-		var err error
-		switch {
-		case held.minor < 0:
-			return a, fmt.Errorf("%w: it is %s overdrawn", ErrAccountNotEmpty, minorString(-held.minor, a.Currency))
-		case held.minor == 0:
-			continue
-		case a.Purpose == MoneyAgent:
-			_, err = s.PostMoney(ctx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "account_close",
-				IdempotencyKey: "account_close:" + uuid.NewString(), Funding: held.funding, Memo: "Account closed", Postings: []MoneyPosting{
-					{AccountID: accountID, AmountMinor: -held.minor}, {AccountID: a.ParentAccountID, AmountMinor: held.minor}}})
-		case payeeID == "":
-			return a, fmt.Errorf("%w: it holds %s of %s money: name payee_id to pay it to", ErrAccountNotEmpty, minorString(held.minor, a.Currency), held.funding)
-		default:
-			var p OutsidePayment
-			p, err = s.PayOutside(ctx, workspaceID, OutsidePayment{AccountID: accountID, PayeeID: payeeID, AmountMinor: held.minor, Currency: a.Currency,
-				Funding: held.funding, Reference: "Account closed", IdempotencyKey: "account_close:" + uuid.NewString()})
-			if err == nil && p.Status != PaymentCompleted {
-				err = fmt.Errorf("%w: the payment of %s to %s is %s %s", ErrAccountNotEmpty, minorString(held.minor, a.Currency), p.PayeeName, p.Status, p.Detail)
+	if a.Purpose == MoneyCompany {
+		for _, held := range []struct {
+			funding string
+			minor   int64
+		}{{FundingTest, a.TestMinor}, {FundingLive, a.LiveMinor}} {
+			switch {
+			case held.minor < 0:
+				return a, fmt.Errorf("%w: it is %s overdrawn", ErrAccountNotEmpty, minorString(-held.minor, a.Currency))
+			case held.minor == 0:
+				continue
+			case payeeID == "":
+				return a, fmt.Errorf("%w: it holds %s of %s money: name payee_id to pay it to", ErrAccountNotEmpty, minorString(held.minor, a.Currency), held.funding)
 			}
-		}
-		if err != nil {
-			return a, err
+			// Under PayOutside's own lock and balance read, so a balance that moved since it was read here pays nothing twice.
+			p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AccountID: accountID, PayeeID: payeeID, AmountMinor: held.minor, Currency: a.Currency,
+				Funding: held.funding, Reference: "Account closed", IdempotencyKey: "account_close:" + uuid.NewString()})
+			if err != nil {
+				return a, err
+			}
+			if p.Status != PaymentCompleted {
+				return a, fmt.Errorf("%w: the payment of %s to %s is %s %s", ErrAccountNotEmpty, minorString(held.minor, a.Currency), p.PayeeName, p.Status, p.Detail)
+			}
 		}
 	}
 
-	// Closed at zero, with the row locked: money still moving through it, or arriving as it closes, keeps it open.
+	// Closed at zero with the row locked: money still moving through it waits, and what arrived as it closed keeps it
+	// open. An agent's balance, read under the lock, moves in this transaction.
 	// shortcut: the partner account mirroring a company account stays open for reconciliation; close it at the partner
 	// when a real account partner closes accounts.
 	tx, err := s.pool.Begin(ctx)
@@ -159,16 +149,48 @@ func (s *DualTokenStore) CloseCurrencyAccount(ctx context.Context, workspaceID, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var status string
-	var balance int64
-	if err := tx.QueryRow(ctx, `SELECT status, COALESCE((SELECT sum(balance_minor) FROM money_account_balances WHERE account_id = id), 0)::bigint
-		FROM money_accounts WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, accountID, workspaceID).Scan(&status, &balance); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT status FROM money_accounts WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, accountID, workspaceID).Scan(&status); err != nil {
 		return a, fmt.Errorf("economy: close account: %w", err)
 	}
-	switch {
-	case status != MoneyOpen:
+	if status != MoneyOpen {
 		return a, fmt.Errorf("%w: %s is %s", ErrAccountStatus, accountID, status)
-	case balance != 0:
-		return a, fmt.Errorf("%w: it holds %s", ErrAccountNotEmpty, minorString(balance, a.Currency))
+	}
+	if err := closeBlockers(ctx, tx, accountID); err != nil {
+		return a, err
+	}
+	rows, err := tx.Query(ctx, `SELECT funding, balance_minor FROM money_account_balances WHERE account_id = $1 AND balance_minor <> 0`, accountID)
+	if err != nil {
+		return a, fmt.Errorf("economy: close account: %w", err)
+	}
+	held := map[string]int64{}
+	for rows.Next() {
+		var funding string
+		var minor int64
+		if err := rows.Scan(&funding, &minor); err != nil {
+			rows.Close()
+			return a, fmt.Errorf("economy: close account: %w", err)
+		}
+		held[funding] = minor
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return a, fmt.Errorf("economy: close account: %w", err)
+	}
+	for _, funding := range []string{FundingTest, FundingLive} {
+		minor := held[funding]
+		switch {
+		case minor < 0:
+			return a, fmt.Errorf("%w: it is %s overdrawn", ErrAccountNotEmpty, minorString(-minor, a.Currency))
+		case minor == 0:
+			continue
+		case a.Purpose != MoneyAgent:
+			return a, fmt.Errorf("%w: it holds %s of %s money", ErrAccountNotEmpty, minorString(minor, a.Currency), funding)
+		}
+		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "account_close",
+			IdempotencyKey: "account_close:" + accountID + ":" + funding, Funding: funding, Memo: "Account closed", Postings: []MoneyPosting{
+				{AccountID: accountID, AmountMinor: -minor}, {AccountID: a.ParentAccountID, AmountMinor: minor}}}, s.screener); err != nil {
+			return a, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE money_accounts SET status = 'closed' WHERE id = $1`, accountID); err != nil {
 		return a, fmt.Errorf("economy: close account: %w", err)
@@ -177,4 +199,21 @@ func (s *DualTokenStore) CloseCurrencyAccount(ctx context.Context, workspaceID, 
 		return a, fmt.Errorf("economy: close account: %w", err)
 	}
 	return currencyAccount(ctx, s.pool, workspaceID, accountID)
+}
+
+// closeBlockers is why accountID cannot close yet: an agent's sub-account of it still open, or a payment out of it
+// still with the partner, whose money would have nowhere to come back to.
+func closeBlockers(ctx context.Context, q pgxDB, accountID string) error {
+	var open, pending int
+	if err := q.QueryRow(ctx, `SELECT (SELECT count(*) FROM money_accounts WHERE parent_account_id = $1 AND status <> 'closed'),
+		(SELECT count(*) FROM money_payments WHERE account_id = $1 AND status IN ('pending', 'sent'))`, accountID).Scan(&open, &pending); err != nil {
+		return fmt.Errorf("economy: close account: %w", err)
+	}
+	switch {
+	case open > 0:
+		return fmt.Errorf("%w: %d of its agents' accounts are open: close them first", ErrAccountNotEmpty, open)
+	case pending > 0:
+		return fmt.Errorf("%w: %d payments from it are still with the partner: close it once they have completed", ErrAccountNotEmpty, pending)
+	}
+	return nil
 }
