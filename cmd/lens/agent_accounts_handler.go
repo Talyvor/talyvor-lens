@@ -81,8 +81,10 @@ import (
 // B19.8 — scheduled payments and automatic top-ups (internal/economy/agent_schedules.go), run every minute:
 //
 //	POST   /v1/workspaces/{wsID}/agents/{id}/schedules  {"to_agent_id", "amount_ulxc", "memo", "every", "first_run_at"}
+//	       — or a standing order to a saved outside payee (B30.18): {"to_payee_id", "amount_minor", "currency", "end_at"}
 //	GET    /v1/workspaces/{wsID}/agents/schedules                  the workspace's schedules
-//	GET    /v1/workspaces/{wsID}/agents/schedules/{sid}/runs       each tick, paid or refused, newest first
+//	GET    /v1/workspaces/{wsID}/agents/schedules/{sid}/runs       each tick, paid, refused or skipped, newest first
+//	POST   /v1/workspaces/{wsID}/agents/schedules/{sid}/skip       skip its next tick
 //	DELETE /v1/workspaces/{wsID}/agents/schedules/{sid}            stop it
 //	PUT    /v1/workspaces/{wsID}/agents/{id}/topup  {"below_ulxc", "to_ulxc"}   below one, back up to the other
 //	GET    /v1/workspaces/{wsID}/agents/{id}/topup
@@ -152,6 +154,8 @@ type agentBank interface {
 	ResumeAllAgents(ctx context.Context, workspaceID string) error
 	CreateAgentSchedule(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo, every string, firstRunAt time.Time) (economy.AgentSchedule, error)
 	CreateAgentListingSchedule(ctx context.Context, workspaceID, fromAgentID, listingID string, amount int64, memo, every string, firstRunAt time.Time) (economy.AgentSchedule, error)
+	CreateStandingOrder(ctx context.Context, workspaceID, fromAgentID, payeeID string, amountMinor int64, currency, memo, every string, firstRunAt time.Time, endAt *time.Time) (economy.AgentSchedule, error)
+	SkipAgentScheduleTick(ctx context.Context, workspaceID, scheduleID string) (economy.AgentSchedule, error)
 	ListAgentSchedules(ctx context.Context, workspaceID string) ([]economy.AgentSchedule, error)
 	ListAgentScheduleRuns(ctx context.Context, workspaceID, scheduleID string) ([]economy.AgentScheduleRun, error)
 	CancelAgentSchedule(ctx context.Context, workspaceID, scheduleID string) error
@@ -631,16 +635,28 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/schedules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		// B19.17: to_listing_id pays a marketplace listing instead of another agent — each tick one use, on the
 		// company's monthly marketplace bill; amount_ulxc is then the most a tick pays (0: the price now).
+		// B30.18: to_payee_id is a standing order to a saved outside payee, amount_minor of currency a tick until end_at.
 		var in struct {
 			ToAgentID   string     `json:"to_agent_id"`
 			ToListingID string     `json:"to_listing_id"`
+			ToPayeeID   string     `json:"to_payee_id"`
 			AmountULXC  int64      `json:"amount_ulxc"`
+			AmountMinor int64      `json:"amount_minor"`
+			Currency    string     `json:"currency"`
 			Memo        string     `json:"memo"`
 			Every       string     `json:"every"`
 			FirstRunAt  *time.Time `json:"first_run_at"`
+			EndAt       *time.Time `json:"end_at"`
 		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || (in.ToAgentID == "") == (in.ToListingID == "") {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id" or "to_listing_id", "amount_ulxc", "memo", "every": "hour|day|week|month", "first_run_at": "<RFC 3339, default now>"}`)
+		err := json.NewDecoder(req.Body).Decode(&in)
+		payees := 0
+		for _, id := range []string{in.ToAgentID, in.ToListingID, in.ToPayeeID} {
+			if id != "" {
+				payees++
+			}
+		}
+		if err != nil || payees != 1 {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id", "to_listing_id" or "to_payee_id" (with "amount_minor" and "currency"), "amount_ulxc", "memo", "every": "hour|day|week|month", "first_run_at": "<RFC 3339, default now>", "end_at"}`)
 			return
 		}
 		first := time.Now()
@@ -649,17 +665,21 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		var sc economy.AgentSchedule
-		var err error
-		if in.ToListingID != "" {
+		switch {
+		case in.ToPayeeID != "":
+			sc, err = bank.CreateStandingOrder(req.Context(), wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
+		case in.ToListingID != "":
 			sc, err = bank.CreateAgentListingSchedule(req.Context(), wsID, agentID, in.ToListingID, in.AmountULXC, in.Memo, in.Every, first)
-		} else {
+		default:
 			sc, err = bank.CreateAgentSchedule(req.Context(), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
 		}
 		switch {
-		case errors.Is(err, economy.ErrAgentNotFound):
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrPayeeNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrSameAgent), errors.Is(err, economy.ErrListingPayee):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPayeeUnconfirmed):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case errors.Is(err, workspace.ErrMoneyWall):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
@@ -687,6 +707,17 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, map[string]any{"schedule_id": chi.URLParam(req, "scheduleID"), "runs": runs})
 		}
 	})
+	r.Post("/v1/workspaces/{wsID}/agents/schedules/{scheduleID}/skip", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		sc, err := bank.SkipAgentScheduleTick(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "scheduleID"))
+		switch {
+		case errors.Is(err, economy.ErrScheduleNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, sc)
+		}
+	}))
 	r.Delete("/v1/workspaces/{wsID}/agents/schedules/{scheduleID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		err := bank.CancelAgentSchedule(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "scheduleID"))
 		switch {

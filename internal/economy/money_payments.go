@@ -71,6 +71,7 @@ type OutsidePayment struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 
 	holdAccountID string
+	at            time.Time // when the agent's rules judge it (B30.18: a standing order's run); zero means now
 }
 
 // key is the idempotency key of the payment's money entry for step: the hold, the failure or the return. The entry
@@ -179,7 +180,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		}
 		fp := sha256.Sum256([]byte("payment_out\x00" + p.AgentID + "\x00" + p.AccountID + "\x00" + p.PayeeID + "\x00" +
 			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
-		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
+		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: hex.EncodeToString(fp[:]),
 			Payee: Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
 			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
