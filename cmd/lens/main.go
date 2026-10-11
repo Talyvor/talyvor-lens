@@ -4670,6 +4670,7 @@ func run() error {
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
