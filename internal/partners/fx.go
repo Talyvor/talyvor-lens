@@ -63,16 +63,9 @@ func (p *TestFXPartner) Quote(_ context.Context, req FXQuoteRequest) (FXQuote, e
 	if err := checkMoney(req.Sell); err != nil {
 		return FXQuote{}, err
 	}
-	if _, ok := currencies[req.Buy]; !ok || req.Buy == req.Sell.Currency {
-		return FXQuote{}, fmt.Errorf("%w: a conversion buys another of GBP, EUR, USD or USDC, not %q", ErrInvalid, req.Buy)
-	}
-	rate := new(big.Rat).Quo(testUSDPerUnit[req.Sell.Currency], testUSDPerUnit[req.Buy])
-	// buy minor = sell minor × rate × 10^(buy decimals − sell decimals), rounded down.
-	buy := new(big.Rat).Mul(new(big.Rat).SetInt64(req.Sell.Minor), rate)
-	buy.Mul(buy, new(big.Rat).SetFrac(pow10(currencies[req.Buy]), pow10(currencies[req.Sell.Currency])))
-	buyMinor := new(big.Int).Quo(buy.Num(), buy.Denom())
-	if !buyMinor.IsInt64() || buyMinor.Sign() <= 0 {
-		return FXQuote{}, fmt.Errorf("%w: %s buys nothing in %s", ErrInvalid, req.Sell, req.Buy)
+	rate, buy, err := testConvert(req.Sell, req.Buy)
+	if err != nil {
+		return FXQuote{}, err
 	}
 	p.book.mu.Lock()
 	defer p.book.mu.Unlock()
@@ -82,8 +75,24 @@ func (p *TestFXPartner) Quote(_ context.Context, req FXQuoteRequest) (FXQuote, e
 	if err != nil {
 		return FXQuote{}, err
 	}
-	return FXQuote{Ref: op.result.Ref, Sell: req.Sell, Buy: Money{buyMinor.Int64(), req.Buy}, Rate: rate.FloatString(8),
-		ExpiresAt: op.at.Add(testQuoteLife)}, nil
+	return FXQuote{Ref: op.result.Ref, Sell: req.Sell, Buy: buy, Rate: rate, ExpiresAt: op.at.Add(testQuoteLife)}, nil
+}
+
+// testConvert is what sell buys in another currency at the Test rates — rounded down to its minor unit — and the rate,
+// buy per sell in whole units, for display.
+func testConvert(sell Money, buyCurrency string) (rate string, buy Money, err error) {
+	if _, ok := currencies[buyCurrency]; !ok || buyCurrency == sell.Currency {
+		return "", Money{}, fmt.Errorf("%w: a conversion buys another of GBP, EUR, USD or USDC, not %q", ErrInvalid, buyCurrency)
+	}
+	r := new(big.Rat).Quo(testUSDPerUnit[sell.Currency], testUSDPerUnit[buyCurrency])
+	// buy minor = sell minor × rate × 10^(buy decimals − sell decimals), rounded down.
+	b := new(big.Rat).Mul(new(big.Rat).SetInt64(sell.Minor), r)
+	b.Mul(b, new(big.Rat).SetFrac(pow10(currencies[buyCurrency]), pow10(currencies[sell.Currency])))
+	buyMinor := new(big.Int).Quo(b.Num(), b.Denom())
+	if !buyMinor.IsInt64() || buyMinor.Sign() <= 0 {
+		return "", Money{}, fmt.Errorf("%w: %s buys nothing in %s", ErrInvalid, sell, buyCurrency)
+	}
+	return r.FloatString(8), Money{buyMinor.Int64(), buyCurrency}, nil
 }
 
 func pow10(n int) *big.Int { return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil) }

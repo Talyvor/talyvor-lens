@@ -21,6 +21,10 @@ import (
 //	                          key as the Idempotency-Key header — pays a saved payee from the company's account in the
 //	                          currency, or account_id; an agent's key pays from its own account, judged by its rules. An
 //	                          approval it needs is filed and the payment refused (403) until the owner approves it.
+//	                          With quote_id it is an international payment at that quote (B30.22), its fee on top.
+//	POST /v1/money/payments/quote {payee_id, amount_minor, currency, account_id, funding} — B30.22: prices a payment
+//	                          to a payee whose account is in another currency: the partner's cost, Talyvor's fee, the
+//	                          total that leaves the account, the rate and what arrives, good until expires_at.
 //	GET  /v1/money/payments   ?agent_id= — the payments out, newest first
 //	GET  /v1/money/payments/{id} — one payment, after asking the partner where it stands now
 //
@@ -30,6 +34,7 @@ import (
 type moneyPaymentBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
+	QuoteInternational(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.InternationalQuote, error)
 	OutsidePayments(ctx context.Context, workspaceID, agentID string) ([]economy.OutsidePayment, error)
 	RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (economy.OutsidePayment, error)
 }
@@ -73,12 +78,31 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 			in.IdempotencyKey = k
 		}
 		p, err := bank.PayOutside(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
-			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey})
+			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey,
+			QuoteID: in.QuoteID})
 		if err != nil {
 			writePaymentErr(w, err)
 			return
 		}
 		writeJSONOK(w, http.StatusCreated, p)
+	})
+	r.Post("/v1/money/payments/quote", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req)
+		if !ok {
+			return
+		}
+		var in economy.OutsidePayment
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"payee_id", "amount_minor", "currency"}`)
+			return
+		}
+		q, err := bank.QuoteInternational(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
+			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding})
+		if err != nil {
+			writePaymentErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusCreated, q)
 	})
 	r.Get("/v1/money/payments", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
@@ -117,7 +141,7 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, economy.ErrPayeeUnconfirmed), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
-		errors.Is(err, economy.ErrMoneyAccountNotOpen):
+		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
 		errors.As(err, new(*screening.Refusal)):
