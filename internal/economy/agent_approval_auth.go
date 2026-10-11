@@ -161,8 +161,22 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 // passkey, and otherwise only with an assertion by one of its passkeys over an open challenge naming
 // that approval, which it spends.
 func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.requirePasskey(ctx, tx, workspaceID, "approval:"+approvalID, a); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// requirePasskey lets an action for purpose through inside tx: at once for a workspace with no passkey, and otherwise
+// only with an assertion by one of its passkeys over an open challenge for purpose, which it spends.
+func (s *DualTokenStore) requirePasskey(ctx context.Context, tx pgx.Tx, workspaceID, purpose string, a *passkey.Assertion) error {
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1`, workspaceID).Scan(&n); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1`, workspaceID).Scan(&n); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
 	}
 	if n == 0 {
@@ -171,15 +185,7 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 	if a == nil {
 		return ErrPasskeyRequired
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, *a); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.spendAssertion(ctx, tx, workspaceID, purpose, *a)
 }
 
 // spendAssertion checks a, by one of workspaceID's passkeys, over an open challenge for purpose, and spends the
