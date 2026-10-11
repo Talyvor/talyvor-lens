@@ -4,11 +4,13 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -426,8 +428,26 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 	case paused:
 		return PaidInvoice{}, ErrInvoicePayerPaused
 	}
-	// shortcut: the payer's spending rules are not asked yet; ask them here once money out of agent accounts has rules (B30.17).
-	// The account is held too, so no other movement spends the same money while this one is judged.
+	// B30.131: the payer's rules judge it as a payment to the issuer, at what it is worth in LXC, exactly as a payment out
+	// (B30.17): its limits, its payee lists and its approval amount. The agent is locked first, then the account, so no
+	// other movement spends the same money or the same limit while this one is judged.
+	if s.accountPartners == nil {
+		return PaidInvoice{}, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)
+	}
+	value, err := s.paymentValue(ctx, OutsidePayment{WorkspaceID: workspaceID, IdempotencyKey: key, AmountMinor: inv.DueMinor, Currency: inv.Currency})
+	if err != nil {
+		return PaidInvoice{}, err
+	}
+	payee := Payee{Kind: "company", ID: inv.WorkspaceID, Name: inv.Issuer}
+	if inv.AgentID != "" {
+		payee = Payee{Kind: "agent", ID: inv.AgentID, Name: inv.Issuer}
+	}
+	fp := sha256.Sum256([]byte(key + "\x00" + strconv.FormatInt(inv.DueMinor, 10) + "\x00" + inv.Currency + "\x00" + funding))
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Payee: payee,
+		Memo: minorString(inv.DueMinor, inv.Currency) + " for invoice " + inv.Number + " from " + cmp.Or(inv.Issuer, inv.WorkspaceID) + " (" + funding + " money)"})
+	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
+		return PaidInvoice{}, err
+	}
 	var held int64
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = $1 FOR UPDATE`, from); err != nil {
 		return PaidInvoice{}, fmt.Errorf("economy: pay invoice: %w", err)
@@ -439,6 +459,9 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 	if held < inv.DueMinor {
 		return PaidInvoice{}, fmt.Errorf("%w: it holds %s of %s money, and %s is due", ErrInvoiceShort, FormatMinor(held, inv.Currency), funding,
 			FormatMinor(inv.DueMinor, inv.Currency))
+	}
+	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, value, key); err != nil {
+		return PaidInvoice{}, s.refusedMovement(ctx, tx, err)
 	}
 	e := MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "invoice_payment", IdempotencyKey: key,
 		Funding: funding, Memo: "Invoice " + inv.Number + " from " + cmp.Or(inv.Issuer, inv.WorkspaceID),

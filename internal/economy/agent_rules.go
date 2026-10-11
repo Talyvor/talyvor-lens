@@ -474,7 +474,8 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 	var spent int64
 	// What it paid other agents counts (B19.3), and its card purchases (B19.12); what they paid it does not raise its limit. What it
 	// used of paid marketplace listings counts too (B20.2), though it is billed to its company. Its questions' platform fees count (B32.11).
-	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back.
+	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
+	// invoices it paid from its currency account (B30.131), recorded under their entry key as the rules let them through.
 	err := tx.QueryRow(ctx, `SELECT (
 		(SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
@@ -482,7 +483,9 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		+ (SELECT COALESCE(sum(price_ulxc), 0) FROM market_uses
 		   WHERE buyer_workspace_id = $1 AND agent_id = $4 AND charge = 'billed' AND used_at >= $3)
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned')))::bigint`,
+		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned'))
+		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_payee_payments
+		   WHERE workspace_id = $1 AND agent_id = $4 AND ref LIKE 'invoice_agent:%' AND created_at >= $3))::bigint`,
 		workspaceID, agentAccount(agentID), since, agentID).Scan(&spent)
 	return spent, err
 }
