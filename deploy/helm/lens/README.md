@@ -29,7 +29,7 @@ default**.
 
 - Kubernetes 1.23+ and Helm 3.8+ (or Helm 4).
 - A reachable **Postgres**, **Redis**, and **NATS** (Lens requires all three).
-- A pullable gateway image (`ghcr.io/gaboracnicolai/talyvor-lens:latest` by default).
+- A pullable gateway image (`ghcr.io/talyvor/talyvor-lens:latest` by default).
   ⚠ `latest` is not reproducible — pin a commit sha for production, see `values.yaml`.
 - A **Secret** containing the required env (see [Secrets](#secrets)).
 - The image must expose the HA endpoints **`/livez`** and **`/readyz`** (added
@@ -68,7 +68,7 @@ helm template lens deploy/helm/lens -f deploy/helm/lens/examples/values-ha.yaml
 | Key | Default | Description |
 |-----|---------|-------------|
 | `replicaCount` | `1` | Gateway replicas. Keep at 1 unless `config.ha.enabled`. |
-| `image.repository` | `ghcr.io/gaboracnicolai/talyvor-lens` | Gateway image. Published by `.github/workflows/images.yaml`. |
+| `image.repository` | `ghcr.io/talyvor/talyvor-lens` | Gateway image. Published by `.github/workflows/images.yaml`. |
 | `image.tag` | `latest` | ⚠ Not reproducible. Pin a 40-char commit sha for production; no semver tag is ever published. |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `imagePullSecrets` | `[]` | Private-registry pull secrets. |

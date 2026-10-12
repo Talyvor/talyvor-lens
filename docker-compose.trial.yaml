@@ -105,7 +105,7 @@ services:
   # receipt from a STAKED + earn_verified node mints fake LENS; the U6 floor still gates an
   # unstaked/unverified node's receipt to Minted:false.
   node:
-    image: ghcr.io/gaboracnicolai/talyvor-lens:latest
+    image: ghcr.io/talyvor/talyvor-lens:latest
     build:
       context: .
     entrypoint: ["/node", "start"]

@@ -26,7 +26,7 @@ GUARD = ROOT / "cmd/lens/runbook_link_reach_test.go"
 
 TESTS = "TestAlertRunbookURLsResolve|TestNoDeadOrgURLInShippedYAML"
 
-GOOD = "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/"
+GOOD = "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/"
 
 
 def run_guard():
@@ -119,13 +119,13 @@ CONTROLS = [
     ),
     dict(
         id="C2", must_pass=False, expect={"R1a"},
-        why="the HALF-CORRECTION: right org, wrong repo (`gaboracnicolai/lens`, measured 404). "
-            "ONLY R1a. R2 must NOT fire — the org is not `talyvor`, so this is the mutation R2 "
-            "cannot claim credit for. R1b and R1d are not reached: a wrong prefix makes the "
-            "filename questions unanswerable, so R1a `continue`s past them by design.",
+        why="the HALF-CORRECTION: right org, wrong repo (`Talyvor/lens`, measured 404). "
+            "ONLY R1a. R2 must NOT fire — R2 watches the pre-move owner and this is not it, so this "
+            "is the mutation R2 cannot claim credit for. R1b and R1d are not reached: a wrong prefix "
+            "makes the filename questions unanswerable, so R1a `continue`s past them by design.",
         edits=[(ALERTS,
                 GOOD + "LensRateLimitSpike.md",
-                "https://github.com/gaboracnicolai/lens/blob/main/deploy/observability/runbooks/LensRateLimitSpike.md")],
+                "https://github.com/Talyvor/lens/blob/main/deploy/observability/runbooks/LensRateLimitSpike.md")],
     ),
     dict(
         id="C2b", must_pass=False, expect={"R1d"},
@@ -137,9 +137,9 @@ CONTROLS = [
     ),
     dict(
         id="C3", must_pass=False, expect={"R2"},
-        why="the dead org resurfacing in a DIFFERENT yaml file, as a value. Only R2 can see this: "
-            "R1 reads alerts.yaml alone. This is the control that justifies R2 existing at all.",
-        edits=[(VALUES, "\nnameOverride:", "\nsupportURL: https://github.com/talyvor/lens\nnameOverride:")],
+        why="the pre-move address resurfacing in a DIFFERENT yaml file, as a value. Only R2 can see "
+            "this: R1 reads alerts.yaml alone. This is the control that justifies R2 existing at all.",
+        edits=[(VALUES, "\nnameOverride:", "\nsupportURL: https://github.com/gaboracnicolai/talyvor-lens\nnameOverride:")],
     ),
     dict(
         id="C4", must_pass=False, expect={"R1c"},
@@ -172,7 +172,8 @@ CONTROLS = [
     dict(
         id="C6", must_pass=False, expect={"R2"},
         why="THE COMMENT RULE IS LOAD-BEARING, NOT DECORATION. Delete R2's `#` skip and it goes "
-            "red on an UNMUTATED tree — on Chart.yaml's deliberate explanatory comment. An "
+            "red on an UNMUTATED tree — on Chart.yaml's deliberate explanatory comment, which quotes "
+            "the pre-move address. An "
             "exemption nobody can make fire is indistinguishable from one that does nothing.",
         edits=[(GUARD,
                 'if strings.HasPrefix(strings.TrimSpace(ln), "#") {',
@@ -180,11 +181,19 @@ CONTROLS = [
     ),
     dict(
         id="C7", must_pass=False, expect={"R1a", "R2"},
-        why="the ORIGINAL defect restored, verbatim. Both guards must see it. This is the only "
-            "control that reproduces what actually shipped; the isolating ones above are what say "
-            "which assertion earns its place. R1b/R1d are not reached — see C2.",
+        why="the PRE-MOVE address restored in alerts.yaml (gaboracnicolai/talyvor-lens, a redirect "
+            "since 12 Oct 2026). Both guards must see it: R1a because it is not the canonical "
+            "prefix, R2 because it names the old owner. R1b/R1d are not reached — see C2.",
         edits=[(ALERTS, GOOD + "LensInstanceDown.md",
-                "https://github.com/talyvor/lens/blob/main/deploy/observability/runbooks/LensInstanceDown.md")],
+                "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensInstanceDown.md")],
+    ),
+    dict(
+        id="C7b", must_pass=False, expect={"R1a"},
+        why="the ORIGINAL defect restored, verbatim (talyvor/lens). Since the Talyvor organisation "
+            "exists, only R1a can see it: the org is right and the repository is not. This is the "
+            "only control that reproduces what actually shipped in August.",
+        edits=[(ALERTS, GOOD + "LensHighErrorRate.md",
+                "https://github.com/talyvor/lens/blob/main/deploy/observability/runbooks/LensHighErrorRate.md")],
     ),
     dict(
         id="C8", must_pass=True, expect=set(),

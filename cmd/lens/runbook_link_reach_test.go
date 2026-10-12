@@ -32,15 +32,22 @@ import (
 //
 // ── WHY THE REAL REPO IS A HARDCODED LITERAL ──────────────────────────────────────────────────
 // Nothing in this repo names it. `go.mod` says `module github.com/talyvor/lens` — the Go import
-// path and the aspirational brand, which need not resolve and which agrees with the very value
-// that was broken. Deriving the expectation from any in-repo file would compare the URL to
-// something equally wrong, or to itself. The literal was measured against the live site above.
-const runbookURLPrefix = "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/"
+// path, which need not resolve and which agrees with the very value that was broken. Deriving the
+// expectation from any in-repo file would compare the URL to something equally wrong, or to
+// itself. The literal was measured against the live site above, and again on 12 Oct 2026, the day
+// the repository moved from gaboracnicolai to the Talyvor organisation:
+//
+//	https://github.com/Talyvor/talyvor-lens/blob/main/.../LensHighErrorRate.md        -> 200
+//	https://github.com/Talyvor/talyvor-lens/blob/main/.../NoSuchRunbook.md            -> 404
+//	https://github.com/talyvor/lens/blob/main/.../LensHighErrorRate.md                -> 404 (no `lens` repo)
+//	https://github.com/gaboracnicolai/talyvor-lens/blob/main/.../LensHighErrorRate.md -> 301 to the first row
+const runbookURLPrefix = "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/"
 
-// The `talyvor` GitHub organisation does not exist — every URL under it 404s, measured above and
-// again in deploy/observability/check-runbook-links.py. R2 below turns that measured fact into a
-// repo-wide rule.
-const deadOrgURLPrefix = "https://github.com/talyvor/"
+// The address this repository had until 12 Oct 2026. GitHub redirects it today, but a redirect is
+// not a promise: it lasts only until someone creates a repository of the same name under
+// gaboracnicolai again, and then every such link 404s with nothing in this repo having changed.
+// R2 below turns that into a repo-wide rule.
+const staleOwnerURLPrefix = "https://github.com/gaboracnicolai/"
 
 // ── THE PINNED SET ────────────────────────────────────────────────────────────────────────────
 // A guard that only walks alerts.yaml cannot see a deletion: delete an alert and every remaining
@@ -123,7 +130,8 @@ func TestAlertRunbookURLsResolve(t *testing.T) {
 	}
 
 	for _, l := range links {
-		// R1a — the full prefix, org AND repository name. `gaboracnicolai/lens` is measured 404.
+		// R1a — the full prefix, org AND repository name. `Talyvor/lens` and `gaboracnicolai/lens` are
+		// measured 404, and the pre-move `gaboracnicolai/talyvor-lens` is only a redirect.
 		// A wrong prefix makes the filename questions below unanswerable, hence the `continue`.
 		if !strings.HasPrefix(l.url, runbookURLPrefix) {
 			t.Errorf("R1a: %s:%d runbook_url does not resolve\n  have: %s\n  want prefix: %s\n"+
@@ -152,20 +160,19 @@ func TestAlertRunbookURLsResolve(t *testing.T) {
 // TestNoDeadOrgURLInShippedYAML is R2, the class rather than the instance.
 //
 // THE RULE, stated so it is a predicate and not an exclusion list: no YAML line that is not a
-// whole-line comment may contain `https://github.com/talyvor/`, because that organisation does not
-// exist and every URL under it 404s.
+// whole-line comment may contain `https://github.com/gaboracnicolai/`, in any letter case — the
+// address this repository had until it moved to the Talyvor organisation on 12 Oct 2026.
 //
-// That rule needs no allowlist, and the three places `github.com/talyvor` legitimately survives
-// fall outside it for a reason, not by name:
+// (Until that day the rule pointed the other way: `https://github.com/talyvor/` was the dead
+// prefix, because the `talyvor` organisation did not exist. It exists now and is where the
+// repository lives. The original `talyvor/lens` links stay dead because the repository is
+// `talyvor-lens`, and in alerts.yaml R1a is what sees that.)
 //
-//   - go.mod's module path — not YAML, and a Go import path need not resolve over HTTP.
-//   - scripts/w64-credential-leak-controls.py — Go import strings inside a control harness; no
-//     `https://` scheme, so nothing there is a link.
-//   - the explanatory comments #418 left in Chart.yaml and values.yaml — whole-line YAML comments.
-//     One of them (Chart.yaml) quotes the broken URL *with* its scheme on purpose, to say what was
-//     wrong. Comments are stripped before Helm or Prometheus ever sees the document, so they are
-//     not clickable in the product. THE COMMENT RULE IS LOAD-BEARING, NOT DECORATION: delete the
-//     `#` skip below and this test goes red on an unmodified tree (control C6).
+// The rule needs no allowlist. Whole-line YAML comments fall outside it for a reason, not by name:
+// Chart.yaml's comment quotes the old address *with* its scheme on purpose, to say where the links
+// used to point, and comments are stripped before Helm or Prometheus ever sees the document, so
+// they are not clickable in the product. THE COMMENT RULE IS LOAD-BEARING, NOT DECORATION: delete
+// the `#` skip below and this test goes red on an unmodified tree (control C6).
 func TestNoDeadOrgURLInShippedYAML(t *testing.T) {
 	var scanned int
 	var offenders []string
@@ -193,7 +200,7 @@ func TestNoDeadOrgURLInShippedYAML(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(ln), "#") {
 				continue // whole-line comment: never rendered, never clickable in the product
 			}
-			if strings.Contains(ln, deadOrgURLPrefix) {
+			if strings.Contains(strings.ToLower(ln), staleOwnerURLPrefix) {
 				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, strings.TrimSpace(ln)))
 			}
 		}
@@ -214,7 +221,8 @@ func TestNoDeadOrgURLInShippedYAML(t *testing.T) {
 	}
 
 	if len(offenders) > 0 {
-		t.Errorf("R2: %d YAML value(s) point at the nonexistent `talyvor` GitHub org (every such URL 404s):\n  %s",
+		t.Errorf("R2: %d YAML value(s) point at github.com/gaboracnicolai, where this repository lived until it moved\n"+
+			"to the Talyvor organisation on 12 Oct 2026 (those links only redirect, and only until the old name is reused):\n  %s",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
 	t.Logf("R2 scanned %d YAML files", scanned)

@@ -18,7 +18,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  OWNER: ${{ github.repository_owner }}
+  # Written out, in lowercase. Since 12 Oct 2026 this repository belongs to the GitHub organisation
+  # whose login is "Talyvor" (capital T), and Docker refuses an image name with a capital letter, so
+  # github.repository_owner can no longer be used here. cmd/lens/chart_image_reach_test.go (2) keeps
+  # this literal and the chart's image.repository in agreement.
+  OWNER: talyvor
 
 jobs:
   build-push:

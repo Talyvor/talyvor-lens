@@ -224,6 +224,7 @@ The key never grants admin, and a workspace can only ever see its own data.
 ## Not covered here
 
 The Helm chart under `deploy/helm/lens/` is **not exercised by this compose-based path**. Its
-default image now resolves (`ghcr.io/gaboracnicolai/talyvor-lens:latest`, verified against the live
-registry), but no live-cluster install has been run from it — treat it as static-validated only. Use
+default image is `ghcr.io/talyvor/talyvor-lens:latest` (until 12 Oct 2026, when the repository moved
+to the Talyvor organisation, it was `ghcr.io/gaboracnicolai/talyvor-lens`), but no live-cluster
+install has been run from it — treat it as static-validated only. Use
 compose for a single-VM host.
