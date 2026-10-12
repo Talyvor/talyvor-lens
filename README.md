@@ -219,7 +219,7 @@ docker compose up -d
 
 Lens is now running at `http://localhost:8080`.
 
-> **Image access:** `ghcr.io/gaboracnicolai/talyvor-lens` is a **private**
+> **Image access:** `ghcr.io/talyvor/talyvor-lens` is a **private**
 > package by decision — the binary embeds the full migration SQL (the
 > pre-launch token-economy schema), so it is not published anonymously.
 > Deploying hosts either authenticate once
@@ -231,7 +231,7 @@ Open `http://localhost:8080/` for the service page (what this host is, live heal
 where to go next), or `http://localhost:8080/status` for per-component health.
 
 The dashboard is a separate app — [app.talyvor.com](https://app.talyvor.com), or
-self-host [`talyvor-suite`](https://github.com/gaboracnicolai/talyvor-suite). Lens
+self-host [`talyvor-suite`](https://github.com/Talyvor/talyvor-suite). Lens
 itself is an API and serves no account UI.
 
 For a step-by-step walkthrough including issuing your first API key and making your first request, see [docs/quickstart.md](docs/quickstart.md).
@@ -289,7 +289,7 @@ API endpoints — point the dashboard app at them, or call them directly:
 | Live cost anomalies (`>3σ`) | `/v1/api/anomalies/scan` |
 
 The dashboard is [app.talyvor.com](https://app.talyvor.com) (or self-hosted
-[`talyvor-suite`](https://github.com/gaboracnicolai/talyvor-suite)), which holds your
+[`talyvor-suite`](https://github.com/Talyvor/talyvor-suite)), which holds your
 key server-side and calls these for you. Unauthenticated, this host serves only `/`
 (service page) and `/status` (component health).
 

@@ -20,7 +20,7 @@
 
 services:
   lens:
-    image: ghcr.io/gaboracnicolai/talyvor-lens:latest
+    image: ghcr.io/talyvor/talyvor-lens:latest
     build:
       context: .
     # Loopback-only publish: lens is reachable from the HOST at 127.0.0.1:8080
@@ -312,7 +312,7 @@ services:
   # an empty schema_migrations — run deploy/migrate-baseline-stamp.sh ONCE
   # before the first `lens migrate` against such a database.
   migrate:
-    image: ghcr.io/gaboracnicolai/talyvor-lens:latest
+    image: ghcr.io/talyvor/talyvor-lens:latest
     build:
       context: .
     command: ["migrate"]
@@ -495,7 +495,7 @@ services:
   # gate the lens stack uses for its own `migrate` service, so `up -d` cannot
   # start the API against an unmigrated database.
   track-migrate:
-    image: ghcr.io/gaboracnicolai/talyvor-track:latest
+    image: ghcr.io/talyvor/talyvor-track:latest
     command: ["migrate", "up"]
     environment:
       TRACK_DATABASE_URL: postgres://lens:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/talyvor_track?sslmode=disable
@@ -505,7 +505,7 @@ services:
     restart: "no"
 
   track:
-    image: ghcr.io/gaboracnicolai/talyvor-track:latest
+    image: ghcr.io/talyvor/talyvor-track:latest
     environment:
       TRACK_DATABASE_URL: postgres://lens:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/talyvor_track?sslmode=disable
       TRACK_LISTEN_ADDR: 0.0.0.0:3000
@@ -592,7 +592,7 @@ services:
   # ── Docs ───────────────────────────────────────────────────────────────────
   # No migrate service: Docs applies pending migrations on boot, fail-closed.
   docs:
-    image: ghcr.io/gaboracnicolai/talyvor-docs:latest
+    image: ghcr.io/talyvor/talyvor-docs:latest
     environment:
       DOCS_DATABASE_URL: postgres://lens:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/talyvor_docs?sslmode=disable
       DOCS_LISTEN_ADDR: 0.0.0.0:4000

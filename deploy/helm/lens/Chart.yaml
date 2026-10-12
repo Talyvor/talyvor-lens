@@ -19,14 +19,17 @@ version: 0.1.0
 # (used as the default image tag). Keep in sync with the Lens release.
 appVersion: "0.1.0"
 
-# Both of these were https://github.com/talyvor/lens, which 404s — the `talyvor`
-# GitHub organisation does not exist (checked 2026-08-10; the real repository
-# returns 200). `github.com/talyvor/lens` survives as the Go module path in
-# go.mod, which is an import identifier and need not resolve; these two fields
-# are links a chart consumer clicks, and they must.
-home: https://github.com/gaboracnicolai/talyvor-lens
+# Both of these were https://github.com/talyvor/lens, which 404s (checked
+# 2026-08-10): the repository is `talyvor-lens`, not `lens`, and at the time the
+# `talyvor` organisation did not exist either. `github.com/talyvor/lens` survives
+# as the Go module path in go.mod, which is an import identifier and need not
+# resolve. Then they were https://github.com/gaboracnicolai/talyvor-lens, until
+# the repository moved to the Talyvor organisation on 12 Oct 2026; that address
+# now only redirects. These two fields are links a chart consumer clicks, and
+# they must resolve.
+home: https://github.com/Talyvor/talyvor-lens
 sources:
-  - https://github.com/gaboracnicolai/talyvor-lens
+  - https://github.com/Talyvor/talyvor-lens
 maintainers:
   - name: Talyvor Platform
 keywords:

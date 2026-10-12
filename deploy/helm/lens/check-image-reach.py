@@ -3,7 +3,8 @@
 
 That is what a self-host evaluator running `helm install` is, and until 2026-08-10 the answer for
 the default render was NO: the chart named `ghcr.io/talyvor/talyvor-lens:0.1.0`, an organisation
-that does not exist on GitHub at all.
+that did not exist on GitHub at all. (It does since 12 Oct 2026: the repositories moved there and the
+image is published as ghcr.io/talyvor/talyvor-lens.)
 
 ⚠ RUN THIS BY HAND, NOT IN CI. It needs `helm` (installed in no talyvor-lens CI job) and it talks
 to a live registry, which would make `go test` fail whenever GHCR has a bad day. The offline half
@@ -99,7 +100,7 @@ CONTROLS = [
     ("ghcr.io/gitleaks/gitleaks:v8.30.1", True),
     ("docker.io/library/postgres:16", True),          # the Docker Hub path must work too
     ("ghcr.io/gitleaks/gitleaks:no-such-tag-9f3a2b", False),   # public repo, absent tag -> 404
-    ("ghcr.io/talyvor/no-such-image-9f3a2b:latest", False),    # absent owner        -> 403
+    ("ghcr.io/talyvor/no-such-image-9f3a2b:latest", False),    # absent image        -> not pullable
     # ⚠ A BADLY CHOSEN CONTROL IS NOT A BROKEN PROBE. An earlier run used
     # ghcr.io/oras-project/oras:latest as a must-PASS row; it returned manifest 404 because that
     # repository has no `latest`, which reads as "the instrument denies everything". Controls are

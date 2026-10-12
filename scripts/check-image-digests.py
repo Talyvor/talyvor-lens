@@ -5,8 +5,9 @@ A floating tag (caddy:2-alpine, redis:7-alpine) changes under the server at the 
 review. A tag alone is not a pin: a publisher can re-point it. The digest is the pin; the tag next
 to it says which release the digest is, so a reviewer can read a bump.
 
-Exempt: Talyvor's own images (ghcr.io/gaboracnicolai/...). This repository's pipeline builds them
-and the deploy pulls :latest after every green merge, so a digest there would stop deploys.
+Exempt: Talyvor's own images (ghcr.io/talyvor/...; ghcr.io/gaboracnicolai/... until the repositories moved
+to the Talyvor organisation on 12 Oct 2026). This repository's pipeline builds them and the deploy
+pulls :latest after every green merge, so a digest there would stop deploys.
 
 To bump an image: `docker buildx imagetools inspect <name>:<new-tag> --format '{{.Manifest.Digest}}'`
 and write `<name>:<new-tag>@<digest>`.
@@ -15,7 +16,7 @@ import re
 import subprocess
 import sys
 
-OWN = "ghcr.io/gaboracnicolai/"
+OWN = "ghcr.io/talyvor/"
 IMAGE_LINE = re.compile(r"^\s*image:\s*[\"']?([^\"'\s#]+)", re.M)
 PINNED = re.compile(r"^[^@\s]+:[\w][\w.-]*@sha256:[0-9a-f]{64}$")
 

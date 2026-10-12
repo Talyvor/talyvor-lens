@@ -20,6 +20,9 @@ import (
 //	ghcr.io/gaboracnicolai/talyvor-lens:0.1.0 -> manifest 404   (the org is right and PUBLIC, that
 //	                                       TAG was simply never published)
 //
+// (Measured 2026-08-10. On 12 Oct 2026 the repositories moved to a new GitHub organisation,
+// "Talyvor", and the image moved with them to ghcr.io/talyvor/talyvor-lens — see publishedImageRepo.)
+//
 // So "fix the organisation" alone yields ImagePullBackOff just the same, one HTTP status later.
 // That is the specific progress-shaped no-op this file exists to prevent, and it is assertion
 // (3) below.
@@ -37,14 +40,15 @@ import (
 //     the suite keeps its site-parity premise. It carries its own both-directions controls.
 //
 // ── WHY THE ORG IS A HARDCODED LITERAL ────────────────────────────────────────────────────────
-// NOTHING IN THIS REPO NAMES THE REAL OWNER. go.mod says `module github.com/talyvor/lens` — that
-// is the Go import path and the aspirational brand, NOT the GHCR org, and it agrees with the very
-// value that was broken. images.yaml gets the owner from `${{ github.repository_owner }}`, which
-// only exists at Actions runtime. Deriving the expectation from any in-repo file would therefore
-// compare the chart to something equally wrong, or to itself. The literal below was measured
-// against the live registry (see the probe script), and assertion (2) keeps it honest by pinning
-// the workflow mechanism that produces it.
-const publishedImageRepo = "ghcr.io/gaboracnicolai/talyvor-lens"
+// go.mod says `module github.com/talyvor/lens` — that is the Go import path, NOT the GHCR
+// namespace, and it agrees with the very value that was once broken. Until 12 Oct 2026 images.yaml
+// got the owner from `${{ github.repository_owner }}`, which only exists at Actions runtime, so
+// nothing in this repo named the real owner and the literal below was measured against the live
+// registry (see the probe script). That day the repository moved to the GitHub organisation whose
+// login is "Talyvor"; Docker refuses capital letters in an image name, so images.yaml now writes
+// the owner out in lowercase (`OWNER: talyvor`), and assertion (2) requires this literal and that
+// one to agree.
+const publishedImageRepo = "ghcr.io/talyvor/talyvor-lens"
 
 // ── WHAT MAY APPEAR AS AN IMAGE IN values.yaml ────────────────────────────────────────────────
 // Every image-bearing default is classified here, and assertion (5) requires the classification
@@ -174,10 +178,14 @@ func TestChartImagesAreActuallyPublished(t *testing.T) {
 	// ── (2) …and the workflow still works the way that literal assumes ────────────────────────
 	// Without this, (1) is a literal compared to a literal: someone could repoint images.yaml at a
 	// different owner or image name and (1) would stay green while the chart went stale again.
-	if !strings.Contains(workflow, "OWNER: ${{ github.repository_owner }}") {
-		t.Errorf("(2) images.yaml no longer derives OWNER from ${{ github.repository_owner }}.\n" +
-			"    publishedImageRepo above is a MEASURED literal that assumes it. Re-measure with\n" +
-			"    deploy/helm/lens/check-image-reach.py and update the constant.")
+	publishedOwner := strings.TrimPrefix(publishedImageRepo[:strings.LastIndex(publishedImageRepo, "/")], "ghcr.io/")
+	ownerLine := regexp.MustCompile(`(?m)^\s*OWNER:\s*` + regexp.QuoteMeta(publishedOwner) + `\s*$`)
+	if !ownerLine.MatchString(workflow) {
+		t.Errorf("(2) images.yaml does not set `OWNER: %s`, the owner publishedImageRepo (%s) assumes.\n"+
+			"    It is written out in lowercase on purpose: github.repository_owner is \"Talyvor\", and Docker\n"+
+			"    refuses an image name with a capital letter. Re-measure with\n"+
+			"    deploy/helm/lens/check-image-reach.py and update both literals together.",
+			publishedOwner, publishedImageRepo)
 	}
 	wantName := gotRepo[strings.LastIndex(gotRepo, "/")+1:]
 	if pushLine := fmt.Sprintf("ghcr.io/${{ env.OWNER }}/%s:latest", wantName); !strings.Contains(workflow, pushLine) {

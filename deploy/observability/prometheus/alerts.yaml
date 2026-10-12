@@ -17,7 +17,7 @@ groups:
         annotations:
           summary: "Lens 5xx error rate above 1%"
           description: "5xx error rate is {{ $value | humanizePercentage }} over the last 5m (threshold 1%)."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensHighErrorRate.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensHighErrorRate.md"
 
       - alert: LensHighLatencyP99
         expr: lens:http_request_duration:p99 > 2
@@ -27,7 +27,7 @@ groups:
         annotations:
           summary: "Lens HTTP p99 latency above 2s"
           description: "p99 request latency is {{ $value | humanizeDuration }} over 5m (threshold 2s)."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensHighLatencyP99.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensHighLatencyP99.md"
 
       - alert: LensProviderDown
         expr: lens_circuit_breaker_state == 1
@@ -37,7 +37,7 @@ groups:
         annotations:
           summary: "Provider {{ $labels.provider }} circuit breaker open"
           description: "The circuit breaker for {{ $labels.provider }} has been OPEN for >2m — requests to it are short-circuiting."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensProviderDown.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensProviderDown.md"
 
       - alert: LensTokenLedgerSlow
         expr: lens:token_ledger_write_duration:p99 > 0.1
@@ -47,7 +47,7 @@ groups:
         annotations:
           summary: "Token-ledger write p99 above 100ms (hot-path guard)"
           description: "Ledger write p99 is {{ $value | humanizeDuration }} over 5m (threshold 100ms). This is the minting hot path; sustained slowness backs up request handling."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensTokenLedgerSlow.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensTokenLedgerSlow.md"
 
       - alert: LensRateLimitSpike
         expr: sum(rate(lens_rate_limit_rejections_total[5m])) > 1
@@ -57,7 +57,7 @@ groups:
         annotations:
           summary: "Rate-limit rejections climbing"
           description: "Lens is rejecting {{ $value | humanize }} req/s with HTTP 429 (sustained >10m). A tenant may be over budget or misbehaving."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensRateLimitSpike.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensRateLimitSpike.md"
 
       - alert: LensInstanceDown
         # Fires when the active HA instance count drops at least 1 below its
@@ -69,4 +69,4 @@ groups:
         annotations:
           summary: "Lens HA instance count dropped"
           description: "Active instances fell to {{ $value }} below the recent peak — a gateway instance is missing from the HA registry."
-          runbook_url: "https://github.com/gaboracnicolai/talyvor-lens/blob/main/deploy/observability/runbooks/LensInstanceDown.md"
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensInstanceDown.md"

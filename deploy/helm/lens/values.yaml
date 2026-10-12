@@ -8,11 +8,14 @@ replicaCount: 1
 
 image:
   # -- Gateway image repository. Published by .github/workflows/images.yaml, which
-  # pushes to ghcr.io/${{ github.repository_owner }}/talyvor-lens — the OWNER of
-  # this GitHub repository. Note that this is NOT the Go module path: go.mod says
-  # `github.com/talyvor/lens`, and `talyvor` is not a GitHub organisation at all.
-  # The chart used to name it here and every `helm install` died on ImagePullBackOff.
-  repository: ghcr.io/gaboracnicolai/talyvor-lens
+  # pushes to ghcr.io/talyvor/talyvor-lens (`OWNER: talyvor` there, written in
+  # lowercase because this repository's owner is the GitHub organisation "Talyvor"
+  # and Docker refuses capital letters). Until 12 Oct 2026 the repository, and the
+  # image, belonged to gaboracnicolai. Note that this is NOT the Go module path:
+  # go.mod says `github.com/talyvor/lens`, an import identifier that need not resolve.
+  # The chart once named ghcr.io/talyvor/talyvor-lens:0.1.0 when nothing was there,
+  # and every `helm install` died on ImagePullBackOff.
+  repository: ghcr.io/talyvor/talyvor-lens
   # -- Image tag.
   #
   # ⚠ `latest` IS NOT REPRODUCIBLE. Two `helm install`s a week apart can deploy
@@ -351,6 +354,9 @@ podDisruptionBudget:
 # ⚠ THE THREE `repository` VALUES BELOW ARE PLACEHOLDERS, NOT PULLABLE IMAGES.
 # Measured 2026-08-10 against the live registry: all three return a token-endpoint
 # 403 under `talyvor` AND under this repository's real owner — they exist nowhere.
+# Since 12 Oct 2026 `talyvor` IS the real owner (the repositories moved to the
+# Talyvor organisation), so the placeholders now name registry.example.invalid, a
+# host that can never resolve.
 # images.yaml builds exactly ONE image (talyvor-lens), so nothing is going to
 # publish them. SETTING `nodes.enabled: true` WITHOUT ALSO SETTING YOUR OWN
 # `repository` FOR EACH ENABLED NODE GIVES YOU ImagePullBackOff. They are
@@ -365,7 +371,7 @@ nodes:
     kind: Deployment
     replicas: 1
     image:
-      repository: ghcr.io/talyvor/talyvor-node
+      repository: registry.example.invalid/talyvor-node
       tag: ""
       pullPolicy: IfNotPresent
     resources: {}
@@ -374,7 +380,7 @@ nodes:
     kind: Deployment
     replicas: 1
     image:
-      repository: ghcr.io/talyvor/talyvor-cachenode
+      repository: registry.example.invalid/talyvor-cachenode
       tag: ""
       pullPolicy: IfNotPresent
     resources: {}
@@ -383,7 +389,7 @@ nodes:
     kind: Deployment
     replicas: 1
     image:
-      repository: ghcr.io/talyvor/talyvor-embednode
+      repository: registry.example.invalid/talyvor-embednode
       tag: ""
       pullPolicy: IfNotPresent
     resources: {}
