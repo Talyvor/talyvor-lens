@@ -129,7 +129,7 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 	var ws, companyID, partnerID string
 	err := s.pool.QueryRow(ctx, `SELECT c.workspace_id, c.id, p.id FROM money_accounts c
 		JOIN money_accounts p ON p.workspace_id = c.workspace_id AND p.partner_account_ref = c.partner_account_ref AND p.purpose = 'partner'
-		WHERE c.partner_account_ref = $1 AND c.purpose = 'company' AND c.status = 'open'`, in.PartnerAccountRef).Scan(&ws, &companyID, &partnerID)
+		WHERE c.partner_account_ref = $1 AND c.purpose = 'company' AND c.status <> 'closed'`, in.PartnerAccountRef).Scan(&ws, &companyID, &partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyEntry{}, fmt.Errorf("%w: no open company account is at the partner's %s", ErrMoneyAccountNotFound, in.PartnerAccountRef)
 	}
@@ -145,7 +145,7 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 	}, in.Reference)
 	if ref := paymentReference.FindString(quoted); ref != "" {
 		var agentAccount string
-		err := s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE parent_account_id = $1 AND payment_reference = $2 AND status = 'open'`,
+		err := s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE parent_account_id = $1 AND payment_reference = $2 AND status <> 'closed'`,
 			companyID, ref).Scan(&agentAccount)
 		switch {
 		case err == nil:
