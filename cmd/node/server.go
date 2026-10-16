@@ -3,9 +3,10 @@ package main
 // server.go — the local HTTP server the node binary spins up.
 // Lens makes inference requests against this endpoint when it
 // routes work to the operator's GPU. Three routes:
-//   POST /inference  (X-Node-Secret required)
-//   GET  /health
-//   GET  /models
+//   POST /inference    (Lens's node token or X-Node-Secret)
+//   POST /challenge    (signed by Lens)
+//   POST /attestation  (signed by Lens)
+//   GET  /health, /models, /v1/models  (health checks — Lens probes /v1/models without a secret)
 
 import (
 	"context"
@@ -182,6 +183,19 @@ func (s *InferenceServer) handleAttestation(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Only Lens may make the node spend a hardware attestation: same pinned key and rotation re-fetch as /challenge.
+	pub := s.challengeKey()
+	if len(pub) != ed25519.PublicKeySize {
+		http.Error(w, "node has no pinned Lens challenge key", http.StatusServiceUnavailable)
+		return
+	}
+	if povi.VerifyAttestationRequest(req, pub) != nil {
+		refreshed, ok := s.reactiveRefetchChallengeKey(r.Context())
+		if !ok || povi.VerifyAttestationRequest(req, refreshed) != nil {
+			http.Error(w, "unauthorized attestation request", http.StatusUnauthorized)
+			return
+		}
+	}
 	eat, err := s.attestor.Report(r.Context(), req.Nonce)
 	if err != nil {
 		http.Error(w, "attestation failed: "+err.Error(), http.StatusBadGateway)
@@ -278,16 +292,14 @@ func (s *InferenceServer) handleInference(w http.ResponseWriter, r *http.Request
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Auth (additive, backward-compatible): accept a valid gateway-signed node-auth token
-	// (auto-route, blocker 6) OR the EXISTING X-Node-Secret / no-secret path. Token verification is
-	// ALWAYS-ON (verify-if-present): a request with NO token takes the unchanged secret path, so the
-	// direct /inference drive (X-Node-Secret) and older gateways behave exactly as before.
+	// Auth: a valid gateway-signed node-auth token (auto-route, blocker 6) OR the X-Node-Secret. A node
+	// with no secret refuses every secret-path request unless it runs with TALYVOR_NODE_DEV_NO_SECRET.
 	if tok := r.Header.Get("X-Lens-Node-Token"); tok != "" {
 		if !s.verifyNodeToken(r.Context(), tok, body) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-	} else if s.secret != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(s.secret)) != 1 {
+	} else if !nodeSecretOK(r, s.secret, s.cfg.DevNoSecret) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -333,6 +345,14 @@ func (s *InferenceServer) handleInference(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// nodeSecretOK checks X-Node-Secret in constant time. An empty secret admits nobody, unless devNoSecret.
+func nodeSecretOK(r *http.Request, secret string, devNoSecret bool) bool {
+	if secret == "" {
+		return devNoSecret
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(secret)) == 1
 }
 
 // ─── health ──────────────────────────────────────

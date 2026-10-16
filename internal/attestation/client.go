@@ -3,6 +3,7 @@ package attestation
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,15 +15,17 @@ import (
 
 // Client POSTs a fresh nonce to a node's /attestation endpoint and returns the node's wrapped EAT response.
 // Mirrors povi.ChallengeClient's gateway→node POST shape.
+// Each request is signed with Lens's challenge key, which the node verifies before attesting.
 type Client struct {
-	http *http.Client
+	http     *http.Client
+	lensPriv ed25519.PrivateKey
 }
 
-func NewClient(timeout time.Duration) *Client {
+func NewClient(lensPriv ed25519.PrivateKey, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Client{http: &http.Client{Timeout: timeout}}
+	return &Client{http: &http.Client{Timeout: timeout}, lensPriv: lensPriv}
 }
 
 // SetHTTPClient swaps the transport (tests inject an httptest client).
@@ -34,7 +37,7 @@ func (c *Client) Fetch(ctx context.Context, nodeURL string, nonce int64) (povi.A
 	if nodeURL == "" {
 		return zero, fmt.Errorf("attestation: node has no URL")
 	}
-	body, _ := json.Marshal(povi.AttestationRequest{Nonce: nonce})
+	body, _ := json.Marshal(povi.SignAttestationRequest(c.lensPriv, nonce))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, trimSlash(nodeURL)+"/attestation", bytes.NewReader(body))
 	if err != nil {
 		return zero, err

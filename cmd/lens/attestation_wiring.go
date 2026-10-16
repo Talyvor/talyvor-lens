@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/x509"
 	"log"
 	"os"
@@ -43,7 +44,7 @@ func (s attestationNodeSource) ActiveNodes(ctx context.Context) ([]attestation.N
 // startAttestationVerify wires the Proof-of-Confidential-Compute VERIFY sweep (step b) — INERT unless the
 // capability flag is on AND the pinned NVIDIA root CA is configured. Flag-off ⇒ this returns immediately, no
 // scheduler, no node dials, no writes. Mints nothing (records a verified hardware class only).
-func startAttestationVerify(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, leader interface {
+func startAttestationVerify(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lensChallengePriv ed25519.PrivateKey, leader interface {
 	Run(ctx context.Context, name string, ttl time.Duration, fn func(context.Context))
 }) {
 	if !cfg.NodeAttestationVerifyEnabled {
@@ -61,7 +62,7 @@ func startAttestationVerify(ctx context.Context, cfg *config.Config, pool *pgxpo
 	}
 	jwks := attestation.NewHTTPJWKS(os.Getenv("LENS_NVIDIA_JWKS_URL"), nil, time.Now)
 	verifier := attestation.NewVerifier(roots, jwks, time.Now)
-	sweep := attestation.NewSweep(attestationNodeSource{pool: pool}, attestation.NewClient(10*time.Second), verifier, attestation.NewStore(pool))
+	sweep := attestation.NewSweep(attestationNodeSource{pool: pool}, attestation.NewClient(lensChallengePriv, 10*time.Second), verifier, attestation.NewStore(pool))
 	log.Printf("🔐 node-attestation-verify enabled (NVIDIA EAT verification; records hardware class, mints nothing — the mint is step c)")
 	go leader.Run(ctx, "node-attestation-verify", 30*time.Second, func(lctx context.Context) {
 		ticker := time.NewTicker(5 * time.Minute)

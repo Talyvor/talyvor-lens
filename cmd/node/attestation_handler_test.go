@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -65,9 +66,10 @@ func TestAttestation_NonceRoundTrip(t *testing.T) {
 	srv := NewInferenceServer(nil, "secret", NodeConfig{})
 	srv.signer = &receiptSigner{priv: priv, nodeID: "node-1"}
 	srv.attestor = stubAttestor{}
+	lensPriv := pinLensKey(t, srv)
 	const nonce = int64(1234567)
 
-	body, _ := json.Marshal(povi.AttestationRequest{Nonce: nonce})
+	body, _ := json.Marshal(povi.SignAttestationRequest(lensPriv, nonce))
 	rr := httptest.NewRecorder()
 	srv.handleAttestation(rr, httptest.NewRequest(http.MethodPost, "/attestation", strings.NewReader(string(body))))
 
@@ -84,6 +86,43 @@ func TestAttestation_NonceRoundTrip(t *testing.T) {
 	got, ok := eatClaims(t, resp.EAT)["eat_nonce"].(float64) // JSON numbers decode to float64
 	if !ok || int64(got) != nonce {
 		t.Fatalf("EAT eat_nonce = %v, want %d — the gateway nonce must bind into the attestor's report", got, nonce)
+	}
+}
+
+// pinLensKey pins a fresh Lens challenge key on srv and returns its private half.
+func pinLensKey(t *testing.T, srv *InferenceServer) ed25519.PrivateKey {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetChallengePubKey(pub)
+	return priv
+}
+
+// B42.3: /attestation refuses a request Lens did not sign (unsigned, or signed by another key), as
+// /challenge does, so an arbitrary caller cannot make the node spend a hardware attestation.
+func TestAttestation_RefusesUnsignedRequest(t *testing.T) {
+	_, priv, err := povi.GenerateNodeKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewInferenceServer(nil, "secret", NodeConfig{})
+	srv.signer = &receiptSigner{priv: priv, nodeID: "node-1"}
+	srv.attestor = stubAttestor{}
+	pinLensKey(t, srv)
+	_, otherPriv, _ := ed25519.GenerateKey(nil)
+
+	for name, req := range map[string]povi.AttestationRequest{
+		"unsigned":        {Nonce: 7},
+		"signed by other": povi.SignAttestationRequest(otherPriv, 7),
+	} {
+		body, _ := json.Marshal(req)
+		rr := httptest.NewRecorder()
+		srv.handleAttestation(rr, httptest.NewRequest(http.MethodPost, "/attestation", strings.NewReader(string(body))))
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s: want 401, got %d: %s", name, rr.Code, rr.Body.String())
+		}
 	}
 }
 
@@ -113,8 +152,9 @@ func TestAttestation_Ed25519Wrap_Verifies(t *testing.T) {
 	srv := NewInferenceServer(nil, "secret", NodeConfig{})
 	srv.signer = &receiptSigner{priv: priv, nodeID: "node-1"}
 	srv.attestor = stubAttestor{}
+	lensPriv := pinLensKey(t, srv)
 
-	body, _ := json.Marshal(povi.AttestationRequest{Nonce: 55})
+	body, _ := json.Marshal(povi.SignAttestationRequest(lensPriv, 55))
 	rr := httptest.NewRecorder()
 	srv.handleAttestation(rr, httptest.NewRequest(http.MethodPost, "/attestation", strings.NewReader(string(body))))
 	if rr.Code != http.StatusOK {

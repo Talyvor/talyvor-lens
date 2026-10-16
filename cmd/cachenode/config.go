@@ -29,6 +29,10 @@ type CacheNodeConfig struct {
 	// absent, it falls back to plain HTTP with a startup warning.
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// DevNoSecret (TALYVOR_NODE_DEV_NO_SECRET=true) lets the node start and serve with no node secret.
+	// Local development only: without it a node with no secret refuses to start.
+	DevNoSecret bool
 }
 
 // LoadConfig pulls every value from the environment and applies
@@ -45,7 +49,16 @@ func LoadConfig() CacheNodeConfig {
 		ShareEnabled: parseBoolEnv("CACHE_NODE_SHARE"),
 		TLSCertFile:  os.Getenv("CACHE_NODE_TLS_CERT"),
 		TLSKeyFile:   os.Getenv("CACHE_NODE_TLS_KEY"),
+		DevNoSecret:  os.Getenv("TALYVOR_NODE_DEV_NO_SECRET") == "true",
 	}
+}
+
+// checkNodeSecret is the start-up gate: a node with no secret would serve any caller.
+func checkNodeSecret(secret string, devNoSecret bool) error {
+	if secret == "" && !devNoSecret {
+		return errors.New("no node secret: refusing to start (set TALYVOR_NODE_DEV_NO_SECRET=true for local development only)")
+	}
+	return nil
 }
 
 // Validate enforces the "required to register" subset of fields.

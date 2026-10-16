@@ -2,7 +2,7 @@ package main
 
 // server.go — HTTP server the embedding-node binary spins up.
 // Lens routes embedding calls here when it picks a network node;
-// other inbound traffic is rejected by the X-Node-Secret check.
+// every route but /health needs the X-Node-Secret (nothing in Lens calls /embed today).
 
 import (
 	"context"
@@ -54,7 +54,7 @@ func (s *EmbedServer) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.secret != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(s.secret)) != 1 {
+	if !nodeSecretOK(r, s.secret, s.cfg.DevNoSecret) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -96,6 +96,14 @@ func (s *EmbedServer) handleEmbed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// nodeSecretOK checks X-Node-Secret in constant time. An empty secret admits nobody, unless devNoSecret.
+func nodeSecretOK(r *http.Request, secret string, devNoSecret bool) bool {
+	if secret == "" {
+		return devNoSecret
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(secret)) == 1
+}
+
 // ─── /health ─────────────────────────────────────
 
 func (s *EmbedServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +133,10 @@ func (s *EmbedServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *EmbedServer) handleBenchmark(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !nodeSecretOK(r, s.secret, s.cfg.DevNoSecret) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	tps, err := RunBenchmark(r.Context(), s.backend, s.cfg.Model)

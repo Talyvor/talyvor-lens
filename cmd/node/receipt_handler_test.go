@@ -36,7 +36,7 @@ func TestHandleInference_ProducesVerifiableReceipt(t *testing.T) {
 
 	srv := NewInferenceServer(
 		fakeProvider{resp: InferResponse{Text: "hello", InputTokens: 3, OutputTokens: 5}},
-		"", // no secret → no X-Node-Secret needed
+		"real-secret",
 		NodeConfig{},
 	)
 	srv.SetReceiptSigner(signer, nil) // nil lens → no async submit
@@ -47,6 +47,7 @@ func TestHandleInference_ProducesVerifiableReceipt(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/inference",
 		strings.NewReader(`{"model":"llama","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("X-Request-ID", "req-test")
+	req.Header.Set("X-Node-Secret", "real-secret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /inference: %v", err)

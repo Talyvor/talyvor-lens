@@ -95,6 +95,19 @@ func (s *CacheStorage) Get(ctx context.Context, key string) (string, string, err
 	return val, owner, nil
 }
 
+// Owner returns the workspace that owns key ("" when the key or its owner tag is absent).
+// Unlike Get it touches no hit/miss counter.
+func (s *CacheStorage) Owner(ctx context.Context, key string) (string, error) {
+	owner, err := s.rdb.Get(ctx, ownerPrefix+key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cachenode: get owner: %w", err)
+	}
+	return owner, nil
+}
+
 // Set stores `value` under `key` with the owner tag + TTL. Rejects
 // the write when the projected total cache size would exceed the
 // configured ceiling. Size accounting is sample-based (see Stats)
