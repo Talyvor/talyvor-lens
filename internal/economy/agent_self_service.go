@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/talyvor/lens/internal/dbjson"
 )
 
 // agent_self_service.go — B19.9: AGENTS USE THEIR WALLETS THEMSELVES.
@@ -112,7 +114,7 @@ func (s *DualTokenStore) RecordAgentToolCall(ctx context.Context, workspaceID, a
 		args = json.RawMessage(`{}`)
 	}
 	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_tool_calls (workspace_id, agent_id, scoped_key_id, tool, arguments, outcome, detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, workspaceID, agentID, scopedKeyID, tool, []byte(args), outcome, detail); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, workspaceID, agentID, scopedKeyID, tool, dbjson.JSONB(args), outcome, detail); err != nil {
 		return fmt.Errorf("economy: log agent tool call: %w", err)
 	}
 	return nil
