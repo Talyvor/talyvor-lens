@@ -23,13 +23,20 @@ func TestGetOrCreate_CreatesNewSession(t *testing.T) {
 func TestGetOrCreate_ReturnsExistingOnSecondCall(t *testing.T) {
 	tr := New(nil)
 	first := tr.GetOrCreate(context.Background(), "s1", "ws-1", "agent")
-	second := tr.GetOrCreate(context.Background(), "s1", "ws-other", "other-agent")
+	second := tr.GetOrCreate(context.Background(), "s1", "ws-1", "other-agent")
 	if first != second {
 		t.Errorf("second call returned a different *Session; want same pointer")
 	}
 	// Mutations on second-call args must NOT overwrite the cached state.
 	if second.WorkspaceID != "ws-1" || second.AgentName != "agent" {
 		t.Errorf("existing session was overwritten by second GetOrCreate: %+v", second)
+	}
+	// B42.2: another workspace naming the same id gets nothing, and ws-1's session is untouched.
+	if other := tr.GetOrCreate(context.Background(), "s1", "ws-other", "other-agent"); other != nil {
+		t.Errorf("ws-other was handed ws-1's session: %+v", other)
+	}
+	if first.WorkspaceID != "ws-1" || first.AgentName != "agent" {
+		t.Errorf("ws-1's session changed: %+v", first)
 	}
 }
 

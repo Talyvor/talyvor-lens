@@ -166,10 +166,10 @@ func TestRecordFeedback_PositiveIncrementsHitCount(t *testing.T) {
 	s := newScorer(pool)
 
 	pool.ExpectExec(`UPDATE prompt_embeddings SET hit_count = hit_count \+ 1`).
-		WithArgs("abc").
+		WithArgs("abc", "ws-a").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	if err := s.RecordFeedback(context.Background(), "abc", FeedbackPositive); err != nil {
+	if _, err := s.RecordFeedback(context.Background(), "ws-a", "abc", FeedbackPositive); err != nil {
 		t.Fatalf("RecordFeedback: %v", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {
@@ -186,10 +186,10 @@ func TestRecordFeedback_RepeatTreatedAsNegative(t *testing.T) {
 	s := newScorer(pool)
 
 	pool.ExpectExec(`UPDATE prompt_embeddings SET hit_count = hit_count - 1`).
-		WithArgs("abc").
+		WithArgs("abc", "ws-a").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	if err := s.RecordFeedback(context.Background(), "abc", FeedbackRepeat); err != nil {
+	if _, err := s.RecordFeedback(context.Background(), "ws-a", "abc", FeedbackRepeat); err != nil {
 		t.Fatalf("RecordFeedback: %v", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {

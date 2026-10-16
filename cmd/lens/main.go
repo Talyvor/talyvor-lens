@@ -3890,35 +3890,7 @@ func run() error {
 		// Node heartbeat (Batch 3 Phase 2). Workspace-scoped UPDATE:
 		// the SQL requires id AND workspace_id so a key from workspace-A
 		// cannot keep alive workspace-B's nodes (cross-workspace hijack fix).
-		authed.Post("/v1/workspaces/{wsID}/nodes/{nodeID}/heartbeat", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			nodeID := chi.URLParam(req, "nodeID")
-			var in struct {
-				ActiveRequests int64    `json:"active_requests"`
-				UptimeSeconds  int64    `json:"uptime_seconds"`
-				ModelsLoaded   []string `json:"models_loaded"`
-			}
-			_ = json.NewDecoder(req.Body).Decode(&in)
-			// Buffer heartbeat in Redis — any instance contributes to the shared
-			// liveness view; the Reconciler reads Redis freshness when building
-			// NodeSnapshots (xDS HA heartbeat reuse).
-			_ = cpHB.Record(req.Context(), "inference", nodeID, in.UptimeSeconds)
-			if pool != nil {
-				tag, err := pool.Exec(req.Context(), `
-					UPDATE inference_nodes
-					SET last_seen_at = NOW(), uptime_seconds = $2
-					WHERE id = $1 AND workspace_id = $3`, nodeID, in.UptimeSeconds, wsID)
-				if err != nil {
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if tag.RowsAffected() == 0 {
-					writeJSONErr(w, http.StatusNotFound, "node not found")
-					return
-				}
-			}
-			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
-		})
+		authed.Post("/v1/workspaces/{wsID}/nodes/{nodeID}/heartbeat", newInferenceHeartbeatHandler(pool, cpHB))
 
 		authed.Delete("/v1/workspaces/{wsID}/nodes/{nodeID}", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -4028,59 +4000,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
 		})
 
-		authed.Post("/v1/workspaces/{wsID}/cache-nodes/{nodeID}/heartbeat", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			nodeID := chi.URLParam(req, "nodeID")
-			var in struct {
-				Entries int     `json:"entries"`
-				SizeMB  float64 `json:"size_mb"`
-				HitRate float64 `json:"hit_rate"`
-			}
-			_ = json.NewDecoder(req.Body).Decode(&in)
-			// Buffer heartbeat in Redis for xDS HA heartbeat reuse.
-			_ = cpHB.Record(req.Context(), "cache", nodeID, 0)
-			if pool != nil {
-				// last_seen_at and metrics must move together atomically;
-				// a partial update leaves the node appearing alive with
-				// stale metrics or updated metrics with a stale timestamp.
-				htx, err := pool.Begin(req.Context())
-				if err != nil {
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				// workspace_id scope: prevents cross-workspace heartbeat hijack.
-				tag, err := htx.Exec(req.Context(), `
-					UPDATE cache_nodes SET last_seen_at = NOW() WHERE id = $1 AND workspace_id = $2`, nodeID, wsID)
-				if err != nil {
-					_ = htx.Rollback(req.Context())
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if tag.RowsAffected() == 0 {
-					_ = htx.Rollback(req.Context())
-					writeJSONErr(w, http.StatusNotFound, "node not found")
-					return
-				}
-				if _, err := htx.Exec(req.Context(), `
-					INSERT INTO cache_node_metrics (node_id, entries, size_mb, hit_rate, last_updated)
-					VALUES ($1, $2, $3, $4, NOW())
-					ON CONFLICT (node_id) DO UPDATE
-					SET entries = EXCLUDED.entries,
-					    size_mb = EXCLUDED.size_mb,
-					    hit_rate = EXCLUDED.hit_rate,
-					    last_updated = NOW()`,
-					nodeID, in.Entries, in.SizeMB, in.HitRate); err != nil {
-					_ = htx.Rollback(req.Context())
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if err := htx.Commit(req.Context()); err != nil {
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-			}
-			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
-		})
+		authed.Post("/v1/workspaces/{wsID}/cache-nodes/{nodeID}/heartbeat", newCacheHeartbeatHandler(pool, cpHB))
 
 		// ─── Embedding node CRUD (embedding mining) ────
 		authed.Post("/v1/workspaces/{wsID}/embedding-nodes", func(w http.ResponseWriter, req *http.Request) {
@@ -4145,29 +4065,7 @@ func run() error {
 		// heartbeat endpoints.  Refreshes last_seen_at via the control-plane
 		// store so the reconciler can track liveness uniformly across all node
 		// types (migration 0035 added last_seen_at to embedding_nodes).
-		authed.Post("/v1/workspaces/{wsID}/embedding-nodes/{nodeID}/heartbeat", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			nodeID := chi.URLParam(req, "nodeID")
-			var in struct {
-				SpeedTPS      int64 `json:"speed_tps"`
-				Inflight      int64 `json:"inflight"`
-				UptimeSeconds int64 `json:"uptime_seconds"`
-			}
-			_ = json.NewDecoder(req.Body).Decode(&in)
-			// Buffer heartbeat in Redis for xDS HA heartbeat reuse.
-			_ = cpHB.Record(req.Context(), "embedding", nodeID, in.UptimeSeconds)
-			// workspace_id scope: prevents cross-workspace heartbeat hijack.
-			found, err := cpStore.RecordEmbedHeartbeat(req.Context(), nodeID, wsID, in.UptimeSeconds)
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			if !found {
-				writeJSONErr(w, http.StatusNotFound, "node not found")
-				return
-			}
-			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
-		})
+		authed.Post("/v1/workspaces/{wsID}/embedding-nodes/{nodeID}/heartbeat", newEmbeddingHeartbeatHandler(cpStore, cpHB))
 
 		econ.get(authed, "/v1/workspaces/{wsID}/tokens/mining/embeddings", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -5124,19 +5022,7 @@ func run() error {
 		// enabled) provisionally mints. GET endpoints are audit + status. A
 		// receipt is ATTESTATION + TAMPER-EVIDENCE, never proof of honest
 		// computation.
-		econ.post(authed, "/v1/workspaces/{wsID}/povi/receipts", func(w http.ResponseWriter, req *http.Request) {
-			var rec povi.Receipt
-			if err := json.NewDecoder(req.Body).Decode(&rec); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			res, err := poviProcessor.Process(req.Context(), rec)
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, res)
-		})
+		econ.post(authed, "/v1/workspaces/{wsID}/povi/receipts", newPoviReceiptSubmitHandler(poviProcessor, poviStakeManager))
 
 		econ.get(authed, "/v1/povi/receipts", newPoviReceiptsHandler(poviStore))
 
@@ -5268,26 +5154,7 @@ func run() error {
 
 		econ.get(authed, "/v1/povi/challenges/{id}", newChallengeGetHandler(challengeStore))
 
-		econ.post(authed, "/v1/povi/challenges/issue", func(w http.ResponseWriter, req *http.Request) {
-			var in struct {
-				RequestID string `json:"request_id"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			rec, err := poviStore.GetReceipt(req.Context(), in.RequestID)
-			if err != nil || rec == nil {
-				writeJSONErr(w, http.StatusNotFound, "receipt not found")
-				return
-			}
-			ch, err := poviChallenger.Challenge(req.Context(), *rec)
-			if err != nil {
-				writeJSONErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, ch)
-		})
+		econ.post(authed, "/v1/povi/challenges/issue", newChallengeIssueHandler(poviStore, poviChallenger))
 
 		econ.get(authed, "/v1/povi/security/status", func(w http.ResponseWriter, req *http.Request) {
 			writeJSONOK(w, http.StatusOK, map[string]any{
@@ -5587,8 +5454,8 @@ func run() error {
 
 		// B23.1: {"request_id", "signal": "negative"|"repeat"} removes the stored answer that request was
 		// given; the older {"prompt_hash", "signal"} form still reaches the quality scorer.
-		authed.Post("/v1/feedback", proxy.AnswerFeedbackHandler(p, pool, func(ctx context.Context, promptHash, signal string) error {
-			return qualityScorer.RecordFeedback(ctx, promptHash, quality.FeedbackSignal(signal))
+		authed.Post("/v1/feedback", proxy.AnswerFeedbackHandler(p, pool, func(ctx context.Context, wsID, promptHash, signal string) (bool, error) {
+			return qualityScorer.RecordFeedback(ctx, wsID, promptHash, quality.FeedbackSignal(signal))
 		}))
 	})
 

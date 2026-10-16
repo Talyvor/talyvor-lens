@@ -96,6 +96,8 @@ ON CONFLICT (id) DO NOTHING`
 // GetOrCreate returns the session for sessionID or creates one. It checks the
 // in-memory map first, then falls back to a PG read so sessions created on
 // another instance are visible here without a round-trip on every request.
+// A session that already exists in another workspace is nil (B42.2): the
+// caller refuses it and nothing of that workspace's session changes.
 func (t *SessionTracker) GetOrCreate(ctx context.Context, sessionID, workspaceID, agentName string) *Session {
 	if agentName == "" {
 		agentName = defaultAgent
@@ -105,7 +107,7 @@ func (t *SessionTracker) GetOrCreate(ctx context.Context, sessionID, workspaceID
 	t.mu.RLock()
 	if s, ok := t.sessions[sessionID]; ok {
 		t.mu.RUnlock()
-		return s
+		return ownedBy(s, workspaceID)
 	}
 	t.mu.RUnlock()
 
@@ -114,11 +116,11 @@ func (t *SessionTracker) GetOrCreate(ctx context.Context, sessionID, workspaceID
 		t.mu.Lock()
 		if s, ok := t.sessions[sessionID]; ok { // double-check after lock
 			t.mu.Unlock()
-			return s
+			return ownedBy(s, workspaceID)
 		}
 		t.sessions[sessionID] = loaded
 		t.mu.Unlock()
-		return loaded
+		return ownedBy(loaded, workspaceID)
 	}
 
 	// New session.
@@ -133,7 +135,7 @@ func (t *SessionTracker) GetOrCreate(ctx context.Context, sessionID, workspaceID
 	t.mu.Lock()
 	if existing, ok := t.sessions[sessionID]; ok { // TOCTOU guard
 		t.mu.Unlock()
-		return existing
+		return ownedBy(existing, workspaceID)
 	}
 	t.sessions[sessionID] = s
 	t.mu.Unlock()
@@ -142,6 +144,14 @@ func (t *SessionTracker) GetOrCreate(ctx context.Context, sessionID, workspaceID
 		if _, err := t.pool.Exec(ctx, insertSessionSQL, s.ID, s.WorkspaceID, s.AgentName); err != nil {
 			slog.Warn("session: insert sessions row failed", slog.String("err", err.Error()))
 		}
+	}
+	return s
+}
+
+// ownedBy is s when it belongs to workspaceID, else nil. WorkspaceID never changes after creation.
+func ownedBy(s *Session, workspaceID string) *Session {
+	if s.WorkspaceID != workspaceID {
+		return nil
 	}
 	return s
 }

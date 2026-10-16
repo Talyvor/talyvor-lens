@@ -862,7 +862,10 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	}
 	var sess *session.Session
 	if sessionID != "" && p.sessionTracker != nil {
-		sess = p.sessionTracker.GetOrCreate(ctx, sessionID, wsID, agentName)
+		if sess = p.sessionTracker.GetOrCreate(ctx, sessionID, wsID, agentName); sess == nil {
+			writeError(w, http.StatusNotFound, "session not found") // another workspace's session (B42.2)
+			return
+		}
 	}
 
 	// Extract any incoming W3C trace context BEFORE we start our own

@@ -159,7 +159,7 @@ func markedBy(ctx context.Context) (wsID, who string) {
 // AnswerFeedbackHandler serves POST /v1/feedback. {"request_id", "signal": "negative"|"repeat"}
 // removes the stored answer that request was given and records who marked it; "positive" changes
 // nothing. The older {"prompt_hash", "signal"} form still goes to legacy (the quality scorer).
-func AnswerFeedbackHandler(p *Proxy, audit AuditExec, legacy func(ctx context.Context, promptHash, signal string) error) http.HandlerFunc {
+func AnswerFeedbackHandler(p *Proxy, audit AuditExec, legacy func(ctx context.Context, wsID, promptHash, signal string) (bool, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			RequestID  string `json:"request_id"`
@@ -172,8 +172,19 @@ func AnswerFeedbackHandler(p *Proxy, audit AuditExec, legacy func(ctx context.Co
 			return
 		}
 		if in.PromptHash != "" {
-			if err := legacy(r.Context(), in.PromptHash, in.Signal); err != nil {
+			wsID, _, ok := feedbackWorkspace(w, r)
+			if !ok {
+				return
+			}
+			// B42.2: only the caller's own workspace's answer is scored; another workspace's
+			// prompt hash is 404, exactly like one that does not exist.
+			found, err := legacy(r.Context(), wsID, in.PromptHash, in.Signal)
+			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if !found {
+				writeError(w, http.StatusNotFound, "answer not found")
 				return
 			}
 			writeFeedbackJSON(w, map[string]bool{"ok": true})
@@ -188,16 +199,8 @@ func AnswerFeedbackHandler(p *Proxy, audit AuditExec, legacy func(ctx context.Co
 			writeError(w, http.StatusBadRequest, "signal must be positive, negative or repeat")
 			return
 		}
-		wsID, who := markedBy(r.Context())
-		if who == "" {
-			writeError(w, http.StatusUnauthorized, "no credential")
-			return
-		}
-		if actx := auth.GetAuthContext(r.Context()); wsID == "" && actx != nil && actx.IsAdmin {
-			wsID = r.Header.Get("X-Talyvor-Workspace") // the operator names the workspace
-		}
-		if wsID == "" {
-			writeError(w, http.StatusBadRequest, "no workspace: send X-Talyvor-Workspace")
+		wsID, who, ok := feedbackWorkspace(w, r)
+		if !ok {
 			return
 		}
 		removed, err := p.removeServedAnswer(r.Context(), wsID, in.RequestID)
@@ -216,6 +219,24 @@ func AnswerFeedbackHandler(p *Proxy, audit AuditExec, legacy func(ctx context.Co
 			"exact_copies_removed": removed.ExactCopies,
 		})
 	}
+}
+
+// feedbackWorkspace is the workspace the feedback acts on: the credential's own, or the one the
+// operator names. It writes the refusal and returns ok=false when there is none.
+func feedbackWorkspace(w http.ResponseWriter, r *http.Request) (wsID, who string, ok bool) {
+	wsID, who = markedBy(r.Context())
+	if who == "" {
+		writeError(w, http.StatusUnauthorized, "no credential")
+		return "", "", false
+	}
+	if actx := auth.GetAuthContext(r.Context()); wsID == "" && actx != nil && actx.IsAdmin {
+		wsID = r.Header.Get("X-Talyvor-Workspace") // the operator names the workspace
+	}
+	if wsID == "" {
+		writeError(w, http.StatusBadRequest, "no workspace: send X-Talyvor-Workspace")
+		return "", "", false
+	}
+	return wsID, who, true
 }
 
 func writeFeedbackJSON(w http.ResponseWriter, v any) {

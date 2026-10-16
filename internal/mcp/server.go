@@ -542,6 +542,11 @@ func (s *Server) toolGetSessionSummary(ctx context.Context, args json.RawMessage
 	if in.SessionID == "" {
 		return nil, fmt.Errorf("session_id required")
 	}
+	// B42.2: another workspace's session reads exactly like one that does not exist.
+	sess, ok := s.sessionTracker.GetSession(in.SessionID)
+	if caller, isAdmin := auth.WorkspaceIdentity(ctx); !ok || (!isAdmin && (caller == "" || sess.WorkspaceID != caller)) {
+		return nil, fmt.Errorf("session not found")
+	}
 	sum := s.sessionTracker.SummariseSession(ctx, in.SessionID)
 	return map[string]any{
 		"session_id":       sum.SessionID,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -144,4 +145,72 @@ func requireNodeOwnership(w http.ResponseWriter, req *http.Request, r nodeWorksp
 		return false
 	}
 	return true
+}
+
+// ── PoVI receipts named in a request (B42.2): check the workspace first, then act ──
+
+type receiptProcessor interface {
+	Process(ctx context.Context, r povi.Receipt) (povi.ProcessResult, error)
+}
+
+// newPoviReceiptSubmitHandler — POST /v1/workspaces/{wsID}/povi/receipts. The
+// middleware authorizes only the {wsID} path segment, so the receipt's own
+// workspace_id and node_id must both be that workspace's; anything else is 404,
+// the same answer as a node that does not exist, and nothing is recorded.
+func newPoviReceiptSubmitHandler(p receiptProcessor, nodes nodeWorkspaceResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var rec povi.Receipt
+		if err := json.NewDecoder(req.Body).Decode(&rec); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		wsID := chi.URLParam(req, "wsID")
+		if rec.WorkspaceID != wsID {
+			writeJSONErr(w, http.StatusNotFound, "node not found")
+			return
+		}
+		if owner, err := nodes.WorkspaceForNode(req.Context(), rec.NodeID); err != nil || owner != wsID {
+			writeJSONErr(w, http.StatusNotFound, "node not found")
+			return
+		}
+		res, err := p.Process(req.Context(), rec)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, res)
+	}
+}
+
+type receiptGetter interface {
+	GetReceipt(ctx context.Context, requestID string) (*povi.StoredReceipt, error)
+}
+
+type receiptChallenger interface {
+	Challenge(ctx context.Context, rec povi.StoredReceipt) (*povi.Challenge, error)
+}
+
+// newChallengeIssueHandler — POST /v1/povi/challenges/issue. Another
+// workspace's receipt is 404, identical to a receipt that does not exist.
+func newChallengeIssueHandler(store receiptGetter, c receiptChallenger) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		rec, err := store.GetReceipt(req.Context(), in.RequestID)
+		if err != nil || rec == nil || !callerOwns(req, rec.WorkspaceID) {
+			writeJSONErr(w, http.StatusNotFound, "receipt not found")
+			return
+		}
+		ch, err := c.Challenge(req.Context(), *rec)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, ch)
+	}
 }
