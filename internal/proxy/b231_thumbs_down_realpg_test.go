@@ -201,7 +201,7 @@ func (g *thumbsDownRig) thumbsDown(t *testing.T, ws, requestID string) string {
 		strings.NewReader(`{"request_id":"`+requestID+`","signal":"negative"}`))
 	req = req.WithContext(chat(req.Context(), ws))
 	w := httptest.NewRecorder()
-	AnswerFeedbackHandler(g.p, g.db, func(context.Context, string, string) error { return nil })(w, req)
+	AnswerFeedbackHandler(g.p, g.db, func(context.Context, string, string, string) (bool, error) { return true, nil })(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("thumbs-down %s: %d %s", requestID, w.Code, w.Body.String())
 	}

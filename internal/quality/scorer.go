@@ -184,13 +184,15 @@ func hasMarkdownStructure(response string) bool {
 	return false
 }
 
-const incrementHitsSQL = `UPDATE prompt_embeddings SET hit_count = hit_count + 1 WHERE prompt_hash = $1`
-const decrementHitsSQL = `UPDATE prompt_embeddings SET hit_count = hit_count - 1 WHERE prompt_hash = $1`
+const incrementHitsSQL = `UPDATE prompt_embeddings SET hit_count = hit_count + 1 WHERE prompt_hash = $1 AND workspace_id = $2`
+const decrementHitsSQL = `UPDATE prompt_embeddings SET hit_count = hit_count - 1 WHERE prompt_hash = $1 AND workspace_id = $2`
 const evictSQL = `DELETE FROM prompt_embeddings WHERE prompt_hash = $1`
 
-func (s *Scorer) RecordFeedback(ctx context.Context, promptHash string, signal FeedbackSignal) error {
+// RecordFeedback scores workspaceID's own stored answer for promptHash and reports whether it has one;
+// another workspace's answer is never touched.
+func (s *Scorer) RecordFeedback(ctx context.Context, workspaceID, promptHash string, signal FeedbackSignal) (bool, error) {
 	if s.pool == nil {
-		return nil
+		return true, nil
 	}
 	// FeedbackRepeat means the caller asked the same question again — the
 	// cached answer wasn't satisfying, treat as a thumbs-down.
@@ -198,10 +200,11 @@ func (s *Scorer) RecordFeedback(ctx context.Context, promptHash string, signal F
 	if signal == FeedbackNegative || signal == FeedbackRepeat {
 		query = decrementHitsSQL
 	}
-	if _, err := s.pool.Exec(ctx, query, promptHash); err != nil {
-		return fmt.Errorf("quality: record feedback: %w", err)
+	tag, err := s.pool.Exec(ctx, query, promptHash, workspaceID)
+	if err != nil {
+		return false, fmt.Errorf("quality: record feedback: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 func (s *Scorer) EvictLowQuality(ctx context.Context, promptHash string) error {
