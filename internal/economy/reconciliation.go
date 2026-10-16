@@ -215,7 +215,7 @@ func (s *DualTokenStore) ReconcileDay(ctx context.Context, p partners.AccountPar
 		r.ShortfallMinor = max(r.CustomersHoldMinor-r.PartnerHoldsMinor, 0)
 		if err := tx.QueryRow(ctx, `INSERT INTO reconciliation_runs (id, day, currency, funding, partner, customers_hold_minor,
 			partner_holds_minor, break_count, breaks) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ran_at`,
-			r.ID, from, c, funding, r.Partner, r.CustomersHoldMinor, r.PartnerHoldsMinor, r.BreakCount, raw).Scan(&r.RanAt); err != nil {
+			r.ID, from, c, funding, r.Partner, r.CustomersHoldMinor, r.PartnerHoldsMinor, r.BreakCount, string(raw)).Scan(&r.RanAt); err != nil {
 			return nil, fmt.Errorf("economy: reconcile: %w", err)
 		}
 		runs = append(runs, r)

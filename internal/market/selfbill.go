@@ -199,7 +199,7 @@ func issueSelfBillTx(ctx context.Context, tx pgx.Tx, workspaceID string, b *Self
 	if _, err := tx.Exec(ctx, `INSERT INTO market_self_bills (id, payout_id, workspace_id, series, number, period, issued_at, agreement_version,
 		supplier, customer, net_usd_micros, vat_usd_micros, rate_bps, jurisdiction, treatment, note, partner, vat_enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-		b.ID, b.PayoutID, workspaceID, b.series, n, b.Period, b.IssuedAt, b.AgreementVersion, supplier, customer, b.NetUSDMicros,
+		b.ID, b.PayoutID, workspaceID, b.series, n, b.Period, b.IssuedAt, b.AgreementVersion, string(supplier), string(customer), b.NetUSDMicros,
 		b.VATUSDMicros, b.RateBps, b.Jurisdiction, b.Treatment, b.Note, b.Partner, b.VATEnabled); err != nil {
 		return fmt.Errorf("market: issue the self-billed invoice: %w", err)
 	}

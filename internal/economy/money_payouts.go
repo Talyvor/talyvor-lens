@@ -158,10 +158,19 @@ func (s *DualTokenStore) CreatePayoutBatch(ctx context.Context, workspaceID stri
 		b.TotalsMinor[r.Currency] += r.AmountMinor
 		held[r.Currency] -= r.AmountMinor
 	}
+	// JSON text, not the Go values: PgBouncer's simple protocol cannot encode a struct slice or map for jsonb (#133).
+	rowsJSON, err := json.Marshal(b.Rows)
+	if err != nil {
+		return PayoutBatch{}, fmt.Errorf("economy: payout batch: %w", err)
+	}
+	totalsJSON, err := json.Marshal(b.TotalsMinor)
+	if err != nil {
+		return PayoutBatch{}, fmt.Errorf("economy: payout batch: %w", err)
+	}
 	b, err = scanPayoutBatch(s.pool.QueryRow(ctx, `INSERT INTO money_payout_batches (id, workspace_id, idempotency_key, rows_sha256, agent_id,
 		funding, status, rows, rows_total, rows_valid, totals_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING `+payoutBatchCols+`, rows`, b.ID, workspaceID, b.IdempotencyKey, hash, b.AgentID, b.Funding, b.Status, b.Rows, b.RowsTotal,
-		b.RowsValid, b.TotalsMinor), true)
+		RETURNING `+payoutBatchCols+`, rows`, b.ID, workspaceID, b.IdempotencyKey, hash, b.AgentID, b.Funding, b.Status, string(rowsJSON), b.RowsTotal,
+		b.RowsValid, string(totalsJSON)), true)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the same key, uploaded at the same moment: answer as that one did
 		return s.CreatePayoutBatch(ctx, workspaceID, in)
@@ -250,8 +259,12 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 		}
 		r.PaymentID, r.Status, r.Detail = p.ID, p.Status, p.Detail
 	}
+	rowsJSON, err := json.Marshal(b.Rows)
+	if err != nil {
+		return b, fmt.Errorf("economy: payout batch: %w", err)
+	}
 	b, err = scanPayoutBatch(s.pool.QueryRow(ctx, `UPDATE money_payout_batches SET status = $2, rows = $3, updated_at = now() WHERE id = $1
-		RETURNING `+payoutBatchCols+`, rows`, b.ID, PayoutSent, b.Rows), true)
+		RETURNING `+payoutBatchCols+`, rows`, b.ID, PayoutSent, string(rowsJSON)), true)
 	if err != nil {
 		return b, fmt.Errorf("economy: payout batch: %w", err)
 	}

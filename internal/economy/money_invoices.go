@@ -305,7 +305,7 @@ func (s *DualTokenStore) CreateInvoice(ctx context.Context, workspaceID, agentID
 		VALUES ($1, $2, $3, $4, $5, (SELECT COALESCE(max(number), 0) + 1 FROM money_invoices WHERE workspace_id = $2), $6, $7, $8, $9, $10, $11, $12,
 		$13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN 'sent' ELSE 'draft' END, CASE WHEN $20 THEN now() END)`,
 		id, workspaceID, owner, accountID, currency, "INV"+strings.ToUpper(ref), "pay_"+token, r.CustomerName, r.CustomerEmail,
-		r.CustomerAddress, r.CustomerVATNumber, r.SellerVATNumber, lines, subtotal, vat, subtotal+vat, due, r.RemindDaysBefore, r.Memo,
+		r.CustomerAddress, r.CustomerVATNumber, r.SellerVATNumber, string(lines), subtotal, vat, subtotal+vat, due, r.RemindDaysBefore, r.Memo,
 		r.Send); err != nil {
 		return Invoice{}, fmt.Errorf("economy: create invoice: %w", err)
 	}
