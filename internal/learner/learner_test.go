@@ -131,7 +131,7 @@ func TestLearner_AnalyseReturnsInsightsSortedByHitCountDesc(t *testing.T) {
 		AddRow("hash-high", 10, float64(200), time.Now()).
 		AddRow("hash-mid", 5, float64(150), time.Now())
 
-	pool.ExpectQuery(`SELECT prompt_hash`).WillReturnRows(rows)
+	pool.ExpectQuery(`SELECT prompt_hash`).WithArgs("").WillReturnRows(rows)
 
 	insights, err := l.Analyse(context.Background())
 	if err != nil {
@@ -157,7 +157,7 @@ func TestLearner_AnalyseQueryFiltersPatternsSeenLessThanThree(t *testing.T) {
 
 	// pgxmock matches the expected SQL as a regex. Requiring the HAVING clause
 	// here means the test fails if Analyse ever emits SQL without the >=3 filter.
-	pool.ExpectQuery(`HAVING COUNT\(\*\) >= 3`).
+	pool.ExpectQuery(`HAVING COUNT\(\*\) >= 3`).WithArgs("").
 		WillReturnRows(pgxmock.NewRows([]string{"prompt_hash", "hit_count", "avg_tokens", "last_seen"}))
 
 	if _, err := l.Analyse(context.Background()); err != nil {

@@ -159,7 +159,7 @@ type challengeStore interface {
 	UpdateResult(ctx context.Context, workspaceID, id string, result ChallengeResult, slashedAmount int64, reason string) error
 	Get(ctx context.Context, id string) (*Challenge, error)
 	AlreadyChallenged(ctx context.Context, requestID string) (bool, error)
-	List(ctx context.Context, nodeID string) ([]Challenge, error)
+	List(ctx context.Context, nodeID, workspaceID string) ([]Challenge, error)
 }
 
 var ErrAlreadyChallenged = errors.New("povi: receipt already challenged")

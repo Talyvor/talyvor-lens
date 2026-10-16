@@ -51,7 +51,7 @@ type pgxDB interface {
 // satisfies it; tests use a stub so they don't have to drive the learner's
 // internal pool.
 type Analyser interface {
-	Analyse(ctx context.Context) ([]learner.PatternInsight, error)
+	AnalyseWorkspace(ctx context.Context, workspaceID string) ([]learner.PatternInsight, error)
 }
 
 type Server struct {
@@ -355,11 +355,16 @@ func (s *Server) SetPOVIChallengeStore(st *povi.ChallengeStore) { s.poviChalleng
 // handlePOVIChallenges returns recent challenges (pass/fail/timeout + slashes)
 // for the Challenges panel. Off the hot path; read-only.
 func (s *Server) handlePOVIChallenges(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.globalReadScope(r)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: no workspace identity"})
+		return
+	}
 	if s.poviChallenges == nil {
 		writeJSON(w, http.StatusOK, []povi.Challenge{})
 		return
 	}
-	list, err := s.poviChallenges.List(r.Context(), r.URL.Query().Get("node"))
+	list, err := s.poviChallenges.List(r.Context(), r.URL.Query().Get("node"), ws)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -373,17 +378,25 @@ func (s *Server) handlePOVIChallenges(w http.ResponseWriter, r *http.Request) {
 // handlePOVIStakes returns the node stakes for the Staking panel (collateral,
 // status, slashes). Off the hot path; read-only.
 func (s *Server) handlePOVIStakes(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.globalReadScope(r)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: no workspace identity"})
+		return
+	}
 	if s.poviStakes == nil {
 		writeJSON(w, http.StatusOK, []povi.Stake{})
 		return
 	}
-	list, err := s.poviStakes.List(r.Context())
+	all, err := s.poviStakes.List(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if list == nil {
-		list = []povi.Stake{}
+	list := []povi.Stake{}
+	for _, st := range all {
+		if inScope(ws, st.WorkspaceID) {
+			list = append(list, st)
+		}
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -486,14 +499,19 @@ func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, anoms)
 }
 
-// handleAnomaliesScan runs ScanAll across every active dimension. Used
-// by the dashboard and by ops dashboards for tenant-wide views.
+// handleAnomaliesScan scans every active dimension of the caller's workspace; the admin key
+// scans every workspace unless it names one (ops dashboards' tenant-wide view).
 func (s *Server) handleAnomaliesScan(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.globalReadScope(r)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: no workspace identity"})
+		return
+	}
 	if s.anomalyDetector == nil {
 		writeJSON(w, http.StatusOK, []anomaly.Anomaly{})
 		return
 	}
-	anoms, err := s.anomalyDetector.ScanAll(r.Context())
+	anoms, err := s.anomalyDetector.ScanWorkspace(r.Context(), ws)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -947,10 +965,16 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 const topPatternsSQL = `SELECT prompt_hash, hit_count, tokens_saved, updated_at
 FROM prompt_embeddings
+WHERE ($2 = '' OR workspace_id = $2)
 ORDER BY hit_count DESC
 LIMIT $1`
 
 func (s *Server) handleCacheTopPatterns(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.globalReadScope(r)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: no workspace identity"})
+		return
+	}
 	if s.pool == nil {
 		writeError(w, http.StatusInternalServerError, "database not configured")
 		return
@@ -963,7 +987,7 @@ func (s *Server) handleCacheTopPatterns(w http.ResponseWriter, r *http.Request) 
 		limit = 100
 	}
 
-	rows, err := s.pool.Query(r.Context(), topPatternsSQL, limit)
+	rows, err := s.pool.Query(r.Context(), topPatternsSQL, limit, ws)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1006,11 +1030,16 @@ func (s *Server) handleCacheTopPatterns(w http.ResponseWriter, r *http.Request) 
 const blendedPerTokenCost = 0.000000375 // ≈ (0.15+0.60)/2 per million tokens
 
 func (s *Server) handleModelsRecommendations(w http.ResponseWriter, r *http.Request) {
+	ws, ok := s.globalReadScope(r)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: no workspace identity"})
+		return
+	}
 	if s.analyser == nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	insights, err := s.analyser.Analyse(r.Context())
+	insights, err := s.analyser.AnalyseWorkspace(r.Context(), ws)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1081,7 +1110,12 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 // Alerts
 // -------------------------------------------------------------------------
 
-func (s *Server) handleAlertsCircuits(w http.ResponseWriter, _ *http.Request) {
+// handleAlertsCircuits and handleAlertsRules show every team's and feature's spend rules: operator
+// configuration with no workspace on it, so admin only (B42.1).
+func (s *Server) handleAlertsCircuits(w http.ResponseWriter, r *http.Request) {
+	if adminRead(w, r) {
+		return
+	}
 	if s.alertManager == nil {
 		writeJSON(w, http.StatusOK, map[string]string{})
 		return
@@ -1089,7 +1123,10 @@ func (s *Server) handleAlertsCircuits(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.alertManager.CircuitStates())
 }
 
-func (s *Server) handleAlertsRules(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleAlertsRules(w http.ResponseWriter, r *http.Request) {
+	if adminRead(w, r) {
+		return
+	}
 	if s.alertManager == nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
@@ -1211,6 +1248,29 @@ func (s *Server) effectiveWorkspaceID(r *http.Request) (string, bool) {
 	}
 	return ws, true
 }
+
+// globalReadScope is effectiveWorkspaceID for the reads that used to walk every workspace (B42.1):
+// a non-admin reads only its own; the admin key reads every workspace ("") unless it names one.
+func (s *Server) globalReadScope(r *http.Request) (string, bool) {
+	ws, isAdmin := auth.WorkspaceIdentity(r.Context())
+	if isAdmin {
+		return r.URL.Query().Get("workspace_id"), true
+	}
+	return ws, ws != ""
+}
+
+// adminRead answers 403 to anyone but the admin key and reports whether it did: the read is
+// process-wide or operator configuration, with no single-workspace shape (B42.1).
+func adminRead(w http.ResponseWriter, r *http.Request) bool {
+	if actx := auth.GetAuthContext(r.Context()); actx != nil && actx.IsAdmin {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin credentials required"})
+	return true
+}
+
+// inScope reports whether a row of workspace rowWS may be shown to a caller scoped to ws ("" = all).
+func inScope(ws, rowWS string) bool { return ws == "" || ws == rowWS }
 
 func queryInt(r *http.Request, key string, fallback int) int {
 	v := r.URL.Query().Get(key)

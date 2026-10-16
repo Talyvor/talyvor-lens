@@ -185,7 +185,7 @@ func TestAPI_CacheTopPatterns_ReturnsSortedList(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	pool.ExpectQuery(`ORDER BY hit_count DESC`).
-		WithArgs(10).
+		WithArgs(10, "default").
 		WillReturnRows(
 			pgxmock.NewRows([]string{"prompt_hash", "hit_count", "tokens_saved", "last_seen"}).
 				AddRow("hash-top", int64(450), int64(180000), now).
@@ -375,7 +375,7 @@ type stubAnalyser struct {
 	insights []learner.PatternInsight
 }
 
-func (s stubAnalyser) Analyse(_ context.Context) ([]learner.PatternInsight, error) {
+func (s stubAnalyser) AnalyseWorkspace(_ context.Context, _ string) ([]learner.PatternInsight, error) {
 	return s.insights, nil
 }
 

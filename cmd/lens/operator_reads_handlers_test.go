@@ -14,13 +14,8 @@ import (
 // operator_reads_handlers_test.go — what GET /v1/api/keys/pool and
 // GET /v1/api/fallback/chains put on the wire, and for whom.
 //
-// ⚠ THESE TESTS RECORD A DEFECT THAT IS NOT FIXED. Both routes are reachable by any
-// tenant's API key while their mutating siblings on the same paths are
-// requireAdmin. Gating a read changes who may call a documented capability
-// (docs/README.md lists "GET /v1/api/keys/pool — API key pool stats"), which is a
-// product decision and W6.18 hands it to Nicolai. Nothing below should be read as
-// approval of the current reachability; the assertions are about WHAT is exposed,
-// and one of them is a live tripwire on the thing that would make it much worse.
+// Both routes are admin-gated since B42.1, like their mutating siblings; the assertions
+// below are about WHAT is exposed to the admin, and one is a tripwire on key material.
 
 const probeProviderSecret = "sk-live-DO-NOT-SHIP-THIS-abcdef0123456789"
 
@@ -196,36 +191,26 @@ func TestOperatorReadsGoThroughTheirNamedHandlers(t *testing.T) {
 	}
 }
 
-// ⚠ THE ASYMMETRY ITSELF, PINNED. The reads are ungated and their mutating siblings
-// are not. If somebody gates a read, this fires and tells them to close W6.18's
-// decision rather than leave the record saying something untrue.
-func TestOperatorReadWriteAsymmetryIsStillWhatW618Recorded(t *testing.T) {
+// W6.18's asymmetry, answered by B42.1: the operator reads are admin-gated like their writes.
+// GET /v1/local/endpoints is the same decision on the same kind of process-wide config.
+func TestOperatorReadsAreAdminGatedLikeTheirWrites(t *testing.T) {
 	regs := operatorRouteRegs(t)
-	for _, c := range []struct{ what, verb, path string }{
-		{"POST /v1/api/keys/pool is admin-gated", "Post", "/v1/api/keys/pool"},
-		{"DELETE /v1/api/keys/pool/{keyID} is admin-gated", "Delete", "/v1/api/keys/pool/{keyID}"},
-		{"PUT /v1/api/fallback/chains/{provider} is admin-gated", "Put", "/v1/api/fallback/chains/{provider}"},
+	for _, c := range []struct{ verb, path string }{
+		{"Post", "/v1/api/keys/pool"},
+		{"Delete", "/v1/api/keys/pool/{keyID}"},
+		{"Put", "/v1/api/fallback/chains/{provider}"},
+		{"Get", "/v1/api/keys/pool"},
+		{"Get", "/v1/api/fallback/chains"},
+		{"Get", "/v1/local/endpoints"},
 	} {
 		r, ok := findRoute(regs, c.verb, c.path)
 		if !ok {
-			t.Errorf("%s — the route is not registered at all; re-anchor this census", c.what)
+			t.Errorf("%s %s is not registered at all", c.verb, c.path)
 			continue
 		}
 		if !r.wrapsCall("requireAdmin") {
-			t.Errorf("%s — no longer true (main.go line %d, handler %s). W6.18's finding is the "+
-				"ASYMMETRY between these writes and their ungated reads; if the writes changed, "+
-				"the record is stale.", c.what, r.line, r.handler)
-		}
-	}
-	for _, c := range []struct{ what, verb, path, handler string }{
-		{"GET /v1/api/keys/pool", "Get", "/v1/api/keys/pool", "newKeyPoolStatsHandler"},
-		{"GET /v1/api/fallback/chains", "Get", "/v1/api/fallback/chains", "newFallbackChainsHandler"},
-	} {
-		r, ok := findRoute(regs, c.verb, c.path)
-		if !ok || !r.wrapsCall(c.handler) || r.wrapsCall("requireAdmin") {
-			t.Errorf("%s is no longer registered as W6.18 recorded it (found=%v, handler=%s). If it "+
-				"was GATED, that is the decision W6.18 asked for — close it in the queue and "+
-				"rewrite this test with the answer.", c.what, ok, r.handler)
+			t.Errorf("%s %s is not admin-gated (main.go line %d, handler %s): any workspace's key "+
+				"reads Lens's process-wide configuration", c.verb, c.path, r.line, r.handler)
 		}
 	}
 }

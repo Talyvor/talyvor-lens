@@ -112,7 +112,7 @@ func (s *memChallengeStore) AlreadyChallenged(_ context.Context, requestID strin
 	defer s.mu.Unlock()
 	return s.challenged[requestID], nil
 }
-func (s *memChallengeStore) List(_ context.Context, _ string) ([]Challenge, error) {
+func (s *memChallengeStore) List(_ context.Context, _, _ string) ([]Challenge, error) {
 	return nil, nil
 }
 

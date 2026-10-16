@@ -44,7 +44,11 @@ func distillSummary(s metrics.DistillStats) distillSummaryResponse {
 
 // handleDistillSummary surfaces the DISTILL conversion metrics for the
 // dashboard. Read-only: it reads the in-process Prometheus counters, computes
-// the honest net, and never touches the request path or any store.
-func (s *Server) handleDistillSummary(w http.ResponseWriter, _ *http.Request) {
+// the honest net, and never touches the request path or any store. The counters are
+// process-wide — every workspace's documents — so admin only (B42.1).
+func (s *Server) handleDistillSummary(w http.ResponseWriter, r *http.Request) {
+	if adminRead(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, distillSummary(metrics.DistillSnapshot()))
 }
