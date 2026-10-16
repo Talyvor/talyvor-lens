@@ -218,6 +218,7 @@ func TestDetect_ReturnsNilWhenCountBelow24(t *testing.T) {
 func TestScanAll_AggregatesAcrossDimensions(t *testing.T) {
 	pool := newPool(t)
 	pool.ExpectQuery(`DISTINCT.*workspace_id.*FROM token_events`).
+		WithArgs("").
 		WillReturnRows(pgxmock.NewRows([]string{"workspace_id", "team", "feature", "provider"}).
 			AddRow("ws-1", "core", "search", "openai").
 			AddRow("ws-2", "core", "summarise", "anthropic"))

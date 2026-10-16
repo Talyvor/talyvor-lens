@@ -116,7 +116,8 @@ WHERE workspace_id = $1
 const distinctDimsSQL = `SELECT DISTINCT workspace_id, team, feature, provider
 FROM token_events
 WHERE created_at > NOW() - INTERVAL '7 days'
-  AND cost_usd > 0`
+  AND cost_usd > 0
+  AND ($1 = '' OR workspace_id = $1)`
 
 // ComputeWindowStats aggregates hourly cost samples over a window of
 // windowDays days and returns their first/second moments. The current
@@ -276,11 +277,14 @@ func (d *Detector) Detect(ctx context.Context, workspaceID, team, feature, provi
 // tuple that has produced cost in the last 7 days and runs Detect on
 // each. The DISTINCT query keeps the dimension count bounded — typical
 // deployments see < 1000 tuples, well under the 30s scan budget.
-func (d *Detector) ScanAll(ctx context.Context) ([]Anomaly, error) {
+func (d *Detector) ScanAll(ctx context.Context) ([]Anomaly, error) { return d.ScanWorkspace(ctx, "") }
+
+// ScanWorkspace is ScanAll confined to one workspace's dimensions ("" = every workspace).
+func (d *Detector) ScanWorkspace(ctx context.Context, workspaceID string) ([]Anomaly, error) {
 	if d.pool == nil {
 		return nil, nil
 	}
-	rows, err := d.pool.Query(ctx, distinctDimsSQL)
+	rows, err := d.pool.Query(ctx, distinctDimsSQL, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("anomaly: distinct dims query: %w", err)
 	}

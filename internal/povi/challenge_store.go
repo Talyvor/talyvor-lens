@@ -41,7 +41,7 @@ const getChallengeSQL = `SELECT id, request_id, node_id, workspace_id, positions
 FROM povi_challenges WHERE id = $1`
 
 const listChallengesSQL = `SELECT id, request_id, node_id, workspace_id, positions, result, slashed_amount, reason, created_at
-FROM povi_challenges WHERE ($1 = '' OR node_id = $1) ORDER BY created_at DESC LIMIT 100`
+FROM povi_challenges WHERE ($1 = '' OR node_id = $1) AND ($2 = '' OR workspace_id = $2) ORDER BY created_at DESC LIMIT 100`
 
 func joinPositions(ps []int) string {
 	parts := make([]string, len(ps))
@@ -137,12 +137,12 @@ func (s *ChallengeStore) Get(ctx context.Context, id string) (*Challenge, error)
 	return &c, nil
 }
 
-// List returns recent challenges, optionally filtered by node (empty = all).
-func (s *ChallengeStore) List(ctx context.Context, nodeID string) ([]Challenge, error) {
+// List returns recent challenges, optionally filtered by node and by workspace (empty = all).
+func (s *ChallengeStore) List(ctx context.Context, nodeID, workspaceID string) ([]Challenge, error) {
 	if s.pool == nil {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, listChallengesSQL, nodeID)
+	rows, err := s.pool.Query(ctx, listChallengesSQL, nodeID, workspaceID)
 	if err != nil {
 		return nil, err
 	}

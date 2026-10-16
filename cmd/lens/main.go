@@ -3597,7 +3597,7 @@ func run() error {
 		// is read-only; the other three routes mutate the
 		// in-process registry (no persistence — restarts re-read
 		// LENS_LOCAL_ENDPOINTS).
-		authed.Get("/v1/local/endpoints", newLocalEndpointsListHandler(localRouterMulti))
+		authed.Get("/v1/local/endpoints", requireAdmin(authManager, newLocalEndpointsListHandler(localRouterMulti)))
 
 		authed.Post("/v1/local/endpoints", requireAdmin(authManager, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			var in localrouter.LocalEndpoint
@@ -5258,7 +5258,7 @@ func run() error {
 			} else if !requireNodeOwnership(w, req, poviStakeManager, node) {
 				return
 			}
-			list, err := challengeStore.List(req.Context(), node)
+			list, err := challengeStore.List(req.Context(), node, "")
 			if err != nil {
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return
@@ -5448,7 +5448,7 @@ func run() error {
 
 		// ⚠ NO GATE, while POST and DELETE on this same path are requireAdmin.
 		// Measured and recorded in W6.18; closing it is a decision, not a repair.
-		authed.Get("/v1/api/keys/pool", newKeyPoolStatsHandler(keyPool))
+		authed.Get("/v1/api/keys/pool", requireAdmin(authManager, newKeyPoolStatsHandler(keyPool)))
 
 		authed.Delete("/v1/api/keys/pool/{keyID}", requireAdmin(authManager, http.HandlerFunc(newPoolKeyDeleteHandler(keyPool))))
 
@@ -5456,7 +5456,7 @@ func run() error {
 		// updates here are not persisted — restarting the binary resets
 		// chains to the defaults.
 		// ⚠ NO GATE, while PUT on this same path is requireAdmin. Same note as above.
-		authed.Get("/v1/api/fallback/chains", newFallbackChainsHandler(fallbackRouter))
+		authed.Get("/v1/api/fallback/chains", requireAdmin(authManager, newFallbackChainsHandler(fallbackRouter)))
 
 		authed.Put("/v1/api/fallback/chains/{provider}", requireAdmin(authManager, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			provider := chi.URLParam(req, "provider")

@@ -479,8 +479,10 @@ func openAPIPaths() map[string]any {
 		},
 		"/v1/local/endpoints": map[string]any{
 			"get": map[string]any{
-				"summary": "List registered local-model endpoints",
+				"summary":     "List registered local-model endpoints",
+				"description": "admin key only",
 				"responses": map[string]any{
+					"401": map[string]any{"description": "admin credentials required"},
 					"200": map[string]any{
 						"description": "list of endpoints",
 						"content": map[string]any{

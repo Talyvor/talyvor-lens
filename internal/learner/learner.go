@@ -156,6 +156,7 @@ FROM token_events
 WHERE created_at > NOW() - INTERVAL '7 days'
   AND serve_source NOT LIKE 'cache_hit%'
   AND prompt_hash <> ''
+  AND ($1 = '' OR workspace_id = $1)
 GROUP BY prompt_hash
 HAVING COUNT(*) >= 3
 ORDER BY hit_count DESC
@@ -165,10 +166,15 @@ LIMIT 20`
 // the last 7 days. Each insight carries a human-readable recommendation
 // suggesting the pattern be pre-warmed into the semantic cache.
 func (l *Learner) Analyse(ctx context.Context) ([]PatternInsight, error) {
+	return l.AnalyseWorkspace(ctx, "")
+}
+
+// AnalyseWorkspace is Analyse over one workspace's traffic ("" = every workspace).
+func (l *Learner) AnalyseWorkspace(ctx context.Context, workspaceID string) ([]PatternInsight, error) {
 	if l.pool == nil {
 		return nil, errors.New("learner: no database pool configured")
 	}
-	rows, err := l.pool.Query(ctx, analyseSQL)
+	rows, err := l.pool.Query(ctx, analyseSQL, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("learner: query token_events: %w", err)
 	}

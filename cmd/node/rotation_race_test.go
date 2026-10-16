@@ -40,8 +40,10 @@ func (noopChallengeStore) UpdateResult(context.Context, string, string, povi.Cha
 func (noopChallengeStore) AlreadyChallenged(context.Context, string) (bool, error) {
 	return false, nil
 }
-func (noopChallengeStore) Get(context.Context, string) (*povi.Challenge, error)   { return nil, nil }
-func (noopChallengeStore) List(context.Context, string) ([]povi.Challenge, error) { return nil, nil }
+func (noopChallengeStore) Get(context.Context, string) (*povi.Challenge, error) { return nil, nil }
+func (noopChallengeStore) List(context.Context, string, string) ([]povi.Challenge, error) {
+	return nil, nil
+}
 
 // ─── fixtures ────────────────────────────────────────────────────────
 
