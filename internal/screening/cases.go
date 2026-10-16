@@ -230,7 +230,7 @@ func (s *Screener) screen(ctx context.Context, c Case, ask func(partners.Screeni
 		UNION ALL
 		SELECT `+caseCols+` FROM compliance_cases WHERE workspace_id = $2 AND subject_kind = $4 AND subject_id = $5 AND name = $6
 			AND direction = $12 AND currency = $14 AND NOT EXISTS (SELECT 1 FROM ins)`,
-		c.ID, c.WorkspaceID, c.Kind, c.SubjectKind, c.SubjectID, c.Name, c.Outcome, c.Status, matches, c.Provider,
+		c.ID, c.WorkspaceID, c.Kind, c.SubjectKind, c.SubjectID, c.Name, c.Outcome, c.Status, string(matches), c.Provider,
 		c.Capability, c.Direction, c.AmountMinor, c.Currency, c.Funding))
 	if errors.Is(err, pgx.ErrNoRows) { // the other attempt committed after this statement's snapshot
 		opened, err = s.caseFor(ctx, c)

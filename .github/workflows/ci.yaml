@@ -9,12 +9,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # B39.1: production sits behind PgBouncer (LENS_DB_PGBOUNCER=true), where pgx speaks the SIMPLE protocol and a
+    # []byte bound to a jsonb column goes out as bytea (22P02, #133). That bug reached production four times because
+    # the real-PG tests only ran on the extended protocol, so every one now runs on both, in parallel legs. pgx reads
+    # default_query_exec_mode from the DSN, so every pool and connection a test opens from it gets the leg's mode.
+    strategy:
+      fail-fast: false
+      matrix:
+        exec_mode: [cache_statement, simple_protocol]
+    name: test (${{ matrix.exec_mode }})
     # ⚠ DEFINED ONCE, AT JOB LEVEL, AND THAT IS LOAD-BEARING. The preflight step
     # below and the `go test` step must use the SAME value: if each defined its
     # own, the preflight could pass against one DSN while every real-PG test
     # skipped on another, which is the failure it exists to catch.
     env:
-      LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable
+      LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable&default_query_exec_mode=${{ matrix.exec_mode }}
       # B26.1: the synthetic reset's scale test runs on a real Redis here (a miniredis without it).
       LENS_TEST_REDIS_URL: redis://localhost:6379/0
     # Throwaway Postgres for two standing regression guards:
@@ -127,7 +136,8 @@ jobs:
       # green. See scripts/check-realpg-dsn.sh for what it does and does not
       # claim, and for why it is not the by-name variant talyvor-docs removed.
       - name: real-PG preflight (the DSN the tests will use must be reachable)
-        run: ./scripts/check-realpg-dsn.sh
+        # psql refuses pgx's default_query_exec_mode parameter; the host and database it checks are the same.
+        run: LENS_TEST_DATABASE_URL="${LENS_TEST_DATABASE_URL%%&default_query_exec_mode=*}" ./scripts/check-realpg-dsn.sh
       - name: go test
         # -p 1 serialises package test binaries so they never share the single lens_test DB concurrently.
         # Without it, packages run in parallel against one DB and destructive resets collide intermittently

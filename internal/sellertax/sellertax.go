@@ -264,6 +264,15 @@ type sealedField struct {
 	sealed  []byte
 }
 
+// value binds the envelope to its jsonb column as text (a []byte goes out as bytea on PgBouncer's simple protocol,
+// #133), and nil as NULL.
+func (f sealedField) value() any {
+	if f.sealed == nil {
+		return nil
+	}
+	return string(f.sealed)
+}
+
 func (s *Store) seal(workspaceID, field string, plaintext []byte) ([]byte, error) {
 	sealed, err := s.ring.Seal(plaintext, aad(workspaceID, field))
 	if err != nil {
@@ -411,8 +420,8 @@ func (s *Store) Put(ctx context.Context, workspaceID string, in Input) (Details,
 				updated_at = EXCLUDED.updated_at
 			RETURNING `+detailsColumns,
 			workspaceID, d.SellerType, d.FirstName, d.MiddleName, d.LastName, d.LegalName, d.Address, d.Country,
-			tins.sealed, maskedJSON, dob.sealed, d.CompanyRegistrationNumber, d.VATNumber, d.VATValid, d.VATDetail,
-			d.VATPartner, d.VATCheckedAt, account.sealed, last4, d.AccountHolder, d.SelfBillingAgreedVersion, now,
+			tins.value(), string(maskedJSON), dob.value(), d.CompanyRegistrationNumber, d.VATNumber, d.VATValid, d.VATDetail,
+			d.VATPartner, d.VATCheckedAt, account.value(), last4, d.AccountHolder, d.SelfBillingAgreedVersion, now,
 			tins.present, dob.present, account.present))
 		if err != nil {
 			return err

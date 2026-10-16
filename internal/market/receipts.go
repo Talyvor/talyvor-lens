@@ -217,7 +217,7 @@ func (s *Store) IssueReceipt(ctx context.Context, buyerWorkspaceID, invoiceID st
 		tag, err := tx.Exec(ctx, `INSERT INTO market_receipts (id, series, year, number, invoice_id, buyer_workspace_id, issued_at, paid_at,
 			supplier, buyer, stripe_total_cents, tax_local_currency, tax_local_minor, tax_local_rate, tax_local_rate_date, tax_local_source)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT (invoice_id) DO NOTHING`,
-			id, series, issuedAt.Year(), n, invoiceID, buyerWorkspaceID, issuedAt, paidAt, supplier, buyerJSON, stripeTotalCents,
+			id, series, issuedAt.Year(), n, invoiceID, buyerWorkspaceID, issuedAt, paidAt, string(supplier), string(buyerJSON), stripeTotalCents,
 			lc, lm, lr, ld, ls)
 		if err != nil {
 			return err
