@@ -1260,6 +1260,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			// priced and minted as an own-cache hit, free and nothing more to the contributor. chargedHit
 			// is pooledHit unless so; a thumbs-down still reaches the pooled entry through pooledHit.
 			// B27.26: a BYOK requester pays nothing for a pooled answer, so it funds — and mints — nothing.
+			// B17.214: "auto" names no priced model, so a hit served to an Auto request is priced and recorded as
+			// the model Lens would have chosen for it — the router's pick on this prompt, as the delegated path
+			// below picks — never on the catalog's fallback floor (≈ 2 µLXC, with the contributor minted nothing).
+			servedModel := model
+			if strings.EqualFold(strings.TrimSpace(model), "auto") && p.router != nil {
+				if pick := p.router.Route(ctx, cfg.ProviderName(), model, prompt).Model; pick != "" {
+					servedModel = pick
+				}
+			}
+			if pooledHit != nil {
+				pooledHit.Model = servedModel
+			}
 			chargedHit := pooledHit
 			if byok || p.pooledPaidBefore(ctx, wsID, pooledHit, cached) {
 				chargedHit = nil
@@ -1284,7 +1296,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 					// Cache-serve spend visibility (0100): the served request
 					// becomes a zero-provider-cost token_events row tagged with
 					// its layer, so hit rate is countable next to every miss.
-					p.recordCacheServe(ctx, wsID, team, sprint, feature, model, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
+					p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
 					p.rememberServed(ctx, wsID, requestID, layer, hitIDs, hitHashes, hitContributor(pooledHit), cached)
 					span.SetAttributes(
 						attribute.Bool("lens.cached", true),
@@ -1318,7 +1330,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				p.mintPooledRoyalty(ctx, chargedHit, prompt, cached, funded, loggingPolicy)
 				p.markPooledPaid(ctx, wsID, chargedHit, cached)
 				// Cache-serve spend visibility (0100): see recordCacheServe.
-				p.recordCacheServe(ctx, wsID, team, sprint, feature, model, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
+				p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
 				p.rememberServed(ctx, wsID, requestID, layer, hitIDs, hitHashes, hitContributor(pooledHit), cached)
 				span.SetAttributes(
 					attribute.Bool("lens.cached", true),
