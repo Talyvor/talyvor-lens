@@ -126,8 +126,8 @@ func TestStreamSavings_CostOptimisedRoutingRoutesAStream(t *testing.T) {
 // circuitOpenSink is the recording sink with its circuit tripped: every request is to be downgraded.
 type circuitOpenSink struct{ *recordingAlertSink }
 
-func (circuitOpenSink) IsCircuitOpen(string, string) bool       { return true }
-func (circuitOpenSink) GetDowngradeModel(string, string) string { return "gpt-4o-mini" }
+func (circuitOpenSink) IsCircuitOpen(string, string, string) bool { return true }
+func (circuitOpenSink) GetDowngradeModel(string, string) string   { return "gpt-4o-mini" }
 
 // A tripped circuit breaker downgrades a stream, as it downgrades a buffered request, and says so.
 func TestStreamSavings_CircuitBreakerDowngradesAStream(t *testing.T) {

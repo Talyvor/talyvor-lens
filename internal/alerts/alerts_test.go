@@ -190,7 +190,7 @@ func TestRecordSpend_FiresWarningAlertOverThreshold(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// Spend is above warning ($1) but below critical ($10).
 	pool.ExpectQuery(`SUM\(cost_usd\)`).
-		WithArgs("core", "search").
+		WithArgs("ws1", "core", "search").
 		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(float64(2.5)))
 
 	if err := mgr.RecordSpend(context.Background(), "ws1", "core", "", "search", "gpt-4o", 1000, 1000, "", "", "", "text", false); err != nil {
@@ -234,10 +234,10 @@ func TestRecordSpend_OpensCircuitOverThreshold(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// Spend above CircuitUSD.
 	pool.ExpectQuery(`SUM\(cost_usd\)`).
-		WithArgs("core", "search").
+		WithArgs("ws1", "core", "search").
 		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(float64(75.0)))
 
-	if mgr.IsCircuitOpen("core", "search") {
+	if mgr.IsCircuitOpen("ws1", "core", "search") {
 		t.Fatal("circuit should start closed")
 	}
 
@@ -245,22 +245,22 @@ func TestRecordSpend_OpensCircuitOverThreshold(t *testing.T) {
 		t.Fatalf("RecordSpend: %v", err)
 	}
 
-	if !mgr.IsCircuitOpen("core", "search") {
+	if !mgr.IsCircuitOpen("ws1", "core", "search") {
 		t.Fatal("expected circuit to be open after spend exceeded CircuitUSD")
 	}
 }
 
 func TestIsCircuitOpen_FalseWhenClosed(t *testing.T) {
 	mgr, _, _ := newTestManager(t, nil)
-	if mgr.IsCircuitOpen("any", "thing") {
+	if mgr.IsCircuitOpen("ws1", "any", "thing") {
 		t.Error("IsCircuitOpen should be false when no circuit has been opened")
 	}
 }
 
 func TestIsCircuitOpen_TrueWhenOpen(t *testing.T) {
 	mgr, _, _ := newTestManager(t, nil)
-	mgr.openCircuitForTest("core", "search")
-	if !mgr.IsCircuitOpen("core", "search") {
+	mgr.openCircuitForTest("ws1", "core", "search")
+	if !mgr.IsCircuitOpen("ws1", "core", "search") {
 		t.Error("IsCircuitOpen should be true after circuit was opened")
 	}
 }
@@ -277,14 +277,14 @@ func TestGetDowngradeModel(t *testing.T) {
 
 func TestResetCircuit_ClosesOpenCircuit(t *testing.T) {
 	mgr, _, _ := newTestManager(t, nil)
-	mgr.openCircuitForTest("core", "search")
-	if !mgr.IsCircuitOpen("core", "search") {
+	mgr.openCircuitForTest("ws1", "core", "search")
+	if !mgr.IsCircuitOpen("ws1", "core", "search") {
 		t.Fatal("setup: circuit should be open")
 	}
 
-	mgr.ResetCircuit("core", "search")
+	mgr.ResetCircuit("ws1", "core", "search")
 
-	if mgr.IsCircuitOpen("core", "search") {
+	if mgr.IsCircuitOpen("ws1", "core", "search") {
 		t.Error("ResetCircuit should close an open circuit")
 	}
 }
