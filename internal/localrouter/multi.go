@@ -345,13 +345,13 @@ func (r *Router) probe(ctx context.Context, endpoint *LocalEndpoint) bool {
 	case "llamacpp":
 		path = "/health"
 	}
-	base := endpoint.URL
-	if err := safehttp.CheckURL(base); err != nil {
+	target := endpoint.URL + path
+	if err := safehttp.CheckURL(target); err != nil {
 		return false
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+path, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
 	if err != nil {
 		return false
 	}
