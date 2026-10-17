@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/talyvor/lens/internal/safehttp"
 )
 
 // ─── constants ───────────────────────────────────
@@ -343,9 +345,17 @@ func (r *Router) probe(ctx context.Context, endpoint *LocalEndpoint) bool {
 	case "llamacpp":
 		path = "/health"
 	}
+	return r.probeURL(ctx, endpoint.URL, path)
+}
+
+// probeURL GETs baseURL+path and reports a 200. baseURL is caller-supplied, so it is checked first.
+func (r *Router) probeURL(ctx context.Context, baseURL, path string) bool {
 	reqCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint.URL+path, nil)
+	if !safehttp.AllowedURL(baseURL) {
+		return false
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+path, nil)
 	if err != nil {
 		return false
 	}

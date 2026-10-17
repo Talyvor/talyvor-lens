@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/safehttp"
 )
 
 // ─── constants ───────────────────────────────────
@@ -236,6 +238,9 @@ func (m *EmbeddingMiner) RegisterNode(ctx context.Context, in EmbeddingNode) (*E
 func (m *EmbeddingMiner) verifyNodeAsync(nodeID, nodeURL, model string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if !safehttp.AllowedURL(nodeURL) {
+		return
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model": model,
 		"input": "hello world",

@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/safehttp"
 )
 
 // ─── constants ───────────────────────────────────
@@ -323,6 +325,9 @@ func (m *ComputeMiner) verifyNodeAsync(nodeID, nodeURL, provider string) {
 		probe = "/api/tags"
 	case "vllm":
 		probe = "/v1/models"
+	}
+	if !safehttp.AllowedURL(nodeURL) {
+		return
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nodeURL+probe, nil)
 	if err != nil {
