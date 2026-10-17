@@ -233,6 +233,59 @@ func TestInferenceServer_AcceptsCorrectSecret(t *testing.T) {
 	}
 }
 
+// B42.3: /inference answers 401 to a caller with no secret — also when the node has no secret and no dev
+// flag — and serves it only in development mode; the health checks stay open.
+func TestInferenceServer_NoSecretRefusedOutsideDev(t *testing.T) {
+	post := func(cfg NodeConfig, secret string) int {
+		ts := httptest.NewServer(NewInferenceServer(&stubProvider{infer: InferResponse{Text: "hi"}}, secret, cfg).Handler())
+		defer ts.Close()
+		resp, err := http.Post(ts.URL+"/inference", "application/json",
+			strings.NewReader(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := post(NodeConfig{}, "real-secret"); got != http.StatusUnauthorized {
+		t.Errorf("no X-Node-Secret: got %d, want 401", got)
+	}
+	if got := post(NodeConfig{}, ""); got != http.StatusUnauthorized {
+		t.Errorf("node without secret, no dev flag: got %d, want 401", got)
+	}
+	if got := post(NodeConfig{DevNoSecret: true}, ""); got != http.StatusOK {
+		t.Errorf("dev flag: got %d, want 200", got)
+	}
+	ts := httptest.NewServer(NewInferenceServer(&stubProvider{}, "real-secret", NodeConfig{}).Handler())
+	defer ts.Close()
+	for _, path := range []string{"/health", "/models", "/v1/models"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Errorf("health check %s must not need the secret", path)
+		}
+	}
+}
+
+func TestCheckNodeSecret(t *testing.T) {
+	if checkNodeSecret("", false) == nil {
+		t.Fatal("no secret and no dev flag must refuse to start")
+	}
+	if err := checkNodeSecret("", true); err != nil {
+		t.Fatalf("dev flag must start: %v", err)
+	}
+	if err := checkNodeSecret("s", false); err != nil {
+		t.Fatalf("a secret must start: %v", err)
+	}
+	t.Setenv("TALYVOR_NODE_DEV_NO_SECRET", "true")
+	if !LoadConfig().DevNoSecret {
+		t.Fatal("TALYVOR_NODE_DEV_NO_SECRET=true must set DevNoSecret")
+	}
+}
+
 func TestInferenceServer_HealthReportsActiveCount(t *testing.T) {
 	srv := NewInferenceServer(&stubProvider{}, "", NodeConfig{
 		Provider: "ollama", GPUType: "rtx4090", Models: []string{"llama3"},

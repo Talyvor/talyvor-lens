@@ -186,8 +186,63 @@ func TestEmbedServer_RejectsWrongSecret(t *testing.T) {
 	}
 }
 
+// B42.3: /embed and /benchmark answer 401 without the secret — also when the node has no secret and no
+// dev flag — while /health stays open; with the secret they serve.
+func TestEmbedServer_EveryRouteButHealthNeedsSecret(t *testing.T) {
+	cfg := EmbedNodeConfig{Model: "nomic-embed-text", Dimensions: 768, MaxBatch: 10}
+	do := func(ts *httptest.Server, method, path, secret string) int {
+		req, _ := http.NewRequest(method, ts.URL+path, strings.NewReader(`{"texts":["hi"]}`))
+		if secret != "" {
+			req.Header.Set("X-Node-Secret", secret)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, secret := range []string{"real-secret", ""} {
+		ts := httptest.NewServer(NewEmbedServer(&stubBackend{dim: 4}, secret, cfg, 100).Handler())
+		if got := do(ts, http.MethodPost, "/embed", ""); got != http.StatusUnauthorized {
+			t.Errorf("node secret %q: /embed without secret got %d, want 401", secret, got)
+		}
+		if got := do(ts, http.MethodGet, "/benchmark", ""); got != http.StatusUnauthorized {
+			t.Errorf("node secret %q: /benchmark without secret got %d, want 401", secret, got)
+		}
+		if got := do(ts, http.MethodGet, "/health", ""); got != http.StatusOK {
+			t.Errorf("node secret %q: /health got %d, want 200", secret, got)
+		}
+		ts.Close()
+	}
+	ts := httptest.NewServer(NewEmbedServer(&stubBackend{dim: 4}, "real-secret", cfg, 100).Handler())
+	defer ts.Close()
+	if got := do(ts, http.MethodPost, "/embed", "real-secret"); got != http.StatusOK {
+		t.Errorf("/embed with secret got %d, want 200", got)
+	}
+	if got := do(ts, http.MethodGet, "/benchmark", "real-secret"); got != http.StatusOK {
+		t.Errorf("/benchmark with secret got %d, want 200", got)
+	}
+}
+
+func TestCheckNodeSecret(t *testing.T) {
+	if checkNodeSecret("", false) == nil {
+		t.Fatal("no secret and no dev flag must refuse to start")
+	}
+	if err := checkNodeSecret("", true); err != nil {
+		t.Fatalf("dev flag must start: %v", err)
+	}
+	if err := checkNodeSecret("s", false); err != nil {
+		t.Fatalf("a secret must start: %v", err)
+	}
+	t.Setenv("TALYVOR_NODE_DEV_NO_SECRET", "true")
+	if !LoadConfig().DevNoSecret {
+		t.Fatal("TALYVOR_NODE_DEV_NO_SECRET=true must set DevNoSecret")
+	}
+}
+
 func TestEmbedServer_ProcessesBatch(t *testing.T) {
-	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{
+	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{DevNoSecret: true,
 		Model: "nomic-embed-text", Dimensions: 768, MaxBatch: 10,
 	}, 100)
 	ts := httptest.NewServer(srv.Handler())
@@ -215,7 +270,7 @@ func TestEmbedServer_ProcessesBatch(t *testing.T) {
 }
 
 func TestEmbedServer_RejectsOversizeBatch(t *testing.T) {
-	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{
+	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{DevNoSecret: true,
 		Model: "nomic-embed-text", Dimensions: 768, MaxBatch: 2,
 	}, 100)
 	ts := httptest.NewServer(srv.Handler())
@@ -231,7 +286,7 @@ func TestEmbedServer_RejectsOversizeBatch(t *testing.T) {
 }
 
 func TestEmbedServer_HealthShape(t *testing.T) {
-	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{
+	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{DevNoSecret: true,
 		Model: "nomic-embed-text", Dimensions: 768, MaxBatch: 10,
 	}, 42)
 	ts := httptest.NewServer(srv.Handler())
@@ -319,7 +374,7 @@ func TestEmbedNodeConfig_TLSDefaultsEmpty(t *testing.T) {
 // ─── EmbedServer TLS ─────────────────────────────
 
 func TestEmbedServer_ServesOverTLS(t *testing.T) {
-	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{
+	srv := NewEmbedServer(&stubBackend{dim: 4}, "", EmbedNodeConfig{DevNoSecret: true,
 		Model: "nomic-embed-text", Dimensions: 768, MaxBatch: 10,
 	}, 100)
 	ts := httptest.NewTLSServer(srv.Handler())

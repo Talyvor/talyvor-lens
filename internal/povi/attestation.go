@@ -17,8 +17,36 @@ import (
 
 // AttestationRequest is the gateway→node nonce challenge (mirrors ChallengeRequest's nonce-carrying shape).
 // The node feeds Nonce into the NVIDIA attestation so NRAS echoes it as the EAT's eat_nonce (anti-replay).
+// Signature is Lens's ed25519 (the challenge key) over the nonce; the node refuses an unsigned request,
+// as it does a /challenge, so only Lens can make it spend a hardware attestation.
 type AttestationRequest struct {
-	Nonce int64 `json:"nonce"`
+	Nonce     int64  `json:"nonce"`
+	Signature []byte `json:"signature"`
+}
+
+// attestationRequestPayload is domain-separated from the challenge and node-token payloads so a signature
+// Lens made for one can never be replayed as another.
+func attestationRequestPayload(nonce int64) []byte {
+	return []byte(fmt.Sprintf("talyvor-attestation-request|%d", nonce))
+}
+
+// SignAttestationRequest is Lens's side: sign the nonce with its challenge key.
+func SignAttestationRequest(lensPriv ed25519.PrivateKey, nonce int64) AttestationRequest {
+	return AttestationRequest{Nonce: nonce, Signature: ed25519.Sign(lensPriv, attestationRequestPayload(nonce))}
+}
+
+// VerifyAttestationRequest is the node's side: the request must be signed by Lens's pinned key.
+func VerifyAttestationRequest(req AttestationRequest, lensPub ed25519.PublicKey) error {
+	if len(lensPub) != ed25519.PublicKeySize {
+		return errors.New("povi: invalid lens public key length")
+	}
+	if len(req.Signature) != ed25519.SignatureSize {
+		return errors.New("povi: invalid attestation request signature length")
+	}
+	if !ed25519.Verify(lensPub, attestationRequestPayload(req.Nonce), req.Signature) {
+		return errors.New("povi: attestation request signature verification failed")
+	}
+	return nil
 }
 
 // AttestationResponse is the node→gateway reply: the NVIDIA-signed EAT bound to this node by the node's own

@@ -79,6 +79,7 @@ Configuration (env vars):
   CACHE_NODE_SHARE        Allow cross-workspace serving (default: false)
   CACHE_NODE_TLS_CERT     Path to TLS certificate file (PEM)
   CACHE_NODE_TLS_KEY      Path to TLS private key file (PEM)
+  TALYVOR_NODE_DEV_NO_SECRET  true: start and serve with no node secret (local development only)
 `)
 }
 
@@ -116,7 +117,10 @@ func runStart(args []string) {
 		log.Printf("🌐 Cross-workspace sharing: enabled")
 	}
 
-	srv := NewCacheServer(storage, state.NodeSecret)
+	if err := checkNodeSecret(state.NodeSecret, cfg.DevNoSecret); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	srv := NewCacheServer(storage, state.NodeSecret, cfg)
 	httpServer, _ := srv.ListenAndServe(cfg.Port, cfg.TLSCertFile, cfg.TLSKeyFile)
 
 	// Heartbeat loop.

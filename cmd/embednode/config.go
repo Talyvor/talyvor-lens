@@ -45,6 +45,10 @@ type EmbedNodeConfig struct {
 	// absent, it falls back to plain HTTP with a startup warning.
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// DevNoSecret (TALYVOR_NODE_DEV_NO_SECRET=true) lets the node start and serve with no node secret.
+	// Local development only: without it a node with no secret refuses to start.
+	DevNoSecret bool
 }
 
 // LoadConfig pulls every value from the environment with the
@@ -62,7 +66,16 @@ func LoadConfig() EmbedNodeConfig {
 		Port:        parseIntDefault("EMBED_NODE_PORT", 9092),
 		TLSCertFile: os.Getenv("EMBED_NODE_TLS_CERT"),
 		TLSKeyFile:  os.Getenv("EMBED_NODE_TLS_KEY"),
+		DevNoSecret: os.Getenv("TALYVOR_NODE_DEV_NO_SECRET") == "true",
 	}
+}
+
+// checkNodeSecret is the start-up gate: a node with no secret would serve any caller.
+func checkNodeSecret(secret string, devNoSecret bool) error {
+	if secret == "" && !devNoSecret {
+		return errors.New("no node secret: refusing to start (set TALYVOR_NODE_DEV_NO_SECRET=true for local development only)")
+	}
+	return nil
 }
 
 // Validate enforces the registration-required subset.

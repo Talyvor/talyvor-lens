@@ -132,38 +132,47 @@ func TestCacheStorage_HitMissCounters(t *testing.T) {
 
 // ─── CacheServer ─────────────────────────────────
 
-func newServer(t *testing.T, secret string) (*httptest.Server, *CacheStorage) {
+const testSecret = "real-secret"
+
+func newServer(t *testing.T, cfg CacheNodeConfig) (*httptest.Server, *CacheStorage) {
 	storage := NewCacheStorage(newRedis(t), 1)
-	srv := httptest.NewServer(NewCacheServer(storage, secret).Handler())
+	srv := httptest.NewServer(NewCacheServer(storage, testSecret, cfg).Handler())
 	t.Cleanup(srv.Close)
 	return srv, storage
 }
 
-func TestCacheServer_GetReturns404OnMiss(t *testing.T) {
-	srv, _ := newServer(t, "")
-	resp, err := http.Get(srv.URL + "/cache/missing")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
+// call sends method path as workspace ws with the given secret ("" sends none).
+func call(t *testing.T, srv *httptest.Server, method, path, secret, ws, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	if secret != "" {
+		req.Header.Set("X-Node-Secret", secret)
 	}
-	if resp.StatusCode != http.StatusNotFound {
+	if ws != "" {
+		req.Header.Set("X-Workspace-ID", ws)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func TestCacheServer_GetReturns404OnMiss(t *testing.T) {
+	srv, _ := newServer(t, CacheNodeConfig{})
+	if resp := call(t, srv, http.MethodGet, "/cache/missing", testSecret, "ws_a", ""); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
 
 func TestCacheServer_PostStoresAndGetRetrieves(t *testing.T) {
-	srv, _ := newServer(t, "")
+	srv, _ := newServer(t, CacheNodeConfig{})
 	postBody := `{"value":"hello","ttl_seconds":300,"owner_workspace":"ws_a"}`
-	resp, err := http.Post(srv.URL+"/cache/mykey", "application/json", strings.NewReader(postBody))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	if resp.StatusCode != http.StatusCreated {
+	if resp := call(t, srv, http.MethodPost, "/cache/mykey", testSecret, "ws_a", postBody); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
-	resp, err = http.Get(srv.URL + "/cache/mykey")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := call(t, srv, http.MethodGet, "/cache/mykey", testSecret, "ws_a", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -178,38 +187,104 @@ func TestCacheServer_PostStoresAndGetRetrieves(t *testing.T) {
 }
 
 func TestCacheServer_RejectsWrongSecret(t *testing.T) {
-	srv, _ := newServer(t, "real-secret")
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/cache/anything", nil)
-	req.Header.Set("X-Node-Secret", "wrong")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	if resp.StatusCode != http.StatusUnauthorized {
+	srv, _ := newServer(t, CacheNodeConfig{})
+	if resp := call(t, srv, http.MethodGet, "/cache/anything", "wrong", "ws_a", ""); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
 }
 
 func TestCacheServer_AcceptsRightSecret(t *testing.T) {
-	srv, storage := newServer(t, "real-secret")
+	srv, storage := newServer(t, CacheNodeConfig{})
 	_ = storage.Set(context.Background(), "k", "v", "ws", time.Minute)
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/cache/k", nil)
-	req.Header.Set("X-Node-Secret", "real-secret")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	if resp := call(t, srv, http.MethodGet, "/cache/k", testSecret, "ws", ""); resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }
 
-func TestCacheServer_Health(t *testing.T) {
-	srv, _ := newServer(t, "")
-	resp, err := http.Get(srv.URL + "/health")
-	if err != nil {
-		t.Fatalf("GET /health: %v", err)
+// B42.3: every route but /health answers 401 without the secret.
+func TestCacheServer_EveryRouteButHealthNeedsSecret(t *testing.T) {
+	srv, _ := newServer(t, CacheNodeConfig{})
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/cache/k"}, {http.MethodPost, "/cache/k"}, {http.MethodDelete, "/cache/k"}, {http.MethodGet, "/stats"},
+	} {
+		if resp := call(t, srv, c.method, c.path, "", "ws_a", `{"value":"v"}`); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s without secret: got %d, want 401", c.method, c.path, resp.StatusCode)
+		}
 	}
+	if resp := call(t, srv, http.MethodGet, "/health", "", "", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("/health without secret: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// B42.3: an empty secret admits nobody, unless the node runs in development mode.
+func TestCacheServer_EmptySecretAdmitsNobodyOutsideDev(t *testing.T) {
+	storage := NewCacheStorage(newRedis(t), 1)
+	locked := httptest.NewServer(NewCacheServer(storage, "", CacheNodeConfig{}).Handler())
+	t.Cleanup(locked.Close)
+	if resp := call(t, locked, http.MethodGet, "/stats", "", "", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no secret, no dev flag: got %d, want 401", resp.StatusCode)
+	}
+	dev := httptest.NewServer(NewCacheServer(storage, "", CacheNodeConfig{DevNoSecret: true}).Handler())
+	t.Cleanup(dev.Close)
+	if resp := call(t, dev, http.MethodGet, "/stats", "", "", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev flag: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// B42.3: workspace B can neither read, overwrite nor delete workspace A's key.
+func TestCacheServer_OwnerCheck(t *testing.T) {
+	srv, storage := newServer(t, CacheNodeConfig{})
+	ctx := context.Background()
+	_ = storage.Set(ctx, "k", "a-secret-answer", "ws_a", time.Minute)
+
+	if resp := call(t, srv, http.MethodGet, "/cache/k", testSecret, "ws_b", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("B reads A's key: got %d, want 404", resp.StatusCode)
+	}
+	if resp := call(t, srv, http.MethodPost, "/cache/k", testSecret, "ws_b", `{"value":"b"}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("B overwrites A's key: got %d, want 403", resp.StatusCode)
+	}
+	if resp := call(t, srv, http.MethodPost, "/cache/k2", testSecret, "ws_b", `{"value":"b","owner_workspace":"ws_a"}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("B writes as A: got %d, want 403", resp.StatusCode)
+	}
+	if resp := call(t, srv, http.MethodDelete, "/cache/k", testSecret, "ws_b", ""); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("B deletes A's key: got %d, want 403", resp.StatusCode)
+	}
+	if resp := call(t, srv, http.MethodGet, "/cache/k", testSecret, "", ""); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("no X-Workspace-ID: got %d, want 400", resp.StatusCode)
+	}
+	if val, owner, _ := storage.Get(ctx, "k"); val != "a-secret-answer" || owner != "ws_a" {
+		t.Fatalf("A's entry changed: %q owned by %q", val, owner)
+	}
+	if resp := call(t, srv, http.MethodDelete, "/cache/k", testSecret, "ws_a", ""); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("A deletes its own key: got %d, want 204", resp.StatusCode)
+	}
+
+	shared, sharedStorage := newServer(t, CacheNodeConfig{ShareEnabled: true})
+	_ = sharedStorage.Set(ctx, "k", "v", "ws_a", time.Minute)
+	if resp := call(t, shared, http.MethodGet, "/cache/k", testSecret, "ws_b", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("CACHE_NODE_SHARE: B reads A's key: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestCheckNodeSecret(t *testing.T) {
+	if checkNodeSecret("", false) == nil {
+		t.Fatal("no secret and no dev flag must refuse to start")
+	}
+	if err := checkNodeSecret("", true); err != nil {
+		t.Fatalf("dev flag must start: %v", err)
+	}
+	if err := checkNodeSecret("s", false); err != nil {
+		t.Fatalf("a secret must start: %v", err)
+	}
+	t.Setenv("TALYVOR_NODE_DEV_NO_SECRET", "true")
+	if !LoadConfig().DevNoSecret {
+		t.Fatal("TALYVOR_NODE_DEV_NO_SECRET=true must set DevNoSecret")
+	}
+}
+
+func TestCacheServer_Health(t *testing.T) {
+	srv, _ := newServer(t, CacheNodeConfig{})
+	resp := call(t, srv, http.MethodGet, "/health", "", "", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -221,12 +296,9 @@ func TestCacheServer_Health(t *testing.T) {
 }
 
 func TestCacheServer_Stats(t *testing.T) {
-	srv, storage := newServer(t, "")
+	srv, storage := newServer(t, CacheNodeConfig{})
 	_ = storage.Set(context.Background(), "k1", strings.Repeat("a", 512), "ws", time.Minute)
-	resp, err := http.Get(srv.URL + "/stats")
-	if err != nil {
-		t.Fatalf("GET /stats: %v", err)
-	}
+	resp := call(t, srv, http.MethodGet, "/stats", testSecret, "", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -293,7 +365,7 @@ func TestCacheNodeConfig_TLSDefaultsEmpty(t *testing.T) {
 
 func TestCacheServer_ServesOverTLS(t *testing.T) {
 	storage := NewCacheStorage(newRedis(t), 1)
-	srv := NewCacheServer(storage, "")
+	srv := NewCacheServer(storage, testSecret, CacheNodeConfig{})
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
 

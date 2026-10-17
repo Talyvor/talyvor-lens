@@ -41,6 +41,10 @@ type NodeConfig struct {
 	// (NODE_ATTESTATION_CMD). Both unset ⇒ no Attestor wired ⇒ /attestation returns 501.
 	AttestationEnabled bool
 	AttestationCmd     string
+
+	// DevNoSecret (TALYVOR_NODE_DEV_NO_SECRET=true) lets the node start and serve with no node secret.
+	// Local development only: without it a node with no secret refuses to start.
+	DevNoSecret bool
 }
 
 // LoadConfig pulls every value from the environment and applies
@@ -62,7 +66,16 @@ func LoadConfig() NodeConfig {
 		// the capability flag AND the operator's NVIDIA attestation command line.
 		AttestationEnabled: os.Getenv("NODE_ATTESTATION_ENABLED") == "true",
 		AttestationCmd:     os.Getenv("NODE_ATTESTATION_CMD"),
+		DevNoSecret:        os.Getenv("TALYVOR_NODE_DEV_NO_SECRET") == "true",
 	}
+}
+
+// checkNodeSecret is the start-up gate: a node with no secret would serve any caller.
+func checkNodeSecret(secret string, devNoSecret bool) error {
+	if secret == "" && !devNoSecret {
+		return errors.New("no node secret: refusing to start (set TALYVOR_NODE_DEV_NO_SECRET=true for local development only)")
+	}
+	return nil
 }
 
 // Validate enforces the "required to register" subset of fields.

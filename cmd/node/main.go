@@ -82,6 +82,7 @@ Configuration (env vars):
   NODE_PROVIDER_URL     override the local provider endpoint
   NODE_TLS_CERT         path to TLS certificate file (PEM)
   NODE_TLS_KEY          path to TLS private key file (PEM)
+  TALYVOR_NODE_DEV_NO_SECRET  true: start and serve with no node secret (local development only)
 `)
 }
 
@@ -119,6 +120,9 @@ func runStart(args []string) {
 	log.Printf("🔧 Serving models: %s", strings.Join(cfg.Models, ", "))
 	log.Printf("🪪 Node ID: %s", state.NodeID)
 
+	if err := checkNodeSecret(state.NodeSecret, cfg.DevNoSecret); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
 	srv := NewInferenceServer(provider, state.NodeSecret, cfg)
 	// Wire PoVI receipt production (Token Economy Phase 1, Part 1). A node
 	// without a signing key simply produces no receipts.

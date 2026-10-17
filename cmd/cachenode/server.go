@@ -1,9 +1,9 @@
 package main
 
-// server.go — HTTP server the cache-node binary spins up. Lens
-// calls these routes when it routes cache reads/writes through
-// the operator's machine. Three semantically-cache routes plus
-// /health and /stats.
+// server.go — HTTP server the cache-node binary spins up. Nothing
+// in Lens calls these routes today (see README.md): every route but
+// /health needs the X-Node-Secret, and /cache/:key also needs the
+// caller's X-Workspace-ID, checked against the key's owner.
 
 import (
 	"crypto/subtle"
@@ -20,14 +20,16 @@ import (
 type CacheServer struct {
 	storage *CacheStorage
 	secret  string
+	cfg     CacheNodeConfig
 
 	startedAt time.Time
 }
 
-func NewCacheServer(storage *CacheStorage, secret string) *CacheServer {
+func NewCacheServer(storage *CacheStorage, secret string, cfg CacheNodeConfig) *CacheServer {
 	return &CacheServer{
 		storage:   storage,
 		secret:    secret,
+		cfg:       cfg,
 		startedAt: time.Now(),
 	}
 }
@@ -45,11 +47,11 @@ func (s *CacheServer) Handler() http.Handler {
 // ─── /cache/:key ─────────────────────────────────
 
 // handleCache multiplexes GET / POST / DELETE under /cache/:key.
-// The X-Node-Secret check runs first; empty configured secret
-// means "no-secret mode" (older-Lens compat), in which case we
-// accept any request.
+// The X-Node-Secret check runs first; an empty configured secret
+// admits nobody unless the node runs with TALYVOR_NODE_DEV_NO_SECRET.
+// X-Workspace-ID names the workspace the call is for.
 func (s *CacheServer) handleCache(w http.ResponseWriter, r *http.Request) {
-	if s.secret != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(s.secret)) != 1 {
+	if !s.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -58,25 +60,45 @@ func (s *CacheServer) handleCache(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key required", http.StatusBadRequest)
 		return
 	}
+	ws := r.Header.Get("X-Workspace-ID")
+	if ws == "" {
+		http.Error(w, "X-Workspace-ID required", http.StatusBadRequest)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		s.cacheGet(w, r, key)
+		s.cacheGet(w, r, key, ws)
 	case http.MethodPost:
-		s.cachePost(w, r, key)
+		s.cachePost(w, r, key, ws)
 	case http.MethodDelete:
-		s.cacheDelete(w, r, key)
+		s.cacheDelete(w, r, key, ws)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *CacheServer) cacheGet(w http.ResponseWriter, r *http.Request, key string) {
+// authorized checks X-Node-Secret in constant time.
+func (s *CacheServer) authorized(r *http.Request) bool {
+	if s.secret == "" {
+		return s.cfg.DevNoSecret
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Node-Secret")), []byte(s.secret)) == 1
+}
+
+// otherOwner reports whether key exists and belongs to a workspace other than ws.
+func (s *CacheServer) otherOwner(r *http.Request, key, ws string) (bool, error) {
+	owner, err := s.storage.Owner(r.Context(), key)
+	return owner != "" && owner != ws, err
+}
+
+func (s *CacheServer) cacheGet(w http.ResponseWriter, r *http.Request, key, ws string) {
 	val, owner, err := s.storage.Get(r.Context(), key)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if val == "" {
+	// Another workspace's entry reads as a miss unless the operator shares across workspaces.
+	if val == "" || (owner != ws && !s.cfg.ShareEnabled) {
 		// Miss → 404 per spec.
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -89,7 +111,7 @@ func (s *CacheServer) cacheGet(w http.ResponseWriter, r *http.Request, key strin
 	})
 }
 
-func (s *CacheServer) cachePost(w http.ResponseWriter, r *http.Request, key string) {
+func (s *CacheServer) cachePost(w http.ResponseWriter, r *http.Request, key, ws string) {
 	var in struct {
 		Value          string `json:"value"`
 		TTLSeconds     int    `json:"ttl_seconds"`
@@ -108,11 +130,23 @@ func (s *CacheServer) cachePost(w http.ResponseWriter, r *http.Request, key stri
 		http.Error(w, "value required", http.StatusBadRequest)
 		return
 	}
+	if in.OwnerWorkspace != "" && in.OwnerWorkspace != ws {
+		http.Error(w, "owner_workspace must be the caller's workspace", http.StatusForbidden)
+		return
+	}
+	// shortcut: check-then-set is not atomic; a Lua CAS if these routes ever get a caller.
+	if other, err := s.otherOwner(r, key, ws); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if other {
+		http.Error(w, "key belongs to another workspace", http.StatusForbidden)
+		return
+	}
 	if in.TTLSeconds <= 0 {
 		in.TTLSeconds = 3600
 	}
 	ttl := time.Duration(in.TTLSeconds) * time.Second
-	if err := s.storage.Set(r.Context(), key, in.Value, in.OwnerWorkspace, ttl); err != nil {
+	if err := s.storage.Set(r.Context(), key, in.Value, ws, ttl); err != nil {
 		// Capacity-exhaustion errors are a 507 Insufficient Storage
 		// per RFC 4918 — bridges nicely to the cache-full
 		// constraint enforced by storage.Set.
@@ -127,7 +161,14 @@ func (s *CacheServer) cachePost(w http.ResponseWriter, r *http.Request, key stri
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-func (s *CacheServer) cacheDelete(w http.ResponseWriter, r *http.Request, key string) {
+func (s *CacheServer) cacheDelete(w http.ResponseWriter, r *http.Request, key, ws string) {
+	if other, err := s.otherOwner(r, key, ws); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if other {
+		http.Error(w, "key belongs to another workspace", http.StatusForbidden)
+		return
+	}
 	if err := s.storage.Delete(r.Context(), key); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -162,6 +203,10 @@ func (s *CacheServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *CacheServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	stats, err := s.storage.Stats(r.Context())

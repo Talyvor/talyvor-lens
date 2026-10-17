@@ -2277,7 +2277,7 @@ func run() error {
 	// Proof-of-Confidential-Compute step (b): the gateway attestation VERIFY sweep. INERT unless the
 	// capability flag + the pinned NVIDIA root CA are configured; records a verified hardware class to
 	// node_attestations, mints nothing (the mint is step c). Flag-off ⇒ no scheduler, no dials, no writes.
-	startAttestationVerify(ctx, cfg, pool, haComps.leader)
+	startAttestationVerify(ctx, cfg, pool, lensChallengePriv, haComps.leader)
 	// S4 routing-pattern EARNING wire-up — the same miner, separate sink + flag.
 	// DEFAULT ON (the default-on loop in Load; force-off'd with EconomyEnabled). ⚠ SO ON A
 	// FRESH DEPLOYMENT AN OPTED-IN WORKSPACE'S SERVED REQUEST ROUTES INTO RecordPattern AND

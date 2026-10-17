@@ -71,6 +71,7 @@ Configuration (env vars):
   EMBED_NODE_PORT          listen port (default: 9092)
   EMBED_NODE_TLS_CERT      path to TLS certificate file (PEM)
   EMBED_NODE_TLS_KEY       path to TLS private key file (PEM)
+  TALYVOR_NODE_DEV_NO_SECRET  true: start and serve with no node secret (local development only)
 `)
 }
 
@@ -117,6 +118,9 @@ func runStart(args []string) {
 	log.Printf("🪪 Node ID: %s", state.NodeID)
 	log.Printf("📚 Model: %s (%dD, batch %d)", cfg.Model, cfg.Dimensions, cfg.MaxBatch)
 
+	if err := checkNodeSecret(state.NodeSecret, cfg.DevNoSecret); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
 	srv := NewEmbedServer(backend, state.NodeSecret, cfg, speedTPS)
 	httpServer, _ := srv.ListenAndServe(cfg.Port, cfg.TLSCertFile, cfg.TLSKeyFile)
 
