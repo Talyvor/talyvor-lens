@@ -45,7 +45,7 @@ func hostAllowed(raw string) bool {
 		return false
 	}
 	ip := net.ParseIP(u.Hostname())
-	return ip == nil || !(ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast())
+	return ip == nil || (!ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !ip.IsMulticast())
 }
 
 // metadataIP is the cloud metadata endpoint — NEVER allowlistable (see blocked).
