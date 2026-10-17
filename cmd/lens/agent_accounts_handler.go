@@ -159,6 +159,9 @@ type agentBank interface {
 	ListAgentSchedules(ctx context.Context, workspaceID string) ([]economy.AgentSchedule, error)
 	ListAgentScheduleRuns(ctx context.Context, workspaceID, scheduleID string) ([]economy.AgentScheduleRun, error)
 	CancelAgentSchedule(ctx context.Context, workspaceID, scheduleID string) error
+	CreatePromptSchedule(ctx context.Context, workspaceID, agentID, prompt, provider, model, every string, firstRunAt time.Time) (economy.PromptSchedule, error)
+	ListPromptSchedules(ctx context.Context, workspaceID string) ([]economy.PromptSchedule, error)
+	StopPromptSchedule(ctx context.Context, workspaceID, scheduleID string) error
 	SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (economy.AgentTopUp, error)
 	GetAgentTopUp(ctx context.Context, workspaceID, agentID string) (economy.AgentTopUp, bool, error)
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
@@ -727,6 +730,51 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"schedule_id": chi.URLParam(req, "scheduleID"), "active": false})
+		}
+	}))
+	// B28.125: a prompt scheduled from Chat, asked at its time as the agent's own key, so its wallet pays.
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/prompt-schedules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Prompt     string    `json:"prompt"`
+			Provider   string    `json:"provider"`
+			Model      string    `json:"model"`
+			Every      string    `json:"every"`
+			FirstRunAt time.Time `json:"first_run_at"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"prompt", "provider", "model", "every": "once|day|week", "first_run_at": "<RFC 3339>"}`)
+			return
+		}
+		sc, err := bank.CreatePromptSchedule(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Prompt, in.Provider, in.Model,
+			in.Every, in.FirstRunAt)
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrBadPromptSchedule):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusCreated, sc)
+		}
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/prompt-schedules", func(w http.ResponseWriter, req *http.Request) {
+		list, err := bank.ListPromptSchedules(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"schedules": list})
+	})
+	r.Delete("/v1/workspaces/{wsID}/agents/prompt-schedules/{scheduleID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		err := bank.StopPromptSchedule(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "scheduleID"))
+		switch {
+		case errors.Is(err, economy.ErrPromptScheduleNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"id": chi.URLParam(req, "scheduleID"), "active": false})
 		}
 	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/topup", ownerOnly(func(w http.ResponseWriter, req *http.Request) {

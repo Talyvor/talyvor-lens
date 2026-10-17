@@ -67,6 +67,10 @@ var perReplica = map[string]string{
 		"top-up locks the agent's row and re-reads its balance, so the second replica finds it above the " +
 		"threshold. Measured by TestAgentRoutes_AWeeklyPaymentRunsOnceAWeekAndATopUpFiresOnce, which runs " +
 		"two stores at once on one tick and pays once.",
+	"scheduled prompt run": "CLAIMED BY ROW LOCK, and it MOVES MONEY (B28.125). Each due prompt schedule is claimed in " +
+		"one transaction that holds its row FOR UPDATE SKIP LOCKED and advances next_run_at (or ends it) before the model " +
+		"is asked, so a second replica skips the locked row or finds the time already moved on; the question is then " +
+		"charged as the agent's own call is. Measured by TestB28125_AScheduledPromptIsAskedAtItsTimeOnTheAgentsWallet.",
 	"ECB rate refresh": "IDEMPOTENT (B19.12). ecbRates.Refresh fetches the ECB's public file and inserts each " +
 		"published rate ON CONFLICT (rate_date, currency) DO NOTHING — a second replica's refresh inserts zero " +
 		"rows, and a published rate never changes. It moves no money: one GET every three hours per replica.",
@@ -103,6 +107,7 @@ var perReplicaMatch = map[string]string{
 	"stranded reservation sweep": "dualToken.ReleaseStrandedReservations",
 	"audit export POST":          "auditExporter.ExportWebhook",
 	"agent schedule run":         "dualToken.RunAgentSchedules",
+	"scheduled prompt run":       "dualToken.RunPromptSchedules",
 	"ECB rate refresh":           "ecbRates.Refresh",
 	"room prize close":           "roomStore.ClosePrizes",
 	"rail probes":                "partnerRegistry.WatchRails",

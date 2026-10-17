@@ -2121,6 +2121,24 @@ func run() error {
 			}
 		}
 	}()
+	// B28.125: prompts scheduled from Chat, asked at their time as the paying agent's own key. Its own tick, so a slow
+	// model never holds up the payments above; each time is claimed before it is asked, so it is asked once.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				if answered, refused, err := dualToken.RunPromptSchedules(ctx, now, p); err != nil {
+					slog.Warn("agents: scheduled prompts failed", slog.String("err", err.Error()))
+				} else if answered+refused > 0 {
+					slog.Info("agents: scheduled prompts asked", slog.Int("answered", answered), slog.Int("refused", refused))
+				}
+			}
+		}
+	}()
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
