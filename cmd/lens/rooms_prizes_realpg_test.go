@@ -12,15 +12,19 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/ecbrate"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/rooms"
+	"github.com/talyvor/lens/internal/taxprofile"
 	"github.com/talyvor/lens/internal/tenant"
 )
 
 // B32.35 — awarding a $50 prize writes one billed prize row, the owner's workspace the buyer and the room wallet the
 // agent, and a perpetual commercial licence for the owner; once the owner's invoice is paid the journal credits the
-// winner 42,500,000 and the fee 7,500,000 µUSD. A prize above the room's remaining budget is refused; a prize past its
+// winner 42,500,000 and the fee 7,500,000 µUSD — paid, as the testers pay it (B17.171), through the synthetic bill-pay
+// route with the receipt main.go issues, which answered 500 behind PgBouncer until B39.1. A prize above the room's remaining budget is refused; a prize past its
 // deadline closes, cannot be awarded and writes no row.
 func TestRooms_PrizeIsAPurchaseOfTheWinningContribution(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -36,6 +40,8 @@ func TestRooms_PrizeIsAPurchaseOfTheWinningContribution(t *testing.T) {
 	}
 	bank := economy.NewDualTokenStore(nil, pool, nil)
 	marketStore := market.NewStore(pool)
+	marketStore.SetReceipts(market.Receipts{Supplier: market.Supplier{LegalName: "TALYVOR LTD"},
+		Buyers: taxprofile.NewStore(pool, partners.NewRegistry(nil)), Rates: ecbrate.New(pool, ecbrate.DailyURL)})
 	store := rooms.NewStore(pool, 3000)
 	store.SetMarket(marketStore)
 	store.SetKeys(tenant.NewStore(pool))
@@ -45,11 +51,17 @@ func TestRooms_PrizeIsAPurchaseOfTheWinningContribution(t *testing.T) {
 	mountRoomRoutes(r, store)
 	mountAgentAccountRoutes(r, bank, tenant.NewStore(pool))
 	mountRoomPrizeRoutes(r, store, &metered, bank)
+	const syntheticKey = "b17171-synthetic-key"
+	mountSyntheticDueRoutes(r, syntheticKey, syntheticDeps{audit: pool, due: syntheticDueDeps{db: pool, bills: marketStore}})
 	call := func(ws, method, path, body string) (int, string) {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req = req.WithContext(auth.WithAuthContext(req.Context(),
-			&auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "user-" + ws, Scopes: []string{auth.ScopeKeys}}))
+		if ws == "" {
+			req.Header.Set(syntheticKeyHeader, syntheticKey)
+		} else {
+			req = req.WithContext(auth.WithAuthContext(req.Context(),
+				&auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "user-" + ws, Scopes: []string{auth.ScopeKeys}}))
+		}
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		return w.Code, w.Body.String()
@@ -148,10 +160,17 @@ func TestRooms_PrizeIsAPurchaseOfTheWinningContribution(t *testing.T) {
 		t.Fatalf("awarding it again = %d with %d rows, want 409 and still one row", code, len(uses()))
 	}
 
-	// The owner's invoice is paid: the prize clears 85/15 — 42,500,000 µUSD to the winner, 7,500,000 to Talyvor.
-	now := time.Now()
-	if _, err := marketStore.ClearInvoice(ctx, owner, "in_b3235", now.Add(-time.Hour), now.Add(time.Hour), now, false); err != nil {
-		t.Fatal(err)
+	// The owner's bill is paid as the testers pay it: the prize clears 85/15 — 42,500,000 µUSD to the winner, 7,500,000
+	// to Talyvor — and the paid bill has its receipt.
+	var paid struct {
+		InvoiceID   string `json:"invoice_id"`
+		UsesCleared int    `json:"uses_cleared"`
+	}
+	_ = json.Unmarshal([]byte(must(http.StatusOK, "", http.MethodPost, "/v1/synthetic/workspaces/"+owner+"/marketplace/bill/pay", "")), &paid)
+	var receipts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_receipts WHERE invoice_id = $1`, paid.InvoiceID).Scan(&receipts); err != nil ||
+		paid.UsesCleared != 1 || receipts != 1 {
+		t.Fatalf("paying the owner's bill = %+v with %d receipts, %v; want the prize cleared and one receipt", paid, receipts, err)
 	}
 	j, err := marketStore.JournalFor(ctx, award.Licence.UseID)
 	if err != nil || len(j) != 1 || j[0].Kind != market.JournalClear {
