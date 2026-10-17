@@ -84,19 +84,33 @@ const CacheBypassHeader = "X-Talyvor-Cache"
 // streamed (B17.151). A temporary chat sends it with X-Talyvor-Cache: bypass, so it neither reads nor leaves an answer.
 const CacheStoreHeader = "X-Talyvor-Cache-Store"
 
-type cacheStoreOffKey struct{}
+// PoolHeader, set to "off", keeps a request's answer out of the shared pool (B17.152): no pooled entry and no
+// shadow-pool observation, buffered or streamed, so it earns no royalty. Its own workspace still caches it, and the
+// request may itself be served from the pool. Chat sends it with every question in a chat kept out of the pool.
+const PoolHeader = "X-Talyvor-Pool"
 
-// withCacheStoreHeader marks ctx when r asks that its answer be kept nowhere; storeAnswer and
-// shadowPoolObservation read the mark through cacheStoreOff.
+type cacheStoreOffKey struct{}
+type poolOffKey struct{}
+
+// withCacheStoreHeader marks ctx when r asks that its answer be kept nowhere (CacheStoreHeader) or out of the
+// shared pool (PoolHeader); storeAnswer, sharesAnswers and shadowPoolObservation read the marks.
 func withCacheStoreHeader(ctx context.Context, r *http.Request) context.Context {
 	if strings.EqualFold(r.Header.Get(CacheStoreHeader), "off") {
-		return context.WithValue(ctx, cacheStoreOffKey{}, true)
+		ctx = context.WithValue(ctx, cacheStoreOffKey{}, true)
+	}
+	if strings.EqualFold(r.Header.Get(PoolHeader), "off") {
+		ctx = context.WithValue(ctx, poolOffKey{}, true)
 	}
 	return ctx
 }
 
 func cacheStoreOff(ctx context.Context) bool {
 	off, _ := ctx.Value(cacheStoreOffKey{}).(bool)
+	return off
+}
+
+func poolOff(ctx context.Context) bool {
+	off, _ := ctx.Value(poolOffKey{}).(bool)
 	return off
 }
 
@@ -3008,7 +3022,7 @@ func (p *Proxy) storeCaches(ctx context.Context, provider, model, cachePrompt, r
 // !piiDetected); a workspace that turned it off would contribute answers nobody checked. Its own cache
 // is unaffected, and turning detection back on resumes sharing on the next answer.
 func (p *Proxy) sharesAnswers(ctx context.Context, wsID string) bool {
-	return p.poolGate.DecidePoolableOnWrite(ctx, wsID) && p.guardrails.DetectsPII(wsID)
+	return !poolOff(ctx) && p.poolGate.DecidePoolableOnWrite(ctx, wsID) && p.guardrails.DetectsPII(wsID)
 }
 
 // forward wraps the upstream call in retry.Do so transient 429/5xx

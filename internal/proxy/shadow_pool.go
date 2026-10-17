@@ -63,7 +63,7 @@ const poolShadowWriteTimeout = 5 * time.Second
 // didPool carries whether the pooled copy was ACTUALLY written, so a reader can separate shadow
 // rows from live ones without knowing how the flag was set that day.
 func (p *Proxy) shadowPoolObservation(ctx context.Context, workspaceID, provider, model, rawPrompt, reqFP string, didPool bool) {
-	if p == nil || p.poolShadowSink == nil || p.poolShadowEnabled == nil || !p.poolShadowEnabled() || cacheStoreOff(ctx) {
+	if p == nil || p.poolShadowSink == nil || p.poolShadowEnabled == nil || !p.poolShadowEnabled() || cacheStoreOff(ctx) || poolOff(ctx) {
 		return
 	}
 	// Shed under overload, like every other post-serve observational write: an observation is
