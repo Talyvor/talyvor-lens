@@ -133,9 +133,11 @@ func TestTrials_ThreeFreeUsesOnTestMoneyThenBilled(t *testing.T) {
 		t.Fatalf("the second pipeline use = %s, %+v; want billed, step and all", c, pu2)
 	}
 
-	// The buyer's invoice is paid: the billed use earns, no trial does — ever.
-	if _, err := s.ClearInvoice(ctx, buyer, "in_b3221", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), time.Now(), false); err != nil {
-		t.Fatal(err)
+	// The buyer's invoice is paid, as the testers pay it, receipt and all (B17.153: a receipt that failed to insert
+	// behind PgBouncer answered 500): the billed use earns, no trial does — ever.
+	s.SetReceipts(Receipts{Supplier: Supplier{LegalName: "Talyvor Ltd"}})
+	if _, n, err := s.PayTestBill(ctx, buyer, time.Now()); err != nil || n != 1 {
+		t.Fatalf("paying the buyer's bill = %d uses, %v; want the one billed use cleared", n, err)
 	}
 	var earned []string
 	rows, err := pool.Query(ctx, `SELECT use_id FROM market_earnings ORDER BY use_id`)
