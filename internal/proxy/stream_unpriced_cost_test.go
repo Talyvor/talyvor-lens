@@ -58,8 +58,8 @@ func (r *recordingBudget) RecordSpend(_ context.Context, _, _, _ string, cost fl
 
 type nopAlertSink struct{}
 
-func (nopAlertSink) IsCircuitOpen(string, string) bool       { return false }
-func (nopAlertSink) GetDowngradeModel(string, string) string { return "" }
+func (nopAlertSink) IsCircuitOpen(string, string, string) bool { return false }
+func (nopAlertSink) GetDowngradeModel(string, string) string   { return "" }
 func (nopAlertSink) RecordSpend(context.Context, string, string, string, string, string, int, int, string, string, string, string, bool) error {
 	return nil
 }

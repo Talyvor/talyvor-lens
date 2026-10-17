@@ -51,7 +51,7 @@ type recordedSpend struct {
 	tare alerts.TareMeter
 }
 
-func (r *recordingAlertSink) IsCircuitOpen(string, string) bool { return false }
+func (r *recordingAlertSink) IsCircuitOpen(string, string, string) bool { return false }
 func (r *recordingAlertSink) GetDowngradeModel(_ string, model string) string {
 	return model
 }

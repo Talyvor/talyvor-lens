@@ -271,7 +271,7 @@ func TestAPI_ModelsRecommendations_ReturnsInsights(t *testing.T) {
 func TestAPI_AlertsCircuits_ReturnsCircuitStates(t *testing.T) {
 	nc := runEmbeddedNATS(t)
 	am := alerts.New(nil, nc, nil)
-	am.OpenCircuit("team-a", "search")
+	am.OpenCircuit("ws-a", "team-a", "search")
 
 	s := newServer(serverDeps{
 		alertManager: am,
@@ -281,8 +281,8 @@ func TestAPI_AlertsCircuits_ReturnsCircuitStates(t *testing.T) {
 	r := newRouter(t, s)
 	_, got := doJSON(t, r, "/v1/api/alerts/circuits")
 
-	if got["team-a:search"] != "open" {
-		t.Errorf("expected team-a:search = open; got %v", got["team-a:search"])
+	if got["ws-a:team-a:search"] != "open" {
+		t.Errorf("expected ws-a:team-a:search = open; got %v", got["ws-a:team-a:search"])
 	}
 }
 

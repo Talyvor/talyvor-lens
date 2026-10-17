@@ -245,8 +245,9 @@ func TestMCP_ToolsCall_GetCacheStats(t *testing.T) {
 func TestMCP_ToolsCall_CheckCircuitBreakers(t *testing.T) {
 	nc := runNATS(t)
 	am := alerts.New(nil, nc, nil)
-	am.OpenCircuit("team-a", "search")
-	am.OpenCircuit("team-b", "summarize")
+	am.OpenCircuit("default", "team-a", "search")
+	am.OpenCircuit("default", "team-b", "summarize")
+	am.OpenCircuit("ws-other", "team-a", "search") // B42.10: another workspace's circuit is not the caller's to see
 
 	s := newServer(nil, nil, am, nil, nil, "test-version")
 	resp := rpcCall(t, s, "tools/call", map[string]any{

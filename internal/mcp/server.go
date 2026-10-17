@@ -307,7 +307,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, id,
 	case "get_model_recommendations":
 		result, err = s.toolGetModelRecommendations(ctx, params.Arguments)
 	case "check_circuit_breakers":
-		result, err = s.toolCheckCircuitBreakers()
+		result, err = s.toolCheckCircuitBreakers(ctx)
 	case "get_session_summary":
 		result, err = s.toolGetSessionSummary(ctx, params.Arguments)
 	case "route_model":
@@ -510,11 +510,17 @@ func (s *Server) toolGetModelRecommendations(ctx context.Context, _ json.RawMess
 
 // Tool 4: check_circuit_breakers --------------------------------------------
 
-func (s *Server) toolCheckCircuitBreakers() (any, error) {
+// toolCheckCircuitBreakers shows the caller its own workspace's circuits, keyed "team:feature"; only
+// the global admin sees every workspace's, keyed "workspace:team:feature" (B42.10).
+func (s *Server) toolCheckCircuitBreakers(ctx context.Context) (any, error) {
 	if s.alertManager == nil {
 		return map[string]any{"circuits": map[string]string{}, "open_count": 0}, nil
 	}
-	states := s.alertManager.CircuitStates()
+	ws, isAdmin := auth.WorkspaceIdentity(ctx)
+	states := s.alertManager.WorkspaceCircuitStates(ws)
+	if isAdmin {
+		states = s.alertManager.CircuitStates()
+	}
 	openCount := 0
 	for _, v := range states {
 		if v == "open" {

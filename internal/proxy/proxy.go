@@ -84,7 +84,7 @@ const CacheBypassHeader = "X-Talyvor-Cache"
 // touches. Defined locally so tests can drop in a counter mock without
 // pulling in the full pgxpool / NATS stack the real manager needs.
 type alertSink interface {
-	IsCircuitOpen(team, feature string) bool
+	IsCircuitOpen(workspaceID, team, feature string) bool
 	GetDowngradeModel(provider, model string) string
 	RecordSpend(ctx context.Context, workspaceID, team, sprint, feature, model string, inputTokens, outputTokens int, prompt, sessionID, requestID, modality string, estimated bool) error
 	// RecordSpendWithDistill is RecordSpend plus the token_events.distill_method
@@ -1541,11 +1541,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	}
 
 	// Circuit breaker override. When the alert manager has tripped a
-	// circuit for this (team, feature), force the cheapest model for the
+	// circuit for this (workspace, team, feature), force the cheapest model for the
 	// provider regardless of what the router decided. The X-Talyvor-Circuit-Open
 	// header below tells the client this happened.
 	circuitOpen := false
-	if p.alertManager != nil && p.alertManager.IsCircuitOpen(team, feature) {
+	if p.alertManager != nil && p.alertManager.IsCircuitOpen(wsID, team, feature) {
 		circuitOpen = true
 		upstreamModel = p.alertManager.GetDowngradeModel(cfg.ProviderName(), model)
 	}

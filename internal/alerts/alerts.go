@@ -72,7 +72,7 @@ type AlertManager struct {
 	pool     pgxDB
 	nc       *nats.Conn
 	rules    []SpendRule
-	circuits map[string]CircuitState
+	circuits map[circuitID]CircuitState
 	mu       sync.RWMutex
 	emitter  *Emitter // SEC-7: outbound Track spend-alert webhook (nil = disabled no-op)
 }
@@ -91,7 +91,7 @@ func newAlertManager(pool pgxDB, nc *nats.Conn, rules []SpendRule) *AlertManager
 		pool:     pool,
 		nc:       nc,
 		rules:    rules,
-		circuits: make(map[string]CircuitState),
+		circuits: make(map[circuitID]CircuitState),
 	}
 }
 
@@ -332,7 +332,7 @@ func (a *AlertManager) recordSpend(ctx context.Context, workspaceID, team, sprin
 		if rule.Team != team || rule.Feature != feature {
 			continue
 		}
-		spend, err := a.windowSpend(ctx, rule)
+		spend, err := a.windowSpend(ctx, rule, workspaceID)
 		if err != nil {
 			slog.Warn("alerts: window spend query failed",
 				slog.String("team", team),
@@ -346,26 +346,52 @@ func (a *AlertManager) recordSpend(ctx context.Context, workspaceID, team, sprin
 	return nil
 }
 
-func (a *AlertManager) windowSpend(ctx context.Context, rule SpendRule) (float64, error) {
+// windowSpend is one workspace's spend under the rule's team and feature labels: the labels are
+// free-form, so another workspace sending the same ones must never count towards this one (B42.10).
+func (a *AlertManager) windowSpend(ctx context.Context, rule SpendRule, workspaceID string) (float64, error) {
 	// INTERVAL is parameterized only via a literal hours value because pgx
 	// can't bind a SQL interval cleanly — the rule's WindowHours comes from
 	// our own config, not user input, so interpolation here is safe.
 	q := fmt.Sprintf(`SELECT COALESCE(SUM(cost_usd), 0)
 FROM token_events
-WHERE team = $1 AND feature = $2
+WHERE workspace_id = $1 AND team = $2 AND feature = $3
   AND created_at > NOW() - INTERVAL '%d hours'`, rule.WindowHours)
 	var spend float64
-	if err := a.pool.QueryRow(ctx, q, rule.Team, rule.Feature).Scan(&spend); err != nil {
+	if err := a.pool.QueryRow(ctx, q, workspaceID, rule.Team, rule.Feature).Scan(&spend); err != nil {
 		return 0, err
 	}
 	return spend, nil
+}
+
+// windowSpendByWorkspace is windowSpend for every workspace that spent under the rule's labels.
+func (a *AlertManager) windowSpendByWorkspace(ctx context.Context, rule SpendRule) (map[string]float64, error) {
+	q := fmt.Sprintf(`SELECT workspace_id, COALESCE(SUM(cost_usd), 0)
+FROM token_events
+WHERE team = $1 AND feature = $2
+  AND created_at > NOW() - INTERVAL '%d hours'
+GROUP BY workspace_id`, rule.WindowHours)
+	rows, err := a.pool.Query(ctx, q, rule.Team, rule.Feature)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var ws string
+		var spend float64
+		if err := rows.Scan(&ws, &spend); err != nil {
+			return nil, err
+		}
+		out[ws] = spend
+	}
+	return out, rows.Err()
 }
 
 // evaluateRule fires alerts and toggles the circuit breaker based on the
 // rule's tier thresholds. Each tier fires independently — warning is still
 // emitted when critical is also true so dashboards see the full ladder.
 func (a *AlertManager) evaluateRule(ctx context.Context, rule SpendRule, spend float64, workspaceID string) {
-	key := circuitKey(rule.Team, rule.Feature)
+	key := circuitID{workspaceID, rule.Team, rule.Feature}
 
 	if spend > rule.CircuitUSD {
 		a.mu.Lock()
@@ -374,6 +400,7 @@ func (a *AlertManager) evaluateRule(ctx context.Context, rule SpendRule, spend f
 		a.mu.Unlock()
 		if prev != CircuitOpen {
 			slog.Warn("alerts: circuit opened",
+				slog.String("workspace_id", workspaceID),
 				slog.String("team", rule.Team),
 				slog.String("feature", rule.Feature),
 				slog.Float64("spend_usd", spend),
@@ -448,10 +475,10 @@ func (a *AlertManager) fireAlert(_ context.Context, alert Alert) error {
 	return nil
 }
 
-func (a *AlertManager) IsCircuitOpen(team, feature string) bool {
+func (a *AlertManager) IsCircuitOpen(workspaceID, team, feature string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.circuits[circuitKey(team, feature)] == CircuitOpen
+	return a.circuits[circuitID{workspaceID, team, feature}] == CircuitOpen
 }
 
 func (a *AlertManager) GetDowngradeModel(provider, _ string) string {
@@ -463,36 +490,49 @@ func (a *AlertManager) GetDowngradeModel(provider, _ string) string {
 	}
 }
 
-func (a *AlertManager) ResetCircuit(team, feature string) {
+func (a *AlertManager) ResetCircuit(workspaceID, team, feature string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.circuits, circuitKey(team, feature))
+	delete(a.circuits, circuitID{workspaceID, team, feature})
 }
 
 // openCircuitForTest is an unexported helper so tests can put a circuit in
 // the open state without setting up the full RecordSpend pipeline.
-func (a *AlertManager) openCircuitForTest(team, feature string) {
+func (a *AlertManager) openCircuitForTest(workspaceID, team, feature string) {
 	a.mu.Lock()
-	a.circuits[circuitKey(team, feature)] = CircuitOpen
+	a.circuits[circuitID{workspaceID, team, feature}] = CircuitOpen
 	a.mu.Unlock()
 }
 
 // OpenCircuit lets callers (admin endpoints, ops tooling) trip a circuit
 // breaker without waiting for spend to cross the threshold.
-func (a *AlertManager) OpenCircuit(team, feature string) {
+func (a *AlertManager) OpenCircuit(workspaceID, team, feature string) {
 	a.mu.Lock()
-	a.circuits[circuitKey(team, feature)] = CircuitOpen
+	a.circuits[circuitID{workspaceID, team, feature}] = CircuitOpen
 	a.mu.Unlock()
 }
 
 // CircuitStates returns a copy of the current circuit-breaker states,
-// keyed by "team:feature". Each value is the string form of CircuitState.
+// keyed by "workspace:team:feature". Each value is the string form of CircuitState.
 func (a *AlertManager) CircuitStates() map[string]string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := make(map[string]string, len(a.circuits))
 	for k, v := range a.circuits {
-		out[k] = string(v)
+		out[k.workspace+":"+k.team+":"+k.feature] = string(v)
+	}
+	return out
+}
+
+// WorkspaceCircuitStates is CircuitStates for one workspace's circuits, keyed by "team:feature".
+func (a *AlertManager) WorkspaceCircuitStates(workspaceID string) map[string]string {
+	out := map[string]string{}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for k, v := range a.circuits {
+		if k.workspace == workspaceID {
+			out[k.team+":"+k.feature] = string(v)
+		}
 	}
 	return out
 }
@@ -505,9 +545,9 @@ func (a *AlertManager) Rules() []SpendRule {
 	return out
 }
 
-func circuitKey(team, feature string) string {
-	return team + ":" + feature
-}
+// circuitID is one workspace's circuit for a team and feature: the labels are the caller's own, so
+// the same labels from another workspace are a different circuit (B42.10).
+type circuitID struct{ workspace, team, feature string }
 
 const monitorInterval = 5 * time.Minute
 
@@ -533,7 +573,7 @@ func (a *AlertManager) monitorLoop(ctx context.Context, interval time.Duration) 
 
 func (a *AlertManager) evaluateAllRules(ctx context.Context) {
 	for _, rule := range a.rules {
-		spend, err := a.windowSpend(ctx, rule)
+		spends, err := a.windowSpendByWorkspace(ctx, rule)
 		if err != nil {
 			slog.Warn("alerts: monitor window spend failed",
 				slog.String("rule_id", rule.ID),
@@ -541,25 +581,31 @@ func (a *AlertManager) evaluateAllRules(ctx context.Context) {
 			)
 			continue
 		}
-		key := circuitKey(rule.Team, rule.Feature)
 
 		a.mu.Lock()
-		state := a.circuits[key]
-		switch {
-		case state == CircuitOpen && spend <= rule.CircuitUSD:
-			delete(a.circuits, key)
-			slog.Info("alerts: circuit closed by monitor",
-				slog.String("team", rule.Team),
-				slog.String("feature", rule.Feature),
-				slog.Float64("spend_usd", spend),
-			)
-		case state != CircuitOpen && spend > rule.CircuitUSD:
-			a.circuits[key] = CircuitOpen
-			slog.Warn("alerts: circuit opened by monitor",
-				slog.String("team", rule.Team),
-				slog.String("feature", rule.Feature),
-				slog.Float64("spend_usd", spend),
-			)
+		// An open circuit whose workspace spent nothing in the window is absent from spends: close it too.
+		for key, state := range a.circuits {
+			if state == CircuitOpen && key.team == rule.Team && key.feature == rule.Feature && spends[key.workspace] <= rule.CircuitUSD {
+				delete(a.circuits, key)
+				slog.Info("alerts: circuit closed by monitor",
+					slog.String("workspace_id", key.workspace),
+					slog.String("team", rule.Team),
+					slog.String("feature", rule.Feature),
+					slog.Float64("spend_usd", spends[key.workspace]),
+				)
+			}
+		}
+		for ws, spend := range spends {
+			key := circuitID{ws, rule.Team, rule.Feature}
+			if a.circuits[key] != CircuitOpen && spend > rule.CircuitUSD {
+				a.circuits[key] = CircuitOpen
+				slog.Warn("alerts: circuit opened by monitor",
+					slog.String("workspace_id", ws),
+					slog.String("team", rule.Team),
+					slog.String("feature", rule.Feature),
+					slog.Float64("spend_usd", spend),
+				)
+			}
 		}
 		a.mu.Unlock()
 	}

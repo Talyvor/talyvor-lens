@@ -246,6 +246,8 @@ func TestMiddleware_SetsWorkspaceHeaderFromAPIKey(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+raw)
 	// Client-sent workspace must be overridden by the middleware.
 	req.Header.Set("X-Talyvor-Workspace", "spoofed-by-client")
+	// B42.10: a key with its own team cannot be re-attributed by the header.
+	req.Header.Set("X-Talyvor-Team", "spoofed-team")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
