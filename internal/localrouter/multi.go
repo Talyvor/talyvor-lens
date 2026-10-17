@@ -352,7 +352,7 @@ func (r *Router) probe(ctx context.Context, endpoint *LocalEndpoint) bool {
 func (r *Router) probeURL(ctx context.Context, baseURL, path string) bool {
 	reqCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
-	if err := safehttp.CheckURL(baseURL); err != nil {
+	if !safehttp.AllowedURL(baseURL) {
 		return false
 	}
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+path, nil)

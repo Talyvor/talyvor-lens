@@ -2,7 +2,7 @@ package safehttp
 
 import "testing"
 
-func TestCheckURL(t *testing.T) {
+func TestAllowedURL(t *testing.T) {
 	cases := map[string]bool{ // url → allowed
 		"https://node.example.com":          true,
 		"http://10.0.0.5:11434/v1":          true, // private: left to the allowlist-aware dial guard
@@ -20,8 +20,8 @@ func TestCheckURL(t *testing.T) {
 		"":                                  false,
 	}
 	for raw, want := range cases {
-		if got := CheckURL(raw) == nil; got != want {
-			t.Errorf("CheckURL(%q) allowed=%v, want %v", raw, got, want)
+		if got := AllowedURL(raw); got != want {
+			t.Errorf("AllowedURL(%q) allowed=%v, want %v", raw, got, want)
 		}
 	}
 }

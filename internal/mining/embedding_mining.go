@@ -238,7 +238,7 @@ func (m *EmbeddingMiner) RegisterNode(ctx context.Context, in EmbeddingNode) (*E
 func (m *EmbeddingMiner) verifyNodeAsync(nodeID, nodeURL, model string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := safehttp.CheckURL(nodeURL); err != nil {
+	if !safehttp.AllowedURL(nodeURL) {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{

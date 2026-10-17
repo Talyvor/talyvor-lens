@@ -326,7 +326,7 @@ func (m *ComputeMiner) verifyNodeAsync(nodeID, nodeURL, provider string) {
 	case "vllm":
 		probe = "/v1/models"
 	}
-	if err := safehttp.CheckURL(nodeURL); err != nil {
+	if !safehttp.AllowedURL(nodeURL) {
 		return
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nodeURL+probe, nil)

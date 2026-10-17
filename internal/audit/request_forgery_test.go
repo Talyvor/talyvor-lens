@@ -21,8 +21,8 @@ func TestExportWebhookRefusesMetadataURL(t *testing.T) {
 	ct := &countingTransport{}
 	e := newExporter(nil).WithHTTPClient(&http.Client{Transport: ct})
 	err := e.ExportWebhook(context.Background(), "http://169.254.169.254/latest/meta-data", ExportFilter{})
-	if !errors.Is(err, safehttp.ErrBlockedAddress) {
-		t.Fatalf("err = %v, want ErrBlockedAddress", err)
+	if !errors.Is(err, safehttp.ErrInvalidURL) {
+		t.Fatalf("err = %v, want ErrInvalidURL", err)
 	}
 	if ct.n != 0 {
 		t.Fatalf("%d request(s) sent to the metadata endpoint, want 0", ct.n)

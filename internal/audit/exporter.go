@@ -132,8 +132,8 @@ func (e *Exporter) Export(ctx context.Context, filter ExportFilter, format Expor
 // callers wanting truly-streaming push to a webhook can call Export
 // directly with their own http.Request body pipe.
 func (e *Exporter) ExportWebhook(ctx context.Context, webhookURL string, filter ExportFilter) error {
-	if err := safehttp.CheckURL(webhookURL); err != nil {
-		return fmt.Errorf("audit: webhook URL: %w", err)
+	if !safehttp.AllowedURL(webhookURL) {
+		return fmt.Errorf("audit: webhook: %w", safehttp.ErrInvalidURL)
 	}
 	var buf bytes.Buffer
 	count, err := e.Export(ctx, filter, FormatNDJSON, &buf)
