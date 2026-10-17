@@ -494,3 +494,28 @@ func (s *Store) Remind(ctx context.Context) (map[string]int, error) {
 	}
 	return sent, nil
 }
+
+// BringRemindersDue sends one test seller every request still to come now, as though the reminder interval had passed
+// after each (B32.99), so a seller with earnings and incomplete details is withheld exactly as after the last request.
+// The caller has checked the workspace is a test one. Without custody, as Remind, nobody is asked or held.
+func (s *Store) BringRemindersDue(ctx context.Context, workspaceID string) error {
+	if s.ring == nil {
+		return nil
+	}
+	now := s.now().UTC()
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO seller_tax_profiles (workspace_id)
+			SELECT $1 WHERE EXISTS (SELECT 1 FROM market_earnings WHERE seller_workspace_id = $1)
+			ON CONFLICT (workspace_id) DO NOTHING`, workspaceID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE seller_tax_profiles SET reminders_sent = $3, last_reminded_at = $2, withheld_since = COALESCE(withheld_since, $2)
+			WHERE workspace_id = $1 AND completed_at IS NULL
+			  AND EXISTS (SELECT 1 FROM market_earnings WHERE seller_workspace_id = $1)`, workspaceID, now, Requests)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("sellertax: bring %s's requests due: %w", workspaceID, err)
+	}
+	return nil
+}

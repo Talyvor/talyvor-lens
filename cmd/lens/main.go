@@ -2784,7 +2784,7 @@ func run() error {
 		// B35.1 — a test workspace on any plan.
 		plans: pool,
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
-		due: syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, cards: dualToken,
+		due: syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
 			authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)},
 	})
 	mountProvisionRoute(r, cfg.ProvisionSecret, wsManager,

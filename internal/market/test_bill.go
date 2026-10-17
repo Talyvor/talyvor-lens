@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // test_bill.go — B25.7: A TEST BUYER'S BILL PAID, ITS EARNINGS PAST THE HOLDBACK, AND REFUNDED, INSIDE ONE TESTER RUN.
@@ -63,4 +64,57 @@ func (s *Store) RefundTestBill(ctx context.Context, buyerWorkspaceID, invoiceID 
 	}
 	n, _, err := s.ReverseInvoice(ctx, invoiceID, "buyer_refund", "ch_synthetic_"+strings.ReplaceAll(uuid.NewString(), "-", ""), 0, true)
 	return n, err
+}
+
+// PayOutTestSeller is the weekly payout run for one test (synthetic) seller now, as on the payout weekday (B32.99):
+// their earnings past the holdback are released onto the journal; a seller withheld for their tax details is answered
+// held and nothing is paid; otherwise what is available is paid exactly as the run pays it — the minimum, once an
+// ISO week, Stripe's fees as PayoutFees takes them, journalled the same — and its transfer is recorded as
+// tr_synthetic_…, with no Stripe call, on test money as PayTestBill pays a test bill. It answers the payout made
+// now, or nil (held, under the minimum, or paid this week already). A real seller is never touched.
+func (s *Store) PayOutTestSeller(ctx context.Context, workspaceID string, now time.Time) (held bool, made *Payout, err error) {
+	var test bool
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT synthetic FROM workspaces WHERE id = $1), false)`, workspaceID).Scan(&test); err != nil {
+		return false, nil, fmt.Errorf("market: pay out a test seller: %w", err)
+	}
+	if !test {
+		return false, nil, ErrNotTestBuyer
+	}
+	if _, err := s.ReleaseDue(ctx, now); err != nil {
+		return false, nil, err
+	}
+	// A test seller connected to Stripe test mode keeps its account on the row; one never connected has none to name.
+	account := "acct_synthetic"
+	if err := s.pool.QueryRow(ctx, `SELECT `+taxHeldSQL+`, COALESCE((SELECT stripe_account_id FROM market_sellers WHERE workspace_id = $1), $2)
+		FROM (SELECT $1::text AS workspace_id) s`, workspaceID, account).Scan(&held, &account); err != nil {
+		return false, nil, fmt.Errorf("market: pay out a test seller: %w", err)
+	}
+	if held {
+		return true, nil, nil
+	}
+	payable := func(q queryRower, ws string) (int64, error) {
+		released, _, paid, err := sellerBalance(ctx, q, ws, now)
+		return released - paid, err
+	}
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		id, err := s.payOutTx(ctx, tx, workspaceID, account, false, payable, now)
+		if err != nil || id == "" {
+			return err
+		}
+		var p Payout
+		if err := tx.QueryRow(ctx, `UPDATE market_payouts SET stripe_transfer_id = $2, paid_at = $3 WHERE id = $1
+			RETURNING id, method, month, period, gross_usd_micros, vat_usd_micros, account_fee_usd_micros, payout_fee_usd_micros, net_usd_micros,
+			          credits_ulxc, stripe_transfer_id, paid_at, last_error, created_at`,
+			id, "tr_synthetic_"+strings.ReplaceAll(uuid.NewString(), "-", ""), now).Scan(&p.ID, &p.Method, &p.Month, &p.Period, &p.GrossUSDMicros,
+			&p.VATUSDMicros, &p.AccountFeeUSDMicros, &p.PayoutFeeUSDMicros, &p.NetUSDMicros, &p.CreditsULXC, &p.StripeTransferID, &p.PaidAt,
+			&p.LastError, &p.CreatedAt); err != nil {
+			return err
+		}
+		made = &p
+		return nil
+	})
+	if err != nil {
+		return false, nil, fmt.Errorf("market: pay out test seller %s: %w", workspaceID, err)
+	}
+	return false, made, nil
 }
