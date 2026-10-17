@@ -305,3 +305,41 @@ func TestMarketTax_ARefusedTaxEventNeverStrandsABilledPrice(t *testing.T) {
 		t.Fatalf("after the tax line was added: tax billed %v, events %v; want %q sent once and the price not again", taxBilled, m.stripe.events, want)
 	}
 }
+
+// B17.154 — the testers' market-bill-tax and market-receipts pay a test GB consumer's taxed bill through PayTestBill,
+// receipts on, and were answered 500 while the receipt's JSON failed to insert behind PgBouncer (22P02, fixed by
+// #817). Paid that way, the bill clears with its tax owed on tax:GB and gets one receipt of net plus tax.
+func TestMarketTax_ATestGBConsumersTaxedBillIsPaidWithItsReceipt(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedDB(t)
+	const seller, gb = "ws-paytax-seller", "ws-paytax-gb"
+	m := newTaxedMarket(t, pool, true, []string{seller, gb}, "GB")
+	if _, err := m.profiles.Put(ctx, gb, taxprofile.Input{LegalName: "Ana Smith", Country: "GB"}); err != nil {
+		t.Fatal(err)
+	}
+	period := 30
+	l, err := m.store.Publish(ctx, seller, Draft{Kind: "prompt", Title: "Adder", Visibility: "public", Artifact: json.RawMessage(adder),
+		Offers: []Offer{{Kind: OfferRent, Licence: LicenceCommercial, PriceUSDMicros: 10_000_000, PeriodDays: &period}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := LicenceDeps{Meter: m.bill("price_market_tax"), Capabilities: &askedCapabilities{}}
+	if lic, _, err := m.store.License(ctx, deps, gb, "", l.ID, "rent-"+gb, LicenceRequest{OfferID: l.Offers[0].ID}); err != nil ||
+		lic.Charge != ChargeBilled {
+		t.Fatalf("the GB consumer rents = %+v, %v", lic, err)
+	}
+
+	m.store.SetReceipts(Receipts{Supplier: Supplier{LegalName: "Talyvor Ltd"}, Buyers: m.profiles})
+	invoice, n, err := m.store.PayTestBill(ctx, gb, time.Now())
+	if err != nil || n != 1 {
+		t.Fatalf("paying the GB consumer's bill = %d uses, %v; want the rental cleared", n, err)
+	}
+	if b, err := m.store.JournalBalance(ctx, AccountTax("GB"), ""); err != nil || b != -2_000_000 {
+		t.Fatalf("tax:GB balance = %d, %v; want −2,000,000 owed", b, err)
+	}
+	receipts, err := m.store.ReceiptsOf(ctx, gb)
+	if err != nil || len(receipts) != 1 || receipts[0].InvoiceID != invoice || receipts[0].TaxUSDMicros != 2_000_000 ||
+		receipts[0].GrossUSDMicros != 12_000_000 {
+		t.Fatalf("the GB consumer's receipts = %+v, %v; want one for %s, tax 2,000,000 of gross 12,000,000", receipts, err, invoice)
+	}
+}
