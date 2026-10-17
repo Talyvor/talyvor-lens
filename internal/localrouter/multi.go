@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/talyvor/lens/internal/safehttp"
 )
 
 // ─── constants ───────────────────────────────────
@@ -343,9 +345,13 @@ func (r *Router) probe(ctx context.Context, endpoint *LocalEndpoint) bool {
 	case "llamacpp":
 		path = "/health"
 	}
+	base := endpoint.URL
+	if err := safehttp.CheckURL(base); err != nil {
+		return false
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint.URL+path, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return false
 	}

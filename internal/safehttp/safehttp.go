@@ -15,12 +15,38 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
 // ErrBlockedAddress is returned when a fetch targets a non-public (SSRF-sensitive) address.
 var ErrBlockedAddress = errors.New("safehttp: refusing to connect to a non-public address")
+
+// ErrInvalidURL is returned by CheckURL for anything but an absolute http(s) URL with a plain host.
+var ErrInvalidURL = errors.New("safehttp: URL must be an absolute http(s) URL with a host and no credentials")
+
+// urlShape: http(s), a host[:port] with no userinfo, and no whitespace or control characters anywhere.
+var urlShape = regexp.MustCompile(`^https?://[^/?#@\s\x00-\x1f\x7f]+(?:[/?#][^\s\x00-\x1f\x7f]*)?$`)
+
+// CheckURL validates a caller-supplied URL before it is requested: it must be http(s) with a plain
+// host, and the host must not be a link-local (incl. cloud metadata), unspecified or multicast IP
+// literal. Loopback, private and DNS-named hosts are left to the dial guard, which resolves them and
+// honours the operator allowlist — call CheckURL in addition to a guarded client, never instead of one.
+func CheckURL(raw string) error {
+	if !urlShape.MatchString(raw) {
+		return ErrInvalidURL
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return ErrInvalidURL
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast()) {
+		return fmt.Errorf("%w: %s", ErrBlockedAddress, ip)
+	}
+	return nil
+}
 
 // metadataIP is the cloud metadata endpoint — NEVER allowlistable (see blocked).
 var metadataIP = net.ParseIP("169.254.169.254")
