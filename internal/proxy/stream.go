@@ -503,7 +503,7 @@ func (s *StreamHandler) serve(
 	// bill — we already paid the provider. WithoutCancel (NOT Background) keeps r's VALUES, including
 	// the reservation handle threaded onto r in serve(), so the streamed settle actually FIRES in-band
 	// instead of stranding the hold for the sweeper to refund (which made streaming requests free).
-	storeCtx := context.WithoutCancel(r.Context())
+	storeCtx := withCacheStoreHeader(context.WithoutCancel(r.Context()), r)
 	cached := ops.synthesizeCachePayload(accumulated.String())
 	// B15.2: a streamed answer is stored only if it ENDED (a stream cut off before the provider's
 	// end event is a partial answer; a cancelled one already returned above) and, where the

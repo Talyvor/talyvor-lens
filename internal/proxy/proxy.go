@@ -80,6 +80,26 @@ const (
 // echoes it as "bypassed".
 const CacheBypassHeader = "X-Talyvor-Cache"
 
+// CacheStoreHeader, set to "off", keeps a request's answer out of every cache layer, own or pooled, buffered or
+// streamed (B17.151). A temporary chat sends it with X-Talyvor-Cache: bypass, so it neither reads nor leaves an answer.
+const CacheStoreHeader = "X-Talyvor-Cache-Store"
+
+type cacheStoreOffKey struct{}
+
+// withCacheStoreHeader marks ctx when r asks that its answer be kept nowhere; storeAnswer and
+// shadowPoolObservation read the mark through cacheStoreOff.
+func withCacheStoreHeader(ctx context.Context, r *http.Request) context.Context {
+	if strings.EqualFold(r.Header.Get(CacheStoreHeader), "off") {
+		return context.WithValue(ctx, cacheStoreOffKey{}, true)
+	}
+	return ctx
+}
+
+func cacheStoreOff(ctx context.Context) bool {
+	off, _ := ctx.Value(cacheStoreOffKey{}).(bool)
+	return off
+}
+
 // alertSink is the subset of *alerts.AlertManager that proxy.serve()
 // touches. Defined locally so tests can drop in a counter mock without
 // pulling in the full pgxpool / NATS stack the real manager needs.
@@ -1165,6 +1185,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	if bypassCache {
 		w.Header().Set(CacheBypassHeader, "bypassed")
 	}
+	ctx = withCacheStoreHeader(ctx, r)
 
 	if !piiDetected && !bypassCache {
 		var cached []byte

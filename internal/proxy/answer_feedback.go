@@ -65,6 +65,9 @@ func (p *Proxy) rememberServed(ctx context.Context, wsID, requestID, layer strin
 
 // storeAnswer stores a fresh answer (storeCaches) and remembers what it was stored as.
 func (p *Proxy) storeAnswer(ctx context.Context, provider, model, cachePrompt, rawPrompt, reqFP string, turn cache.Turn, wsID, requestID string, response []byte) {
+	if cacheStoreOff(ctx) {
+		return
+	}
 	if p.storeCaches(ctx, provider, model, cachePrompt, rawPrompt, reqFP, turn, wsID, response) {
 		p.rememberServed(ctx, wsID, requestID, "fresh", nil, answerHashes(provider, model, cachePrompt, rawPrompt, reqFP), "", response)
 	}
