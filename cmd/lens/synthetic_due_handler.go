@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -38,6 +40,9 @@ import (
 //	                                                                   {"amount_minor":2000,"currency":"gbp","merchant":"…"}
 //	                                                                   a purchase on the test agent's card, decided
 //	                                                                   as Stripe Issuing's authorisation request is
+//	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
+//	                                                                   the two linked as though both paid with one
+//	                                                                   card, so a trust panel's linked buyer is testable
 //
 // Each is refused 403 for a workspace that is not synthetic — read from the database every Lens shares — and
 // nothing changes. Each is also written to synthetic_operations, like create and reset, under its own rate.
@@ -100,6 +105,7 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/agents/{agentID}/card/authorizations",
 		syntheticGuard(key, "card-authorization", limit, d, due.testOnly(due.cardPurchase)))
+	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
 }
 
 // testOnly runs run for a synthetic workspace, and refuses any other before anything is read or written.
@@ -181,6 +187,38 @@ func (d syntheticDueDeps) payoutRun(w http.ResponseWriter, r *http.Request, ws s
 		out["hold"] = sellertax.HoldReason
 	}
 	writeJSONOK(w, http.StatusOK, out)
+	return 1, "ok"
+}
+
+// cardLink is B32.102: a fresh synthetic fingerprint on both workspaces, written only when the other is a test one too.
+// Test-mode payments never capture a fingerprint (B25.2), so this is the only way a test user shares a card.
+func (d syntheticDueDeps) cardLink(w http.ResponseWriter, r *http.Request, ws string) (int, string) {
+	var in struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return 0, "error: bad request"
+	}
+	if in.WorkspaceID == "" || in.WorkspaceID == ws {
+		writeJSONErr(w, http.StatusBadRequest, "workspace_id must name another test workspace")
+		return 0, "error: bad request"
+	}
+	// Never a real card's hash: sha256 of a random value.
+	fp := sha256.Sum256([]byte(uuid.NewString()))
+	var linked bool
+	if err := d.db.QueryRow(r.Context(), `WITH test AS (SELECT count(*) = 2 AS ok FROM workspaces WHERE id IN ($1, $2) AND synthetic),
+		ins AS (INSERT INTO workspace_card_fingerprints (workspace_id, fingerprint_hash)
+			SELECT w, $3 FROM unnest(ARRAY[$1, $2]::text[]) AS w, test WHERE test.ok ON CONFLICT DO NOTHING)
+		SELECT ok FROM test`, ws, in.WorkspaceID, "synthetic:"+hex.EncodeToString(fp[:])).Scan(&linked); err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	if !linked {
+		writeJSONErr(w, http.StatusForbidden, "only two test (synthetic) workspaces can be linked by a card")
+		return 0, "refused: not a test workspace"
+	}
+	writeJSONOK(w, http.StatusOK, map[string]any{"workspace_id": ws, "linked_to": in.WorkspaceID})
 	return 1, "ok"
 }
 
