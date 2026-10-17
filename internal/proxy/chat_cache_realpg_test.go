@@ -251,3 +251,58 @@ func TestChatCache_ATemporaryChatsAnswerIsKeptNowhere(t *testing.T) {
 		}
 	}
 }
+
+// B17.152 — a chat kept out of the shared pool (X-Talyvor-Pool: off) puts no answer in it: wsPoolB, asking the
+// same question after wsPoolA's kept-out chat, is answered by the model, streamed or buffered. It may still be served
+// from the pool: asked after wsPoolB's plain answer, the kept-out chat is served that, which is also the control
+// that the harness pools at all.
+func TestChatCache_AChatKeptOutOfThePoolPutsNoAnswerInIt(t *testing.T) {
+	const answer = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"The capital of the UK is London."}],"stop_reason":"end_turn","usage":{"input_tokens":16,"output_tokens":9}}`
+	for _, streamed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "streamed", false: "buffered"}[streamed], func(t *testing.T) {
+			setup := func() (func(ws string, header ...string), *int64) {
+				p, _, calls := chatCacheProxy(t, chatSSE("The capital of the UK is London.", true))
+				question := chatQuestion
+				if !streamed {
+					question = strings.Replace(chatQuestion, `"stream":true`, `"stream":false`, 1)
+					up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						atomic.AddInt64(calls, 1)
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, answer)
+					}))
+					t.Cleanup(up.Close)
+					p.anthropicURL = up.URL
+				}
+				return func(ws string, header ...string) {
+					req := httptest.NewRequest(http.MethodPost, "/v1/proxy/anthropic/v1/messages", strings.NewReader(question))
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-Talyvor-Workspace", ws)
+					for i := 0; i+1 < len(header); i += 2 {
+						req.Header.Set(header[i], header[i+1])
+					}
+					req = req.WithContext(auth.WithAuthContext(req.Context(),
+						&auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodSessionKey, Scopes: []string{auth.ScopeProxy}}))
+					w := newFlushRecorder()
+					p.HandleAnthropic(w, req)
+					if w.Code != http.StatusOK {
+						t.Fatalf("ws=%s status=%d body=%s", ws, w.Code, w.Body.String())
+					}
+				}, calls
+			}
+
+			ask, calls := setup()
+			ask("wsPoolA", PoolHeader, "off")
+			ask("wsPoolB")
+			if got := atomic.LoadInt64(calls); got != 2 {
+				t.Fatalf("the model was asked %d times, want 2 — wsPoolB was served the kept-out chat's answer", got)
+			}
+
+			ask, calls = setup()
+			ask("wsPoolB")
+			ask("wsPoolA", PoolHeader, "off")
+			if got := atomic.LoadInt64(calls); got != 1 {
+				t.Fatalf("the model was asked %d times, want 1 — the kept-out chat was not served wsPoolB's pooled answer", got)
+			}
+		})
+	}
+}
