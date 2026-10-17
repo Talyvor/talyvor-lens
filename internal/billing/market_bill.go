@@ -178,10 +178,11 @@ func (s *Service) ensureMarketBill(ctx context.Context, workspaceID string) (str
 // the API version stripe-go pins (line.price) and later ones (line.pricing.price_details.price, and the
 // subscription under parent.subscription_details) are understood.
 type marketInvoice struct {
-	ID           string          `json:"id"`
-	Total        *int64          `json:"total"` // in cents, its tax lines included: what the buyer's receipt adds up to (B32.40)
-	Subscription json.RawMessage `json:"subscription"`
-	Parent       struct {
+	ID            string          `json:"id"`
+	BillingReason string          `json:"billing_reason"` // subscription_create: the opening invoice, which bills no use
+	Total         *int64          `json:"total"`          // in cents, its tax lines included: what the buyer's receipt adds up to (B32.40)
+	Subscription  json.RawMessage `json:"subscription"`
+	Parent        struct {
 		SubscriptionDetails struct {
 			Subscription string `json:"subscription"`
 		} `json:"subscription_details"`
@@ -306,6 +307,12 @@ func (s *Service) handleInvoicePaid(w http.ResponseWriter, ctx context.Context, 
 	start, end := s.marketPeriod(inv)
 	if end == 0 {
 		w.WriteHeader(http.StatusOK) // no marketplace line: not a marketplace bill
+		return
+	}
+	// B17.159: the subscription's opening invoice is paid at $0 the moment a buyer's first use subscribes them; its
+	// line spans the new period, so clearing it would clear that first use unpaid. Uses are billed in arrears.
+	if inv.BillingReason == "subscription_create" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	var workspaceID string
