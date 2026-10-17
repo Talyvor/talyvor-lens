@@ -219,9 +219,9 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 	// The buyer pays the invoice covering the first use only: that use clears — 10 LXC = $1.00, the seller's
 	// first sale — and Talyvor keeps 15% of it from the first dollar (B32.8): the seller earns 850,000 µUSD and
 	// the fee is 150,000. A replay changes nothing.
-	paid := func(invoiceID, subscription string, end time.Time) int {
+	paid := func(invoiceID, subscription, reason string, end time.Time) int {
 		t.Helper()
-		obj := map[string]any{"id": invoiceID, "object": "invoice", "subscription": subscription,
+		obj := map[string]any{"id": invoiceID, "object": "invoice", "subscription": subscription, "billing_reason": reason,
 			"status_transitions": map[string]any{"paid_at": time.Now().Unix()},
 			"lines": map[string]any{"object": "list", "data": []any{map[string]any{"id": "il_" + invoiceID, "object": "line_item",
 				"period": map[string]any{"start": end.Add(-24 * time.Hour).Unix(), "end": end.Unix()},
@@ -235,11 +235,16 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 		r.ServeHTTP(w, req)
 		return w.Code
 	}
-	if code := paid("in_other", "sub_someone_elses_plan", periodEnd); code != http.StatusOK || earnings().PayableUSDMicros != 0 {
+	if code := paid("in_other", "sub_someone_elses_plan", "subscription_cycle", periodEnd); code != http.StatusOK || earnings().PayableUSDMicros != 0 {
 		t.Fatalf("a paid invoice that is not a marketplace bill = %d and moved the seller's payable", code)
 	}
+	// B17.159: the $0 opening invoice Stripe pays the moment the first use subscribes the buyer spans the first use,
+	// and clears nothing: that use is billed on the next.
+	if code := paid("in_0", "sub_market_1", "subscription_create", periodEnd); code != http.StatusOK || row(first.ID).cleared || earnings().PayableUSDMicros != 0 {
+		t.Fatalf("the subscription's opening invoice paid = %d, cleared the first use %v; want it acknowledged and nothing cleared", code, row(first.ID).cleared)
+	}
 	for range 2 {
-		if code := paid("in_1", "sub_market_1", periodEnd); code != http.StatusOK {
+		if code := paid("in_1", "sub_market_1", "subscription_cycle", periodEnd); code != http.StatusOK {
 			t.Fatalf("invoice.paid = %d", code)
 		}
 	}
