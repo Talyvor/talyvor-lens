@@ -25,7 +25,8 @@ func (d roomTestDeps) RunDeps(context.Context) rooms.DepsFor {
 // B32.36 — an agent takes part in a public room over MCP with its own key, as its owner's member: it joins, posts (its
 // message carries its name), proposes a skill, votes, forks, and runs another member's $0.10 contribution paying itself
 // within its rules — one billed row with its id and the room; a $0.50 run above its per-request cap is an isError naming
-// the rule and writes no row; paying room is refused while its owner's membership may not spend; every call is in
+// the rule and writes no row; paying a members_with_spend room is refused, naming may_spend, while its owner's
+// membership was never given it (B17.174, the testers' room-agent-mcp); every call is in
 // agent_tool_calls and counts against LENS_ROOM_MESSAGES_PER_MINUTE.
 func TestRoomTools_AnAgentTakesPartInARoomWithinItsRules(t *testing.T) {
 	pool := savingsTestPool(t)
@@ -42,7 +43,7 @@ func TestRoomTools_AnAgentTakesPartInARoomWithinItsRules(t *testing.T) {
 	store.SetMarket(marketStore)
 
 	room, err := store.Create(ctx, host, "user-host", rooms.Draft{Title: "Release notes", Topic: "writing", Visibility: rooms.Public,
-		Terms: rooms.TermsDraft{RemixShareBPS: 2000, DefaultPriceUSDMicros: 100_000}})
+		Terms: rooms.TermsDraft{RemixShareBPS: 2000, DefaultPriceUSDMicros: 100_000, SpendPolicy: rooms.SpendMembersWithSpend}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestRoomTools_AnAgentTakesPartInARoomWithinItsRules(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1`, dear.ListingID).Scan(&dearUses); err != nil || dearUses != 0 {
 		t.Fatalf("the refused run wrote %d rows, %v; want none", dearUses, err)
 	}
-	if _, why := call("room_run", `{`+in+`,"target":"`+cheap.ID+`","variables":{"change":"v3"},"pay":"room"}`, true); !strings.Contains(why, "spend") {
+	if _, why := call("room_run", `{`+in+`,"target":"`+cheap.ID+`","variables":{"change":"v3"},"pay":"room"}`, true); !strings.Contains(why, "may_spend") {
 		t.Fatalf("paying room without may_spend answered %q; want it refused", why)
 	}
 
