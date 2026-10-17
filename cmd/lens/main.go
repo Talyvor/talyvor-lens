@@ -2747,6 +2747,10 @@ func run() error {
 		r.Post("/v1/agent-cards/authorizations", agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates).ServeHTTP)
 	}
 
+	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
+	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)}
+
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
 	// (LENS_PROVISION_SECRET) rather than an API key: its whole purpose is to serve a caller that
@@ -2784,8 +2788,7 @@ func run() error {
 		// B35.1 — a test workspace on any plan.
 		plans: pool,
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
-		due: syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, cards: dualToken,
-			authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)},
+		due: syntheticDue,
 	})
 	mountProvisionRoute(r, cfg.ProvisionSecret, wsManager,
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {

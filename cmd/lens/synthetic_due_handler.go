@@ -14,6 +14,7 @@ import (
 
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
+	"github.com/talyvor/lens/internal/sellertax"
 )
 
 // B25.7 — A TEST USER'S SLOW MONEY BROUGHT DUE INSIDE ONE TESTER RUN.
@@ -30,6 +31,9 @@ import (
 //	POST /v1/synthetic/workspaces/{wsID}/marketplace/bill/{invoiceID}/refund
 //	                                                                   that paid bill refunded, as Stripe's
 //	                                                                   charge.refunded refunds it
+//	POST /v1/synthetic/workspaces/{wsID}/marketplace/payouts/run      B32.99: the weekly payout run for the test
+//	                                                                   seller now, its tax-details requests brought
+//	                                                                   due first: {"withheld","hold","payout"}
 //	POST /v1/synthetic/workspaces/{wsID}/agents/{agentID}/card/authorizations
 //	                                                                   {"amount_minor":2000,"currency":"gbp","merchant":"…"}
 //	                                                                   a purchase on the test agent's card, decided
@@ -54,6 +58,14 @@ type syntheticBills interface {
 	RefundTestBill(ctx context.Context, buyerWorkspaceID, invoiceID string) (int, error)
 }
 
+type syntheticPayouts interface {
+	PayOutTestSeller(ctx context.Context, workspaceID string, now time.Time) (bool, *market.Payout, error)
+}
+
+type syntheticSellerTax interface {
+	BringRemindersDue(ctx context.Context, workspaceID string) error
+}
+
 type syntheticCards interface {
 	GetAgentCard(ctx context.Context, workspaceID, agentID string) (economy.AgentCard, error)
 }
@@ -67,6 +79,8 @@ type syntheticDueDeps struct {
 	db         syntheticQuerier
 	loans      syntheticLoans
 	bills      syntheticBills
+	payouts    syntheticPayouts
+	sellerTax  syntheticSellerTax
 	cards      syntheticCards
 	authorizer syntheticCardAuthorizer
 }
@@ -81,6 +95,9 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 	r.Post("/v1/synthetic/workspaces/{wsID}/marketplace/bill/pay", syntheticGuard(key, "bill-pay", limit, d, due.testOnly(due.billPay)))
 	r.Post("/v1/synthetic/workspaces/{wsID}/marketplace/bill/{invoiceID}/refund",
 		syntheticGuard(key, "bill-refund", limit, d, due.testOnly(due.billRefund)))
+	if due.payouts != nil && due.sellerTax != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/marketplace/payouts/run", syntheticGuard(key, "payout-run", limit, d, due.testOnly(due.payoutRun)))
+	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/agents/{agentID}/card/authorizations",
 		syntheticGuard(key, "card-authorization", limit, d, due.testOnly(due.cardPurchase)))
 }
@@ -145,6 +162,25 @@ func (d syntheticDueDeps) billRefund(w http.ResponseWriter, r *http.Request, ws 
 		return 0, "error: " + err.Error()
 	}
 	writeJSONOK(w, http.StatusOK, map[string]any{"invoice_id": invoiceID, "uses_refunded": n})
+	return 1, "ok"
+}
+
+// payoutRun is B32.99: a test seller withheld for their tax details, or paid, inside one tester run.
+func (d syntheticDueDeps) payoutRun(w http.ResponseWriter, r *http.Request, ws string) (int, string) {
+	if err := d.sellerTax.BringRemindersDue(r.Context(), ws); err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	held, payout, err := d.payouts.PayOutTestSeller(r.Context(), ws, time.Now())
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	out := map[string]any{"withheld": held, "payout": payout}
+	if held {
+		out["hold"] = sellertax.HoldReason
+	}
+	writeJSONOK(w, http.StatusOK, out)
 	return 1, "ok"
 }
 
