@@ -124,6 +124,14 @@ func TestB28125_AScheduledPromptIsAskedAtItsTimeOnTheAgentsWallet(t *testing.T) 
 	if list[0].NextRunAt == nil || !list[0].NextRunAt.Equal(at.AddDate(0, 0, 1)) || !list[0].Active {
 		t.Fatalf("a daily schedule's next time is %v, want %v", list[0].NextRunAt, at.AddDate(0, 0, 1))
 	}
+	// A tick three days late asks it once and moves it to the next day after then, not to each day it missed.
+	if a, r := run(at.AddDate(0, 0, 3).Add(time.Hour)); a+r != 1 {
+		t.Fatalf("three days late: %d answered, %d refused, want one run", a, r)
+	}
+	list, _ = store.ListPromptSchedules(ctx, ws)
+	if want := at.AddDate(0, 0, 4); list[0].NextRunAt == nil || !list[0].NextRunAt.Equal(want) {
+		t.Fatalf("three days late, the next time is %v, want %v", list[0].NextRunAt, want)
+	}
 	after, _ := store.AgentStatement(ctx, ws, agent.ID, 50)
 	if len(after) != len(lines) {
 		t.Fatalf("the refused run wrote statement lines: %d → %d", len(lines), len(after))

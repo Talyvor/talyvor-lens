@@ -32,6 +32,12 @@ const maxPromptChars = 8000
 // promptSchedulesPerRun bounds one tick's questions; the rest wait for the next tick.
 const promptSchedulesPerRun = 100
 
+// promptScheduleSkew is how far in the past a first time may be and still be taken as now, as Chat's BFF allows.
+const promptScheduleSkew = 2 * time.Minute
+
+// promptAskTimeout bounds one question, so one slow model does not hold up the tick.
+const promptAskTimeout = 2 * time.Minute
+
 // PromptSchedule is a prompt asked of Model at NextRunAt, then every day or week while Active, paid by AgentID.
 type PromptSchedule struct {
 	ID        string      `json:"id"`
@@ -85,6 +91,8 @@ func (s *DualTokenStore) CreatePromptSchedule(ctx context.Context, workspaceID, 
 		return PromptSchedule{}, fmt.Errorf("%w: every must be once, day or week", ErrBadPromptSchedule)
 	case firstRunAt.IsZero():
 		return PromptSchedule{}, fmt.Errorf("%w: a scheduled prompt needs the time it runs", ErrBadPromptSchedule)
+	case firstRunAt.Before(time.Now().Add(-promptScheduleSkew)):
+		return PromptSchedule{}, fmt.Errorf("%w: that time has passed — pick a time to come", ErrBadPromptSchedule)
 	}
 	sc := PromptSchedule{Runs: []PromptRun{}}
 	err := s.pool.QueryRow(ctx, `
@@ -177,10 +185,15 @@ func (s *DualTokenStore) RunPromptSchedules(ctx context.Context, now time.Time, 
 		run := PromptRun{RanAt: time.Now().UTC(), RequestID: "psr_" + uuid.NewString()}
 		if due.keyID == "" {
 			run.Outcome, run.Detail = "refused", "the agent has no key to ask with"
-		} else if answer, aerr := ask.AskAsKey(ctx, due.workspaceID, due.keyID, due.provider, due.model, due.prompt, run.RequestID); aerr != nil {
-			run.Outcome, run.Detail = "refused", aerr.Error()
 		} else {
-			run.Outcome, run.Answer = "answered", answer
+			actx, cancel := context.WithTimeout(ctx, promptAskTimeout)
+			answer, aerr := ask.AskAsKey(actx, due.workspaceID, due.keyID, due.provider, due.model, due.prompt, run.RequestID)
+			cancel()
+			if aerr != nil {
+				run.Outcome, run.Detail = "refused", aerr.Error()
+			} else {
+				run.Outcome, run.Answer = "answered", answer
+			}
 		}
 		if err := s.recordPromptRun(ctx, due, &run); err != nil {
 			return answered, refused, err
@@ -214,13 +227,10 @@ func (s *DualTokenStore) claimDuePrompt(ctx context.Context, now time.Time) (due
 	if err != nil {
 		return d, false, fmt.Errorf("economy: due prompt schedule: %w", err)
 	}
+	// The next time after now: times missed while Lens was down are not asked late, each charged again.
 	var next *time.Time
-	switch every {
-	case "day":
-		n := at.AddDate(0, 0, 1)
-		next = &n
-	case "week":
-		n := at.AddDate(0, 0, 7)
+	if step := map[string]time.Duration{"day": 24 * time.Hour, "week": 7 * 24 * time.Hour}[every]; step > 0 {
+		n := at.Add(step * (now.Sub(at)/step + 1))
 		next = &n
 	}
 	if _, err := tx.Exec(ctx, `UPDATE prompt_schedules SET next_run_at = $2, active = $2::timestamptz IS NOT NULL WHERE id = $1`, d.id, next); err != nil {
