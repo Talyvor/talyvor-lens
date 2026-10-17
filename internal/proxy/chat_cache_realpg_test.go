@@ -202,3 +202,52 @@ func TestChatCache_TheBypassHeaderAlwaysAsksTheModel(t *testing.T) {
 		t.Errorf("%s response header = %q, want bypassed", CacheBypassHeader, got)
 	}
 }
+
+// B17.151 — a temporary chat (X-Talyvor-Cache: bypass + X-Talyvor-Cache-Store: off) keeps nothing: its answer is
+// served to no later question, in its own workspace (wsPoolA) or through the pool (wsPoolB), streamed or buffered.
+// The repeat is the control: the same question asked plainly is stored and replayed, so the harness sees a stored answer.
+func TestChatCache_ATemporaryChatsAnswerIsKeptNowhere(t *testing.T) {
+	const answer = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"The capital of the UK is London."}],"stop_reason":"end_turn","usage":{"input_tokens":16,"output_tokens":9}}`
+	for _, streamed := range []bool{true, false} {
+		for _, later := range []string{"wsPoolA", "wsPoolB"} {
+			t.Run(map[bool]string{true: "streamed", false: "buffered"}[streamed]+"/"+later, func(t *testing.T) {
+				p, _, calls := chatCacheProxy(t, chatSSE("The capital of the UK is London.", true))
+				question := chatQuestion
+				if !streamed {
+					question = strings.Replace(chatQuestion, `"stream":true`, `"stream":false`, 1)
+					up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						atomic.AddInt64(calls, 1)
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, answer)
+					}))
+					t.Cleanup(up.Close)
+					p.anthropicURL = up.URL
+				}
+				ask := func(ws string, header ...string) {
+					req := httptest.NewRequest(http.MethodPost, "/v1/proxy/anthropic/v1/messages", strings.NewReader(question))
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-Talyvor-Workspace", ws)
+					for i := 0; i+1 < len(header); i += 2 {
+						req.Header.Set(header[i], header[i+1])
+					}
+					req = req.WithContext(auth.WithAuthContext(req.Context(),
+						&auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodSessionKey, Scopes: []string{auth.ScopeProxy}}))
+					w := newFlushRecorder()
+					p.HandleAnthropic(w, req)
+					if w.Code != http.StatusOK {
+						t.Fatalf("ws=%s status=%d body=%s", ws, w.Code, w.Body.String())
+					}
+				}
+				ask("wsPoolA", CacheBypassHeader, "bypass", CacheStoreHeader, "off")
+				ask(later)
+				if got := atomic.LoadInt64(calls); got != 2 {
+					t.Fatalf("the model was asked %d times, want 2 — %s was served the temporary chat's answer", got, later)
+				}
+				ask(later)
+				if got := atomic.LoadInt64(calls); got != 2 {
+					t.Fatalf("the model was asked %d times, want 2 — a plainly asked answer was not stored, so this test sees nothing", got)
+				}
+			})
+		}
+	}
+}
