@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -170,8 +171,9 @@ func TestMarketTools_AnAgentSearchesRentsAndUsesWithinItsRules(t *testing.T) {
 		t.Fatalf("after the covered use the agent has %d billed and %d licensed rows; want 1 and 1", billed, licensed)
 	}
 
-	if u, _ := call("market_use", `{"listing_id":"`+doubler.ID+`","variables":{"a":"1","b":"1"},"max_price_usd_micros":50000}`, false); u["charge"] != market.ChargeBilled {
-		t.Fatalf("a $0.05 use within a $0.05 max_price = %v; want it billed", u)
+	billedUse, _ := call("market_use", `{"listing_id":"`+doubler.ID+`","variables":{"a":"1","b":"1"},"max_price_usd_micros":50000}`, false)
+	if billedUse["charge"] != market.ChargeBilled {
+		t.Fatalf("a $0.05 use within a $0.05 max_price = %v; want it billed", billedUse)
 	}
 	if _, err := store.ReplaceOffers(ctx, seller, doubler.ID, []market.Offer{{Kind: market.OfferPerUse, Licence: market.LicenceCommercial, PriceUSDMicros: 100_000}}); err != nil {
 		t.Fatal(err)
@@ -183,6 +185,21 @@ func TestMarketTools_AnAgentSearchesRentsAndUsesWithinItsRules(t *testing.T) {
 	var doublerUses int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1`, doubler.ID).Scan(&doublerUses); err != nil || doublerUses != 1 {
 		t.Fatalf("the doubler has %d uses, %v; want only the one within the max price", doublerUses, err)
+	}
+	// B17.158: the buyer's bill (GET .../marketplace/bill) holds the rent and the one billed use — nothing for the
+	// refused rent, the licensed use or the use above the max price.
+	bill, err := store.MonthBill(ctx, buyer, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLines := map[string]string{rent["use_id"].(string): adder.ID + " 15000000", billedUse["id"].(string): doubler.ID + " 500000"}
+	if len(bill.Lines) != len(wantLines) {
+		t.Fatalf("the buyer's bill = %+v; want exactly the rent and the one billed use", bill.Lines)
+	}
+	for _, l := range bill.Lines {
+		if wantLines[l.UseID] != fmt.Sprintf("%s %d", l.ListingID, l.PriceULXC) || l.AgentID != agent.ID {
+			t.Fatalf("the buyer's bill line %+v; want one of %v by the agent", l, wantLines)
+		}
 	}
 
 	mine, _ := call("market_licences", `{}`, false)
