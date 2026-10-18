@@ -236,14 +236,29 @@ func (s *DualTokenStore) claimDuePrompt(ctx context.Context, now time.Time) (due
 	if _, err := tx.Exec(ctx, `UPDATE prompt_schedules SET next_run_at = $2, active = $2::timestamptz IS NOT NULL WHERE id = $1`, d.id, next); err != nil {
 		return d, false, fmt.Errorf("economy: advance prompt schedule: %w", err)
 	}
-	// The agent's oldest live key, as a room wallet's is read (rooms/wallet.go): the call is the agent's own.
-	err = tx.QueryRow(ctx, `SELECT a.scoped_key_id FROM agent_account_keys a JOIN workspace_api_keys k ON k.id::text = a.scoped_key_id
-		WHERE a.agent_id = $1 AND k.workspace_id = $2 AND (k.expires_at IS NULL OR k.expires_at > now())
-		ORDER BY a.created_at LIMIT 1`, agentID, d.workspaceID).Scan(&d.keyID)
+	err = tx.QueryRow(ctx, agentKeySQL, agentID, d.workspaceID).Scan(&d.keyID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return d, false, fmt.Errorf("economy: prompt schedule's key: %w", err)
 	}
 	return d, true, tx.Commit(ctx)
+}
+
+// agentKeySQL reads an agent's oldest live key, as a room wallet's is read (rooms/wallet.go): the call is the agent's own.
+const agentKeySQL = `SELECT a.scoped_key_id FROM agent_account_keys a JOIN workspace_api_keys k ON k.id::text = a.scoped_key_id
+	WHERE a.agent_id = $1 AND k.workspace_id = $2 AND (k.expires_at IS NULL OR k.expires_at > now())
+	ORDER BY a.created_at LIMIT 1`
+
+// AgentKey is the key a scheduled prompt of agentID's is asked with, "" when the agent has no live key.
+func (s *DualTokenStore) AgentKey(ctx context.Context, workspaceID, agentID string) (string, error) {
+	var key string
+	err := s.pool.QueryRow(ctx, agentKeySQL, agentID, workspaceID).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("economy: agent's key: %w", err)
+	}
+	return key, nil
 }
 
 // recordPromptRun records run with what the request cost the agent: every posting on its account the request's hold

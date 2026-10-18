@@ -160,6 +160,7 @@ type agentBank interface {
 	ListAgentScheduleRuns(ctx context.Context, workspaceID, scheduleID string) ([]economy.AgentScheduleRun, error)
 	CancelAgentSchedule(ctx context.Context, workspaceID, scheduleID string) error
 	CreatePromptSchedule(ctx context.Context, workspaceID, agentID, prompt, provider, model, every string, firstRunAt time.Time) (economy.PromptSchedule, error)
+	AgentKey(ctx context.Context, workspaceID, agentID string) (string, error)
 	ListPromptSchedules(ctx context.Context, workspaceID string) ([]economy.PromptSchedule, error)
 	StopPromptSchedule(ctx context.Context, workspaceID, scheduleID string) error
 	SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (economy.AgentTopUp, error)
@@ -755,6 +756,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
+			// B17.232: an agent made on Agent Wallets has no key until one is issued; it is asked as a key Lens issues
+			// it now and never shows, so the run is still the agent's own call, judged by its rules and paid by its wallet.
+			if err := ensurePromptKey(req.Context(), bank, keys, chi.URLParam(req, "wsID"), sc.AgentID); err != nil {
+				_ = bank.StopPromptSchedule(context.WithoutCancel(req.Context()), chi.URLParam(req, "wsID"), sc.ID)
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			writeJSONOK(w, http.StatusCreated, sc)
 		}
 	}))
@@ -1077,4 +1085,17 @@ func csvText(s string) string {
 		return "'" + s
 	}
 	return s
+}
+
+// ensurePromptKey issues agentID a proxy key, its plaintext discarded, when it has no live key to ask a scheduled
+// prompt with.
+func ensurePromptKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, wsID, agentID string) error {
+	if key, err := bank.AgentKey(ctx, wsID, agentID); err != nil || key != "" {
+		return err
+	}
+	_, key, err := keys.CreateAPIKey(ctx, wsID, "Scheduled prompts", []string{"proxy"}, nil)
+	if err != nil {
+		return fmt.Errorf("the agent's key for scheduled prompts: %w", err)
+	}
+	return bank.AttachAgentKey(ctx, wsID, agentID, key.ID)
 }
