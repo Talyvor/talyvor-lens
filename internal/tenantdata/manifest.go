@@ -309,6 +309,7 @@ var Manifest = map[string]Entry{
 	"subscription_events":           {Delete, ""},
 	"subscriptions":                 {Delete, ""},
 	"workspace_contracts":           {Delete, "B32.10: an Enterprise contract's plan and fees; the contract itself and its invoices are the operator's"},
+	"workspace_rate_limits":         {Delete, "B39.9: the request limits an operator gave the workspace"},
 	"lxc_reservations":              {Delete, ""},
 	"output_attributions":           {Delete, ""},
 	"pattern_mine_credits":          {Delete, ""},
