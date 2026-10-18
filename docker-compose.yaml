@@ -362,6 +362,9 @@ services:
       # 2026-06-12 chaos session; second occurrence needed a manual restart).
       # 3s keeps retries cheap while making recovery prompt.
       - SERVER_LOGIN_RETRY=3
+      # A query waiting for a server connection gives up after this many seconds (default 120) instead
+      # of riding out a Postgres outage to Lens's 60s request timeout (B39.5, #174; scripts/db-kill/run.py).
+      - QUERY_WAIT_TIMEOUT=5
     # autoheal opt-in (see the autoheal service): pgbouncer is the one service
     # observed wedging running-but-unhealthy (#174), and a wedged pooler serves
     # nothing — restart is always the right call. Deliberately NOT set on lens:

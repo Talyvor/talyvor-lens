@@ -1938,6 +1938,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// response — just not incrementally. A blocked output falls through to
 		// the JSON 422 below (errors aren't streamed).
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len("data: ")+len(clientBody)+len("\n\ndata: [DONE]\n\n")))
 		w.WriteHeader(clientStatus)
 		_, _ = w.Write([]byte("data: "))
 		_, _ = w.Write(clientBody)
@@ -1946,9 +1947,13 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		if w.Header().Get("Content-Type") == "" {
 			w.Header().Set("Content-Type", "application/json")
 		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(clientBody)))
 		w.WriteHeader(clientStatus)
 		_, _ = w.Write(clientBody)
 	}
+	// B39.5: the answer is complete on the wire now, so the client is not kept waiting on the writes below
+	// (each bounded at postAnswerWriteTimeout, but run one after another — 20 s with Postgres frozen, #174).
+	_ = http.NewResponseController(w).Flush()
 
 	// A blocked output is treated like a blocked request: no caching, no
 	// spend, no attribution. The guardrail block itself is recorded
