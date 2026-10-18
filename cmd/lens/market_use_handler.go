@@ -266,6 +266,9 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
+				if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
+					b.Invoice.InvoicePDF = "" // its PDF is the owner's, as the invoices list is
+				}
 				writeJSONOK(w, http.StatusOK, b)
 			}
 			return
