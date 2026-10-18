@@ -147,6 +147,9 @@ type UseDeps struct {
 	Runner Runner
 	Meter  Meter      // nil: paid listings cannot be used by anyone but their seller
 	Agents AgentJudge // nil: no agent keys
+	// Charged, when set, is told the use as charged once it is recorded, before it runs (B28.186: Chat names the
+	// charge on the answer it is about to stream).
+	Charged func(Use)
 }
 
 // Use runs listingID for buyerWorkspaceID (agentID when an agent's key asked; "" otherwise) and records
@@ -282,6 +285,9 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 		break
 	}
 
+	if deps.Charged != nil {
+		deps.Charged(u)
+	}
 	if l.Kind == "pipeline" {
 		err = runPipeline(ctx, deps.Runner, steps, req, &u)
 	} else {
