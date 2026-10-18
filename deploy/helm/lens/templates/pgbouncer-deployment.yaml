@@ -33,22 +33,33 @@ spec:
           env:
             # Postgres password comes from the same Secret as the Lens gateway
             # so operators manage one secret instead of two.
-            - name: POSTGRESQL_PASSWORD
+            - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "lens.secretName" . }}
                   key: {{ .Values.pgbouncer.postgresPasswordSecretKey | quote }}
+          # SELECT 1 through the pooler, as compose's healthcheck does: it proves the [databases]
+          # entry, auth and the backend end to end. A tcpSocket probe passes on a wedged pooler
+          # (#174), so Kubernetes would never restart it.
           livenessProbe:
-            tcpSocket:
-              port: pgbouncer
+            exec:
+              command:
+                - sh
+                - -c
+                - PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -p "$LISTEN_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            tcpSocket:
-              port: pgbouncer
+            exec:
+              command:
+                - sh
+                - -c
+                - PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -p "$LISTEN_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           {{- with .Values.pgbouncer.resources }}
           resources:

@@ -310,9 +310,10 @@ pgbouncer:
   #        PGBOUNCER_POSTGRES_PASSWORD: <same password>
   #      (PgBouncer reads credentials separately from the connection string.)
   enabled: false
-  # -- PgBouncer image. Bitnami's image configures itself from environment
-  # variables — no custom config file needed.
-  image: "bitnami/pgbouncer:1"
+  # -- PgBouncer image: edoburu/pgbouncer, pinned to the same digest as docker-compose.yaml
+  # (bitnami/pgbouncer:1 was purged from Docker Hub, #126). It configures itself from
+  # environment variables — no custom config file needed.
+  image: "edoburu/pgbouncer:v1.25.2-p0@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340"
   # -- Port PgBouncer listens on inside the container. The ClusterIP Service
   # always exposes port 5432 → this port so LENS_DATABASE_URL uses :5432.
   listenPort: 6432
@@ -338,6 +339,10 @@ pgbouncer:
   defaultPoolSize: 25
   # -- Minimum idle server connections kept warm.
   minPoolSize: 2
+  # -- Seconds PgBouncer waits before retrying a failed server login. PgBouncer's
+  # default is 15, which was half of the recovery time after a Postgres outage
+  # (#174); compose uses 3.
+  serverLoginRetry: 3
   # -- PgBouncer container resource requests/limits.
   resources: {}
 
