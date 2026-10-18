@@ -397,6 +397,10 @@ func runMigrate() error {
 	if err != nil {
 		return err
 	}
+	// B39.6: the lens_app / lens_retention roles and their grants, re-derived after every run.
+	if err := dbmigrate.ApplyRoles(ctx, conn, os.Getenv("LENS_APP_DB_PASSWORD"), os.Getenv("LENS_RETENTION_DB_PASSWORD")); err != nil {
+		return err
+	}
 	if len(applied) == 0 {
 		slog.Info("migrate: database already up to date")
 	} else {
@@ -1030,7 +1034,22 @@ func run() error {
 	// LENS_AUDIT_RETENTION > 0, and the off-box export is inert unless
 	// LENS_AUDIT_EXPORT_URL is set — StartSweeper/StartLoop return immediately when
 	// their feature is disabled, so leader election spins on a no-op.
-	auditRetention := audit.NewRetention(pool, cfg.AuditRetention,
+	// B39.6: under the lens_app role the main pool cannot DELETE token_events, so the sweeper takes
+	// the lens_retention role's own URL when one is set.
+	retentionPool := pool
+	if cfg.AuditRetentionDatabaseURL != "" {
+		rcfg, err := pgxpool.ParseConfig(injectSSLMode(cfg.AuditRetentionDatabaseURL, cfg.DBSSLMode))
+		if err != nil {
+			return fmt.Errorf("LENS_AUDIT_RETENTION_DATABASE_URL: %w", err)
+		}
+		rcfg.MaxConns = 2
+		rcfg.ConnConfig.DefaultQueryExecMode = poolCfg.ConnConfig.DefaultQueryExecMode
+		if retentionPool, err = pgxpool.NewWithConfig(ctx, rcfg); err != nil {
+			return fmt.Errorf("retention pgxpool: %w", err)
+		}
+		defer retentionPool.Close()
+	}
+	auditRetention := audit.NewRetention(retentionPool, cfg.AuditRetention,
 		cfg.AuditRequireExportBeforePrune, cfg.AuditExportURL != "")
 	go haComps.leader.Run(ctx, "audit-retention", 30*time.Second, func(lctx context.Context) {
 		auditRetention.StartSweeper(lctx, time.Hour)
