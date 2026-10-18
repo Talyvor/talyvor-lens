@@ -2421,49 +2421,8 @@ func run() error {
 	r.Group(func(pub chi.Router) {
 		pub.Use(ratelimit.RateLimitMiddleware(rateLimiter))
 
-		// Token earning rates — part of Lens's public economic surface.
-		econ.get(pub, "/v1/tokens/rates", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				// "cache" retired (Phase-4a Item 0 — superseded by pool-royalty).
-				"compute": map[string]any{
-					"base_per_1k_tokens_ulens": mining.ComputeMineBaseRate, // µLENS (SEC-2)
-					"multiplier_cpu":           mining.GPUMultiplierCPU,
-					"multiplier_rtx4090":       mining.GPUMultiplierRTX4090,
-					"multiplier_a100":          mining.GPUMultiplierA100,
-					"multiplier_h100":          mining.GPUMultiplierH100,
-				},
-				"embedding":  mining.EmbeddingRates(),
-				"annotation": mining.AnnotationRates(),
-				"pattern":    mining.PatternRates(),
-			})
-		})
-
-		// Economy stats (Batch 3 Phase 1).
-		econ.get(pub, "/v1/economy/stats", func(w http.ResponseWriter, req *http.Request) {
-			stats, err := marketplace.GetEconomyStats(req.Context())
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, stats)
-		})
-
 		// B18.1: the token exchange (/v1/marketplace/listings*, /v1/marketplace/trades) is no longer
 		// registered — see the note where its authenticated routes were.
-
-		// Aggregated routing patterns across opted-in workspaces.
-		econ.get(pub, "/v1/insights/routing", func(w http.ResponseWriter, req *http.Request) {
-			q := req.URL.Query()
-			insights, err := patternMiner.GetInsights(req.Context(),
-				q.Get("model"), q.Get("provider"), q.Get("feature"))
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, insights)
-		})
 
 		// Discovery: embedding nodes available for a model. UNAUTHENTICATED —
 		// see public_node_discovery.go for what an anonymous caller may learn.
@@ -2690,19 +2649,10 @@ func run() error {
 	r.Get("/", dashHandler.ServeHTTP)
 	dashReg{on: cfg.DashboardEnabled}.get(r, "/dashboard", dashHandler.ServeHTTP)
 
-	// Public oracle + economy endpoints — no auth, no PII, but rate-limited
+	// Public conversion-rate endpoints — no auth, no PII, but rate-limited
 	// to prevent scraping / DoS.
 	r.Group(func(pub chi.Router) {
 		pub.Use(ratelimit.RateLimitMiddleware(rateLimiter))
-
-		econ.get(pub, "/v1/oracle/stats", func(w http.ResponseWriter, req *http.Request) {
-			stats, err := oracleEngine.GetOracleStats(req.Context())
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, stats)
-		})
 
 		// Public conversion-rate surface (two-token split). The rate +
 		// its full derivation are public economic signal; no auth.
@@ -2972,6 +2922,58 @@ func run() error {
 			}
 			return &tare.Reducer{Kind: tare.KindProse, New: tareModel.Reduction}
 		})
+
+		// B39.3: the token-economy reads need a credential; the two that pool
+		// across workspaces (routing insights, the oracle queue) need the admin key.
+		// Token earning rates.
+		econ.get(authed, "/v1/tokens/rates", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				// "cache" retired (Phase-4a Item 0 — superseded by pool-royalty).
+				"compute": map[string]any{
+					"base_per_1k_tokens_ulens": mining.ComputeMineBaseRate, // µLENS (SEC-2)
+					"multiplier_cpu":           mining.GPUMultiplierCPU,
+					"multiplier_rtx4090":       mining.GPUMultiplierRTX4090,
+					"multiplier_a100":          mining.GPUMultiplierA100,
+					"multiplier_h100":          mining.GPUMultiplierH100,
+				},
+				"embedding":  mining.EmbeddingRates(),
+				"annotation": mining.AnnotationRates(),
+				"pattern":    mining.PatternRates(),
+			})
+		})
+
+		// Economy stats (Batch 3 Phase 1).
+		econ.get(authed, "/v1/economy/stats", func(w http.ResponseWriter, req *http.Request) {
+			stats, err := marketplace.GetEconomyStats(req.Context())
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSONOK(w, http.StatusOK, stats)
+		})
+
+		// Aggregated routing patterns across opted-in workspaces.
+		econ.get(authed, "/v1/insights/routing", requireAdmin(authManager, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			q := req.URL.Query()
+			insights, err := patternMiner.GetInsights(req.Context(),
+				q.Get("model"), q.Get("provider"), q.Get("feature"))
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSONOK(w, http.StatusOK, insights)
+		})))
+
+		econ.get(authed, "/v1/oracle/stats", requireAdmin(authManager, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			stats, err := oracleEngine.GetOracleStats(req.Context())
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSONOK(w, http.StatusOK, stats)
+		})))
 
 		// ADMIN-ONLY distill attribution read (S1 read-surface commitment).
 		// requireAdmin-gated: content_hash + counterparty workspace ids are
