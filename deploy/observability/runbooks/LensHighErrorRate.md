@@ -27,5 +27,7 @@ kubectl -n <ns> exec deploy/<release>-lens -- wget -qO- localhost:8080/readyz
 ## Mitigation
 - Bad deploy → `helm rollback <release>` (or `kubectl rollout undo`).
 - Dependency down → restore Postgres/Redis/NATS; `/readyz` will recover.
+  While Postgres is down, which requests are refused, served, and served unbilled is in
+  [docs/database-outage.md](../../../docs/database-outage.md).
 - Single provider → rely on breaker/fallback; consider disabling that provider.
 - Capacity → scale replicas (HA) or raise resource limits.

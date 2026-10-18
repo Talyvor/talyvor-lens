@@ -241,6 +241,8 @@ node-liveness channels are bus-backed). Current per-surface windows:
 
 Workspace-config and guardrail-policy propagation are both **test-proven** with two-instance-over-one-pool reload tests (a change on instance A becomes visible on instance B after its reload; a deletion reverts to default rather than lingering). The remaining windows (spend-cap ≈60 s, key-revocation ≈5 min) reflect current refresh/TTL constants and are **not yet enforced by tests**. Plan multi-replica rollouts accordingly.
 
+These windows assume a reachable database. What Lens does while Postgres is down — how long a revoked key keeps working, and whether workspace and agent requests are served and billed — is in [docs/database-outage.md](../../../docs/database-outage.md).
+
 **Guardrail fail-safe (security control).** Guardrails are a security control, so the load path fails *safe*, never *open*. If custom policies cannot be loaded at **startup** (DB unreachable or a corrupt row), the engine serves the locked-down default — PII redact + injection block stay ON for every workspace — and raises a loud `Degraded()` + ERROR, so the downgrade is visible, never silent. A **reload** failure *after* a prior good load retains the last-good policies (build-then-swap never publishes a partial map) and stays non-degraded, so a transient DB blip can never loosen a stricter-than-default workspace. A single corrupt row fails the whole rebuild rather than skipping just that row — skipping would silently downgrade that one tenant to the (possibly looser) default.
 
 ### Read scaling — optional read-replica (U8/U9)
