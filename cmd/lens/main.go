@@ -2935,7 +2935,7 @@ func run() error {
 		// document to Markdown through the KILLABLE subprocess (ProcessIsolator,
 		// using the proven-sufficient 512 MiB default) — never the in-process
 		// path. No model call, no token_events, no spend. A text-less/scanned
-		// doc returns needs_vision honestly (vision OCR is a later PR).
+		// doc returns needs_vision honestly (no vision model runs here).
 		distillPreview := &distillpreview.Handler{
 			Converter: &distill.ProcessIsolator{WorkerBin: cfg.DistillWorkerBin},
 			IsAdmin: func(req *http.Request) bool {

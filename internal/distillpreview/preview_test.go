@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -214,6 +215,28 @@ func TestPreview_RealIsolatorEndToEnd(t *testing.T) {
 	}
 	if md, _ := got["markdown"].(string); !strings.Contains(md, "# Hi") {
 		t.Errorf("real isolator should convert HTML→Markdown; got %q", md)
+	}
+}
+
+// B39.10: a real scanned PDF through the real preview path warns that a preview
+// runs no vision model — never that the vision converter "is a later PR".
+func TestPreview_ScannedPDFWarningSaysNoVisionRuns(t *testing.T) {
+	scanned, err := os.ReadFile("../distill/testdata/vision/memo.pdf") // image-only, no text layer
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &distillpreview.Handler{Converter: &distill.ProcessIsolator{WorkerBin: buildRealWorker(t)}, IsAdmin: adminYes}
+
+	w, got := post(t, h, "application/pdf", scanned, "")
+	if w.Code != http.StatusOK || got["needs_vision"] != true {
+		t.Fatalf("status=%d needs_vision=%v; body=%s", w.Code, got["needs_vision"], w.Body.String())
+	}
+	warn, _ := json.Marshal(got["warnings"])
+	if strings.Contains(string(warn), "later PR") {
+		t.Errorf("preview warning must not call vision OCR a later PR; got %s", warn)
+	}
+	if !strings.Contains(string(warn), "a preview runs no vision model") {
+		t.Errorf("preview warning must say no vision model ran; got %s", warn)
 	}
 }
 

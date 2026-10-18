@@ -100,6 +100,23 @@ func TestVision_RoutesNeedsVisionToDispatcher(t *testing.T) {
 	}
 }
 
+// B39.10: a served request's warnings say what happened — read by a vision
+// model and charged — never that the vision converter "is a later PR".
+func TestVision_ServedScannedPDFWarningsSayWhatHappens(t *testing.T) {
+	mv := &mockVision{md: "recovered", inTok: 10, outTok: 2}
+	res, _, err := DistillWithCache(context.Background(), nil, buildPDF(), WithVision(mv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(res.Warnings, "\n")
+	if strings.Contains(all, "later PR") {
+		t.Errorf("served warnings must not call vision OCR a later PR; got %q", all)
+	}
+	if !strings.Contains(all, "a vision model reads it") || !strings.Contains(all, "text recovered via vision-OCR") {
+		t.Errorf("served warnings must say a vision model read the document; got %q", all)
+	}
+}
+
 // The honesty assertion: vision OCR is SPEND. Its cost is recorded as a COST
 // (Savings.VisionTokensCost + the vision cost counter), tokens_saved is NOT
 // positive, and the distill_tokens_saved counter does NOT move. This is the
