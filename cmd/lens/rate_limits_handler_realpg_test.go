@@ -62,7 +62,6 @@ func TestRateLimits_ARaisedWorkspaceIsServedPastTheDefault(t *testing.T) {
 	t.Cleanup(func() { _ = rc.Close() })
 	limits := ratelimit.NewWorkspaceLimits(pool)
 	limiter := ratelimit.New(rc, ratelimit.DefaultRules())
-	limiter.AttachWorkspaceLimits(limits)
 
 	admin := chi.NewRouter()
 	admin.Put("/v1/admin/workspaces/{wsID}/rate-limits", newRateLimitsPutHandler(limits).ServeHTTP)
@@ -72,6 +71,12 @@ func TestRateLimits_ARaisedWorkspaceIsServedPastTheDefault(t *testing.T) {
 	if put.Code != http.StatusOK {
 		t.Fatalf("PUT rate-limits = %d %s", put.Code, put.Body)
 	}
+	// The limiter reads a second copy loaded from the table, as another instance would.
+	other := ratelimit.NewWorkspaceLimits(pool)
+	if err := other.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	limiter.AttachWorkspaceLimits(other)
 
 	served := ratelimit.RateLimitMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

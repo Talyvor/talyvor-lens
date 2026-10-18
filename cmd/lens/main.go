@@ -830,6 +830,10 @@ func run() error {
 	rateLimiter := ratelimit.New(redisClient, ratelimit.DefaultRules())
 	// B39.9: an operator can give one workspace its own limits (PUT /v1/admin/workspaces/{wsID}/rate-limits).
 	workspaceRateLimits := ratelimit.NewWorkspaceLimits(pool)
+	if err := workspaceRateLimits.Reload(ctx); err != nil {
+		logger.Warn("ratelimit: workspace limits load failed; defaults until the next reload", slog.String("err", err.Error()))
+	}
+	workspaceRateLimits.StartRefresh(ctx)
 	rateLimiter.AttachWorkspaceLimits(workspaceRateLimits)
 
 	// Token-bucket multi-tier limiter (Item 8). ⚠ ONE TIER, NO CALLER.
