@@ -14,6 +14,7 @@ type Limiter struct {
 	mu     sync.RWMutex
 	rules  []RateRule
 	shared SharedChecker
+	perWS  WorkspaceRuleSource
 }
 
 // SharedChecker is an optional authoritative cross-instance limiter (the HA
@@ -31,6 +32,14 @@ type SharedChecker interface {
 func (l *Limiter) AttachShared(s SharedChecker) {
 	l.mu.Lock()
 	l.shared = s
+	l.mu.Unlock()
+}
+
+// AttachWorkspaceLimits installs the operator's per-workspace limits (B39.9): a workspace that has its own
+// replaces the rules for every key of that workspace; every other workspace keeps them.
+func (l *Limiter) AttachWorkspaceLimits(src WorkspaceRuleSource) {
+	l.mu.Lock()
+	l.perWS = src
 	l.mu.Unlock()
 }
 
@@ -148,6 +157,14 @@ func windowsFor(rule RateRule) []window {
 // every request when Redis is briefly unavailable.
 func (l *Limiter) Check(ctx context.Context, wsID, keyID string) RateLimitResult {
 	rule := l.matchRule(wsID, keyID)
+	l.mu.RLock()
+	perWS := l.perWS
+	l.mu.RUnlock()
+	if perWS != nil && wsID != "" {
+		if own, ok := perWS.WorkspaceRule(ctx, wsID); ok {
+			rule = own
+		}
+	}
 
 	if l.redis == nil {
 		return RateLimitResult{Allowed: true}

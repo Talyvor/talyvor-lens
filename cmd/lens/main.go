@@ -828,6 +828,13 @@ func run() error {
 	// B18.3: the spending cap and rate limits set through PUT /v1/workspaces/{ws}/config are enforced.
 	p.SetWorkspaceLimits(tenantStore, spendTracker)
 	rateLimiter := ratelimit.New(redisClient, ratelimit.DefaultRules())
+	// B39.9: an operator can give one workspace its own limits (PUT /v1/admin/workspaces/{wsID}/rate-limits).
+	workspaceRateLimits := ratelimit.NewWorkspaceLimits(pool)
+	if err := workspaceRateLimits.Reload(ctx); err != nil {
+		logger.Warn("ratelimit: workspace limits load failed; defaults until the next reload", slog.String("err", err.Error()))
+	}
+	workspaceRateLimits.StartRefresh(ctx)
+	rateLimiter.AttachWorkspaceLimits(workspaceRateLimits)
 
 	// Token-bucket multi-tier limiter (Item 8). ⚠ ONE TIER, NO CALLER.
 	//
@@ -835,13 +842,13 @@ func run() error {
 	// that build a per-request limiter from tenant.WorkspaceConfig." Nothing does.
 	// The limiter is blank-assigned four lines below — "exposed for future
 	// per-request wiring" — and the two claims contradicted each other in the same
-	// screen. tenant.WorkspaceConfig has no production reader at all (W6.27;
-	// internal/tenant/enforcement_census_test.go pins that).
+	// screen.
 	//
-	// What actually rate-limits traffic is the legacy sliding-window limiter above,
-	// built from ratelimit.DefaultRules(): the SAME fixed 100/s · 1000/min ·
-	// 10000/hr for every workspace. rate_limit_rpm and rate_limit_tpm, which
-	// PUT /v1/workspaces/{wsID}/config accepts and stores, change nothing.
+	// What actually rate-limits traffic is the sliding-window limiter above:
+	// ratelimit.DefaultRules() (100/s · 1000/min · 10000/hr) for every workspace,
+	// except one an operator has given its own limits (B39.9, workspace_rate_limits).
+	// A workspace's own rate_limit_rpm and rate_limit_tpm, set through
+	// PUT /v1/workspaces/{wsID}/config, are enforced too (B18.3), and can only lower them.
 	multiTierLimiter := ratelimit.NewMultiTierLimiter(redisClient,
 		ratelimit.LimitTier{
 			Name: "global",
@@ -2541,6 +2548,10 @@ func run() error {
 	r.Get("/v1/admin/workspaces/{wsID}/contract", requireAdmin(authManager, newContractGetHandler(pool)))
 	r.Put("/v1/admin/workspaces/{wsID}/contract", requireAdmin(authManager, newContractPutHandler(pool)))
 	r.Delete("/v1/admin/workspaces/{wsID}/contract", requireAdmin(authManager, newContractDeleteHandler(pool)))
+	// B39.9 — the operator gives one workspace its own request limits, or puts it back on the defaults.
+	r.Get("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsGetHandler(workspaceRateLimits)))
+	r.Put("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsPutHandler(workspaceRateLimits)))
+	r.Delete("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsDeleteHandler(workspaceRateLimits)))
 	// B27.28 — the operator audit trail: the web app records each operator action on its moderator key
 	// (naming the operator), operators read it back filtered or as CSV. Append-only in the database (0182).
 	// operator_audit_handler.go.
