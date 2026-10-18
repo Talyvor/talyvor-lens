@@ -532,7 +532,9 @@ func (s *StreamHandler) serve(
 		// Use the workspace-scoped prompt for the cache key so streamed
 		// responses respect tenant isolation just like buffered ones. The raw
 		// prompt + wsID also feed the opt-in pooled (cross-tenant) write.
-		s.proxy.storeAnswer(storeCtx, provider, model, cachePrompt, prompt, sc.reqFP, sc.turn, sc.wsID, sc.requestID, cached)
+		wctx, cancel := detachBounded(storeCtx) // B39.4: storeCtx has no deadline; each write after the answer gets its own
+		s.proxy.storeAnswer(wctx, provider, model, cachePrompt, prompt, sc.reqFP, sc.turn, sc.wsID, sc.requestID, cached)
+		cancel()
 	}
 	// W4.9 SHADOW POOL LOG — the streaming lane carries the SAME paid provider call as the buffered
 	// one, so leaving it out would make the measured pooled hit rate a statement about half the
@@ -554,14 +556,18 @@ func (s *StreamHandler) serve(
 	// Close the streamed-spend gap: bill on the captured provider usage when
 	// present, else the len/4 estimate. A streamed request must never again
 	// be invisible to budgets/alerts.
-	settled, chatULXC := s.proxy.recordStreamSpend(storeCtx, sc, usage, accumulated.String())
+	spendCtx, cancelSpend := detachBounded(storeCtx)
+	settled, chatULXC := s.proxy.recordStreamSpend(spendCtx, sc, usage, accumulated.String())
+	cancelSpend()
 	if reportCharge {
 		if chatULXC >= 0 {
 			write([][]byte{[]byte("event: " + chargeFrame), []byte(fmt.Sprintf(`data: {"type":%q,"charged_ulxc":%d}`, chargeFrame, chatULXC)), {}})
 		}
 		write(held)
 	}
-	s.proxy.recordStreamPostServe(storeCtx, r, sc, usage, prompt, accumulated.String(), cached, qualityScore, scored, settled)
+	postCtx, cancelPost := detachBounded(storeCtx)
+	defer cancelPost()
+	s.proxy.recordStreamPostServe(postCtx, r, sc, usage, prompt, accumulated.String(), cached, qualityScore, scored, settled)
 	return nil
 }
 

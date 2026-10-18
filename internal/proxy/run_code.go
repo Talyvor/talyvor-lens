@@ -113,8 +113,10 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 		if rec.Code != http.StatusOK || n == maxCodeRounds || !onlyRunCode(calls) {
 			writeRunCodeAnswer(w, rec, committed)
 			if rec.Code == http.StatusOK && len(calls) == 0 && rc.keyed && rc.answer != nil {
-				p.storeAnswer(withCacheStoreHeader(context.WithoutCancel(base), r), rc.provider, rc.model, rc.cachePrompt,
+				sctx, cancel := detachBounded(base) // B39.4
+				p.storeAnswer(withCacheStoreHeader(sctx, r), rc.provider, rc.model, rc.cachePrompt,
 					rc.prompt, rc.reqFP, rc.turn, rc.wsID, rc.requestID, rc.answer)
+				cancel()
 			}
 			return
 		}

@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/talyvor/lens/internal/alerts"
 	"github.com/talyvor/lens/internal/auth"
@@ -314,6 +315,17 @@ func (p *Proxy) agentReserve(ctx context.Context, apiKeyID, wsID, model, prompt,
 	return withReservation(ctx, reservationHandle{reservationID: reservationID, requestID: requestID}), nil
 }
 
+// postAnswerWriteTimeout bounds each write Lens makes after the answer is sent (B39.4). The pool sets no statement
+// or lock timeout, so without it a write stuck on a locked row or a full pool waits forever and holds its connection.
+const postAnswerWriteTimeout = 10 * time.Second
+
+// detachBounded detaches ctx from the request's cancellation, keeping its values, and gives it its own
+// postAnswerWriteTimeout: a write after the answer survives a client hanging up but cannot hang forever.
+// A write that times out fails as any failed write does — logged and, where it is counted, counted.
+func detachBounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), postAnswerWriteTimeout)
+}
+
 // settleReservation SETTLES the held reservation (if any) to the DELIVERED cost — called at the post-serve
 // seam so the hold is released PROMPTLY, not on a timer (the sweeper is for crashes only). deliveredUSD is
 // converted to µLXC (ceil); the primitive clamps to [0, held] so a mis-estimate cannot over-bill.
@@ -340,7 +352,8 @@ func (p *Proxy) settleReservationBasis(ctx context.Context, deliveredUSD float64
 	// B27.4: every settle runs after the answer is written, so a client that hangs up right then cancels
 	// r's context. Detach it (values kept), as the streamed seam's storeCtx does, or the settle aborts, the
 	// hold is swept and refunded, and the question is free. The same holds for every settle and release below.
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := detachBounded(ctx)
+	defer cancel()
 	finalLXC := int64(0)
 	if deliveredUSD > 0 {
 		finalLXC = int64(math.Ceil(deliveredUSD / economy.LXCUSDValue * 1e6))
@@ -381,7 +394,8 @@ func (p *Proxy) settleAgentDebitULXC(ctx context.Context, wsID string, delivered
 	if !ok || p.agentSpender == nil {
 		return 0, false
 	}
-	ctx = context.WithoutCancel(ctx) // B27.4: see settleReservationBasis
+	ctx, cancel := detachBounded(ctx) // B27.4, B39.4: see settleReservationBasis
+	defer cancel()
 	meta.RequestedModel, meta.RequestID = d.requestedModel, d.requestID
 	s, err := p.agentSpender.SettleAgentDebit(ctx, wsID, d.debitKey, deliveredLXC, meta)
 	if err != nil {
@@ -439,7 +453,8 @@ func (p *Proxy) settleReservationPooled(ctx context.Context, chargedUSD float64,
 	if !ok || p.agentSpender == nil {
 		return 0 // no reservation ⇒ the consumer was charged nothing (plain key / path off)
 	}
-	ctx = context.WithoutCancel(ctx) // B27.4: see settleReservationBasis
+	ctx, cancel := detachBounded(ctx) // B27.4, B39.4: see settleReservationBasis
+	defer cancel()
 	settledLXC, cashBackedLXC, err := p.agentSpender.SettleLXCReservation(ctx, h.reservationID, price.ChargedULXC,
 		economy.AgentDebitMeta{ServedModel: price.modelForRow, PriceBasis: price.PriceBasis,
 			PoolListULXC: price.ListULXC, PoolDiscountRate: price.Rate})
@@ -472,7 +487,8 @@ func (p *Proxy) releaseReservation(ctx context.Context, reason string) {
 	if !ok || p.agentSpender == nil {
 		return
 	}
-	ctx = context.WithoutCancel(ctx) // B27.4: see settleReservationBasis
+	ctx, cancel := detachBounded(ctx) // B27.4, B39.4: see settleReservationBasis
+	defer cancel()
 	if err := p.agentSpender.ReleaseLXCReservation(ctx, h.reservationID, reason); err != nil {
 		slog.Warn("economy: reservation release failed (hold will be swept/refunded)",
 			slog.String("reservation", h.reservationID), slog.String("err", err.Error()))
