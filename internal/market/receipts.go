@@ -58,6 +58,7 @@ type Receipts struct {
 	Supplier Supplier
 	Buyers   ReceiptBuyers // nil: the buyer is printed by its workspace's name
 	Rates    ReceiptRates  // nil: no tax in the buyer's currency
+	AppURL   string        // the app's origin, where a test bill's invoice links its receipt's PDF (B28.140); "": it links none
 }
 
 // SetReceipts turns receipts on: every marketplace bill paid from now on gets one.

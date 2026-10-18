@@ -2174,9 +2174,10 @@ func run() error {
 		slog.Warn("compliance: LENS_OPERATOR_STEP_UP_SECRET is not set; the compliance case actions and screening decisions answer 503 until it is")
 	}
 	// B32.40 — every paid marketplace bill gets Talyvor's receipt, as the supplier: the buyer as its tax profile names
-	// it, and the tax also in the buyer's currency at the ECB's reference rate.
+	// it, and the tax also in the buyer's currency at the ECB's reference rate; a test bill's invoice links it on the app's
+	// origin (B28.140).
 	marketStore.SetReceipts(market.Receipts{Supplier: market.Supplier{LegalName: cfg.SupplierLegalName, Address: cfg.SupplierAddress,
-		VATNumber: cfg.SupplierVATNumber}, Buyers: taxProfiles, Rates: ecbRates})
+		VATNumber: cfg.SupplierVATNumber}, Buyers: taxProfiles, Rates: ecbRates, AppURL: cfg.WebAuthnOrigins[0]})
 	marketStore.SetDisplayRates(ecbRates) // B32.51: listing reads show each offer in the buyer's currency
 	// B32.43 — to a seller who agreed to self-billing each weekly payout is also a self-billed invoice from them to
 	// Talyvor, with the VAT on their supply worked out by the tax partner and paid on top — at zero, "under review",

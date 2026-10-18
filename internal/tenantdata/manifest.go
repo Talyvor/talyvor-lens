@@ -245,6 +245,7 @@ var Manifest = map[string]Entry{
 	"agent_escrows":                {Delete, "B22.6: keys `payer_workspace_id`+`payee_workspace_id`: credits one agent paid into escrow for another, and their state; its money is in agent_postings and lxc_ledger"},
 	"agent_debit_settlements":      {Delete, "B23.13: how each agent question's pre-serve estimate was settled to its delivered cost and what its limit wrote off; the credits' movements are in agent_postings and lxc_ledger"},
 	"market_bills":                 {Delete, "B20.2: the Stripe subscription a buyer's marketplace uses are metered onto"},
+	"market_invoices":              {Delete, "B28.140: keys `buyer_workspace_id`: each paid invoice of a buyer's marketplace bill — its billing period, number and Stripe's PDF"},
 	"market_sellers":               {Delete, "B20.5: the seller's connected Stripe account and what Stripe last said of it"},
 	"market_remix_grants":          {Delete, "B32.25: the remix licences a workspace accepted, one per listing version, each with the share it locked"},
 	"rooms":                        {Delete, "B32.28: keys `owner_workspace_id`: the rooms a workspace opened; their terms, members and agents cascade"},

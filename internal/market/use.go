@@ -893,20 +893,27 @@ type Bill struct {
 	TaxUSDMicros   int64      `json:"tax_usd_micros"`
 	GrossUSDMicros int64      `json:"gross_usd_micros"`
 	Lines          []BillLine `json:"lines"`
+	Invoice        *Invoice   `json:"invoice,omitempty"` // the invoice it was read for (B28.140, invoices.go)
 }
 
 // MonthBill reads the billed uses buyerWorkspaceID made in month ("2006-01").
 func (s *Store) MonthBill(ctx context.Context, buyerWorkspaceID string, month time.Time) (Bill, error) {
 	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
-	b := Bill{Month: from.Format("2006-01"), Lines: []BillLine{}}
+	return s.bill(ctx, Bill{Month: from.Format("2006-01")}, `u.ran_at IS NOT NULL AND u.used_at >= $2 AND u.used_at < $3`,
+		buyerWorkspaceID, from, from.AddDate(0, 1, 0))
+}
+
+// bill reads into b the buyer's ($1) billed uses that match where, and totals them.
+func (s *Store) bill(ctx context.Context, b Bill, where string, args ...any) (Bill, error) {
+	b.Lines = []BillLine{}
 	rows, err := s.pool.Query(ctx, `SELECT u.id, u.listing_id, COALESCE(l.title, 'Payment to ' || a.name, ''), u.agent_id, u.price_ulxc, u.used_at, u.cleared_at,
 		       r.refunded_at, u.payee_agent_id, u.memo, COALESCE(t.tax_usd_micros, 0), COALESCE(t.rate_bps, 0), COALESCE(t.jurisdiction, ''),
 		       COALESCE(t.treatment, ''), COALESCE(t.note, '')
 		FROM market_uses u LEFT JOIN market_listings l ON l.id = u.listing_id LEFT JOIN market_refunds r ON r.use_id = u.id
 		LEFT JOIN agent_accounts a ON a.id = u.payee_agent_id AND u.payee_agent_id <> ''
 		LEFT JOIN market_tax_lines t ON t.use_id = u.id
-		WHERE u.buyer_workspace_id = $1 AND u.charge = 'billed' AND u.ran_at IS NOT NULL AND u.used_at >= $2 AND u.used_at < $3
-		ORDER BY u.used_at, u.id`, buyerWorkspaceID, from, from.AddDate(0, 1, 0))
+		WHERE u.buyer_workspace_id = $1 AND u.charge = 'billed' AND `+where+`
+		ORDER BY u.used_at, u.id`, args...)
 	if err != nil {
 		return b, fmt.Errorf("market: bill: %w", err)
 	}

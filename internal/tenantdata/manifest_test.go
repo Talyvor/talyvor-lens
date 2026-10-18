@@ -327,6 +327,7 @@ var w626PopulationDelta = []string{
 	"distill_royalty_basis", "distill_royalty_mints", "distill_serve_attribution",
 	"eval_contribution_mints", "eval_correctness_attestations",
 	"market_earnings",
+	"market_invoices",        // B28.140: keyed buyer_workspace_id, classified in the manifest
 	"market_ip_claims",       // B32.47: keyed claimant_workspace_id, classified in the manifest
 	"market_licences",        // B32.19: keyed buyer_workspace_id, classified in the manifest
 	"market_listing_reports", // B20.2: keyed reporter_workspace_id, classified in the manifest

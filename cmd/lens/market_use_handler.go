@@ -17,6 +17,7 @@ import (
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/mcp"
+	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/workspace"
 )
 
@@ -29,6 +30,8 @@ import (
 //	GET  /v1/workspaces/{wsID}/marketplace/earnings            the seller's payable, in holdback and available (µUSD)
 //	GET  /v1/workspaces/{wsID}/marketplace/journal             the seller's holdback and available on the journal, and whether they reconcile (B32.17)
 //	GET  /v1/workspaces/{wsID}/marketplace/bill?month=2026-09  the buyer's billed uses in a month
+//	GET  /v1/workspaces/{wsID}/marketplace/bill?invoice=in_…   B28.140: the uses one invoice carried ("upcoming": the period in progress)
+//	GET  /v1/workspaces/{wsID}/marketplace/invoices            B28.140: the bill's invoices, newest first, the period in progress first
 //
 // A use runs the listing through Lens's own proxy with the caller's credential, so the models it calls are
 // billed to the buyer as usual; a paid listing's price then goes on the buyer's monthly marketplace bill.
@@ -241,7 +244,32 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 			"reconciled":                 j.OK(),
 		})
 	})
+	r.Get("/v1/workspaces/{wsID}/marketplace/invoices", func(w http.ResponseWriter, req *http.Request) {
+		// Stripe's PDF of an invoice prints the buyer's name and address, as a receipt does: the owner's or an admin's.
+		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may read its invoices")
+			return
+		}
+		list, err := store.Invoices(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"invoices": list})
+	})
 	r.Get("/v1/workspaces/{wsID}/marketplace/bill", func(w http.ResponseWriter, req *http.Request) {
+		if id := req.URL.Query().Get("invoice"); id != "" { // B28.140: the uses one invoice carried
+			b, err := store.InvoiceBill(req.Context(), chi.URLParam(req, "wsID"), id)
+			switch {
+			case errors.Is(err, market.ErrNoInvoice):
+				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case err != nil:
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			default:
+				writeJSONOK(w, http.StatusOK, b)
+			}
+			return
+		}
 		month := time.Now().UTC()
 		if m := req.URL.Query().Get("month"); m != "" {
 			t, err := time.Parse("2006-01", m)
