@@ -68,6 +68,10 @@ func (p *Proxy) storeAnswer(ctx context.Context, provider, model, cachePrompt, r
 	if cacheStoreOff(ctx) {
 		return
 	}
+	if rc := runCodeAnswerOf(ctx); rc != nil {
+		rc.answer = response // serveRunningCode stores the finished answer under its first round's key
+		return
+	}
 	if p.storeCaches(ctx, provider, model, cachePrompt, rawPrompt, reqFP, turn, wsID, response) {
 		p.rememberServed(ctx, wsID, requestID, "fresh", nil, answerHashes(provider, model, cachePrompt, rawPrompt, reqFP), "", response)
 	}
