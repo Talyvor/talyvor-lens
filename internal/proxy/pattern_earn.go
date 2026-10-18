@@ -88,7 +88,8 @@ func (p *Proxy) earnPattern(ctx context.Context, piiDetected, guardrailFired boo
 	earnWS := ak.WorkspaceID
 	// Detached: post-serve, must outlive client cancellation and cannot affect
 	// the served response (the IsOptedIn read + the credit both ride this).
-	dctx := context.WithoutCancel(ctx)
+	dctx, cancel := detachBounded(ctx) // B39.4: and bounded, so it cannot hang on a locked row
+	defer cancel()
 	optedIn, err := p.patternEarnSink.IsOptedIn(dctx, earnWS)
 	if err != nil || !optedIn {
 		return false // not opted-in, or read error (fail-safe) — caller runs capture

@@ -74,7 +74,8 @@ func (p *Proxy) recordDistillServes(ctx context.Context, requester string, loggi
 	if loggingPolicy == workspace.LoggingNone {
 		return // the row records a content hash; honor the no-logging posture
 	}
-	dctx := context.WithoutCancel(ctx)
+	dctx, cancel := detachBounded(ctx) // B39.4: and bounded, so it cannot hang on a locked row
+	defer cancel()
 	for _, f := range facts {
 		if f.owner == "" {
 			continue // no owner stamp ⇒ nothing to attribute (defensive)

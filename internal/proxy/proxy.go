@@ -2915,8 +2915,10 @@ func (p *Proxy) mintPooledRoyalty(ctx context.Context, hit *poolroyalty.ServedHi
 	// response must not cancel the contributor's royalty mid-transaction.
 	// WithoutCancel keeps the request's values (trace) but detaches its
 	// cancellation; the mint is synchronous-after-flush, so it adds no
-	// client-visible latency either way.
-	res, err := p.royaltyMinter.MintServedHit(context.WithoutCancel(ctx), *hit)
+	// client-visible latency either way. Bounded, so a mint stuck on a lock gives up (B39.4).
+	mctx, cancel := detachBounded(ctx)
+	defer cancel()
+	res, err := p.royaltyMinter.MintServedHit(mctx, *hit)
 	if err != nil {
 		// On a clean error the tx rolled back (claim + credit together) and a
 		// retry can mint; on an ambiguous commit error the claim may have
