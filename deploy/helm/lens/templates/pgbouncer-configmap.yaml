@@ -7,14 +7,22 @@ metadata:
     {{- include "lens.labels" . | nindent 4 }}
     app.kubernetes.io/component: pgbouncer
 data:
-  POSTGRESQL_HOST: {{ required "pgbouncer.postgresHost is required when pgbouncer.enabled=true" .Values.pgbouncer.postgresHost | quote }}
-  POSTGRESQL_PORT: {{ .Values.pgbouncer.postgresPort | quote }}
-  POSTGRESQL_DATABASE: {{ .Values.pgbouncer.postgresDatabase | quote }}
-  POSTGRESQL_USERNAME: {{ .Values.pgbouncer.postgresUsername | quote }}
-  PGBOUNCER_PORT: {{ .Values.pgbouncer.listenPort | quote }}
-  PGBOUNCER_POOL_MODE: {{ .Values.pgbouncer.poolMode | quote }}
-  PGBOUNCER_MAX_CLIENT_CONN: {{ .Values.pgbouncer.maxClientConn | quote }}
-  PGBOUNCER_DEFAULT_POOL_SIZE: {{ .Values.pgbouncer.defaultPoolSize | quote }}
-  PGBOUNCER_MIN_POOL_SIZE: {{ .Values.pgbouncer.minPoolSize | quote }}
-  PGBOUNCER_SERVER_IDLE_TIMEOUT: "600"
+  # edoburu/pgbouncer's variables — the same set docker-compose.yaml's pgbouncer service uses.
+  DB_HOST: {{ required "pgbouncer.postgresHost is required when pgbouncer.enabled=true" .Values.pgbouncer.postgresHost | quote }}
+  DB_PORT: {{ .Values.pgbouncer.postgresPort | quote }}
+  DB_NAME: {{ .Values.pgbouncer.postgresDatabase | quote }}
+  DB_USER: {{ .Values.pgbouncer.postgresUsername | quote }}
+  LISTEN_PORT: {{ .Values.pgbouncer.listenPort | quote }}
+  # Image default is md5; scram-sha-256 keeps the plaintext password in the userlist so both legs
+  # (client→pgbouncer, pgbouncer→postgres) can complete SCRAM, which Postgres 14+ stores by default.
+  AUTH_TYPE: "scram-sha-256"
+  POOL_MODE: {{ .Values.pgbouncer.poolMode | quote }}
+  MAX_CLIENT_CONN: {{ .Values.pgbouncer.maxClientConn | quote }}
+  DEFAULT_POOL_SIZE: {{ .Values.pgbouncer.defaultPoolSize | quote }}
+  MIN_POOL_SIZE: {{ .Values.pgbouncer.minPoolSize | quote }}
+  SERVER_IDLE_TIMEOUT: "600"
+  SERVER_LOGIN_RETRY: {{ .Values.pgbouncer.serverLoginRetry | quote }}
+  # A query waiting for a server connection gives up after 5s instead of riding out a Postgres
+  # outage to Lens's request timeout — compose's value (B39.5, #174).
+  QUERY_WAIT_TIMEOUT: "5"
 {{- end }}

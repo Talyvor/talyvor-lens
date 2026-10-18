@@ -62,7 +62,10 @@ def split_ref(ref):
         host, rest = ref.split("/", 1)
     else:
         host, rest = "docker.io", ref
-    if ":" in rest.split("/")[-1]:
+    if "@" in rest:  # `repo:tag@sha256:…` — the digest is what gets pulled, so probe that
+        repo, tag = rest.split("@", 1)
+        repo = repo.rsplit(":", 1)[0] if ":" in repo.split("/")[-1] else repo
+    elif ":" in rest.split("/")[-1]:
         repo, tag = rest.rsplit(":", 1)
     else:
         repo, tag = rest, "latest"
@@ -99,6 +102,7 @@ CONTROLS = [
     ("ghcr.io/gitleaks/gitleaks:latest", True),
     ("ghcr.io/gitleaks/gitleaks:v8.30.1", True),
     ("docker.io/library/postgres:16", True),          # the Docker Hub path must work too
+    ("postgres:16@sha256:" + "0" * 64, False),        # a digest must be probed, not a tag  -> 404
     ("ghcr.io/gitleaks/gitleaks:no-such-tag-9f3a2b", False),   # public repo, absent tag -> 404
     ("ghcr.io/talyvor/no-such-image-9f3a2b:latest", False),    # absent image        -> not pullable
     # ⚠ A BADLY CHOSEN CONTROL IS NOT A BROKEN PROBE. An earlier run used
