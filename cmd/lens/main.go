@@ -2802,11 +2802,16 @@ func run() error {
 		// created with an explicit, non-proxy scope set (e.g. scopes:["analytics"])
 		// is refused here (403). Admin (the global key) bypasses via IsAdmin.
 		proxyScope := auth.RequireScope(auth.ScopeProxy)
+		// B28.186: a Chat request naming a marketplace listing (X-Talyvor-Listing) is asked through it, as one use of it.
+		// Wrapping the handler, not a With(...): the route censuses read each registration's With(proxyScope) as written.
+		listingOpenAI := chatListing(marketStore, marketMeter, dualToken, chatShapeOpenAI)
+		listingAnthropic := chatListing(marketStore, marketMeter, dualToken, chatShapeAnthropic)
+		listingNone := chatListing(marketStore, marketMeter, dualToken, "")
 
-		authed.With(proxyScope).Post("/v1/proxy/openai/*", p.HandleOpenAI)
-		authed.With(proxyScope).Post("/v1/proxy/anthropic/*", p.HandleAnthropic)
-		authed.With(proxyScope).Post("/v1/proxy/google/*", p.HandleGoogle)
-		authed.With(proxyScope).Post("/v1/proxy/bedrock/*", p.HandleBedrock)
+		authed.With(proxyScope).Post("/v1/proxy/openai/*", listingOpenAI(p.HandleOpenAI))
+		authed.With(proxyScope).Post("/v1/proxy/anthropic/*", listingAnthropic(p.HandleAnthropic))
+		authed.With(proxyScope).Post("/v1/proxy/google/*", listingNone(p.HandleGoogle))
+		authed.With(proxyScope).Post("/v1/proxy/bedrock/*", listingNone(p.HandleBedrock))
 		authed.With(proxyScope).Post("/v1/documents", documents.UploadHandler(docStore)) // B18.13
 		// K4 output verdicts — WORKSPACE-SCOPED read: a tenant sees ONLY its OWN verdicts (scoped to the
 		// authenticated WorkspaceID; never another's). Intra-tenant by construction.
@@ -2841,17 +2846,17 @@ func run() error {
 		// Bond READ-BACK (list + owner-scoped get) — gated on the SAME flag as the write siblings, so
 		// flag-off ⇒ the routes are never registered (chi 404).
 		registerBondReadRoutes(authed, cfg.H5BondsEnabled, authManager, bondReader)
-		authed.With(proxyScope).Post("/v1/proxy/mistral/*", p.HandleExtraProvider("mistral"))
-		authed.With(proxyScope).Post("/v1/proxy/groq/*", p.HandleExtraProvider("groq"))
-		authed.With(proxyScope).Post("/v1/proxy/vllm/*", p.HandleExtraProvider("vllm"))
+		authed.With(proxyScope).Post("/v1/proxy/mistral/*", listingOpenAI(p.HandleExtraProvider("mistral")))
+		authed.With(proxyScope).Post("/v1/proxy/groq/*", listingOpenAI(p.HandleExtraProvider("groq")))
+		authed.With(proxyScope).Post("/v1/proxy/vllm/*", listingOpenAI(p.HandleExtraProvider("vllm")))
 
 		// Helicone-shape URL prefixes. First-class routes (not a
 		// deprecated alias) — migrating teams can keep these URLs
 		// indefinitely. The compat middleware above strips the
 		// Helicone-Auth / Helicone-Property-* headers before the
 		// proxy handler runs.
-		authed.With(proxyScope).Post("/oai/*", p.HandleOpenAI)
-		authed.With(proxyScope).Post("/anthropic/*", p.HandleAnthropic)
+		authed.With(proxyScope).Post("/oai/*", listingOpenAI(p.HandleOpenAI))
+		authed.With(proxyScope).Post("/anthropic/*", listingAnthropic(p.HandleAnthropic))
 
 		authed.Post("/v1/api/keys", newCreateAPIKeyHandler(keyStore))
 

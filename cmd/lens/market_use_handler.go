@@ -100,42 +100,9 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 		}
 		deps := market.UseDeps{Runner: proxyRunner{lens: lens, from: req}, Meter: m, Agents: agents}
 		u, err := store.Use(req.Context(), deps, wsID, agentID, chi.URLParam(req, "listingID"), in)
-		var need *economy.ApprovalNeededError
-		var ran *runError
 		switch {
-		case errors.As(err, &need):
-			writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "approval_id": need.ApprovalID})
-		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, market.ErrNotSoldHere):
-			writeJSONErr(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, market.ErrNotFound):
-			writeJSONErr(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, market.ErrTakenDown):
-			writeJSONErr(w, http.StatusGone, err.Error())
-		case errors.Is(err, market.ErrNotSoldPerUse), errors.Is(err, market.ErrOverMaxPrice):
-			writeJSONErr(w, http.StatusConflict, err.Error())
-		case errors.Is(err, market.ErrInvalid), errors.Is(err, market.ErrNoModel):
-			writeJSONErr(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, market.ErrNotRunnable):
-			writeJSONErr(w, http.StatusNotImplemented, err.Error())
-		case errors.Is(err, market.ErrNoBill):
-			if byKind.isTest != nil {
-				if _, why := byKind.billFor(wsID); why != nil {
-					writeJSONErr(w, http.StatusForbidden, why.Error())
-					return
-				}
-			}
-			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
-		case errors.As(err, &ran):
-			// The buyer's own limits pass through (no credit, rate limited, a model their agent may not use). A
-			// 401 cannot be the buyer's credential — it just passed the same authentication — so it is the
-			// provider's, and a bad gateway.
-			status := http.StatusBadGateway
-			if ran.status >= 400 && ran.status < 500 && ran.status != http.StatusUnauthorized {
-				status = ran.status
-			}
-			writeJSONErr(w, status, err.Error())
 		case err != nil:
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			writeMarketUseErr(w, err, byKind, wsID)
 		default:
 			if u.MeterError != "" {
 				slog.Warn("market: a use ran but is not yet on the buyer's bill; the next pass bills it",
@@ -289,6 +256,47 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 		}
 		writeJSONOK(w, http.StatusOK, b)
 	})
+}
+
+// writeMarketUseErr answers a use Store.Use refused or could not run.
+func writeMarketUseErr(w http.ResponseWriter, err error, byKind stripeByKind, wsID string) {
+	var need *economy.ApprovalNeededError
+	var ran *runError
+	switch {
+	case errors.As(err, &need):
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "approval_id": need.ApprovalID})
+	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, market.ErrNotSoldHere):
+		writeJSONErr(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, market.ErrNotFound):
+		writeJSONErr(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, market.ErrTakenDown):
+		writeJSONErr(w, http.StatusGone, err.Error())
+	case errors.Is(err, market.ErrNotSoldPerUse), errors.Is(err, market.ErrOverMaxPrice):
+		writeJSONErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, market.ErrInvalid), errors.Is(err, market.ErrNoModel):
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, market.ErrNotRunnable):
+		writeJSONErr(w, http.StatusNotImplemented, err.Error())
+	case errors.Is(err, market.ErrNoBill):
+		if byKind.isTest != nil {
+			if _, why := byKind.billFor(wsID); why != nil {
+				writeJSONErr(w, http.StatusForbidden, why.Error())
+				return
+			}
+		}
+		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+	case errors.As(err, &ran):
+		// The buyer's own limits pass through (no credit, rate limited, a model their agent may not use). A
+		// 401 cannot be the buyer's credential — it just passed the same authentication — so it is the
+		// provider's, and a bad gateway.
+		status := http.StatusBadGateway
+		if ran.status >= 400 && ran.status < 500 && ran.status != http.StatusUnauthorized {
+			status = ran.status
+		}
+		writeJSONErr(w, status, err.Error())
+	default:
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // refundTakenDownMarketUses finishes what a takedown could not (B20.4): it refunds a use that was running
