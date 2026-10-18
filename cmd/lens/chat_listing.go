@@ -76,7 +76,8 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 			lw := &listingWriter{ResponseWriter: w}
 			run := &chatListingRunner{next: next, w: lw, r: r, body: body, shape: shape}
 			deps := market.UseDeps{Runner: run, Meter: m, Agents: agents, Charged: func(u market.Use) {
-				lw.charge, run.kind = u.Charge, u.Kind
+				w.Header().Set(listingChargeHeader, u.Charge)
+				run.kind = u.Kind
 			}}
 			// The runner sends the chat's own messages; Input only satisfies the use's plan, which needs one. A chat that
 			// hangs up once its answer is in cannot cancel the use's record and its bill: only the model call is the chat's.
@@ -85,7 +86,7 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 			case err != nil && lw.status != 0:
 				// The model call answered, and was relayed as it is; the use was removed and is not charged.
 			case err != nil:
-				writeMarketUseErr(w, err, byKind, wsID)
+				writeMarketUseErr(lw, err, byKind, wsID)
 			case u.MeterError != "":
 				slog.Warn("market: a chat's use ran but is not yet on the buyer's bill; the next pass bills it",
 					"use", u.ID, "workspace", wsID, "err", u.MeterError)
@@ -118,6 +119,9 @@ func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.M
 	req := c.r.Clone(c.r.Context())
 	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(b)), int64(len(b))
 	c.next.ServeHTTP(c.w, req)
+	if c.w.status == 0 {
+		c.w.status = http.StatusOK // written without a WriteHeader
+	}
 	if c.w.status/100 != 2 {
 		return "", &runError{status: c.w.status, body: "the model call was not answered"}
 	}
@@ -159,28 +163,20 @@ func rawJSON(v any) json.RawMessage {
 	return b
 }
 
-// listingWriter relays the proxy's answer, naming the use's charge on a 2xx, and keeps the status it answered.
+// listingWriter relays the proxy's answer and keeps the status it answered; the use's charge is named only on a 2xx.
 type listingWriter struct {
 	http.ResponseWriter
-	charge string
 	status int
 }
 
 func (w *listingWriter) WriteHeader(code int) {
 	if w.status == 0 {
 		w.status = code
-		if code/100 == 2 && w.charge != "" {
-			w.Header().Set(listingChargeHeader, w.charge)
+		if code/100 != 2 {
+			w.Header().Del(listingChargeHeader)
 		}
 	}
 	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *listingWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
 }
 
 // Flush keeps a streamed answer streaming.
