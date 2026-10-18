@@ -51,6 +51,13 @@ type MarketReceipter interface {
 	IssueMarketReceipt(ctx context.Context, buyerWorkspaceID, invoiceID string, paidAt time.Time, livemode bool, stripeTotalCents *int64) (string, error)
 }
 
+// MarketInvoiceRecorder records a paid marketplace invoice — its billing period, number and Stripe's PDF — so the bill is
+// read by invoice (B28.140). *market.Store satisfies it.
+type MarketInvoiceRecorder interface {
+	RecordMarketInvoice(ctx context.Context, buyerWorkspaceID, invoiceID, number, pdf string, periodStart, periodEnd, paidAt time.Time,
+		livemode bool) error
+}
+
 // MarketFailer ends what a marketplace invoice Stripe gave up on was to pay for (B32.20): the licences it carried end
 // unpaid. *market.Store satisfies it.
 type MarketFailer interface {
@@ -179,6 +186,8 @@ func (s *Service) ensureMarketBill(ctx context.Context, workspaceID string) (str
 // subscription under parent.subscription_details) are understood.
 type marketInvoice struct {
 	ID            string          `json:"id"`
+	Number        string          `json:"number"`         // B28.140: as Stripe prints it
+	InvoicePDF    string          `json:"invoice_pdf"`    // B28.140: Stripe's PDF of it
 	BillingReason string          `json:"billing_reason"` // subscription_create: the opening invoice, which bills no use
 	Total         *int64          `json:"total"`          // in cents, its tax lines included: what the buyer's receipt adds up to (B32.40)
 	Subscription  json.RawMessage `json:"subscription"`
@@ -345,6 +354,13 @@ func (s *Service) handleInvoicePaid(w http.ResponseWriter, ctx context.Context, 
 	if err != nil {
 		s.fail(w, "market clear", event.ID, err)
 		return
+	}
+	if r, ok := s.marketClearer.(MarketInvoiceRecorder); ok {
+		if err := r.RecordMarketInvoice(ctx, workspaceID, inv.ID, inv.Number, inv.InvoicePDF, time.Unix(start, 0).UTC(), time.Unix(end, 0).UTC(),
+			paidAt, event.Livemode); err != nil {
+			s.fail(w, "market invoice", event.ID, err)
+			return
+		}
 	}
 	receipt := ""
 	if r, ok := s.marketClearer.(MarketReceipter); ok { // B32.40: Talyvor, the supplier, gives the buyer its receipt

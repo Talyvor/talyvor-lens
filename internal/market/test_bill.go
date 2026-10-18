@@ -42,12 +42,24 @@ func (s *Store) PayTestBill(ctx context.Context, buyerWorkspaceID string, now ti
 	if err != nil || n == 0 {
 		return "", n, err
 	}
+	// B28.140: its billing period began where the buyer's last one ended, or with the first use it cleared, and ends now.
+	var start time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT LEAST((SELECT max(period_end) FROM market_invoices WHERE buyer_workspace_id = $1),
+		(SELECT min(used_at) FROM market_uses WHERE cleared_invoice_id = $2))`, buyerWorkspaceID, invoiceID).Scan(&start); err != nil {
+		return invoiceID, n, fmt.Errorf("market: pay a test bill: %w", err)
+	}
+	// A bill Lens paid itself has no Stripe invoice: its PDF is Talyvor's receipt for it, as the app opens it.
+	pdf := ""
 	if s.receipts != nil { // B32.40: the paid bill's receipt, in the test series
-		if _, err := s.IssueReceipt(ctx, buyerWorkspaceID, invoiceID, paidAt, false, nil); err != nil {
+		r, err := s.IssueReceipt(ctx, buyerWorkspaceID, invoiceID, paidAt, false, nil)
+		if err != nil {
 			return invoiceID, n, err
 		}
+		if s.receipts.AppURL != "" {
+			pdf = s.receipts.AppURL + "/api/marketplace/receipts/" + r.ID + "?format=pdf"
+		}
 	}
-	return invoiceID, n, nil
+	return invoiceID, n, s.RecordMarketInvoice(ctx, buyerWorkspaceID, invoiceID, "", pdf, start, now, paidAt, false)
 }
 
 // RefundTestBill refunds a test buyer's paid bill in full, as Stripe's charge.refunded refunds one: a
