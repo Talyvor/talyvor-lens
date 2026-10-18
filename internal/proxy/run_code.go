@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/talyvor/lens/internal/cache"
 	"github.com/talyvor/lens/internal/coderun"
 )
 
@@ -41,6 +42,24 @@ type codeRunner interface {
 // SetCodeRunner turns Run code on for requests that ask for it. Without one, RunCodeHeader is ignored.
 func (p *Proxy) SetCodeRunner(r codeRunner) { p.codeRunner = r }
 
+// runCodeAnswer is a code-running request's cache key, read in its first round, and the answer its latest round
+// would have stored (B17.225). No round is stored on its own — one may be a call to run code, and a streamed one is
+// stored as its text alone — so the finished answer is stored under the question as asked, and the same question
+// asked again is served it from the first round's cache read.
+type runCodeAnswer struct {
+	keyed                                                        bool
+	provider, model, cachePrompt, prompt, reqFP, wsID, requestID string
+	turn                                                         cache.Turn
+	answer                                                       []byte
+}
+
+type runCodeAnswerKey struct{}
+
+func runCodeAnswerOf(ctx context.Context) *runCodeAnswer {
+	rc, _ := ctx.Value(runCodeAnswerKey{}).(*runCodeAnswer)
+	return rc
+}
+
 // toolCall is one tool the model asked for in an answer.
 type toolCall struct{ ID, Name, Args string }
 
@@ -68,6 +87,9 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 	tools, _ := req["tools"].([]any)
 	req["tools"] = append(tools, runCodeToolDef(anthropic))
 
+	base := r.Context()
+	rc := &runCodeAnswer{}
+	r = r.WithContext(context.WithValue(base, runCodeAnswerKey{}, rc))
 	committed := false // a streaming client's response has begun
 	for n := 0; ; n++ {
 		if n == maxCodeRounds {
@@ -83,12 +105,17 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 			return
 		}
 		rec := httptest.NewRecorder()
+		rc.answer = nil
 		p.serve(rec, runCodeRound(r, body, n), cfg)
 		text, calls := answerOf(rec.Body.Bytes(), anthropic, streaming)
 		// shortcut: an answer calling run_code and one of the client's own tools goes to the client whole, run_code
 		// included; split the calls if a client ever offers both and the model asks for both at once.
 		if rec.Code != http.StatusOK || n == maxCodeRounds || !onlyRunCode(calls) {
 			writeRunCodeAnswer(w, rec, committed)
+			if rec.Code == http.StatusOK && len(calls) == 0 && rc.keyed && rc.answer != nil {
+				p.storeAnswer(withCacheStoreHeader(context.WithoutCancel(base), r), rc.provider, rc.model, rc.cachePrompt,
+					rc.prompt, rc.reqFP, rc.turn, rc.wsID, rc.requestID, rc.answer)
+			}
 			return
 		}
 		if streaming && !committed {
@@ -142,9 +169,9 @@ func runCodeRound(r *http.Request, body []byte, n int) *http.Request {
 	rr.Body = io.NopCloser(bytes.NewReader(body))
 	rr.ContentLength = int64(len(body))
 	rr.Header.Del(RunCodeHeader)
-	// An answer worked out by running code is never one remembered from before.
-	rr.Header.Set(CacheBypassHeader, "bypass")
 	if n > 0 {
+		// The first round reads the cache as the client asked; a later one carries a run's output, never asked before.
+		rr.Header.Set(CacheBypassHeader, "bypass")
 		// Each round is its own request: a repeated Idempotency-Key would be charged once, as a retry.
 		for _, h := range []string{"Idempotency-Key", "X-Talyvor-Request-ID"} {
 			if v := rr.Header.Get(h); v != "" {
