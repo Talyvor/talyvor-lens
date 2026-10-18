@@ -175,8 +175,10 @@ func (p *Proxy) agentAllocate(ctx context.Context, apiKeyID, wsID, model, prompt
 	}
 	// The debit row carries the REQUESTED model + token_events request_id (non-content — AgentDebitMeta),
 	// so the ledger is readable and joins to token_events. NEVER prompt text/hash/embedding (0055 immutable).
-	err = p.agentSpender.SpendLXCForAgent(ctx, apiKeyID, wsID, debitKey, estLXC, "proof-of-agent-allocation: pre-serve estimate debit",
+	hctx, cancel := context.WithTimeout(ctx, preServeHoldTimeout)
+	err = p.agentSpender.SpendLXCForAgent(hctx, apiKeyID, wsID, debitKey, estLXC, "proof-of-agent-allocation: pre-serve estimate debit",
 		economy.AgentDebitMeta{RequestedModel: model, RequestID: requestID})
+	cancel()
 	if err == nil {
 		// debited ⇒ allow (serve)
 		return context.WithValue(ctx, agentDebitedCtxKey{}, agentDebit{debitKey: debitKey, requestedModel: model, requestID: requestID}), nil
@@ -219,7 +221,7 @@ func (p *Proxy) agentDebitKeyFor(ctx context.Context, apiKeyID, model, prompt st
 // writeAgentRefusal answers a blocked agent request: its rules' refusal says which rule (403) — the requests-per-
 // minute rule's is 429 (B28.302), since the same request goes through once the minute has room; a hold Lens could
 // not take for its locks is 503 and says so, never that the balance is short (B35.2); a balance or ceiling
-// refusal, or another failure, is the 402 it always was. Returns the metrics reason.
+// refusal is the 402 it always was, and any other failure a 503 (B39.5). Returns the metrics reason.
 func writeAgentRefusal(w http.ResponseWriter, err error) string {
 	if errors.Is(err, economy.ErrLockContention) {
 		writeError(w, http.StatusServiceUnavailable, "Lens could not take the hold for this request; nothing was charged, and it can be sent again")
@@ -233,9 +235,19 @@ func writeAgentRefusal(w http.ResponseWriter, err error) string {
 		writeError(w, http.StatusForbidden, strings.TrimPrefix(err.Error(), "economy: "))
 		return "agent_rule"
 	}
+	if !expectedAgentRefusal(err) {
+		// B39.5: a hold or debit that failed rather than refused (Postgres down, preServeHoldTimeout spent) is
+		// not a short balance.
+		writeError(w, http.StatusServiceUnavailable, "Lens could not check this agent's budget just now; send the request again shortly")
+		return "agent_hold_failed"
+	}
 	writeError(w, http.StatusPaymentRequired, "agent LXC sub-budget exceeded or insufficient balance")
 	return "agent_blocked"
 }
+
+// preServeHoldTimeout bounds an agent's pre-serve hold or debit (B39.5). With Postgres frozen mid-query the call
+// otherwise waits out the 60 s request timeout (#174); an unfinished hold is refunded by the reservation sweeper.
+const preServeHoldTimeout = 5 * time.Second
 
 // ─── Reservation seam (billing redesign) ────────────────────────────────────
 //
@@ -304,8 +316,10 @@ func (p *Proxy) agentReserve(ctx context.Context, apiKeyID, wsID, model, prompt,
 		slog.Error("economy: reservation key derivation failed (failing closed)", slog.String("err", err.Error()))
 		return ctx, err
 	}
-	err = p.agentSpender.ReserveLXCForAgent(ctx, apiKeyID, wsID, reservationID, heldLXC,
+	hctx, cancel := context.WithTimeout(ctx, preServeHoldTimeout)
+	err = p.agentSpender.ReserveLXCForAgent(hctx, apiKeyID, wsID, reservationID, heldLXC,
 		economy.AgentDebitMeta{RequestedModel: model, RequestID: requestID})
+	cancel()
 	if err != nil {
 		if !expectedAgentRefusal(err) {
 			slog.Warn("economy: reservation hold failed (failing closed)", slog.String("agent", apiKeyID), slog.String("err", err.Error()))

@@ -1,0 +1,24 @@
+# Overlay for scripts/db-kill/run.sh (B39.5, issue #174): the production compose with a mock
+# upstream and a locally built image, so the kill test needs no provider key and never touches
+# the shared ghcr.io/...:latest tag.
+services:
+  lens:
+    image: ghcr.io/talyvor/talyvor-lens:db-kill
+    environment:
+      - LENS_API_KEY=${LENS_API_KEY:?}
+      - LENS_VLLM_BASE_URL=http://mockvllm:8000
+      # config.Load() presence-checks these; the test routes only to the mock.
+      - LENS_OPENAI_API_KEY=dummy-openai-unused
+      - LENS_ANTHROPIC_API_KEY=dummy-anthropic-unused
+      # Funds the test workspace (POST /v1/admin/lxc/grant) so the LXC gate does not refuse it.
+      - LENS_ADMIN_LXC_GRANT_ENABLED=true
+    depends_on:
+      mockvllm:
+        condition: service_started
+  migrate:
+    image: ghcr.io/talyvor/talyvor-lens:db-kill
+  mockvllm:
+    image: python:3.12.15-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+    volumes:
+      - ./tools/trial/mock_vllm.py:/mock_vllm.py:ro
+    command: ["python3", "/mock_vllm.py"]
