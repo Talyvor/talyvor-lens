@@ -3,7 +3,7 @@
 # the shared ghcr.io/...:latest tag.
 services:
   lens:
-    image: talyvor-lens:db-kill
+    image: ghcr.io/talyvor/talyvor-lens:db-kill
     environment:
       - LENS_API_KEY=${LENS_API_KEY:?}
       - LENS_VLLM_BASE_URL=http://mockvllm:8000
@@ -16,7 +16,7 @@ services:
       mockvllm:
         condition: service_started
   migrate:
-    image: talyvor-lens:db-kill
+    image: ghcr.io/talyvor/talyvor-lens:db-kill
   mockvllm:
     image: python:3.12.15-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
     volumes:
