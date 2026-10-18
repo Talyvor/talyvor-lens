@@ -617,6 +617,56 @@ func extractResponseContent(body []byte) string {
 	return ""
 }
 
+// emptyAnswer reports a provider answer that says nothing — no text and no tool call — in the Anthropic
+// shape (content blocks) or the OpenAI one (choices). A body in neither shape is not judged empty.
+func emptyAnswer(body []byte) bool {
+	var r struct {
+		Content *[]struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Choices *[]struct {
+			Message struct {
+				Content      json.RawMessage `json:"content"`
+				ToolCalls    json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage `json:"function_call"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return false
+	}
+	switch {
+	case r.Content != nil:
+		for _, c := range *r.Content {
+			switch c.Type {
+			case "text":
+				if strings.TrimSpace(c.Text) != "" {
+					return false
+				}
+			case "thinking", "redacted_thinking":
+			default:
+				return false // a tool call, or a block this does not know
+			}
+		}
+		return true
+	case r.Choices != nil:
+		blank := func(raw json.RawMessage) bool {
+			t := strings.TrimSpace(string(raw))
+			return t == "" || t == "null" || t == `""` || t == "[]"
+		}
+		for _, c := range *r.Choices {
+			var text string
+			if !blank(c.Message.ToolCalls) || !blank(c.Message.FunctionCall) ||
+				!blank(c.Message.Content) && (json.Unmarshal(c.Message.Content, &text) != nil || strings.TrimSpace(text) != "") {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // replaceResponseContent rewrites the first choice's message content (used to
 // re-inject redacted output). Returns the body unchanged when the shape
 // doesn't match, so a redaction can never corrupt the response envelope.
@@ -1274,6 +1324,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				// with the RecordCacheHit calls below.
 				metrics.RecordCacheMiss("cache_miss")
 			}
+		}
+		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
+		// request goes upstream and its fresh answer replaces the stored one.
+		if cached != nil && emptyAnswer(cached) {
+			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
+			metrics.RecordCacheMiss("cache_miss")
 		}
 		if cached != nil {
 			// Record the session turn first so the headers below reflect
@@ -2965,6 +3021,10 @@ func (p *Proxy) storeCaches(ctx context.Context, provider, model, cachePrompt, r
 	// site, so all four (buffered, local and node routing, streamed) are covered by construction.
 	// Such a workspace can still be served from the shared pool: reading stores nothing.
 	if p.loggingPolicyFor(wsID) == workspace.LoggingNone {
+		return false
+	}
+	// B17.178: an answer that says nothing is passed to its asker, never stored for the next one.
+	if emptyAnswer(response) {
 		return false
 	}
 	if p.exact != nil {
