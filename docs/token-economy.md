@@ -173,5 +173,9 @@ export EMBED_NODE_DIMENSIONS=768
 There are no built-in browser pages for these; the reads are API endpoints:
 
 - `/v1/workspaces/{ws}/tokens/balance`, `.../tokens/mining/*` — balance and mining (authenticated)
-- `/v1/economy/stats`, `/v1/tokens/rates`, `/v1/oracle/stats` — global supply, rates and the
-  oracle queue (public, present only when the economy is enabled)
+- `/v1/economy/stats`, `/v1/tokens/rates` — global supply and rates (any API key)
+- `/v1/oracle/stats`, `/v1/insights/routing` — the oracle queue and routing patterns pooled across
+  workspaces (admin key only)
+- `/v1/economy/conversion-rate` — the LENS/LXC rate (public, no credential)
+
+All of these are present only when the economy is enabled.

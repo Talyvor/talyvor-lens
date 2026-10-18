@@ -26,12 +26,12 @@
 // ── THE RULE THIS PAGE OBEYS ────────────────────────────────────────────────
 //
 // It shows only what it can prove without a credential. In practice that is
-// /healthz — already unauthenticated, already real — and nothing else. Public
-// economy aggregates (/v1/economy/stats, /v1/oracle/stats, /v1/tokens/rates)
-// were considered and left out: they are global rather than the visitor's, they
+// /healthz — already unauthenticated, already real — and nothing else. Economy
+// aggregates (/v1/economy/stats, /v1/oracle/stats, /v1/tokens/rates) need a
+// credential since B39.3; before that they were considered and left out: they are global rather than the visitor's, they
 // exist only when the economy is enabled, and on a young install "circulating
 // supply 2,000 µLENS · 0 oracle tasks" recreates the very impression this page
-// corrects — accurately. They remain curl-able for anyone who wants them.
+// corrects — accurately.
 //
 // It also carries NO money constant. The retired dashboard hardcoded the LXC peg
 // twice and the staking rates three times, duplicating economy.LXCUSDValue and

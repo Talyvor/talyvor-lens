@@ -124,18 +124,18 @@ func TestPageShowsNoCredentialedData(t *testing.T) {
 }
 
 // TestPageShowsNoEconomyAggregates: /v1/economy/stats, /v1/oracle/stats and
-// /v1/tokens/rates ARE public, so showing them would leak nothing. They are
-// excluded on editorial grounds: they are global rather than the visitor's, they
+// /v1/tokens/rates need a credential since B39.3, so the page could only render
+// a 401. Before that they were public and were excluded on editorial grounds:
+// they are global rather than the visitor's, they
 // exist only when the economy is enabled (so the page would differ per
 // deployment), and on a young install "circulating supply 2,000 µLENS · 0 oracle
 // tasks" reproduces the exact "this product is dead" impression this page was
-// built to correct — with accurate data. They remain curl-able; they are not
-// front-door material.
+// built to correct — with accurate data.
 func TestPageShowsNoEconomyAggregates(t *testing.T) {
 	body := render(t)
 	for _, p := range []string{"/v1/economy/", "/v1/oracle/stats", "/v1/tokens/rates", "/v1/marketplace/"} {
 		if strings.Contains(body, p) {
-			t.Errorf("the page reads %s — public, but not this page's business", p)
+			t.Errorf("the page reads %s, which requires an API key it does not have", p)
 		}
 	}
 	for _, w := range []string{"circulating", "total supply", "Total Supply"} {
