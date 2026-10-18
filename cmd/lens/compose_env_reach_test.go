@@ -195,6 +195,13 @@ func lensServiceEnv(t *testing.T, compose string) string {
 // An exemption is a decision; it is written here so the next person can disagree with it rather
 // than guess at it.
 var credentialExemptions = map[string]string{
+	"LENS_APP_DB_PASSWORD": "B39.6: read only by the `lens migrate` subcommand, to give the lens_app role its " +
+		"login; docker-compose.yaml forwards it to the migrate service and builds the lens service's " +
+		"LENS_DATABASE_URL from it. The server never reads it.",
+
+	"LENS_RETENTION_DB_PASSWORD": "B39.6: read only by `lens migrate`, to give the lens_retention role its " +
+		"login; forwarded to the migrate service. The server's sweeper takes LENS_AUDIT_RETENTION_DATABASE_URL.",
+
 	"LENS_JWT_SECRET": "the RETIRED HS256 key. internal/config/config.go REFUSES TO START when it " +
 		"is set (Lens moved to ES256), so forwarding it would convert a boot guard into a boot " +
 		"failure. It must stay unforwarded.",

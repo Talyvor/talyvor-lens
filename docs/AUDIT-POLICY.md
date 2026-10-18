@@ -64,13 +64,56 @@ automatically; the TRUNCATE triggers do not.
 issues `UPDATE`/`DELETE`/`TRUNCATE` against the audit tables (via the parent or a
 partition).
 
-**Does NOT protect against:** a **compromised database role**. The role that runs
-migrations is the same role the application runs as, and it can
-`ALTER TABLE … DISABLE TRIGGER`, `DROP TRIGGER`, or `SET lens.audit_retention='on'`
-to bypass the guard. Closing this requires **DB role separation** (a migration-only
-role that owns the triggers; the app role with `UPDATE`/`DELETE`/`TRUNCATE` revoked)
-— tracked in the U14 follow-up issue *"DB role separation"*. Tamper-evidence
-(hash-chaining / signed checkpoints) is a separate, additive layer not in this PR.
+**Does NOT protect against, by default:** a **compromised database role**. Unless
+you switch on role separation below, Lens logs in as the role that runs the
+migrations and owns the tables, and that role can `ALTER TABLE … DISABLE TRIGGER`,
+`DROP TRIGGER`, or `SET lens.audit_retention='on'` to bypass the guard.
+Tamper-evidence (hash-chaining / signed checkpoints) is a separate, additive layer
+not built here.
+
+### Role separation (B39.6, #186) — opt-in
+
+`lens migrate` creates two roles (NOLOGIN until given a password) and re-applies
+their grants after every run, from the live schema, so a table a later migration
+adds is covered at the next migrate:
+
+| Role | Gets | Never gets |
+|---|---|---|
+| the migration login (`lens` on compose) | owns the schema and every `audit_block_mutation` trigger | — |
+| `lens_app` — Lens itself | `SELECT, INSERT, UPDATE, DELETE` on every table, sequences | `UPDATE, DELETE, TRUNCATE` on any table an `audit_block_mutation` trigger guards; any write to `schema_migrations`; ownership, so it cannot `DISABLE` or `DROP` a trigger |
+| `lens_retention` — the retention sweeper | `SELECT, DELETE` on `token_events`, `SELECT` on `audit_export_state` | anything else |
+
+As `lens_app`, `UPDATE money_postings` fails with `permission denied for table
+money_postings` and `ALTER TABLE money_postings DISABLE TRIGGER …` with `must be
+owner of table money_postings` (both SQLSTATE 42501), and setting the retention
+flag is no bypass: without `DELETE` it changes nothing.
+`internal/dbmigrate/roles_integration_test.go` proves this on the full schema.
+
+**Switching on, compose.** Put a URL-safe password (`openssl rand -hex 24`) in
+`.env` as `LENS_APP_DB_PASSWORD` and run `docker compose up -d`. `migrate` gives
+`lens_app` that password (sent as a SCRAM verifier, so no log holds it), and PgBouncer and Lens then log in as `lens_app`. The
+migrate service keeps the owner login. With it unset nothing changes: Lens logs
+in as `lens`, exactly as before. To switch back, remove the line and `up -d` again.
+
+**Retention under its own role.** Under `lens_app` the sweeper cannot delete, so
+with `LENS_AUDIT_RETENTION` set, also put `LENS_RETENTION_DB_PASSWORD` in `.env`
+(migrate gives `lens_retention` that login) and in `lens.env`:
+`LENS_AUDIT_RETENTION_DATABASE_URL=postgres://lens_retention:<password>@postgres:5432/talyvor_lens?sslmode=disable`.
+Unset, the sweeper uses Lens's own login, as before. The sweeper runs inside
+Lens, so Lens holds this login too: it can delete `token_events` rows, never a
+ledger row.
+
+**Switching on, Helm.** Point the Secret's `LENS_DATABASE_URL` at
+`lens_app`, set `migrations.databaseURL` to the owner's direct URL (the Job then
+uses it and the Deployment keeps the Secret's), and add `LENS_APP_DB_PASSWORD`
+(and optionally `LENS_RETENTION_DB_PASSWORD`) to the Secret so the migration Job
+sets the logins. With PgBouncer in front, its user must be `lens_app` too.
+
+**Or by hand:** `ALTER ROLE lens_app LOGIN PASSWORD '…'` as the owner; migrate
+leaves a login it was given no password for alone.
+
+If the migration login may not create roles (some managed Postgres), migrate
+logs a warning and carries on unless a password was asked for.
 
 ## 4. Retention
 
@@ -119,7 +162,7 @@ sweep is **skipped with a warning** rather than pruning un-exportable rows. Defa
 customer-/compliance-driven decision, not a code default.
 
 ## Follow-ups
-- **DB role separation** (migration role vs app role) — for DB-enforced immutability
-  against a compromised role. Tracked: #186.
+- **DB role separation** (migration role vs app role) — BUILT (#186, B39.6, opt-in
+  via `LENS_APP_DB_PASSWORD`; §3).
 - **Export-then-prune watermark** — proof-of-export-before-delete. BUILT (#187,
   opt-in via `LENS_AUDIT_REQUIRE_EXPORT_BEFORE_PRUNE`, default off).

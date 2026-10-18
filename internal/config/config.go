@@ -95,6 +95,9 @@ type Config struct {
 	// (token_events ONLY — there is no table knob; it can never touch a ledger).
 	// Env LENS_AUDIT_RETENTION (Go duration). <= 0 / unset DISABLES the sweeper.
 	AuditRetention time.Duration
+	// AuditRetentionDatabaseURL (LENS_AUDIT_RETENTION_DATABASE_URL) is the lens_retention role's URL the
+	// sweeper deletes with (B39.6); empty = the main pool, as before. The lens_app role cannot delete.
+	AuditRetentionDatabaseURL string
 
 	// AuditExportURL / AuditExportInterval drive the leader-elected off-box export
 	// loop (reuses the audit webhook exporter). Empty URL = no loop (default off).
@@ -2129,6 +2132,7 @@ func Load() (*Config, error) {
 		}
 		c.AuditRetention = d
 	}
+	c.AuditRetentionDatabaseURL = os.Getenv("LENS_AUDIT_RETENTION_DATABASE_URL")
 	// U14 off-box export loop — empty URL disables (default). Interval default 1h.
 	c.AuditExportURL = os.Getenv("LENS_AUDIT_EXPORT_URL")
 	c.AuditExportInterval = time.Hour

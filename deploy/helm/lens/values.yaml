@@ -225,7 +225,9 @@ migrations:
   # pgbouncer.enabled=true**: migrations run DDL and must connect DIRECT to
   # Postgres — a transaction-mode pooler rejects prepared statements and can't
   # safely run multi-statement DDL. The app Deployment keeps using the pooled
-  # URL; only migrations go direct.
+  # URL; only migrations go direct. Also how Lens runs as the lens_app role
+  # (docs/AUDIT-POLICY.md §3, B39.6): this URL keeps the owner login, the
+  # Secret's LENS_DATABASE_URL names lens_app.
   databaseURL: ""
   # -- Hook weight (lower runs earlier).
   hookWeight: -5

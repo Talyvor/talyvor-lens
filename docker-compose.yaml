@@ -68,7 +68,9 @@ services:
       # Route through PgBouncer (transaction pooling) instead of Postgres directly.
       # LENS_DB_PGBOUNCER switches pgx to simple query protocol (required).
       # LENS_DB_MAX_CONNS is raised — connections are cheap against PgBouncer.
-      - LENS_DATABASE_URL=postgres://lens:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}@pgbouncer:6432/talyvor_lens?sslmode=disable
+      # B39.6: with LENS_APP_DB_PASSWORD set in .env, Lens logs in as lens_app, which cannot UPDATE,
+      # DELETE or TRUNCATE the ledgers nor switch their triggers off; unset, it logs in as lens, as before.
+      - LENS_DATABASE_URL=postgres://lens${LENS_APP_DB_PASSWORD:+_app}:${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}@pgbouncer:6432/talyvor_lens?sslmode=disable
       - LENS_DB_PGBOUNCER=true
       - LENS_DB_MAX_CONNS=100
       - LENS_REDIS_URL=redis://redis:6379
@@ -318,6 +320,9 @@ services:
     command: ["migrate"]
     environment:
       LENS_DATABASE_URL: postgres://lens:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}@postgres:5432/talyvor_lens?sslmode=disable
+      # B39.6: migrate creates lens_app and lens_retention and gives each a login with its password.
+      LENS_APP_DB_PASSWORD: ${LENS_APP_DB_PASSWORD:-}
+      LENS_RETENTION_DB_PASSWORD: ${LENS_RETENTION_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -346,8 +351,9 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=talyvor_lens
-      - DB_USER=lens
-      - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}
+      # Lens's own login (B39.6): lens_app once LENS_APP_DB_PASSWORD is set, else lens.
+      - DB_USER=lens${LENS_APP_DB_PASSWORD:+_app}
+      - DB_PASSWORD=${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}
       - LISTEN_PORT=6432
       - AUTH_TYPE=scram-sha-256
       - POOL_MODE=transaction
@@ -375,6 +381,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # lens_app's login exists only once migrate has run (B39.6).
+      migrate:
+        condition: service_completed_successfully
     # psql SELECT 1 through the pooler, not pg_isready: it validates the
     # [databases] entry + auth + backend end-to-end (pg_isready counts ANY
     # server response — including "no such database" — as healthy).
