@@ -81,18 +81,17 @@ func TestRateLimits_ARaisedWorkspaceIsServedPastTheDefault(t *testing.T) {
 	served := ratelimit.RateLimitMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	// 1,001 requests over eleven seconds of the minute, so the 100-a-second window never trips.
+	// Each workspace has had 1,000 requests served this minute; the next one is its 1,001st.
 	last := func(ws string) *httptest.ResponseRecorder {
-		var rec *httptest.ResponseRecorder
-		for i := 0; i < 1001; i++ {
-			if i%100 == 0 {
-				mr.FastForward(time.Second)
-			}
-			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-			req.Header.Set("X-Talyvor-Workspace", ws)
-			rec = httptest.NewRecorder()
-			served.ServeHTTP(rec, req)
+		key := "lens:rl:" + ws + "::minute"
+		if err := mr.Set(key, "1000"); err != nil {
+			t.Fatal(err)
 		}
+		mr.SetTTL(key, 30*time.Second)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set("X-Talyvor-Workspace", ws)
+		rec := httptest.NewRecorder()
+		served.ServeHTTP(rec, req)
 		return rec
 	}
 	if got := last("ws-fleet"); got.Code != http.StatusOK {
