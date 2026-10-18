@@ -78,8 +78,9 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 			deps := market.UseDeps{Runner: run, Meter: m, Agents: agents, Charged: func(u market.Use) {
 				lw.charge, run.kind = u.Charge, u.Kind
 			}}
-			// The runner sends the chat's own messages; Input only satisfies the use's plan, which needs one.
-			u, err := store.Use(r.Context(), deps, wsID, agentID, listingID, market.UseRequest{Model: model, Input: "(the chat's question)", Person: person})
+			// The runner sends the chat's own messages; Input only satisfies the use's plan, which needs one. A chat that
+			// hangs up once its answer is in cannot cancel the use's record and its bill: only the model call is the chat's.
+			u, err := store.Use(context.WithoutCancel(r.Context()), deps, wsID, agentID, listingID, market.UseRequest{Model: model, Input: "(the chat's question)", Person: person})
 			switch {
 			case err != nil && lw.status != 0:
 				// The model call answered, and was relayed as it is; the use was removed and is not charged.
@@ -105,7 +106,7 @@ type chatListingRunner struct {
 	ran   bool
 }
 
-func (c *chatListingRunner) Run(ctx context.Context, _ string, messages []market.Message) (string, error) {
+func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.Message) (string, error) {
 	if (c.kind != "skill" && c.kind != "agent") || c.ran || len(messages) == 0 || messages[0].Role != "system" {
 		return "", fmt.Errorf("%w in Chat: only a skill or an agent can be asked there", market.ErrNotRunnable)
 	}
@@ -114,7 +115,7 @@ func (c *chatListingRunner) Run(ctx context.Context, _ string, messages []market
 		return "", fmt.Errorf("%w: %v", market.ErrInvalid, err)
 	}
 	b, _ := json.Marshal(c.body)
-	req := c.r.Clone(ctx)
+	req := c.r.Clone(c.r.Context())
 	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(b)), int64(len(b))
 	c.next.ServeHTTP(c.w, req)
 	if c.w.status/100 != 2 {

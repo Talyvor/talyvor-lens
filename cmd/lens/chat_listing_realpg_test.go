@@ -18,7 +18,7 @@ import (
 
 // B28.186 — two questions asked in a chat attached to a paid skill are two billed uses on the buyer's marketplace
 // bill, each asked with the skill's instructions and each answer naming its charge; a model call that fails charges
-// nothing, and a request naming no listing passes through untouched — asserted on market_uses and the meter events.
+// nothing, a chat hanging up once its answer is in is still charged, and a request naming no listing passes through untouched — asserted on market_uses and the meter events.
 func TestChatListing_TwoQuestionsAreTwoBilledUses(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -31,6 +31,7 @@ func TestChatListing_TwoQuestionsAreTwoBilledUses(t *testing.T) {
 
 	// The proxy, as the chat's request reaches it: it streams one frame, or fails when asked to.
 	var sent [][]market.Message
+	hangUp := func() {} // the chat hanging up once the answer is in
 	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Messages []market.Message `json:"messages"`
@@ -44,6 +45,7 @@ func TestChatListing_TwoQuestionsAreTwoBilledUses(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {}\n\ndata: [DONE]\n\n"))
 		w.(http.Flusher).Flush()
+		hangUp()
 	})
 	r := chi.NewRouter()
 	mountMarketRoutes(r, store)
@@ -56,7 +58,10 @@ func TestChatListing_TwoQuestionsAreTwoBilledUses(t *testing.T) {
 			req.Header.Set(listingHeader, listing)
 		}
 		who := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner-" + ws, Scopes: []string{auth.ScopeKeys}}
-		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		rctx, cancel := context.WithCancel(auth.WithAuthContext(req.Context(), who))
+		defer cancel()
+		hangUp = cancel
+		req = req.WithContext(rctx)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		return w
