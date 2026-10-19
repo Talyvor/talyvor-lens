@@ -64,6 +64,7 @@ import (
 	"github.com/talyvor/lens/internal/dashboard"
 	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/dbrouting"
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/distill"
 	"github.com/talyvor/lens/internal/distillattrib"
 	"github.com/talyvor/lens/internal/distillpreview"
@@ -2649,6 +2650,7 @@ func run() error {
 		approvalPusher = sender
 	}
 	dualToken.SetApprovalAuth(passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins}, approvalPusher)
+	dualToken.SetDeviceKeys(devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}) // B40.4
 	// B19.11: an agent's verified badge follows its owner's workspace's verification (the U6 predicate).
 	dualToken.SetOwnerVerifier(earnverify.New(cfg.EarnRequireLivePurchase))
 	// B22.9: cash-outs are paid through the partner-neutral interface; only the test partner exists, and it pays
@@ -4631,6 +4633,7 @@ func run() error {
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
+		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20

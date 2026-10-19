@@ -158,11 +158,13 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 }
 
 // AuthorizeApprovalDecision lets a decision on approvalID through: at once for a workspace with no
-// passkey, and otherwise only with an assertion by one of its passkeys over an open challenge naming
-// that approval, which it spends.
+// passkey or device key, and otherwise only with an assertion by one of its passkeys or device keys over
+// an open challenge naming that approval, which it spends. A revoked device key still counts (B40.4):
+// revoking a lost phone must never leave approvals needing no signature at all.
 func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error {
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1`, workspaceID).Scan(&n); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
 	}
 	if n == 0 {
@@ -182,9 +184,12 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 	return tx.Commit(ctx)
 }
 
-// spendAssertion checks a, by one of workspaceID's passkeys, over an open challenge for purpose, and spends the
-// challenge, inside tx.
+// spendAssertion checks a, by one of workspaceID's passkeys or device keys, over an open challenge for purpose, and
+// spends the challenge, inside tx.
 func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspaceID, purpose string, a passkey.Assertion) error {
+	if a.DeviceID != "" {
+		return spendDeviceSignature(ctx, tx, workspaceID, purpose, a)
+	}
 	if s.approvalRP == nil {
 		return fmt.Errorf("%w: passkeys are not configured on this server", passkey.ErrInvalid)
 	}

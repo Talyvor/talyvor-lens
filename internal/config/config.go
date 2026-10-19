@@ -213,8 +213,14 @@ type Config struct {
 	// VAPIDSubject (LENS_VAPID_SUBJECT) is the contact the push services are given.
 	WebAuthnRPID    string
 	WebAuthnOrigins []string
-	VAPIDPrivateKey string
-	VAPIDSubject    string
+	// B40.4 — the phone app's device keys. DeviceAppleAppID (LENS_DEVICE_APPLE_APP_ID, "<team id>.<bundle id>",
+	// default empty) is the iPhone app App Attest attestations must be for; empty, no iPhone key registers.
+	// DeviceTestAttestation (LENS_DEVICE_TEST_ATTESTATION, default false) accepts device keys with a fake
+	// attestation, platform "test" — test-only: never on a server real people use.
+	DeviceAppleAppID      string
+	DeviceTestAttestation bool
+	VAPIDPrivateKey       string
+	VAPIDSubject          string
 
 	// Global rate limits (Item 8). Zero = no global cap.
 	//
@@ -1417,10 +1423,12 @@ func Load() (*Config, error) {
 		ProvisionSecret: os.Getenv("LENS_PROVISION_SECRET"),
 		SyntheticKey:    os.Getenv("LENS_SYNTHETIC_KEY"),
 
-		WebAuthnRPID:    getEnv("LENS_WEBAUTHN_RP_ID", "app.talyvor.com"),
-		WebAuthnOrigins: strings.Split(getEnv("LENS_WEBAUTHN_ORIGINS", "https://app.talyvor.com"), ","),
-		VAPIDPrivateKey: os.Getenv("LENS_VAPID_PRIVATE_KEY"),
-		VAPIDSubject:    getEnv("LENS_VAPID_SUBJECT", "mailto:support@talyvor.com"),
+		WebAuthnRPID:          getEnv("LENS_WEBAUTHN_RP_ID", "app.talyvor.com"),
+		WebAuthnOrigins:       strings.Split(getEnv("LENS_WEBAUTHN_ORIGINS", "https://app.talyvor.com"), ","),
+		DeviceAppleAppID:      os.Getenv("LENS_DEVICE_APPLE_APP_ID"),
+		DeviceTestAttestation: os.Getenv("LENS_DEVICE_TEST_ATTESTATION") == "true",
+		VAPIDPrivateKey:       os.Getenv("LENS_VAPID_PRIVATE_KEY"),
+		VAPIDSubject:          getEnv("LENS_VAPID_SUBJECT", "mailto:support@talyvor.com"),
 
 		HAEnabled: parseBoolEnv("LENS_HA_ENABLED"),
 
