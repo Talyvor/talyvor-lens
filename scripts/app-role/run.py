@@ -39,7 +39,7 @@ def compose(*args, check=True, capture=False):
                           capture_output=capture)
 
 
-def psql(sql, user='lens', password='approle'):
+def psql(sql, user='lens', password='approle'):  # nosemgrep: python.lang.security.audit.hardcoded-password-default-argument.hardcoded-password-default-argument -- password of the throwaway local test database this harness starts
     # Over TCP, so lens_app logs in with its password rather than the socket's trust.
     r = compose('exec', '-T', '-e', 'PGPASSWORD=' + password, 'postgres', 'psql', '-h', '127.0.0.1',
                 '-U', user, '-d', 'talyvor_lens', '-v', 'VERBOSITY=verbose', '-tAc', sql,
@@ -51,7 +51,7 @@ def http(method, path, key, body=None):
     req = urllib.request.Request(BASE + path, method=method, data=json.dumps(body).encode() if body else None,
                                  headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- BASE is the local test Lens this harness starts
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()

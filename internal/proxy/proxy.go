@@ -1941,7 +1941,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		w.Header().Set("Content-Length", strconv.Itoa(len("data: ")+len(clientBody)+len("\n\ndata: [DONE]\n\n")))
 		w.WriteHeader(clientStatus)
 		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(clientBody)
+		_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/event-stream or application/json model answer, never HTML
 		_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
 	} else {
 		if w.Header().Get("Content-Type") == "" {
@@ -1949,7 +1949,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(clientBody)))
 		w.WriteHeader(clientStatus)
-		_, _ = w.Write(clientBody)
+		_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json unless the upstream set its own type; nosniff is set on every response
 	}
 	// B39.5: the answer is complete on the wire now, so the client is not kept waiting on the writes below
 	// (each bounded at postAnswerWriteTimeout, but run one after another — 20 s with Postgres frozen, #174).
@@ -2390,7 +2390,7 @@ func (p *Proxy) tryNodeRouting(
 	w.Header().Set("X-Talyvor-Node-Served", ep.ID)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out) // JSON API response (application/json), mirrors tryLocalRouting
+	_, _ = w.Write(out) // JSON API response (application/json), mirrors tryLocalRouting  // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json from json.Marshal
 	// B26.5: the agent's hold settles to what the node delivered, on the same len/4 measurement as the mint basis.
 	p.settleServedOffSeam(ctx, wsID, model, len(prompt)/4, len(nr.Text)/4)
 	// B27.2: and a chat or subscriber question pays the same, and counts toward budgets and limits. The node
@@ -2504,7 +2504,7 @@ func (p *Proxy) tryLocalRouting(
 	w.Header().Set("X-Talyvor-Local-Model", decision.Model)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(formatted)
+	_, _ = w.Write(formatted) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json model answer
 	// B26.5: the agent's hold settles to what the local model delivered, on the token counts the spend row uses.
 	p.settleServedOffSeam(ctx, wsID, decision.Model, len(prompt)/4, len(formatted)/4)
 	// B27.2: a local run costs Talyvor nothing, so a chat or subscriber question is charged 0 — through the
@@ -3270,7 +3270,7 @@ func disableStream(body []byte) []byte {
 func writeBytes(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	_, _ = w.Write(body) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -3343,7 +3343,7 @@ func replayAsSSE(w http.ResponseWriter, provider string, cached []byte) error {
 
 	flusher, _ := w.(http.Flusher)
 	for _, frame := range frames {
-		_, _ = w.Write(frame)
+		_, _ = w.Write(frame) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/event-stream replay of cached frames
 		if flusher != nil {
 			flusher.Flush()
 		}

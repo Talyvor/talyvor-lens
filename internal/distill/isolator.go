@@ -98,7 +98,7 @@ func (p *ProcessIsolator) Convert(ctx context.Context, input []byte, format Form
 		return Result{Format: format}, fmt.Errorf("distill: isolator marshal: %w", err)
 	}
 
-	cmd := exec.CommandContext(tctx, p.WorkerBin)
+	cmd := exec.CommandContext(tctx, p.WorkerBin) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the worker binary is the operator-configured LENS_DISTILL_WORKER_BIN, run with no arguments and no shell
 
 	// Inherit the parent's environment, then:
 	//   GOMEMLIMIT — soft ceiling: Go GC applies pressure before actual usage
@@ -145,7 +145,7 @@ func (p *ProcessIsolator) Convert(ctx context.Context, input []byte, format Form
 	}
 
 	// Deliver the request, then close stdin to signal EOF to the worker.
-	if _, err := stdin.Write(reqBytes); err != nil {
+	if _, err := stdin.Write(reqBytes); err != nil { // nosemgrep: go.lang.security.audit.dangerous-command-write.dangerous-command-write -- stdin carries the JSON-encoded document for the worker to parse, never a command
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait() // collect exit status — prevents a zombie on Unix / leaked handle on Windows
 		return Result{Format: format}, fmt.Errorf("distill: isolator write stdin: %w", err)

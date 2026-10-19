@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- A/B bucket assignment only, never an id, token or secret
 	"sort"
 	"strings"
 	"sync"

@@ -74,5 +74,5 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	// long that a redeploy's version stays wrong on a refresh.
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(h.html)
+	_, _ = w.Write(h.html) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- static page bytes built at startup, no request data
 }

@@ -30,7 +30,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -195,7 +194,7 @@ func startTLS(cfg *config.Config, handler http.Handler, logger *slog.Logger) (*s
 	// provisioning because Let's Encrypt renews certificates every 90 days.
 	redirectSrv := &http.Server{
 		Addr:              ":80",
-		Handler:           certManager.HTTPHandler(http.HandlerFunc(httpsRedirectHandler)),
+		Handler:           certManager.HTTPHandler(httpsRedirectHandler(cfg.TLSDomain)),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		WriteTimeout:      shortWriteTimeout,
 		IdleTimeout:       serverIdleTimeout,
@@ -244,16 +243,13 @@ func startTLS(cfg *config.Config, handler http.Handler, logger *slog.Logger) (*s
 }
 
 // httpsRedirectHandler issues a 301 Moved Permanently redirect from the
-// HTTP URL to its HTTPS equivalent, preserving the path and query string.
-// The port is stripped from r.Host because a client that sends "Host: example.com:80"
-// would otherwise be redirected to https://example.com:80/… (port 80 over TLS — wrong).
-func httpsRedirectHandler(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	target := "https://" + host + r.URL.RequestURI()
-	http.Redirect(w, r, target, http.StatusMovedPermanently)
+// HTTP URL to its HTTPS equivalent on domain, preserving the path and query string.
+// The target host is always the configured TLS domain, never the request's Host
+// header: a forged Host must not turn port 80 into an open redirect.
+func httpsRedirectHandler(domain string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://"+domain+r.URL.RequestURI(), http.StatusMovedPermanently) // nosemgrep: go.lang.security.injection.open-redirect.open-redirect -- the host is the configured TLS domain; only the path comes from the request
+	})
 }
 
 // certIsCached reports whether autocert has already written a certificate for
