@@ -151,6 +151,10 @@ type Assertion struct {
 	ClientDataJSON    string `json:"client_data_json"`   // base64url
 	AuthenticatorData string `json:"authenticator_data"` // base64url
 	Signature         string `json:"signature"`          // base64url, ASN.1 DER ECDSA
+	// B40.4: a phone app's device key (internal/devicekey) signs instead when DeviceID is set: Signature is then over
+	// devicekey.Message(Challenge), and CredentialID and the WebAuthn fields are empty.
+	DeviceID  string `json:"device_id,omitempty"`
+	Challenge string `json:"challenge,omitempty"`
 }
 
 // VerifyAssertion checks an assertion answers challenge, signed by the key spki with the user verified

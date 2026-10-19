@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/talyvor/lens/internal/dbjson"
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/passkey"
@@ -326,6 +327,8 @@ type DualTokenStore struct {
 	// B19.16: the relying party approvals' passkeys are checked for, and the push sent for each approval filed.
 	approvalRP     *passkey.RelyingParty
 	approvalPusher ApprovalPusher
+	// B40.4: how the phone app's device keys are checked when they are registered.
+	deviceVerifier devicekey.Verifier
 	// B19.11: what the verified-agent badge follows.
 	ownerVerifier OwnerVerifier
 	// cashOutPartner pays cash-outs out as money (B22.9); nil, cash-out is unavailable.

@@ -266,6 +266,7 @@ var Manifest = map[string]Entry{
 	"seller_tax_profiles":          {Delete, "B32.41: the workspace's tax details as a seller — names, address, TINs, date of birth and payout account, the sealed ones under the envelope key — and its reminders and payout hold"},
 	"market_listing_reports":       {Delete, "B20.4: keys `reporter_workspace_id`: the reports a workspace made of listings; reports of its own listings cascade with them"},
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
+	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
 	"webauthn_challenges":          {Delete, ""},

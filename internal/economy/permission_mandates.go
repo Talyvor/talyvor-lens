@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -116,6 +117,7 @@ type PermissionMandate struct {
 	Status       string     `json:"status"` // active, not_yet_valid, expired or revoked
 	Canonical    string     `json:"canonical"`
 	CredentialID string     `json:"credential_id"`
+	DeviceID     string     `json:"device_id,omitempty"` // B40.4: set when a device key signed it, instead of a passkey
 	CreatedBy    string     `json:"created_by"`
 	CreatedAt    time.Time  `json:"created_at"`
 	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
@@ -279,8 +281,13 @@ func (s *DualTokenStore) PreparePermissionMandate(ctx context.Context, workspace
 	if err != nil {
 		return "", "", nil, err
 	}
-	if len(keys) == 0 {
-		return "", "", nil, fmt.Errorf("%w: a mandate is signed with a passkey, and this workspace has none: register one first", ErrPermissionMandate)
+	var devices int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL`,
+		workspaceID).Scan(&devices); err != nil {
+		return "", "", nil, fmt.Errorf("economy: device keys: %w", err)
+	}
+	if len(keys) == 0 && devices == 0 {
+		return "", "", nil, fmt.Errorf("%w: a mandate is signed with a passkey or the phone app's device key, and this workspace has neither: register one first", ErrPermissionMandate)
 	}
 	credentialIDs = []string{}
 	for _, k := range keys {
@@ -335,27 +342,35 @@ func (s *DualTokenStore) CreatePermissionMandate(ctx context.Context, workspaceI
 		return PermissionMandate{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var spki []byte
-	var count int64
-	err = tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
-		a.CredentialID, workspaceID).Scan(&spki, &count)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return PermissionMandate{}, fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
-	}
-	if err != nil {
-		return PermissionMandate{}, fmt.Errorf("economy: passkey: %w", err)
-	}
-	next, err := s.verifyMandateSignature(canonical, *a, spki, uint32(count))
-	if err != nil {
-		return PermissionMandate{}, err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET sign_count = $2, last_used_at = now() WHERE credential_id = $1`,
-		a.CredentialID, int64(next)); err != nil {
-		return PermissionMandate{}, fmt.Errorf("economy: passkey: %w", err)
+	if a.DeviceID != "" {
+		// B40.4: the phone app's device key signs the mandate's own challenge; the WebAuthn fields stay empty.
+		if err := signDevice(ctx, tx, workspaceID, MandateChallenge(canonical), *a); err != nil {
+			return PermissionMandate{}, err
+		}
+		a = &passkey.Assertion{DeviceID: a.DeviceID, Signature: a.Signature}
+	} else {
+		var spki []byte
+		var count int64
+		err = tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+			a.CredentialID, workspaceID).Scan(&spki, &count)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PermissionMandate{}, fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+		}
+		if err != nil {
+			return PermissionMandate{}, fmt.Errorf("economy: passkey: %w", err)
+		}
+		next, err := s.verifyMandateSignature(canonical, *a, spki, uint32(count))
+		if err != nil {
+			return PermissionMandate{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET sign_count = $2, last_used_at = now() WHERE credential_id = $1`,
+			a.CredentialID, int64(next)); err != nil {
+			return PermissionMandate{}, fmt.Errorf("economy: passkey: %w", err)
+		}
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO permission_mandates (id, workspace_id, agent_id, canonical, credential_id, client_data_json,
-		authenticator_data, signature, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		t.ID, workspaceID, t.AgentID, canonical, a.CredentialID, a.ClientDataJSON, a.AuthenticatorData, a.Signature, by)
+		authenticator_data, signature, created_by, device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		t.ID, workspaceID, t.AgentID, canonical, a.CredentialID, a.ClientDataJSON, a.AuthenticatorData, a.Signature, by, a.DeviceID)
 	if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23505" {
 		return PermissionMandate{}, fmt.Errorf("%w: this mandate was already signed once; prepare a new one", ErrPermissionMandate)
 	}
@@ -368,12 +383,12 @@ func (s *DualTokenStore) CreatePermissionMandate(ctx context.Context, workspaceI
 	return s.PermissionMandate(ctx, workspaceID, t.ID)
 }
 
-const permissionMandateCols = `id, canonical, credential_id, created_by, created_at, revoked_at, revoked_by`
+const permissionMandateCols = `id, canonical, credential_id, device_id, created_by, created_at, revoked_at, revoked_by`
 
 func scanPermissionMandate(row pgx.Row, now time.Time) (PermissionMandate, error) {
 	var m PermissionMandate
 	var id string
-	if err := row.Scan(&id, &m.Canonical, &m.CredentialID, &m.CreatedBy, &m.CreatedAt, &m.RevokedAt, &m.RevokedBy); err != nil {
+	if err := row.Scan(&id, &m.Canonical, &m.CredentialID, &m.DeviceID, &m.CreatedBy, &m.CreatedAt, &m.RevokedAt, &m.RevokedBy); err != nil {
 		return m, err
 	}
 	// The terms shown are the signed JSON's; a row whose JSON does not read is shown by id alone and evaluates to block.
@@ -439,13 +454,14 @@ func (s *DualTokenStore) RevokePermissionMandate(ctx context.Context, workspaceI
 func (s *DualTokenStore) EvaluateMandatePayment(ctx context.Context, workspaceID, id string, p PreparedPayment) (MandateDecision, error) {
 	var canonical, rowWS string
 	var a passkey.Assertion
-	var spki []byte
+	var spki, deviceSPKI []byte
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `SELECT m.canonical, m.workspace_id, m.credential_id, m.client_data_json, m.authenticator_data, m.signature,
-		m.revoked_at, k.public_key FROM permission_mandates m
+		m.device_id, m.revoked_at, k.public_key, d.public_key FROM permission_mandates m
 		LEFT JOIN workspace_passkeys k ON k.credential_id = m.credential_id AND k.workspace_id = m.workspace_id
+		LEFT JOIN workspace_device_keys d ON d.id = m.device_id AND d.workspace_id = m.workspace_id AND d.revoked_at IS NULL
 		WHERE m.id = $1 AND m.workspace_id = $2`, id, workspaceID).
-		Scan(&canonical, &rowWS, &a.CredentialID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &revokedAt, &spki)
+		Scan(&canonical, &rowWS, &a.CredentialID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &a.DeviceID, &revokedAt, &spki, &deviceSPKI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MandateDecision{}, ErrPermissionMandateNotFound
 	}
@@ -459,11 +475,19 @@ func (s *DualTokenStore) EvaluateMandatePayment(ctx context.Context, workspaceID
 	if err != nil || t.ID != id || t.WorkspaceID != rowWS {
 		return block("the mandate is not what the person signed"), nil
 	}
-	if spki == nil {
+	switch {
+	case a.DeviceID != "" && deviceSPKI == nil:
+		return block("the device key that signed the mandate was revoked or is no longer the workspace's"), nil
+	case a.DeviceID != "":
+		if err := devicekey.Verify(deviceSPKI, MandateChallenge(canonical), a.Signature); err != nil {
+			return block("the mandate's signature does not verify: " + err.Error()), nil
+		}
+	case spki == nil:
 		return block("the passkey that signed the mandate is no longer the workspace's"), nil
-	}
-	if _, err := s.verifyMandateSignature(canonical, a, spki, 0); err != nil {
-		return block("the mandate's signature does not verify: " + err.Error()), nil
+	default:
+		if _, err := s.verifyMandateSignature(canonical, a, spki, 0); err != nil {
+			return block("the mandate's signature does not verify: " + err.Error()), nil
+		}
 	}
 	return EvaluatePermissionMandate(t, revokedAt, p, time.Now()), nil
 }
