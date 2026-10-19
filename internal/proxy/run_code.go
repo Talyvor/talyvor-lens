@@ -368,6 +368,12 @@ func writeRunCodeAnswer(w http.ResponseWriter, rec *httptest.ResponseRecorder, c
 		for k, v := range rec.Header() {
 			w.Header()[k] = v
 		}
+		// The answer is JSON, an event stream or a plain refusal, never a page: one that echoes the request (and so was
+		// sniffed as HTML by the recorder) or came back as HTML goes out as plain text, and is never sniffed again.
+		if ct := strings.ToLower(rec.Header().Get("Content-Type")); ct == "" || strings.Contains(ct, "html") {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(rec.Code)
 		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
 		_, _ = w.Write(rec.Body.Bytes())
