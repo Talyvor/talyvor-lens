@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -336,7 +337,7 @@ func TestMCP_SSEReturnsEndpointEvent(t *testing.T) {
 	if !strings.Contains(body, "event: endpoint") {
 		t.Errorf("missing endpoint event in body:\n%s", body)
 	}
-	if !strings.Contains(body, `"uri":"/mcp"`) {
+	if !strings.Contains(body, "data: /mcp?sessionId=") {
 		t.Errorf(`missing endpoint URI in body:\n%s`, body)
 	}
 }
@@ -365,8 +366,8 @@ func TestMCP_SSEEndpointEventReachesClientThroughMiddleware(t *testing.T) {
 			t.Fatalf("stream ended after %q: %v", got, err)
 		}
 	}
-	if want := "event: endpoint\ndata: {\"uri\":\"/mcp\"}\n\n"; got != want {
-		t.Errorf("first event = %q, want %q", got, want)
+	if !strings.HasPrefix(got, "event: endpoint\ndata: /mcp?sessionId=") {
+		t.Errorf("first event = %q, want the endpoint URI", got)
 	}
 }
 
@@ -385,5 +386,87 @@ func TestMCP_InvalidJSONReturnsParseError(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != -32700 {
 		t.Errorf("error = %+v, want code -32700", resp.Error)
+	}
+}
+
+// B40.1: initialize answers the version asked for (or the newest), ping answers, a notification is accepted with
+// no body, initialize issues an Mcp-Session-Id, and an unknown MCP-Protocol-Version header is refused.
+func TestMCP_StreamableHTTPLifecycle(t *testing.T) {
+	s := newServer(nil, nil, nil, nil, nil, "test")
+	post := func(body string, header ...string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		for i := 0; i+1 < len(header); i += 2 {
+			req.Header.Set(header[i], header[i+1])
+		}
+		w := httptest.NewRecorder()
+		s.HandleRPC(w, req)
+		return w
+	}
+	for asked, want := range map[string]string{"2024-11-05": "2024-11-05", "2025-06-18": "2025-06-18", "2099-01-01": handshakeVersions[0]} {
+		w := post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` + asked + `","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+		if !strings.Contains(w.Body.String(), `"protocolVersion":"`+want+`"`) || w.Header().Get("Mcp-Session-Id") == "" {
+			t.Errorf("initialize asking %s = %s (session %q), want %s and a session id", asked, w.Body.String(), w.Header().Get("Mcp-Session-Id"), want)
+		}
+	}
+	if w := post(`{"jsonrpc":"2.0","id":2,"method":"ping"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"result":{}`) {
+		t.Errorf("ping = %d %s", w.Code, w.Body.String())
+	}
+	if w := post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); w.Code != http.StatusAccepted || w.Body.Len() != 0 {
+		t.Errorf("notifications/initialized = %d %q, want 202 and no body", w.Code, w.Body.String())
+	}
+	if w := post(`{"jsonrpc":"2.0","id":3,"method":"ping"}`, "MCP-Protocol-Version", "1999-01-01"); w.Code != http.StatusBadRequest {
+		t.Errorf("an unsupported MCP-Protocol-Version = %d, want 400", w.Code)
+	}
+}
+
+// B40.1: a 2026-07-28 request names its version in _meta and needs no initialize: server/discover lists the versions,
+// tools/list answers with resultType and a cache lifetime, a header that disagrees with the body is a 400 HeaderMismatch
+// and an unknown version a 400 naming the supported ones.
+func TestMCP_StatelessRevision(t *testing.T) {
+	s := newServer(nil, nil, nil, nil, nil, "test")
+	post := func(method, version, name string) (int, map[string]any) {
+		body := `{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"` + version + `"}}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("MCP-Protocol-Version", version)
+		req.Header.Set("Mcp-Method", name)
+		w := httptest.NewRecorder()
+		s.HandleRPC(w, req)
+		var resp map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if w.Header().Get("Mcp-Session-Id") != "" {
+			t.Errorf("%s minted a session id under 2026-07-28", method)
+		}
+		return w.Code, resp
+	}
+	code, resp := post("server/discover", "2026-07-28", "server/discover")
+	if res, _ := resp["result"].(map[string]any); code != 200 || res["resultType"] != "complete" || !strings.Contains(fmt.Sprint(res["supportedVersions"]), "2024-11-05") {
+		t.Errorf("server/discover = %d %v", code, resp)
+	}
+	code, resp = post("tools/list", "2026-07-28", "tools/list")
+	if res, _ := resp["result"].(map[string]any); code != 200 || res["resultType"] != "complete" || res["cacheScope"] != "private" || res["tools"] == nil {
+		t.Errorf("tools/list = %d %v", code, resp)
+	}
+	if code, resp = post("tools/list", "2026-07-28", "tools/call"); code != 400 || fmt.Sprint(resp["error"].(map[string]any)["code"]) != "-32020" {
+		t.Errorf("a mismatched Mcp-Method = %d %v, want 400 -32020", code, resp)
+	}
+	if code, resp = post("tools/list", "2031-01-01", "tools/list"); code != 400 || fmt.Sprint(resp["error"].(map[string]any)["code"]) != "-32022" {
+		t.Errorf("an unknown version = %d %v, want 400 -32022", code, resp)
+	}
+}
+
+// B40.1: every tool has a title and annotations, and a name of at most 64 characters.
+func TestMCP_EveryToolIsAnnotated(t *testing.T) {
+	var all []map[string]any
+	for _, defs := range [][]map[string]any{toolDefinitions(), agentToolDefinitions(), walletToolDefinitions(), marketToolDefinitions(), roomToolDefinitions()} {
+		all = append(all, annotate(defs)...)
+	}
+	for _, tool := range all {
+		name := tool["name"].(string)
+		if _, ok := toolAnnotations[name]; !ok || len(name) > 64 || tool["title"] == "" {
+			t.Errorf("tool %q has no annotations in toolAnnotations, or a name over 64 characters", name)
+		}
+	}
+	if len(all) != len(toolAnnotations) {
+		t.Errorf("%d tools, %d annotated: toolAnnotations names a tool that does not exist", len(all), len(toolAnnotations))
 	}
 }

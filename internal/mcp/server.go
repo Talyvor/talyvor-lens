@@ -1,11 +1,18 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,8 +30,17 @@ import (
 	"github.com/talyvor/lens/internal/workspace"
 )
 
+// supportedVersions are the MCP protocol versions /mcp speaks, newest first (B40.1). 2026-07-28 is stateless: each
+// request names its version in _meta and there is no initialize. The others open with initialize, which answers the
+// version the client asks for when it is one of them, else the newest; 2024-11-05 stays for the agents built on it.
+var (
+	supportedVersions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+	modernVersions    = supportedVersions[:1]
+	handshakeVersions = supportedVersions[1:]
+)
+
 const (
-	protocolVersion = "2024-11-05"
+	legacyVersion   = "2024-11-05" // what a client that names no version gets
 	serverName      = "talyvor-lens"
 	ssePingInterval = 30 * time.Second
 
@@ -33,6 +49,10 @@ const (
 	rpcErrMethodNotFnd = -32601
 	rpcErrInvalidParam = -32602
 	rpcErrInternal     = -32603
+	rpcErrHeader       = -32020 // 2026-07-28 HeaderMismatch
+	rpcErrVersion      = -32022 // 2026-07-28 UnsupportedProtocolVersion
+
+	metaVersion = "io.modelcontextprotocol/protocolVersion"
 )
 
 // pgxDB is the subset of *pgxpool.Pool the MCP tools need. nil pool is
@@ -58,6 +78,15 @@ type Server struct {
 	marketDeps     MarketDeps
 	rooms          *rooms.Store // B32.36: the room tools; nil leaves them out
 	roomDeps       RoomDeps
+
+	sseMu sync.Mutex
+	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
+}
+
+// sseSession is one 2024-11-05 HTTP+SSE stream: answers to the POSTs that name it are sent down it.
+type sseSession struct {
+	keyID string
+	out   chan []byte
 }
 
 func New(
@@ -91,6 +120,7 @@ func newServer(
 		sessionTracker: sessionTracker,
 		router:         router.New(),
 		version:        version,
+		sse:            map[string]*sseSession{},
 	}
 }
 
@@ -113,56 +143,183 @@ type rpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
-func (s *Server) writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	resp := rpcResponse{JSONRPC: "2.0", ID: id, Result: result}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+// metaVersion is the version a 2026-07-28 request names in params._meta; "" for a request of the handshake era.
+func (r rpcRequest) metaVersion() string {
+	var p struct {
+		Meta map[string]any `json:"_meta"`
+	}
+	_ = json.Unmarshal(r.Params, &p)
+	v, _ := p.Meta[metaVersion].(string)
+	return v
 }
 
-func (s *Server) writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
-	resp := rpcResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+func (r rpcRequest) toolName() string {
+	var p struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(r.Params, &p)
+	return p.Name
 }
 
-// HandleRPC dispatches a single JSON-RPC request. MCP clients open this
-// endpoint per call; long-lived streaming happens at /mcp/sse.
+// headerValue undoes the =?base64?…?= form a 2026-07-28 client sends a value that is not plain ASCII in.
+func headerValue(h string) string {
+	if v, ok := strings.CutPrefix(h, "=?base64?"); ok && strings.HasSuffix(v, "?=") {
+		if b, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(v, "?=")); err == nil {
+			return string(b)
+		}
+	}
+	return h
+}
+
+func rpcOK(id json.RawMessage, r any) rpcResponse {
+	return rpcResponse{JSONRPC: "2.0", ID: id, Result: r}
+}
+
+func rpcErr(id json.RawMessage, code int, msg string) rpcResponse {
+	return rpcResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}}
+}
+
+func newSessionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// HandleRPC answers one JSON-RPC message POSTed to /mcp: Streamable HTTP (2025-03-26 on), and the POST half of the
+// 2024-11-05 HTTP+SSE transport when it names a stream with ?sessionId=, whose answer then goes down that stream.
 func (s *Server) HandleRPC(w http.ResponseWriter, r *http.Request) {
+	var stream *sseSession
+	if sid := r.URL.Query().Get("sessionId"); sid != "" {
+		s.sseMu.Lock()
+		stream = s.sse[sid]
+		s.sseMu.Unlock()
+		if stream == nil || stream.keyID != callerKeyID(r.Context()) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+	}
+	status := http.StatusOK
 	var req rpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeRPCError(w, nil, rpcErrParse, "Parse error")
+	var resp rpcResponse
+	err := json.NewDecoder(r.Body).Decode(&req)
+	header, modern := r.Header.Get("MCP-Protocol-Version"), req.metaVersion()
+	switch {
+	case err != nil:
+		resp = rpcErr(nil, rpcErrParse, "Parse error")
+	case header != "" && !slices.Contains(supportedVersions, header) || modern != "" && !slices.Contains(modernVersions, modern):
+		status, resp = http.StatusBadRequest, rpcErr(req.ID, rpcErrVersion, "Unsupported protocol version")
+		resp.Error.Data = map[string]any{"supported": supportedVersions, "requested": cmp.Or(modern, header)}
+	case modern != "" && (header != modern || r.Header.Get("Mcp-Method") != req.Method ||
+		req.Method == "tools/call" && headerValue(r.Header.Get("Mcp-Name")) != req.toolName()):
+		status, resp = http.StatusBadRequest, rpcErr(req.ID, rpcErrHeader, "Header mismatch: MCP-Protocol-Version, Mcp-Method and Mcp-Name must match the body")
+	case len(req.ID) == 0 || string(req.ID) == "null":
+		// A notification (notifications/initialized, …) or a client's answer: nothing to send back.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	default:
+		resp = s.dispatch(context.WithValue(r.Context(), callerRequestKey{}, r), req)
+		if modern != "" {
+			status = s.stateless(&resp, req.Method)
+		}
+	}
+	body, _ := json.Marshal(resp)
+	if stream != nil {
+		select {
+		case stream.out <- body:
+			w.WriteHeader(http.StatusAccepted)
+		case <-r.Context().Done():
+		}
 		return
 	}
+	if req.Method == "initialize" && resp.Error == nil {
+		// Every request is authenticated by its own key, so the id is issued for clients that want one and never
+		// looked up.
+		w.Header().Set("Mcp-Session-Id", newSessionID())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
+}
+
+// stateless finishes a 2026-07-28 answer: every result says it is complete and who answered, a list says how long
+// it may be cached, and an unknown method is a 404.
+func (s *Server) stateless(resp *rpcResponse, method string) int {
+	if resp.Error != nil {
+		if resp.Error.Code == rpcErrMethodNotFnd && !strings.HasPrefix(resp.Error.Message, "unknown tool") {
+			return http.StatusNotFound
+		}
+		return http.StatusOK
+	}
+	if m, ok := resp.Result.(map[string]any); ok {
+		m["resultType"] = "complete"
+		m["_meta"] = map[string]any{"io.modelcontextprotocol/serverInfo": s.serverInfo()}
+		if method == "tools/list" || method == "server/discover" {
+			m["ttlMs"], m["cacheScope"] = 300_000, "private"
+		}
+	}
+	return http.StatusOK
+}
+
+func (s *Server) serverInfo() map[string]any {
+	return map[string]any{"name": serverName, "version": s.version}
+}
+
+func (s *Server) dispatch(ctx context.Context, req rpcRequest) rpcResponse {
 	switch req.Method {
 	case "initialize":
-		s.writeRPCResult(w, req.ID, map[string]any{
-			"protocolVersion": protocolVersion,
+		var p struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		version := legacyVersion
+		if p.ProtocolVersion != "" {
+			version = handshakeVersions[0]
+			if slices.Contains(handshakeVersions, p.ProtocolVersion) {
+				version = p.ProtocolVersion
+			}
+		}
+		return rpcOK(req.ID, map[string]any{
+			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{
-				"name":    serverName,
-				"version": s.version,
-			},
+			"serverInfo":      s.serverInfo(),
 		})
+	case "server/discover":
+		return rpcOK(req.ID, map[string]any{"supportedVersions": supportedVersions, "capabilities": map[string]any{"tools": map[string]any{}}})
+	case "ping":
+		return rpcOK(req.ID, map[string]any{})
 	case "tools/list":
-		s.writeRPCResult(w, req.ID, map[string]any{"tools": s.tools()})
+		return rpcOK(req.ID, map[string]any{"tools": s.tools()})
 	case "tools/call":
-		s.handleToolsCall(w, context.WithValue(r.Context(), callerRequestKey{}, r), req.ID, req.Params)
+		return s.handleToolsCall(ctx, req.ID, req.Params)
 	default:
-		s.writeRPCError(w, req.ID, rpcErrMethodNotFnd, "method not found: "+req.Method)
+		return rpcErr(req.ID, rpcErrMethodNotFnd, "method not found: "+req.Method)
 	}
 }
 
-// HandleSSE keeps an SSE connection open and periodically pings the
-// client. Clients use it to wake up when the MCP server is back online
-// after a network blip. The initial `endpoint` event tells the client
-// where to send JSON-RPC traffic.
+func callerKeyID(ctx context.Context) string {
+	if a := auth.GetAuthContext(ctx); a != nil {
+		return a.APIKeyID
+	}
+	return ""
+}
+
+// HandleSSE is the stream of the 2024-11-05 HTTP+SSE transport: its endpoint event is the URI to POST to, and the
+// answers to those POSTs, and a ping every 30 s, come down it.
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// Meant to stay open, so it is never /healthz's slowest request nor logged as slow (B27.11).
 	reqtrack.MarkLongLived(r.Context())
+	id, sess := newSessionID(), &sseSession{keyID: callerKeyID(r.Context()), out: make(chan []byte, 16)}
+	s.sseMu.Lock()
+	s.sse[id] = sess
+	s.sseMu.Unlock()
+	defer func() {
+		s.sseMu.Lock()
+		delete(s.sse, id)
+		s.sseMu.Unlock()
+	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -170,7 +327,7 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Through the wrapping middleware, which hides http.Flusher: a type assertion left the stream unsent (B17.131).
 	rc := http.NewResponseController(w)
-	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: {\"uri\":\"/mcp\"}\n\n")
+	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: /mcp?sessionId=%s\n\n", id)
 	_ = rc.Flush()
 
 	ticker := time.NewTicker(ssePingInterval)
@@ -179,6 +336,9 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case msg := <-sess.out:
+			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+			_ = rc.Flush()
 		case <-ticker.C:
 			_, _ = fmt.Fprintf(w, "event: ping\ndata: {}\n\n")
 			_ = rc.Flush()
@@ -191,7 +351,7 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 // tools lists every tool this server answers: the agent tools too when agent wallets are set.
 func (s *Server) tools() []map[string]any {
 	if s.agentBank == nil {
-		return toolDefinitions()
+		return annotate(toolDefinitions())
 	}
 	all := append(append(toolDefinitions(), agentToolDefinitions()...), walletToolDefinitions()...)
 	if s.market != nil {
@@ -200,7 +360,7 @@ func (s *Server) tools() []map[string]any {
 	if s.rooms != nil {
 		all = append(all, roomToolDefinitions()...)
 	}
-	return all
+	return annotate(all)
 }
 
 func toolDefinitions() []map[string]any {
@@ -282,11 +442,10 @@ type toolCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, id, paramsRaw json.RawMessage) {
+func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMessage) rpcResponse {
 	var params toolCallParams
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		s.writeRPCError(w, id, rpcErrInvalidParam, "Invalid params: "+err.Error())
-		return
+		return rpcErr(id, rpcErrInvalidParam, "Invalid params: "+err.Error())
 	}
 
 	var (
@@ -296,8 +455,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, id,
 	switch params.Name {
 	case "agent_balance", "agent_request_approval", "agent_pay", "agent_receipt":
 		if s.agentBank == nil {
-			s.writeRPCError(w, id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
-			return
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.callAgentTool(ctx, params.Name, params.Arguments)
 	case "get_spend_summary":
@@ -315,27 +473,23 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, id,
 	default:
 		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil)
 		if !known || s.agentBank == nil {
-			s.writeRPCError(w, id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
-			return
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.callAgentTool(ctx, params.Name, params.Arguments) // B22.11, B32.23, B32.36: run and logged as the agent tools are
 	}
 	var refusal *toolRefusal
 	if errors.As(err, &refusal) {
-		s.writeRPCResult(w, id, map[string]any{"content": []map[string]any{{"type": "text", "text": refusal.msg}}, "isError": true})
-		return
+		return rpcOK(id, map[string]any{"content": []map[string]any{{"type": "text", "text": refusal.msg}}, "isError": true})
 	}
 	if err != nil {
-		s.writeRPCError(w, id, rpcErrInternal, err.Error())
-		return
+		return rpcErr(id, rpcErrInternal, err.Error())
 	}
 	// MCP wraps tool results in a content array of typed text blocks.
 	body, mErr := json.Marshal(result)
 	if mErr != nil {
-		s.writeRPCError(w, id, rpcErrInternal, "result marshal: "+mErr.Error())
-		return
+		return rpcErr(id, rpcErrInternal, "result marshal: "+mErr.Error())
 	}
-	s.writeRPCResult(w, id, map[string]any{
+	return rpcOK(id, map[string]any{
 		"content": []map[string]any{{
 			"type": "text",
 			"text": string(body),
