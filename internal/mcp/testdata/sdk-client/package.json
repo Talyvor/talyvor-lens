@@ -1,0 +1,8 @@
+{
+  "name": "lens-mcp-sdk-client-check",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

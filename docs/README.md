@@ -47,7 +47,8 @@ The full API is documented inline in `internal/api/server.go` (`MountAuthenticat
 - `POST /v1/guardrails/check` — pre-flight prompt scan.
 - `POST /v1/eval/run` — synchronous eval suite run.
 - `GET  /v1/api/keys/pool` — API key pool stats.
-- `POST /mcp` — JSON-RPC 2.0 endpoint for agent frameworks.
+- `POST /mcp` — the MCP server (Streamable HTTP; protocol versions 2024-11-05 to 2026-07-28) for Claude, ChatGPT, Cursor and the MCP SDKs; send the agent's key as `Authorization: Bearer`.
+- `GET  /mcp/sse` — the same server over the older HTTP+SSE transport (2024-11-05).
 
 ## Schema migrations
 
