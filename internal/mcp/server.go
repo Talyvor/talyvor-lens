@@ -79,6 +79,7 @@ type Server struct {
 	marketDeps     MarketDeps
 	rooms          *rooms.Store // B32.36: the room tools; nil leaves them out
 	roomDeps       RoomDeps
+	mandates       MandateReader // B40.2: get_mandates; nil leaves it out
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
@@ -355,10 +356,14 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 // tools lists every tool this server answers: the agent tools too when agent wallets are set.
 func (s *Server) tools() []map[string]any {
-	if s.agentBank == nil {
-		return annotate(toolDefinitions())
+	all := toolDefinitions()
+	if s.mandates != nil {
+		all = append(all, mandateToolDefinitions()...)
 	}
-	all := append(append(toolDefinitions(), agentToolDefinitions()...), walletToolDefinitions()...)
+	if s.agentBank == nil {
+		return annotate(all)
+	}
+	all = append(append(all, agentToolDefinitions()...), walletToolDefinitions()...)
 	if s.market != nil {
 		all = append(all, marketToolDefinitions()...)
 	}
@@ -475,6 +480,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 		result, err = s.toolGetSessionSummary(ctx, params.Arguments)
 	case "route_model":
 		result, err = s.toolRouteModel(ctx, params.Arguments)
+	case "get_mandates":
+		if s.mandates == nil {
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
+		}
+		result, err = s.toolGetMandates(ctx, params.Arguments)
 	default:
 		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil)
 		if !known || s.agentBank == nil {
