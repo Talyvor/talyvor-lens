@@ -203,7 +203,8 @@ func (t PermissionMandateTerms) validate() error {
 		return bad(`name at least one client: "chat", "voice", "mcp:<client id>" or "key:<api key id>"`)
 	}
 	for _, c := range t.Clients {
-		if c != ClientChat && c != ClientVoice && !(strings.HasPrefix(c, "mcp:") && len(c) > 4) && !(strings.HasPrefix(c, "key:") && len(c) > 4) {
+		named := (strings.HasPrefix(c, "mcp:") || strings.HasPrefix(c, "key:")) && len(c) > 4
+		if c != ClientChat && c != ClientVoice && !named {
 			return bad("%q is not a client: use \"chat\", \"voice\", \"mcp:<client id>\" or \"key:<api key id>\"", c)
 		}
 	}
