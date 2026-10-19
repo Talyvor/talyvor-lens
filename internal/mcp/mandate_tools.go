@@ -7,11 +7,12 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/storedanswers"
 )
 
 // mandate_tools.go — B40.2: get_mandates reads the permission mandates of the caller's workspace — what the person
 // allowed an assistant or an agent to prepare and pay, each with whether it is active. An agent's key sees the ones for
-// it and the ones for no agent in particular. It reads only; a mandate is signed and revoked by the person.
+// it and the ones for no agent in particular; any other key is refused. It reads only; a mandate is signed and revoked by the person.
 
 // MandateReader reads a workspace's permission mandates (economy.DualTokenStore).
 type MandateReader interface {
@@ -35,13 +36,19 @@ func (s *Server) toolGetMandates(ctx context.Context, _ json.RawMessage) (any, e
 	if ws == "" {
 		return nil, &toolRefusal{"permission mandates are a workspace's: use a workspace's key"}
 	}
+	// The same gate as GET /v1/money/permission-mandates: the owner or an admin reads all, an agent's key its own.
 	agentID := ""
-	if actx := auth.GetAuthContext(ctx); actx != nil && actx.APIKeyID != "" && s.agentBank != nil {
-		a, _, err := s.agentBank.AgentOfKey(ctx, actx.APIKeyID)
-		if err != nil && !errors.Is(err, economy.ErrAgentNotFound) {
-			return nil, err
+	if _, owner := storedanswers.OwnerOrAdmin(ctx); !owner {
+		if actx := auth.GetAuthContext(ctx); actx != nil && actx.APIKeyID != "" && s.agentBank != nil {
+			a, _, err := s.agentBank.AgentOfKey(ctx, actx.APIKeyID)
+			if err != nil && !errors.Is(err, economy.ErrAgentNotFound) {
+				return nil, err
+			}
+			agentID = a
 		}
-		agentID = a
+		if agentID == "" {
+			return nil, &toolRefusal{"only the workspace's owner, an admin or an agent's own key may read its permission mandates"}
+		}
 	}
 	list, err := s.mandates.PermissionMandates(ctx, ws, agentID)
 	if err != nil {
