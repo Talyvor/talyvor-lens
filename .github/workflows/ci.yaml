@@ -146,8 +146,9 @@ jobs:
         # TestSpendByRequest's token_events seed — producing false reds on unrelated PRs (this caused #276's
         # scary-but-harmless red). Serialising is the systemic fix; correctness over a little wall-clock.
         # -timeout is per package: cmd/lens alone takes 108–120s under -race on a normal runner, so 120s
-        # timed it out on three consecutive attempts at 29221e6 with no test at fault.
-        run: go test -timeout 300s -race -count=1 -p 1 ./...
+        # timed it out on three consecutive attempts at 29221e6 with no test at fault. By 19 Oct 2026 it took
+        # 227–299s, and 300s timed it out on three of four runs with no test at fault (B40.5), so 600s.
+        run: go test -timeout 600s -race -count=1 -p 1 ./...
       # B35.2 — one agent's 60 simultaneous requests, and two agents' at once, all hold and settle with no
       # deadlock: five runs in a row, as the item's DONE asks, because one green run of a race proves little.
       - name: B35.2 simultaneous agent requests, five runs in a row
