@@ -3580,7 +3580,8 @@ func run() error {
 				_, _ = w.Write([]byte(html)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- roi.RenderHTML uses html/template, which escapes every value
 			case "md", "markdown":
 				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-				_, _ = w.Write([]byte(roi.RenderMarkdown(rep))) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/markdown, not HTML; nosniff is set on every response
+				// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/markdown, not HTML; nosniff is set on every response
+				_, _ = w.Write([]byte(roi.RenderMarkdown(rep)))
 			default:
 				writeJSONOK(w, http.StatusOK, rep)
 			}

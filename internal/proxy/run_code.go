@@ -369,9 +369,11 @@ func writeRunCodeAnswer(w http.ResponseWriter, rec *httptest.ResponseRecorder, c
 			w.Header()[k] = v
 		}
 		w.WriteHeader(rec.Code)
-		_, _ = w.Write(rec.Body.Bytes()) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
+		_, _ = w.Write(rec.Body.Bytes())
 	case rec.Code == http.StatusOK:
-		_, _ = w.Write(rec.Body.Bytes()) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
+		_, _ = w.Write(rec.Body.Bytes())
 	default:
 		var refused struct {
 			Error struct {
