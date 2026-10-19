@@ -23,6 +23,12 @@ var toolAnnotations = map[string]toolAnnotation{
 	"route_model":               {"Choose a model", reads},
 	"get_mandates":              {"Permission mandates", reads},
 
+	"prepare_payment":              {"Prepare a payment for approval", moves},
+	"prepare_batch":                {"Prepare payments for approval", moves},
+	"request_marketplace_purchase": {"Prepare a marketplace purchase for approval", moves},
+	"cancel_request":               {"Cancel a payment request", moves},
+	"get_request_status":           {"Payment request status", reads},
+
 	"agent_balance":          {"Your balance and rules", reads},
 	"agent_request_approval": {"Ask a person to approve a payment", moves},
 	"agent_pay":              {"Pay an agent", moves},

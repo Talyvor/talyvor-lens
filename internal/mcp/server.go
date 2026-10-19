@@ -80,6 +80,8 @@ type Server struct {
 	rooms          *rooms.Store // B32.36: the room tools; nil leaves them out
 	roomDeps       RoomDeps
 	mandates       MandateReader // B40.2: get_mandates; nil leaves it out
+	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; nil leaves them out
+	paymentRequests PaymentRequester
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
@@ -360,6 +362,9 @@ func (s *Server) tools() []map[string]any {
 	if s.mandates != nil {
 		all = append(all, mandateToolDefinitions()...)
 	}
+	if s.paymentRequests != nil {
+		all = append(all, paymentRequestToolDefinitions()...)
+	}
 	if s.agentBank == nil {
 		return annotate(all)
 	}
@@ -485,6 +490,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.toolGetMandates(ctx, params.Arguments)
+	case "prepare_payment", "prepare_batch", "request_marketplace_purchase", "cancel_request", "get_request_status":
+		if s.paymentRequests == nil {
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
+		}
+		result, err = s.callPaymentRequestTool(ctx, params.Name, params.Arguments)
 	default:
 		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil)
 		if !known || s.agentBank == nil {
