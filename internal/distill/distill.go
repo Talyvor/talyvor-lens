@@ -82,7 +82,7 @@ type Result struct {
 	// NeedsVision reports that the input carries no extractable text layer
 	// (e.g. a scanned, image-only PDF) and should be routed to the vision
 	// fallback. The PDF converter sets it when text extraction yields nothing
-	// (or fails); the vision fallback that ACTS on it is a later PR.
+	// (or fails); on a served request visionFallback acts on it (vision.go).
 	NeedsVision bool
 	// Tier is the fidelity tier applied to produce this Markdown (faithful by
 	// default). Recorded so an over-aggressive tier is traceable.

@@ -12,11 +12,11 @@ import (
 // vision.go is the vision-OCR fallback for text-less documents (scanned,
 // image-only, or encrypted PDFs that set NeedsVision). It is the EXPENSIVE path
 // — the honest opposite of distillation's savings: OCR'ing a document with a
-// vision model SPENDS tokens, it does not save them. Stage 5 builds the
-// decision, the request shaping, the honest cost accounting, and a clean
-// dispatch SEAM. The LIVE dispatch (rendering pages, building provider content
-// blocks, calling a vision-capable model over HTTP, writing token_events) needs
-// the request path / proxy and lands with stage 3 — here we depend only on the
+// vision model SPENDS tokens, it does not save them. This file holds the
+// decision, the request shaping, the honest cost accounting, and the dispatch
+// SEAM. The LIVE dispatch (building provider content blocks, calling a
+// vision-capable model over HTTP) is internal/proxy/vision_dispatch.go, and the
+// proxy books the cost as a 'vision_ocr' spend row — here we depend only on the
 // VisionDispatcher interface, exercised in tests by a mock.
 
 // VisionDispatcher sends a text-less document to a vision-capable model and

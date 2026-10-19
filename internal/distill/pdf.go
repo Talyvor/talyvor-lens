@@ -34,9 +34,11 @@ import (
 // has no text operators, so extraction yields empty text. Both empty output
 // AND any extraction error/panic are treated as "no text layer" → the result
 // sets NeedsVision=true (the core's reserved signal becomes real here) with a
-// clear warning, NOT empty-looking success and NOT garbage. The actual vision
-// fallback (rendering + OCR) is a later PR; for now NeedsVision is surfaced
-// honestly, not acted on.
+// clear warning, NOT empty-looking success and NOT garbage. This converter
+// never OCRs: on a served request the orchestrator's vision fallback
+// (vision.go, dispatched live by internal/proxy/vision_dispatch.go) reads the
+// document with a vision model and books that call as its own spend; the
+// preview runs no vision model and returns NeedsVision as-is.
 //
 // RESIDUAL RISK (must be handled at the integration layer, like html.go's
 // stack-overflow note): the EXTRACTED-TEXT size is bounded here, but
@@ -53,7 +55,7 @@ type pdfConverter struct{}
 
 func (pdfConverter) Format() Format { return FormatPDF }
 
-const pdfNeedsVisionWarning = "pdf: no extractable text layer (scanned/image-only, encrypted, or unparseable PDF) — routed to vision fallback (NeedsVision); the vision converter is a later PR"
+const pdfNeedsVisionWarning = "pdf: no extractable text layer (scanned/image-only, encrypted, or unparseable PDF) — on a served request a vision model reads it, and that call is charged as its own spend; a preview runs no vision model"
 
 func (pdfConverter) Convert(ctx context.Context, input []byte) (res Result, err error) {
 	// Local recover: ledongthuc/pdf panics liberally on malformed input
