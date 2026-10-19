@@ -189,7 +189,7 @@ func newComplianceExportHandler(cf complianceCaseFile) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="compliance-case-`+safeFilename(id)+`-draft.txt"`)
-		_, _ = w.Write([]byte(text))
+		_, _ = w.Write([]byte(text)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/plain attachment; SecurityHeadersMiddleware sets nosniff on every response
 	})
 }
 

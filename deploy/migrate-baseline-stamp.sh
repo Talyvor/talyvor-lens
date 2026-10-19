@@ -154,6 +154,6 @@ if [ "$DRY" = "--dry-run" ]; then
   exit 0
 fi
 
-vals=$(IFS=,; echo "${to_stamp[*]}")
+vals=$(IFS=,; echo "${to_stamp[*]}")  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering -- IFS is set inside the command substitution subshell only
 q "BEGIN; INSERT INTO schema_migrations (version, name) VALUES $vals; COMMIT;" >/dev/null
 echo "Stamped. lens migrate will now skip the recorded versions and apply anything newer."

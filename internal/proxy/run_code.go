@@ -369,8 +369,10 @@ func writeRunCodeAnswer(w http.ResponseWriter, rec *httptest.ResponseRecorder, c
 			w.Header()[k] = v
 		}
 		w.WriteHeader(rec.Code)
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
 		_, _ = w.Write(rec.Body.Bytes())
 	case rec.Code == http.StatusOK:
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- replays a recorded answer with the recorder's own headers (JSON or event stream)
 		_, _ = w.Write(rec.Body.Bytes())
 	default:
 		var refused struct {
@@ -390,7 +392,7 @@ func writeRunCodeAnswer(w http.ResponseWriter, rec *httptest.ResponseRecorder, c
 }
 
 func writeFrame(w http.ResponseWriter, event string, data []byte) {
-	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data) // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter -- text/event-stream frame; event is a constant and data is JSON
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}

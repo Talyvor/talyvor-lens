@@ -394,7 +394,7 @@ func ReplayStream(
 	flusher, _ := w.(http.Flusher)
 
 	emit := func(s string) error {
-		if _, err := io.WriteString(w, s); err != nil {
+		if _, err := io.WriteString(w, s); err != nil { // nosemgrep: go.lang.security.audit.xss.no-io-writestring-to-responsewriter.no-io-writestring-to-responsewriter -- text/event-stream replay of a cached answer
 			return err
 		}
 		if flusher != nil {

@@ -661,7 +661,7 @@ func RequireScope(scope string) func(http.Handler) http.Handler {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`))
+				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json; scope is a route constant, never request input
 				return
 			}
 			// No AuthContext ⇒ a fast-path api_keys credential (no scope field);

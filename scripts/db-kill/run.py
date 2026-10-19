@@ -50,7 +50,7 @@ def http(method, path, key, body=None, timeout=90):
     req = urllib.request.Request(BASE + path, method=method, data=json.dumps(body).encode() if body else None,
                                  headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- BASE is the local test Lens this harness starts
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()

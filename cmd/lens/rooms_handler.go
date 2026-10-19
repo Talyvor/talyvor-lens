@@ -504,14 +504,14 @@ func mountRoomRoutes(r chi.Router, store *rooms.Store) {
 				if err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", e.Cursor, data); err != nil {
+				if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", e.Cursor, data); err != nil { // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter -- text/event-stream frame; data is json.Marshal output
 					return err
 				}
 				after = e.Cursor
 			}
 			return rc.Flush()
 		}
-		if _, err := fmt.Fprintf(w, "retry: %d\n\n", roomEventRetry.Milliseconds()); err != nil {
+		if _, err := fmt.Fprintf(w, "retry: %d\n\n", roomEventRetry.Milliseconds()); err != nil { // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter -- text/event-stream retry frame; the value is a constant
 			return
 		}
 		if send(events) != nil {

@@ -559,7 +559,7 @@ func overLevelLimit(ctx context.Context, q pgxDB, workspaceID string, c Capabili
 	if err != nil {
 		return nil, err
 	}
-	moved := map[string]int64{}
+	moved := map[string]int64{} // nosemgrep: trailofbits.go.iterate-over-empty-map.iterate-over-empty-map -- moved is filled from postings just above; empty means nothing moves, so no limit applies
 	for _, p := range postings {
 		if p.AmountMinor > 0 {
 			moved[p.Currency] += p.AmountMinor

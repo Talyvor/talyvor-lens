@@ -423,7 +423,7 @@ func (s *StreamHandler) serve(
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(errBody)
+		_, _ = w.Write(errBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- the upstream error is sent as text/event-stream with nosniff, never as HTML
 		s.proxy.releaseReservation(r.Context(), fmt.Sprintf("upstream status %d", resp.StatusCode))
 		return fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
@@ -443,7 +443,7 @@ func (s *StreamHandler) serve(
 	translator, translates := ops.(clientTranslator)
 	write := func(lines [][]byte) {
 		for _, l := range lines {
-			_, _ = w.Write(l)
+			_, _ = w.Write(l) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/event-stream lines from the model, sent with nosniff
 			_, _ = w.Write([]byte("\n"))
 		}
 		if flusher != nil && len(lines) > 0 {

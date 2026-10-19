@@ -237,7 +237,7 @@ func convert(ctx context.Context, input []byte, format *Format, o convOptions) (
 	if !ok {
 		return Result{Format: f, Tier: normalizeTier(o.tier)}, ErrUnsupportedFormat
 	}
-	res, err = c.Convert(ctx, input)
+	res, err = c.Convert(ctx, input) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable -- Result is a value, not a pointer, and every converter returns its Format with an error; the partial result is kept on purpose
 	if err != nil {
 		res.Tier = normalizeTier(o.tier)
 		return res, err

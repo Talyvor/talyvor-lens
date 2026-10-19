@@ -26,7 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- backoff jitter only, never an id, token or secret
 	"net"
 	"net/http"
 	"strconv"

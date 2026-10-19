@@ -672,7 +672,7 @@ func (s *StatusPage) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(renderHTML(snap)))
+	_, _ = w.Write([]byte(renderHTML(snap))) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- renderHTML escapes every value with htmlEscape
 }
 
 // ServeJSON always returns JSON, ignoring the Accept header. The

@@ -59,7 +59,7 @@ func mountMarketReceiptRoutes(r chi.Router, store marketReceipts) {
 		case format == "pdf" || (format == "" && strings.Contains(accept, "application/pdf")):
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", `inline; filename="talyvor-receipt-`+rc.Number+`.pdf"`)
-			_, _ = w.Write(rc.PDF())
+			_, _ = w.Write(rc.PDF()) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		case format == "html" || (format == "" && strings.Contains(accept, "text/html")):
 			page, err := rc.HTML()
 			if err != nil {
@@ -68,7 +68,7 @@ func mountMarketReceiptRoutes(r chi.Router, store marketReceipts) {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
-			_, _ = w.Write(page)
+			_, _ = w.Write(page) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- Receipt.HTML uses html/template, and the page carries a default-src none CSP
 		case format == "" || format == "json":
 			writeJSONOK(w, http.StatusOK, rc)
 		default:

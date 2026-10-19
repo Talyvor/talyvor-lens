@@ -3,7 +3,7 @@ package retry
 import (
 	"context"
 	"io"
-	"math/rand"
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- backoff jitter only, never an id, token or secret
 	"net/http"
 	"strconv"
 	"time"

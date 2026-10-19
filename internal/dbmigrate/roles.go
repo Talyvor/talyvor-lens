@@ -69,7 +69,7 @@ func ApplyRoles(ctx context.Context, conn *pgx.Conn, appPassword, retentionPassw
 			continue
 		}
 		// A concurrent migrate may create it between the lookup and here; that is not an error.
-		_, err := conn.Exec(ctx, `DO $$ BEGIN CREATE ROLE `+role+` NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`)
+		_, err := conn.Exec(ctx, `DO $$ BEGIN CREATE ROLE `+role+` NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`) // nosemgrep: go.lang.security.audit.sqli.pgx-sqli.pgx-sqli -- role comes only from the fixed AppRole/RetentionRole constants, never from input
 		if err != nil {
 			if appPassword == "" && retentionPassword == "" {
 				slog.Warn("migrate: cannot create the database roles Lens can run as; it keeps the migration login",

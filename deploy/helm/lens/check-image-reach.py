@@ -81,7 +81,7 @@ def resolves(ref):
         return None, f"no probe implemented for registry {host!r}"
     try:
         req = urllib.request.Request(reg["auth"].format(repo=repo))
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is a fixed https registry template from REGISTRIES
             token = json.loads(r.read()).get("token")
     except urllib.error.HTTPError as e:
         return False, f"token endpoint HTTP {e.code}"
@@ -90,7 +90,7 @@ def resolves(ref):
     try:
         req = urllib.request.Request(reg["api"].format(repo=repo, tag=tag),
                                      headers={"Authorization": f"Bearer {token}", "Accept": ACCEPT})
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is a fixed https registry template from REGISTRIES
             return r.status == 200, f"manifest HTTP {r.status}"
     except urllib.error.HTTPError as e:
         return False, f"manifest HTTP {e.code}"

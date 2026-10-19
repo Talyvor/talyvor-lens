@@ -39,7 +39,7 @@ REAL = "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/r
 def status(url):
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "talyvor-runbook-probe"})
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=20) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- probes the runbook links written in this repo, an operator tool
             return r.status
     except urllib.error.HTTPError as e:
         return e.code

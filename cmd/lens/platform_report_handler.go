@@ -70,7 +70,7 @@ func newPlatformReportExportHandler(g *platformreport.Generator) http.Handler {
 		w.Header().Set("X-Platform-Report-Sha256", run.SHA256)
 		w.Header().Set("X-Platform-Report-Rows", strconv.Itoa(run.Rows))
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(file)
+		_, _ = w.Write(file) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- a CSV/JSON attachment with its own content type; nosniff is set on every response
 	})
 }
 
