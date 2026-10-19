@@ -120,6 +120,12 @@ type PaymentRequestItem struct {
 	Reason      string `json:"reason"`
 	Rule        string `json:"rule,omitempty"`
 	MandateID   string `json:"mandate_id,omitempty"`
+	// B40.5: once paying it was tried, the payment out that paid it, where it stands, and under what authority:
+	// "approval" or "mandate:<id>".
+	PaymentID string `json:"payment_id,omitempty"`
+	PayStatus string `json:"pay_status,omitempty"`
+	PayDetail string `json:"pay_detail,omitempty"`
+	Authority string `json:"authority,omitempty"`
 }
 
 // PaymentRequest is a prepared request as kept.
@@ -282,6 +288,18 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 			id, it.Position, it.PayeeID, it.PayeeName, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.Decision, it.Reason, it.Rule, it.MandateID); err != nil {
 			return r, false, fmt.Errorf("economy: payment request item: %w", err)
 		}
+	}
+	// B40.5: the request and how each item was judged are the first links of its record.
+	if err := appendAudit(ctx, tx, workspaceID, id, "request", map[string]any{"by": by, "client": in.Client, "agent_id": in.AgentID,
+		"kind": kind, "canonical": string(canonical), "payload_hash": sha256Hex(string(canonical))}); err != nil {
+		return r, false, err
+	}
+	decisions := []map[string]any{}
+	for _, it := range items {
+		decisions = append(decisions, map[string]any{"position": it.Position, "decision": it.Decision, "reason": it.Reason, "rule": it.Rule, "mandate_id": it.MandateID})
+	}
+	if err := appendAudit(ctx, tx, workspaceID, id, "decision", map[string]any{"items": decisions}); err != nil {
+		return r, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return r, false, err
@@ -489,7 +507,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 		return r, fmt.Errorf("economy: payment request: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT position, payee_id, payee_name, listing_id, currency, amount_minor, reference, decision,
-		reason, rule, mandate_id FROM payment_request_items WHERE request_id = $1 ORDER BY position`, id)
+		reason, rule, mandate_id, payment_id, pay_status, pay_detail, authority FROM payment_request_items WHERE request_id = $1 ORDER BY position`, id)
 	if err != nil {
 		return r, fmt.Errorf("economy: payment request items: %w", err)
 	}
@@ -499,7 +517,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 	for rows.Next() {
 		var it PaymentRequestItem
 		if err := rows.Scan(&it.Position, &it.PayeeID, &it.PayeeName, &it.ListingID, &it.Currency, &it.AmountMinor, &it.Reference,
-			&it.Decision, &it.Reason, &it.Rule, &it.MandateID); err != nil {
+			&it.Decision, &it.Reason, &it.Rule, &it.MandateID, &it.PaymentID, &it.PayStatus, &it.PayDetail, &it.Authority); err != nil {
 			return r, err
 		}
 		if it.Decision != ItemBlocked {
@@ -538,14 +556,35 @@ func formatMinor(currency string, minor int64) string {
 }
 
 // CancelPaymentRequest cancels a request not yet cancelled: its auto items stop counting towards the mandates' limits.
-// agentID, when not "", cancels only a request that agent prepared.
+// agentID, when not "", cancels only a request that agent prepared. One approved, or with an item paid, stays (B40.5).
 func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (PaymentRequest, error) {
 	if _, err := s.PaymentRequest(ctx, workspaceID, agentID, id); err != nil {
 		return PaymentRequest{}, err
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE payment_requests SET status = 'cancelled', cancelled_at = now(), cancelled_by = $3
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PaymentRequest{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Held as PayPaymentRequest holds it: a request is cancelled before any item is paid, or not at all.
+	var status string
+	var paid bool
+	if err := tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, workspaceID).Scan(&status); err != nil {
+		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
+	}
+	// Read after the lock, so a payer that held it is seen.
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM payment_request_items WHERE request_id = $1 AND payment_id <> '')`, id).Scan(&paid); err != nil {
+		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
+	}
+	if status == "approved" || paid {
+		return PaymentRequest{}, fmt.Errorf("%w: the request was approved or paid already: it cannot be cancelled", ErrPaymentRequest)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE payment_requests SET status = 'cancelled', cancelled_at = now(), cancelled_by = $3
 		WHERE id = $1 AND workspace_id = $2 AND status <> 'cancelled'`, id, workspaceID, by); err != nil {
 		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PaymentRequest{}, err
 	}
 	return s.PaymentRequest(ctx, workspaceID, agentID, id)
 }

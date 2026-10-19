@@ -406,6 +406,10 @@ const undocumentedB403Routes = 3
 // line of their own.
 const undocumentedB404Routes = 4
 
+// 310 → 314 (B40.5): POST /v1/money/payment-requests/{id}/approval, …/approve and …/pay, and GET …/record — on a line
+// of their own.
+const undocumentedB405Routes = 4
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -419,10 +423,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes)
 	}
 }
