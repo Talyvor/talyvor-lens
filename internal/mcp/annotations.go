@@ -21,6 +21,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"check_circuit_breakers":    {"Circuit breakers", reads},
 	"get_session_summary":       {"Session summary", reads},
 	"route_model":               {"Choose a model", reads},
+	"get_mandates":              {"Permission mandates", reads},
 
 	"agent_balance":          {"Your balance and rules", reads},
 	"agent_request_approval": {"Ask a person to approve a payment", moves},

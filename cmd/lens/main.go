@@ -2635,6 +2635,7 @@ func run() error {
 	mcpServer := mcp.New(pool, l, alertManager, wsManager, sessionTracker, lensVersion)
 	mcpServer.SetAgentBank(dualToken) // B19.9: agents use their wallets with their own keys
 	mcpServer.SetCredentials(kyaSvc)  // B30.5: and show their Know Your Agent credential
+	mcpServer.SetMandates(dualToken)  // B40.2: get_mandates
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -4627,6 +4628,7 @@ func run() error {
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
+		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
