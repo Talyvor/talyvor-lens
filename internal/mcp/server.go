@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -83,9 +84,10 @@ type Server struct {
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
 }
 
-// sseSession is one 2024-11-05 HTTP+SSE stream: answers to the POSTs that name it are sent down it.
+// sseSession is one 2024-11-05 HTTP+SSE stream: answers to the POSTs that name it, from the credential that opened
+// it, are sent down it.
 type sseSession struct {
-	keyID string
+	owner string
 	out   chan []byte
 }
 
@@ -196,7 +198,8 @@ func (s *Server) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		s.sseMu.Lock()
 		stream = s.sse[sid]
 		s.sseMu.Unlock()
-		if stream == nil || stream.keyID != callerKeyID(r.Context()) {
+		who := callerPrincipal(r.Context())
+		if stream == nil || who == "" || subtle.ConstantTimeCompare([]byte(stream.owner), []byte(who)) != 1 {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
@@ -299,11 +302,13 @@ func (s *Server) dispatch(ctx context.Context, req rpcRequest) rpcResponse {
 	}
 }
 
-func callerKeyID(ctx context.Context) string {
-	if a := auth.GetAuthContext(ctx); a != nil {
-		return a.APIKeyID
+// callerPrincipal is the whole verified credential a 2024-11-05 stream is bound to; "" when there is none.
+func callerPrincipal(ctx context.Context) string {
+	a := auth.GetAuthContext(ctx)
+	if a == nil {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("%q %q %q %q %q %d %t", a.WorkspaceID, a.UserID, a.AuthMethod, a.APIKeyID, a.SessionKeyID, a.ModeratorKeyID, a.IsAdmin)
 }
 
 // HandleSSE is the stream of the 2024-11-05 HTTP+SSE transport: its endpoint event is the URI to POST to, and the
@@ -311,7 +316,7 @@ func callerKeyID(ctx context.Context) string {
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// Meant to stay open, so it is never /healthz's slowest request nor logged as slow (B27.11).
 	reqtrack.MarkLongLived(r.Context())
-	id, sess := newSessionID(), &sseSession{keyID: callerKeyID(r.Context()), out: make(chan []byte, 16)}
+	id, sess := newSessionID(), &sseSession{owner: callerPrincipal(r.Context()), out: make(chan []byte, 16)}
 	s.sseMu.Lock()
 	s.sse[id] = sess
 	s.sseMu.Unlock()

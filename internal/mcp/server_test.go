@@ -470,3 +470,38 @@ func TestMCP_EveryToolIsAnnotated(t *testing.T) {
 		t.Errorf("%d tools, %d annotated: toolAnnotations names a tool that does not exist", len(all), len(toolAnnotations))
 	}
 }
+
+// B40.1: a 2024-11-05 stream answers only the credential that opened it; another key naming it is a 404.
+func TestMCP_SSEStreamIsBoundToItsCredential(t *testing.T) {
+	s := newServer(nil, nil, nil, nil, nil, "test")
+	as := func(key string, r *http.Request) *http.Request {
+		return r.WithContext(auth.WithAuthContext(r.Context(), &auth.AuthContext{APIKeyID: key, WorkspaceID: "ws"}))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sse := httptest.NewRecorder()
+	go s.HandleSSE(sse, as("key-a", httptest.NewRequest(http.MethodGet, "/mcp/sse", nil).WithContext(ctx)))
+	var sid string
+	for range 100 {
+		s.sseMu.Lock()
+		for id := range s.sse {
+			sid = id
+		}
+		s.sseMu.Unlock()
+		if sid != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	post := func(key string) int {
+		w := httptest.NewRecorder()
+		s.HandleRPC(w, as(key, httptest.NewRequest(http.MethodPost, "/mcp?sessionId="+sid, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))))
+		return w.Code
+	}
+	if code := post("key-b"); code != http.StatusNotFound {
+		t.Errorf("another key posting to the stream = %d, want 404", code)
+	}
+	if code := post("key-a"); code != http.StatusAccepted {
+		t.Errorf("the stream's own key = %d, want 202", code)
+	}
+}
