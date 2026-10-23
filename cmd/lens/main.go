@@ -2560,6 +2560,8 @@ func run() error {
 	r.Post("/v1/admin/operator-audit/record", requireAdminOrModerator(authManager, moderatorKeys, newOperatorAuditRecordHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit", requireAdminOrOperatorRead(authManager, newOperatorAuditListHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit/export", requireAdminOrOperatorRead(authManager, newOperatorAuditExportHandler(operatorAudit)))
+	// B44.6 — every talyvor.com waitlist signup, oldest first, for the operator.
+	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
 	// (non-money read of ledger metadata + keel_findings; keeps the U8/U9 ExactlySix replica-reader invariant
 	// unchanged).
@@ -2797,6 +2799,8 @@ func run() error {
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
+	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
+	mountWaitlistRoute(r, cfg.ProvisionSecret, pool)
 	// B26.1 — synthetic workspaces older than seven days are deleted, by the leader alone.
 	if cfg.SyntheticKey != "" {
 		go haComps.leader.Run(ctx, "synthetic-purge", 30*time.Second, func(lctx context.Context) {
