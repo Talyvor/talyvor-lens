@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/webpush"
 )
@@ -264,7 +265,7 @@ func (s *DualTokenStore) DeletePushSubscription(ctx context.Context, workspaceID
 // approval: which agent, how much, to whom and why.
 func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 	pusher := s.approvalPusher
-	if pusher == nil {
+	if pusher == nil && s.nativePusher == nil {
 		return
 	}
 	go func() {
@@ -284,6 +285,20 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
 			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
 			"payee_name": payeeName, "memo": memo})
+		// B40.15: the phones are told the payee and the amount — not the reason or memo, which the agent wrote.
+		to := payeeName
+		if to == "" {
+			to = model
+		}
+		body := agentName + " wants to spend " + lxcString(amount) + " LXC"
+		if to != "" {
+			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
+		}
+		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Data: map[string]string{
+			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID}})
+		if pusher == nil {
+			return
+		}
 		rows, err := s.pool.Query(ctx, `SELECT endpoint, p256dh, auth FROM workspace_push_subscriptions WHERE workspace_id = $1`, workspaceID)
 		if err != nil {
 			slog.Warn("agents: approval push: subscriptions", slog.String("err", err.Error()))
