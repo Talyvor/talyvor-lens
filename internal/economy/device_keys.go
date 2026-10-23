@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/devicekey"
+	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -142,4 +147,95 @@ func spendDeviceSignature(ctx context.Context, tx pgx.Tx, workspaceID, purpose s
 		return err
 	}
 	return useChallenge(ctx, tx, workspaceID, purpose, a.Challenge)
+}
+
+// B40.15 — NATIVE PUSH TO THE PHONE APP, BESIDE WEB PUSH. A device key may carry its phone's push token (APNs on iOS,
+// FCM on Android); each approval filed and each request prepared for approval is pushed to every device of the
+// workspace that has one and is not revoked, naming the payee and the amount and never account details.
+
+// NativePusher sends one native push (internal/nativepush.Senders); a platform it has no service for sends nothing.
+type NativePusher interface {
+	Send(ctx context.Context, platform, token string, m nativepush.Message) error
+}
+
+// SetNativePush turns on the native push; nil turns it off.
+func (s *DualTokenStore) SetNativePush(p NativePusher) { s.nativePusher = p }
+
+// SetDevicePushToken keeps token as the push token of device id; "" removes it. A revoked key takes none.
+func (s *DualTokenStore) SetDevicePushToken(ctx context.Context, workspaceID, id, token string) (DeviceKey, error) {
+	var platform string
+	err := s.pool.QueryRow(ctx, `SELECT platform FROM workspace_device_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL`,
+		id, workspaceID).Scan(&platform)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeviceKey{}, ErrDeviceKeyNotFound
+	}
+	if err != nil {
+		return DeviceKey{}, fmt.Errorf("economy: device key: %w", err)
+	}
+	if token != "" && platform != "test" && !nativepush.ValidToken(platform, token) {
+		return DeviceKey{}, fmt.Errorf("%w: push_token is not an %s push token", ErrAgentRule, map[string]string{"ios": "APNs", "android": "FCM"}[platform])
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE workspace_device_keys SET push_token = $3 WHERE id = $1 AND workspace_id = $2`, id, workspaceID, token); err != nil {
+		return DeviceKey{}, fmt.Errorf("economy: device push token: %w", err)
+	}
+	return scanDeviceKey(s.pool.QueryRow(ctx, `SELECT `+deviceKeyCols+` FROM workspace_device_keys WHERE id = $1`, id))
+}
+
+// pushDevices sends m to each of workspaceID's unrevoked devices with a push token, forgetting the tokens the push
+// services say are gone.
+func (s *DualTokenStore) pushDevices(ctx context.Context, workspaceID string, m nativepush.Message) {
+	if s.nativePusher == nil {
+		return
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, platform, push_token FROM workspace_device_keys
+		WHERE workspace_id = $1 AND revoked_at IS NULL AND push_token <> ''`, workspaceID)
+	if err != nil {
+		slog.Warn("devices: native push: devices", slog.String("err", err.Error()))
+		return
+	}
+	var devices [][3]string
+	for rows.Next() {
+		var d [3]string
+		if rows.Scan(&d[0], &d[1], &d[2]) == nil {
+			devices = append(devices, d)
+		}
+	}
+	rows.Close()
+	for _, d := range devices {
+		err := s.nativePusher.Send(ctx, d[1], d[2], m)
+		switch {
+		case errors.Is(err, nativepush.ErrGone):
+			_, _ = s.pool.Exec(ctx, `UPDATE workspace_device_keys SET push_token = '' WHERE id = $1 AND push_token = $2`, d[0], d[2])
+		case err != nil:
+			slog.Warn("devices: native push", slog.String("err", err.Error()))
+		}
+	}
+}
+
+// notifyPaymentRequest pushes, in the background, a request prepared for approval to the workspace's phones: each
+// payee and the total, never account details.
+func (s *DualTokenStore) notifyPaymentRequest(workspaceID string, r PaymentRequest) {
+	if s.nativePusher == nil || r.Status != "pending_approval" {
+		return
+	}
+	var payees []string
+	for _, it := range r.Items {
+		if it.Decision != ItemBlocked && !slices.Contains(payees, it.PayeeName) {
+			payees = append(payees, it.PayeeName)
+		}
+	}
+	if len(payees) > 3 {
+		payees = append(payees[:3], fmt.Sprintf("%d more", len(payees)-3))
+	}
+	var totals []string
+	for _, c := range slices.Sorted(maps.Keys(r.Totals)) {
+		totals = append(totals, formatMinor(c, r.Totals[c]))
+	}
+	m := nativepush.Message{Title: "Approval needed", Body: "Pay " + strings.Join(payees, ", ") + " · " + strings.Join(totals, " + "),
+		Data: map[string]string{"type": "payment_request", "request_id": r.ID, "workspace_id": workspaceID, "url": r.DeepLink}}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		s.pushDevices(ctx, workspaceID, m)
+	}()
 }

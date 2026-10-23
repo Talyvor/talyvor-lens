@@ -97,6 +97,7 @@ import (
 	"github.com/talyvor/lens/internal/modelwatch"
 	"github.com/talyvor/lens/internal/moderatorkey"
 	"github.com/talyvor/lens/internal/monitoring"
+	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/nodelatency"
 	"github.com/talyvor/lens/internal/operatoraudit"
 	"github.com/talyvor/lens/internal/opsusage"
@@ -2654,6 +2655,33 @@ func run() error {
 	}
 	dualToken.SetApprovalAuth(passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins}, approvalPusher)
 	dualToken.SetDeviceKeys(devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}) // B40.4
+	// B40.15: and a native push to each phone with a push token, for whichever of APNs and FCM is configured.
+	var native nativepush.Senders
+	if cfg.APNsKey != "" {
+		key, err := nativepush.Secret(cfg.APNsKey)
+		if err == nil {
+			host := nativepush.APNsProduction
+			if cfg.APNsSandbox {
+				host = nativepush.APNsSandbox
+			}
+			native.APNs, err = nativepush.NewAPNs(key, cfg.APNsKeyID, cfg.APNsTeamID, cfg.APNsTopic, host)
+		}
+		if err != nil {
+			return fmt.Errorf("LENS_APNS_KEY: %w", err)
+		}
+	}
+	if cfg.FCMCredentials != "" {
+		creds, err := nativepush.Secret(cfg.FCMCredentials)
+		if err == nil {
+			native.FCM, err = nativepush.NewFCM(creds)
+		}
+		if err != nil {
+			return fmt.Errorf("LENS_FCM_CREDENTIALS: %w", err)
+		}
+	}
+	if native.APNs != nil || native.FCM != nil {
+		dualToken.SetNativePush(native)
+	}
 	// B19.11: an agent's verified badge follows its owner's workspace's verification (the U6 predicate).
 	dualToken.SetOwnerVerifier(earnverify.New(cfg.EarnRequireLivePurchase))
 	// B22.9: cash-outs are paid through the partner-neutral interface; only the test partner exists, and it pays

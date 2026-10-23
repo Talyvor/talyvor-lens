@@ -329,6 +329,8 @@ type DualTokenStore struct {
 	approvalPusher ApprovalPusher
 	// B40.4: how the phone app's device keys are checked when they are registered.
 	deviceVerifier devicekey.Verifier
+	// B40.15: the native push sent to each phone with a push token for each approval filed or request prepared.
+	nativePusher NativePusher
 	// B19.11: what the verified-agent badge follows.
 	ownerVerifier OwnerVerifier
 	// cashOutPartner pays cash-outs out as money (B22.9); nil, cash-out is unavailable.

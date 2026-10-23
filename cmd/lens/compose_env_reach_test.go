@@ -214,6 +214,13 @@ var credentialExemptions = map[string]string{
 		"like LENS_SYNTHETIC_KEY and for the same reason: an environment: entry would arrive as \"\" and " +
 		"override the lens.env value, turning the approval pushes off.",
 
+	"LENS_APNS_KEY": "B40.15's APNs signing key reaches the process through env_file: lens.env, like " +
+		"LENS_VAPID_PRIVATE_KEY and for the same reason: an environment: entry would arrive as \"\" and override the " +
+		"lens.env value, turning the phones' approval pushes off.",
+
+	"LENS_FCM_CREDENTIALS": "B40.15's FCM service-account key reaches the process through env_file: lens.env, " +
+		"with LENS_APNS_KEY and for the same reason.",
+
 	"LENS_OPERATOR_STEP_UP_SECRET": "B30.8's step-up secret for the compliance case file reaches the process " +
 		"through env_file: lens.env, like LENS_SYNTHETIC_KEY and for the same reason: an environment: entry would " +
 		"arrive as \"\" and override the lens.env value, so every compliance action would answer 503.",

@@ -305,6 +305,9 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, err
 	}
 	r, err = s.PaymentRequest(ctx, workspaceID, "", id)
+	if err == nil {
+		s.notifyPaymentRequest(workspaceID, r) // B40.15: a retry with the same key returned above and tells nobody again
+	}
 	return r, false, err
 }
 

@@ -224,6 +224,16 @@ type Config struct {
 	DeviceTestAttestation bool
 	VAPIDPrivateKey       string
 	VAPIDSubject          string
+	// B40.15 — native push to the phone app. APNs (iPhones): APNsKey (LENS_APNS_KEY, the .p8 key's PEM or its file's
+	// path), APNsKeyID (LENS_APNS_KEY_ID), APNsTeamID (LENS_APNS_TEAM_ID), APNsTopic (LENS_APNS_TOPIC, the bundle id),
+	// APNsSandbox (LENS_APNS_SANDBOX, development builds). FCM (Android): FCMCredentials (LENS_FCM_CREDENTIALS, a
+	// service account's JSON key or its file's path). Unset, nothing is pushed to that platform and nothing fails.
+	APNsKey        string
+	APNsKeyID      string
+	APNsTeamID     string
+	APNsTopic      string
+	APNsSandbox    bool
+	FCMCredentials string
 
 	// Global rate limits (Item 8). Zero = no global cap.
 	//
@@ -1431,6 +1441,12 @@ func Load() (*Config, error) {
 		WebAuthnRPID:          getEnv("LENS_WEBAUTHN_RP_ID", "app.talyvor.com"),
 		WebAuthnOrigins:       strings.Split(getEnv("LENS_WEBAUTHN_ORIGINS", "https://app.talyvor.com"), ","),
 		DeviceAppleAppID:      os.Getenv("LENS_DEVICE_APPLE_APP_ID"),
+		APNsKey:               os.Getenv("LENS_APNS_KEY"),
+		APNsKeyID:             os.Getenv("LENS_APNS_KEY_ID"),
+		APNsTeamID:            os.Getenv("LENS_APNS_TEAM_ID"),
+		APNsTopic:             os.Getenv("LENS_APNS_TOPIC"),
+		APNsSandbox:           os.Getenv("LENS_APNS_SANDBOX") == "true",
+		FCMCredentials:        os.Getenv("LENS_FCM_CREDENTIALS"),
 		DeviceTestAttestation: os.Getenv("LENS_DEVICE_TEST_ATTESTATION") == "true",
 		VAPIDPrivateKey:       os.Getenv("LENS_VAPID_PRIVATE_KEY"),
 		VAPIDSubject:          getEnv("LENS_VAPID_SUBJECT", "mailto:support@talyvor.com"),

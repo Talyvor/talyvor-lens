@@ -24,6 +24,8 @@ import (
 //	                                      "signature", "attestation"}, base64url — keeps the key (201)
 //	GET  /v1/money/devices               — the workspace's device keys, revoked ones included
 //	POST /v1/money/devices/{id}/revoke   — revoked at once: its signatures are refused from now on
+//	POST /v1/money/devices/{id}/push-token {"push_token"} — B40.15: the phone's APNs or FCM token ("" removes it);
+//	                                       approvals are then pushed to it, beside web push, until the key is revoked
 //
 // A device key then signs wherever an "assertion" is taken for an approval or a mandate:
 // {"device_id", "challenge", "signature"}. Every route is the owner's or an admin's. Mounted in the authed group.
@@ -33,6 +35,7 @@ type deviceKeyBank interface {
 	RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration) (economy.DeviceKey, error)
 	ListDeviceKeys(ctx context.Context, workspaceID string) ([]economy.DeviceKey, error)
 	RevokeDeviceKey(ctx context.Context, workspaceID, id, by string) (economy.DeviceKey, error)
+	SetDevicePushToken(ctx context.Context, workspaceID, id, token string) (economy.DeviceKey, error)
 }
 
 func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
@@ -109,6 +112,30 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		switch {
 		case errors.Is(err, economy.ErrDeviceKeyNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, d)
+		}
+	})
+	r.Post("/v1/money/devices/{id}/push-token", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			PushToken *string `json:"push_token"`
+		}
+		if json.NewDecoder(req.Body).Decode(&in) != nil || in.PushToken == nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"push_token"}: the phone's APNs or FCM token, or "" to remove it`)
+			return
+		}
+		d, err := bank.SetDevicePushToken(req.Context(), ws, chi.URLParam(req, "id"), *in.PushToken)
+		switch {
+		case errors.Is(err, economy.ErrDeviceKeyNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrAgentRule):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

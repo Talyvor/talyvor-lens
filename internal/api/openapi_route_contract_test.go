@@ -402,9 +402,9 @@ const undocumentedB402Routes = 5
 // 303 → 306 (B40.3): POST /v1/money/payment-requests, GET …/{id} and POST …/{id}/cancel — on a line of their own.
 const undocumentedB403Routes = 3
 
-// 306 → 310 (B40.4): POST /v1/money/devices/challenge, POST and GET /v1/money/devices and POST …/{id}/revoke — on a
-// line of their own.
-const undocumentedB404Routes = 4
+// 306 → 310 (B40.4): POST /v1/money/devices/challenge, POST and GET /v1/money/devices and POST …/{id}/revoke, and
+// POST …/{id}/push-token (B40.15) — on a line of their own.
+const undocumentedB404Routes = 5
 
 // 310 → 314 (B40.5): POST /v1/money/payment-requests/{id}/approval, …/approve and …/pay, and GET …/record — on a line
 // of their own.
