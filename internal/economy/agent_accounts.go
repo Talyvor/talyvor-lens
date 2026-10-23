@@ -257,12 +257,30 @@ func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, own
 		return Agent{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockWorkspaceAgents(ctx, tx, workspaceID); err != nil {
+		return Agent{}, err
+	}
+	a, err := createAgentTx(ctx, tx, workspaceID, name, ownerUserID)
+	if err != nil {
+		return Agent{}, err
+	}
+	return a, tx.Commit(ctx)
+}
+
+// lockWorkspaceAgents takes workspaceID's agents lock for the rest of tx: what counts or creates its agents
+// serialises on it.
+func lockWorkspaceAgents(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agents:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: lock the workspace's agents: %w", err)
+	}
+	return nil
+}
+
+// createAgentTx is CreateAgent in tx, which holds the workspace's agents lock.
+func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserID string) (Agent, error) {
 	// B32.12: no more agents than the workspace's plan allows (LENS_PLAN_GATES); an archived agent is retired
 	// for good and does not count, nor does a room's wallet (B32.32). Counted under the workspace's lock, so two
 	// creates cannot both take the last place.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agents:' || $1, 0))`, workspaceID); err != nil {
-		return Agent{}, fmt.Errorf("economy: lock the workspace's agents: %w", err)
-	}
 	plan, err := plans.Of(ctx, tx, workspaceID)
 	if err != nil {
 		return Agent{}, err
@@ -281,7 +299,7 @@ func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, own
 	if err != nil {
 		return Agent{}, fmt.Errorf("economy: create agent: %w", err)
 	}
-	return a, tx.Commit(ctx)
+	return a, nil
 }
 
 // CreateRoomAgentTx creates a room's wallet in tx, the transaction that opens the room (B32.32): an agent account of

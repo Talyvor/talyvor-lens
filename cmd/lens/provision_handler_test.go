@@ -17,6 +17,8 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/dbmigrate"
+	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/tenant"
 	"github.com/talyvor/lens/internal/workspace"
 	"github.com/talyvor/lens/migrations"
 )
@@ -114,7 +116,7 @@ func provisionManager(t *testing.T) (*workspace.Manager, *pgxpool.Pool) {
 func provisionRouter(t *testing.T, secret string, p provisioner, key *ecdsaKeyFixture) chi.Router {
 	t.Helper()
 	r := chi.NewRouter()
-	mountProvisionRoute(r, secret, p, key.mint)
+	mountProvisionRoute(r, secret, p, nil, key.mint)
 	return r
 }
 
@@ -147,6 +149,13 @@ type provisionResponseBody struct {
 	CachePoolable bool   `json:"cache_poolable"`
 	Token         string `json:"token"`
 	ExpiresAt     string `json:"expires_at"`
+	FirstAgent    *struct {
+		Agent struct {
+			ID string `json:"id"`
+		} `json:"agent"`
+		Key           string `json:"key"`
+		TestMoneyULXC int64  `json:"test_money_ulxc"`
+	} `json:"first_agent"`
 }
 
 func doProvision(t *testing.T, r chi.Router, secret, body string) (*httptest.ResponseRecorder, provisionResponseBody) {
@@ -204,7 +213,7 @@ func TestProvision_GateRefusesBadSecret(t *testing.T) {
 // matches, and the endpoint silently becomes world-writable.
 func TestProvision_RouteNotMountedWhenSecretUnset(t *testing.T) {
 	r := chi.NewRouter()
-	mountProvisionRoute(r, "", stubProvisioner{}, newKeyFixture(t).mint)
+	mountProvisionRoute(r, "", stubProvisioner{}, nil, newKeyFixture(t).mint)
 
 	rec, _ := doProvision(t, r, "", `{"identity":"anyone"}`)
 	if rec.Code != http.StatusNotFound {
@@ -564,3 +573,39 @@ func (stubProvisioner) RegisterWorkspace(context.Context, workspace.Workspace, .
 	return nil
 }
 func (stubProvisioner) CachePoolableConsent(string) (bool, bool) { return false, false }
+
+// B45.7: a first sign-in starts the new workspace with test money and a first agent whose key works; signing in
+// again changes nothing.
+func TestProvision_NewWorkspaceStartsWithTestMoneyAndFirstAgent(t *testing.T) {
+	mgr, pool := provisionManager(t)
+	ctx := context.Background()
+	bank := economy.NewDualTokenStore(nil, pool, nil)
+	const money = int64(25_000_000)
+	r := chi.NewRouter()
+	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, money), newKeyFixture(t).mint)
+	body := `{"identity":"b457-start-` + time.Now().Format("150405.000000") + `"}`
+
+	rec, out := doProvision(t, r, provisionSecret, body)
+	if rec.Code != http.StatusOK || !out.Created || out.FirstAgent == nil || out.FirstAgent.Key == "" || out.FirstAgent.TestMoneyULXC != money {
+		t.Fatalf("first sign-in: %d %s", rec.Code, rec.Body.String())
+	}
+	if k, err := tenant.NewStore(pool).ValidateAPIKey(ctx, out.FirstAgent.Key); err != nil || k.WorkspaceID != out.WorkspaceID {
+		t.Fatalf("the first agent's key does not authenticate to its workspace: %+v %v", k, err)
+	}
+	var funding string
+	var amount int64
+	if err := pool.QueryRow(ctx, `SELECT amount, metadata->>'funding' FROM lxc_ledger WHERE workspace_id = $1 AND type = $2`,
+		out.WorkspaceID, economy.LXCTypeStarterTest).Scan(&amount, &funding); err != nil || amount != money || funding != economy.FundingTest {
+		t.Fatalf("starter ledger row: %d %q %v; want %d test", amount, funding, err, money)
+	}
+
+	rec, again := doProvision(t, r, provisionSecret, body)
+	if rec.Code != http.StatusOK || again.Created || again.FirstAgent != nil {
+		t.Fatalf("second sign-in: %d %s, want no new agent", rec.Code, rec.Body.String())
+	}
+	var rows, agents int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM lxc_ledger WHERE workspace_id = $1),
+		(SELECT count(*) FROM agent_accounts WHERE workspace_id = $1)`, out.WorkspaceID).Scan(&rows, &agents); err != nil || rows != 1 || agents != 1 {
+		t.Fatalf("after a second sign-in: %d ledger rows, %d agents (%v); want 1 and 1", rows, agents, err)
+	}
+}
