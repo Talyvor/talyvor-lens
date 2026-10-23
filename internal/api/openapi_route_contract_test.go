@@ -410,6 +410,9 @@ const undocumentedB404Routes = 4
 // of their own.
 const undocumentedB405Routes = 4
 
+// 314 → 315 (B44.6): POST /v1/waitlist, the BFF's waitlist write on the provision secret — on a line of its own.
+const undocumentedB446Routes = 1
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -423,10 +426,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes)
 	}
 }

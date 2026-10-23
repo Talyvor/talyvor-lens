@@ -53,6 +53,7 @@ var operatorReadable = map[string]string{
 	"/v1/admin/safeguarding":              "B30.11: what customers hold in each currency against what the partner reports holding for them. DualTokenStore.Safeguarding is Query-only.",
 	"/v1/admin/operator-audit":            "B27.28: the operator audit trail, filtered — the Operator screen shows it. operatoraudit.Store.List is Query-only.",
 	"/v1/admin/operator-audit/export":     "B27.28: the same trail as a CSV download. operatoraudit.Store.List is Query-only.",
+	"/v1/admin/waitlist":                  "B44.6: every talyvor.com waitlist signup, oldest first, for the operator's CSV. A SELECT only.",
 	"/v1/admin/pool-royalty/detect":       "self-dealing detection read. Query-only reader, explicitly NOT economy-gated so forensics survive the kill switch.",
 	"/v1/admin/pool-royalty/resolve":      "the resolution view of the same detection. Query-only.",
 	"/v1/admin/pool-royalty/margin":       "margin observability. Query-only.",
