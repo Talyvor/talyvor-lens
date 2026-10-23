@@ -195,14 +195,14 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          # Must EQUAL go.mod's `toolchain` (go1.26.9): golangci-lint refuses to run if it
+          # Must EQUAL go.mod's `toolchain` (go1.26.10): golangci-lint refuses to run if it
           # was built with a Go older than the module's targeted version. (The test/build
           # jobs can stay on 1.25 — `go test`/`go build` auto-fetch the toolchain; a
           # `go install`-built golangci-lint does not, so it needs the newer Go here.)
           # ">=" was the old wording and it is too weak to be checkable: go.mod's toolchain
           # is a FLOOR, so a pin ABOVE it is not pulled back down. internal/toolchainaudit
           # asserts equality — change this and go.mod together or the guard reds.
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           cache: false
       - name: golangci-lint
         run: |
@@ -304,7 +304,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.9" # keep in lockstep with go.mod toolchain so stdlib vulns are assessed against the shipped runtime — ENFORCED by internal/toolchainaudit, because a pin ABOVE go.mod's toolchain grades a stdlib nothing ships and this gate would go green over a vulnerable binary
+          go-version: "1.26.10" # keep in lockstep with go.mod toolchain so stdlib vulns are assessed against the shipped runtime — ENFORCED by internal/toolchainaudit, because a pin ABOVE go.mod's toolchain grades a stdlib nothing ships and this gate would go green over a vulnerable binary
           cache: false
       - name: govulncheck
         run: |
