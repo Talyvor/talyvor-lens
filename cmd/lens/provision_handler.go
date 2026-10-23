@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/tenant"
 	"github.com/talyvor/lens/internal/workspace"
 )
 
@@ -24,6 +27,25 @@ type provisioner interface {
 	GetWorkspace(id string) (*workspace.Workspace, bool)
 	RegisterWorkspace(ctx context.Context, ws workspace.Workspace, opts ...workspace.RegisterOption) error
 	CachePoolableConsent(wsID string) (poolable bool, known bool)
+}
+
+// workspaceStarter gives a new workspace its test money and first agent (B45.7): started is false, and
+// nothing changes, when it already has an agent.
+type workspaceStarter func(ctx context.Context, workspaceID, ownerUserID string) (out economy.WorkspaceStart, started bool, err error)
+
+// newWorkspaceStarter starts a workspace in bank with testMoneyULXC of test money and a first agent whose proxy key
+// is minted in the same transaction.
+func newWorkspaceStarter(bank *economy.DualTokenStore, testMoneyULXC int64) workspaceStarter {
+	return func(ctx context.Context, workspaceID, ownerUserID string) (economy.WorkspaceStart, bool, error) {
+		return bank.StartWorkspace(ctx, workspaceID, ownerUserID, testMoneyULXC,
+			func(ctx context.Context, tx pgx.Tx, workspaceID, name string) (string, string, error) {
+				raw, key, err := tenant.CreateAPIKeyTx(ctx, tx, workspaceID, name, []string{"proxy"}, nil)
+				if err != nil {
+					return "", "", err
+				}
+				return raw, key.ID, nil
+			})
+	}
 }
 
 // tokenMinter mints the workspace-scoped session JWT.
@@ -45,6 +67,9 @@ type provisionResponse struct {
 	CachePoolable bool   `json:"cache_poolable"`
 	Token         string `json:"token"`
 	ExpiresAt     string `json:"expires_at"`
+	// FirstAgent is the agent the new workspace starts with, its key shown this once (B45.7); absent on a
+	// workspace that already existed.
+	FirstAgent *economy.WorkspaceStart `json:"first_agent,omitempty"`
 }
 
 // deriveWorkspaceID turns an opaque identity into this deployment's workspace id.
@@ -54,14 +79,14 @@ func deriveWorkspaceID(identity string) string {
 	return "u" + strings.ToLower(enc)[:26]
 }
 
-func mountProvisionRoute(r chi.Router, secret string, p provisioner, mint tokenMinter) {
+func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter) {
 	if secret == "" {
 		return
 	}
-	r.Post("/v1/provision", newProvisionHandler(secret, p, mint))
+	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint))
 }
 
-func newProvisionHandler(secret string, p provisioner, mint tokenMinter) http.HandlerFunc {
+func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(req.Header.Get(provisionSecretHeader)), []byte(secret)) != 1 {
 			writeJSONErr(w, http.StatusUnauthorized, "provisioning credentials required")
@@ -111,6 +136,20 @@ func newProvisionHandler(secret string, p provisioner, mint tokenMinter) http.Ha
 				return
 			}
 		}
+		// B45.7: the first agent is owned by the person the session token names (wsID, below). Asked on
+		// first sight only — an existing workspace is never given test money or an agent on a later login —
+		// and a first sight that raced another gets started=false and no second agent.
+		var first *economy.WorkspaceStart
+		if !existed && start != nil {
+			out, started, err := start(req.Context(), wsID, wsID)
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, "workspace created, but its first agent was not: "+err.Error())
+				return
+			}
+			if started {
+				first = &out
+			}
+		}
 
 		poolable, _ := p.CachePoolableConsent(wsID)
 		ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
@@ -125,6 +164,7 @@ func newProvisionHandler(secret string, p provisioner, mint tokenMinter) http.Ha
 			CachePoolable: poolable,
 			Token:         tok,
 			ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
+			FirstAgent:    first,
 		})
 	}
 }
