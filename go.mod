@@ -2,7 +2,7 @@ module github.com/talyvor/lens
 
 go 1.25.0
 
-toolchain go1.26.9 // the version this repo SHIPS: setup-go pins below it are upgraded to it, so the released binary is built with exactly this. >= 1.26.9 clears GO-2026-{6617,6613,6612,6611,6610,6608,6607,6605,6603,6600,6599}, eleven reachable stdlib advisories (net/http, net/textproto, crypto/tls, html/template) that made the govulncheck gate red for every PR; >= 1.26.6 cleared GO-2026-{6218,6091,6090,6089,6088,5972,5026}, seven reachable stdlib advisories that made the govulncheck gate red on main; >= 1.26.5 was for GO-2026-5856 (crypto/tls ECH privacy leak). Enforced by the govulncheck CI gate, and kept in lockstep with ci.yaml's graders by internal/toolchainaudit
+toolchain go1.26.10 // the version this repo SHIPS: setup-go pins below it are upgraded to it, so the released binary is built with exactly this. >= 1.26.10 clears GO-2026-6809 (crypto/x509 compromised intermediates, reachable via devicekey.Verifier.verifyChain); >= 1.26.9 clears GO-2026-{6617,6613,6612,6611,6610,6608,6607,6605,6603,6600,6599}, eleven reachable stdlib advisories (net/http, net/textproto, crypto/tls, html/template) that made the govulncheck gate red for every PR; >= 1.26.6 cleared GO-2026-{6218,6091,6090,6089,6088,5972,5026}, seven reachable stdlib advisories that made the govulncheck gate red on main; >= 1.26.5 was for GO-2026-5856 (crypto/tls ECH privacy leak). Enforced by the govulncheck CI gate, and kept in lockstep with ci.yaml's graders by internal/toolchainaudit
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
