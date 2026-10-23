@@ -38,9 +38,11 @@ const (
 	defaultSpeechModel        = "aura-2"
 	maxAudioBytes             = 25 << 20 // OpenAI's own upload limit
 	maxSpeechChars            = 4096     // OpenAI's own input limit
-	// holdBytesPerSecond bounds a clip's length from its size for the agent's hold before it is heard: 8 kbps
-	// is below what speech codecs use, so the hold covers the clip and the settle charges what it really was.
-	holdBytesPerSecond = 1000
+	// holdBytesPerSecond bounds a clip's length from its size for the agent's hold before it is heard: 800 bps
+	// is far below what speech codecs use (Opus's floor is 6 kbps), so the hold covers the clip and the settle
+	// charges what it really was. shortcut: a losslessly compressed silence can still be longer than this bound;
+	// the settle then charges the hold and the excess is logged — parse the container's duration if that is seen.
+	holdBytesPerSecond = 100
 )
 
 // SetDeepgram configures speech. An empty key leaves both /v1/audio routes answering "not configured".
@@ -81,6 +83,13 @@ func (p *Proxy) speechModel(w http.ResponseWriter, id string, transcribe bool) (
 // prepaid covers it. It returns the context to settle on, or false once it has answered the refusal.
 func (p *Proxy) speechAdmit(w http.ResponseWriter, r *http.Request, wsID string, m catalog.Model, requestID string, estUSD float64) (context.Context, bool) {
 	ctx := economy.WithChargeRequest(r.Context(), requestID)
+	if p.workspaceManager != nil {
+		if policy := p.workspaceManager.CheckPolicy(ctx, wsID, m.Provider, m.ID, 0); !policy.Allowed {
+			writeError(w, http.StatusForbidden, policy.Violation)
+			metrics.RequestsTotal.WithLabelValues(m.Provider, "workspace_blocked").Inc()
+			return ctx, false
+		}
+	}
 	if p.budgetService != nil && p.budgetService.CheckBudget(ctx, wsID, r.Header.Get("X-Talyvor-Team"), r.Header.Get("X-Talyvor-Sprint"), estUSD) == budgets.DecisionBlock {
 		writeError(w, http.StatusPaymentRequired, "budget exceeded for workspace/team/sprint")
 		metrics.RequestsTotal.WithLabelValues(m.Provider, "budget_blocked").Inc()
@@ -286,6 +295,10 @@ func (p *Proxy) HandleTranscription(w http.ResponseWriter, r *http.Request) {
 	}
 	if seconds <= 0 { // a provider that did not say how long it heard is charged the bound it was held for
 		seconds = boundSeconds
+	}
+	if seconds > boundSeconds {
+		slog.Warn("speech: the clip ran past its hold; an agent is charged the hold", slog.String("request_id", requestID),
+			slog.Float64("heard_seconds", seconds), slog.Float64("held_seconds", boundSeconds))
 	}
 	p.speechCharge(ctx, wsID, m.ID, r.Header.Get("X-Talyvor-Team"), r.Header.Get("X-Talyvor-Sprint"), seconds/60*m.PerMinute)
 	metrics.RequestsTotal.WithLabelValues(m.Provider, "success").Inc()
