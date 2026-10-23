@@ -74,6 +74,10 @@ type Model struct {
 	LongPrompt *LongPromptRates `json:"long_prompt,omitempty"`
 	// B38.2 — a price the provider has announced for a set date (Gemini 3.8 Flash on 2027-01-01). nil = none.
 	NewPrice *DatedRates `json:"new_price,omitempty"`
+	// B40.10 — speech models are priced by what they hear or say, not in tokens: USD per minute of audio
+	// transcribed, and USD per 1,000,000 characters spoken. Zero on every other model.
+	PerMinute  float64 `json:"per_minute,omitempty"`
+	Per1MChars float64 `json:"per_1m_chars,omitempty"`
 }
 
 // DatedRates replace a model's own rates for every request served at or after From. A LongPrompt still
@@ -105,6 +109,7 @@ const (
 	TierBalanced  = "balanced"
 	TierFast      = "fast"
 	TierEmbedding = "embedding"
+	TierSpeech    = "speech" // B40.10: transcription and spoken replies, served on /v1/audio/*
 )
 
 // TierFor infers the tier of a model the seed does not know — one discovery found — from the words
@@ -388,6 +393,7 @@ func (r *Registry) DecodeOverrides(raw []byte) ([]Model, error) {
 		base := r.byID[probe.ID] // zero Model when the id is new — the pre-existing behaviour
 		base.InputPer1M, base.OutputPer1M = 0, 0
 		base.CachedInputPer1M, base.CacheWritePer1M = 0, 0
+		base.PerMinute, base.Per1MChars = 0, 0
 		base.LongPrompt = nil // a price too: a reprice that does not restate it drops it
 		base.NewPrice = nil
 		// DisallowUnknownFields HERE and deliberately NOT on the id probe above: the

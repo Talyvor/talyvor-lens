@@ -43,6 +43,9 @@ type Config struct {
 	NatsURL         string
 	OpenAIAPIKey    string
 	AnthropicAPIKey string
+	// B40.10 — speech (internal/proxy/speech.go): Deepgram's key and base URL (default its EU endpoint).
+	DeepgramAPIKey string
+	DeepgramURL    string
 
 	// ModelWatchEnabled runs the catalog-drift poller (internal/modelwatch): asks each provider what it
 	// serves and alerts on anything the catalog cannot price. DETECTION ONLY — it never sets a price,
@@ -1307,6 +1310,8 @@ func Load() (*Config, error) {
 		OpenAIAPIKey:      os.Getenv("LENS_OPENAI_API_KEY"),
 		AnthropicAPIKey:   os.Getenv("LENS_ANTHROPIC_API_KEY"),
 		GoogleAPIKey:      os.Getenv("LENS_GOOGLE_API_KEY"),
+		DeepgramAPIKey:    os.Getenv("LENS_DEEPGRAM_API_KEY"),
+		DeepgramURL:       getEnv("LENS_DEEPGRAM_URL", "https://api.eu.deepgram.com"),
 		EmbeddingModel:    getEnv("LENS_EMBEDDING_MODEL", DefaultEmbeddingModel),
 		EmbeddingBaseURL:  os.Getenv("LENS_EMBEDDING_BASE_URL"),
 		SemanticThreshold: DefaultSemanticThreshold,

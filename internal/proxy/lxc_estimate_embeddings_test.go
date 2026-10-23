@@ -179,7 +179,7 @@ func TestReserveEstimateLXC_TheHoldCollapsesForAnEmbeddingModelWhateverMaxOutIs(
 func TestCatalog_TheZeroOutputRateModelsAreExactlyTheEmbeddingOnes(t *testing.T) {
 	zeroOut := map[string]bool{}
 	for _, m := range catalog.All() {
-		if m.OutputPer1M <= 0 {
+		if m.OutputPer1M <= 0 && m.Tier != catalog.TierSpeech { // speech models are refused on the chat seams (B40.10)
 			zeroOut[m.ID] = true
 		}
 	}

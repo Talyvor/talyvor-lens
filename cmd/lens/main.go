@@ -2084,6 +2084,7 @@ func run() error {
 	// seam holds a conservative bounded reservation and the post-serve seam settles the delivered cost;
 	// shadow and settle are mutually exclusive by this flag (no double charge).
 	p.SetReservation(func() bool { return cfg.LXCReservationEnabled }, func() int { return cfg.LXCReservationMaxOutputTokens })
+	p.SetDeepgram(cfg.DeepgramAPIKey, cfg.DeepgramURL) // B40.10: speech
 	// Crash-recovery sweeper: RELEASES (refunds) reservations stranded by a crash between hold and settle.
 	// The normal path settles PROMPTLY at the post-serve seam; this is for crashes ONLY and never auto-settles
 	// (a stranded serve's outcome is unknown, so the safe money move is to refund). Threshold >> any request.
@@ -2851,6 +2852,8 @@ func run() error {
 		authed.With(proxyScope).Post("/v1/proxy/google/*", listingNone(p.HandleGoogle))
 		authed.With(proxyScope).Post("/v1/proxy/bedrock/*", listingNone(p.HandleBedrock))
 		authed.With(proxyScope).Post("/v1/documents", documents.UploadHandler(docStore)) // B18.13
+		authed.With(proxyScope).Post("/v1/audio/transcriptions", p.HandleTranscription)  // B40.10
+		authed.With(proxyScope).Post("/v1/audio/speech", p.HandleSpeech)                 // B40.10
 		// K4 output verdicts — WORKSPACE-SCOPED read: a tenant sees ONLY its OWN verdicts (scoped to the
 		// authenticated WorkspaceID; never another's). Intra-tenant by construction.
 		authed.Get("/v1/output-verdicts", newOutputVerdictsWorkspaceHandler(authManager, outputVerdictReader))

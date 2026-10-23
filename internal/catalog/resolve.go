@@ -88,7 +88,7 @@ func (r *Registry) ResolveRates(id string, purpose Purpose) (Rates, Provenance) 
 // ResolveRatesAt is ResolveRates for a request whose prompt is promptTokens input tokens long, cache reads
 // and writes included — above a model's LongPrompt threshold the whole request is priced at its long rates.
 func (r *Registry) ResolveRatesAt(id string, purpose Purpose, promptTokens int) (Rates, Provenance) {
-	if in, cachedIn, cacheWrite, out, ok := r.PriceDetailedAt(id, promptTokens); ok && !unpriced(in, out) {
+	if in, cachedIn, cacheWrite, out, ok := r.PriceDetailedAt(id, promptTokens); ok && (!unpriced(in, out) || r.speechPriced(id)) {
 		return Rates{InputPer1M: in, CachedInputPer1M: cachedIn, CacheWritePer1M: cacheWrite, OutputPer1M: out},
 			ProvenanceExact
 	}
@@ -119,6 +119,13 @@ func (r *Registry) ResolveRatesAt(id string, purpose Purpose, promptTokens int) 
 // bills a real floor, emits WarnUnpricedModel's ERROR + metric on every request, and reappears in
 // modelwatch's drift findings. An operator who genuinely meant "free" learns so on the first request.
 func unpriced(in, out float64) bool { return in <= 0 && out <= 0 }
+
+// speechPriced reports whether id is a speech model with its own price (B40.10): it has no token rates
+// because it is not billed in tokens, and modelwatch must read it as priced, not as unknown.
+func (r *Registry) speechPriced(id string) bool {
+	m, ok := r.Get(id)
+	return ok && (m.PerMinute > 0 || m.Per1MChars > 0)
+}
 
 // fallbackRates derives a bound from the models this catalog DOES know for the same provider, so the
 // number is anchored in real published prices rather than invented. Provider is inferred from the id
