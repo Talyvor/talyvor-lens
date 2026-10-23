@@ -334,6 +334,22 @@ func capsJSON(limits map[string]int64, key func(string) string) (*string, error)
 // rules by saving its other rules. An empty list or a zero clears them. A save
 // that changes them is their next version (B28.307), recorded with who ctx names (WithRulesChange).
 func (s *DualTokenStore) SetAgentRules(ctx context.Context, workspaceID, agentID string, r AgentRules) (AgentRules, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return r, fmt.Errorf("economy: set agent rules: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if r, err = s.setAgentRulesTx(ctx, tx, workspaceID, agentID, r); err != nil {
+		return r, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return r, fmt.Errorf("economy: set agent rules: %w", err)
+	}
+	return r, nil
+}
+
+// setAgentRulesTx is SetAgentRules in tx.
+func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, r AgentRules) (AgentRules, error) {
 	if err := r.validate(); err != nil {
 		return r, fmt.Errorf("%w: %s", ErrAgentRule, err)
 	}
@@ -358,11 +374,6 @@ func (s *DualTokenStore) SetAgentRules(ctx context.Context, workspaceID, agentID
 	if err != nil {
 		return r, fmt.Errorf("economy: set agent rules: %w", err)
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return r, fmt.Errorf("economy: set agent rules: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	// B32.32: a room wallet's monthly limit is the room's budget, at most what the room owner's plan allows.
 	if err := s.checkRoomBudget(ctx, tx, workspaceID, agentID, r.MonthlyLimitULXC); err != nil {
 		return r, err
@@ -413,9 +424,6 @@ func (s *DualTokenStore) SetAgentRules(ctx context.Context, workspaceID, agentID
 	}
 	if err := recordRulesVersion(ctx, tx, agentID, rulesChangeFrom(ctx)); err != nil {
 		return r, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return r, fmt.Errorf("economy: set agent rules: %w", err)
 	}
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
 	r.MaxCommitmentULXC, r.MaySubscribe = &commitment, &maySubscribe
