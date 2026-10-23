@@ -48,6 +48,15 @@ func seedModels() []Model {
 		{ID: "text-embedding-3-small", Provider: "openai", DisplayName: "Embedding 3 small", ReleaseDate: "2024-01-25", Tier: TierEmbedding, InputPer1M: 0.02, OutputPer1M: 0, ContextTokens: 8191, MaxOutput: 0},
 		{ID: "text-embedding-3-large", Provider: "openai", DisplayName: "Embedding 3 large", ReleaseDate: "2024-01-25", Tier: TierEmbedding, InputPer1M: 0.13, OutputPer1M: 0, ContextTokens: 8191, MaxOutput: 0},
 		{ID: "text-embedding-ada-002", Provider: "openai", DisplayName: "Embedding ada 002", ReleaseDate: "2022-12-15", Tier: TierEmbedding, InputPer1M: 0.10, OutputPer1M: 0, ContextTokens: 8191, MaxOutput: 0},
+		// B40.10 — speech, served on /v1/audio/transcriptions and /v1/audio/speech. Not chat models: no token
+		// rates, so output_per_1m 0 keeps them out of the chat picker. Deepgram's pay-as-you-go rates from
+		// https://deepgram.com/pricing (read 2026-10-23: Nova-3 pre-recorded $0.0043/min, Aura-2 $0.030 per 1k
+		// characters); OpenAI's from https://developers.openai.com/api/docs/pricing (read 2026-10-23).
+		{ID: "nova-3", Provider: "deepgram", DisplayName: "Deepgram Nova-3", ReleaseDate: "2025-02-12", Tier: TierSpeech, PerMinute: 0.0043, Capabilities: Capabilities{Audio: true}},
+		{ID: "aura-2", Provider: "deepgram", DisplayName: "Deepgram Aura-2", ReleaseDate: "2025-04-15", Tier: TierSpeech, Per1MChars: 30.00},
+		{ID: "whisper-1", Provider: "openai", DisplayName: "Whisper", ReleaseDate: "2023-03-01", Tier: TierSpeech, PerMinute: 0.006, Capabilities: Capabilities{Audio: true}},
+		{ID: "tts-1", Provider: "openai", DisplayName: "TTS 1", ReleaseDate: "2023-11-06", Tier: TierSpeech, Per1MChars: 15.00},
+		{ID: "tts-1-hd", Provider: "openai", DisplayName: "TTS 1 HD", ReleaseDate: "2023-11-06", Tier: TierSpeech, Per1MChars: 30.00},
 		// B38.1: cached input $0.025 from the pricing page (read 2026-10-09) — see the gpt-4.1 rows below.
 		{ID: "gpt-4.1-nano", Provider: "openai", DisplayName: "GPT-4.1 nano", ReleaseDate: "2025-04-14", Tier: TierFast, InputPer1M: 0.10, OutputPer1M: 0.40, CachedInputPer1M: 0.025, Capabilities: vision, ContextTokens: 1000000, MaxOutput: 32768},
 		// B38.3: its LongPrompt — see gpt-5.5 in the GPT-5.5 / 5.6 block below.

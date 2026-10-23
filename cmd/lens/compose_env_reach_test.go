@@ -229,6 +229,10 @@ var credentialExemptions = map[string]string{
 	"LENS_STRIPE_TEST_WEBHOOK_SECRET": "B25.2's test-mode webhook secret reaches the process through env_file: " +
 		"lens.env, with LENS_STRIPE_TEST_SECRET_KEY and for the same reason.",
 
+	"LENS_DEEPGRAM_API_KEY": "B40.10's speech key reaches the process through env_file: lens.env, like " +
+		"LENS_VAPID_PRIVATE_KEY and for the same reason: an environment: entry would arrive as \"\" and override " +
+		"the lens.env value, so /v1/audio/* would answer that speech is not configured.",
+
 	"LENS_KYA_SIGNING_KEY": "B30.5's Know Your Agent signing key reaches the process through env_file: lens.env, " +
 		"like LENS_VAPID_PRIVATE_KEY and for the same reason: an environment: entry would arrive as \"\" and override " +
 		"the lens.env value, so every start would sign agent credentials with a new key.",

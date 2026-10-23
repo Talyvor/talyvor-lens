@@ -272,6 +272,52 @@ func openAPIPaths() map[string]any {
 				},
 			},
 		},
+		// B40.10 — speech, OpenAI-compatible, priced per minute or per character and charged like a model call.
+		"/v1/audio/transcriptions": map[string]any{
+			"post": map[string]any{
+				"summary": "Transcribe audio to text",
+				"description": "multipart/form-data: file (the audio, up to 25 MB), model (nova-3, the default, or whisper-1), " +
+					"and optionally language and response_format (json, the default, or text). Charged per minute heard at the " +
+					"model's catalog price, from the agent's wallet for an agent's key. Lens keeps no audio. 503 when speech is " +
+					"not configured; 402 when the wallet or budget does not cover the clip.",
+				"requestBody": map[string]any{"required": true, "content": map[string]any{
+					"multipart/form-data": map[string]any{"schema": map[string]any{"type": "object", "required": []string{"file"},
+						"properties": map[string]any{
+							"file":            map[string]any{"type": "string", "format": "binary"},
+							"model":           map[string]any{"type": "string"},
+							"language":        map[string]any{"type": "string"},
+							"response_format": map[string]any{"type": "string", "enum": []string{"json", "text"}},
+						}}},
+				}},
+				"responses": map[string]any{
+					"200": map[string]any{"description": `{"text": "…"}, or the text alone for response_format=text`},
+					"402": map[string]any{"description": "the wallet, budget or an agent's rules do not cover it"},
+					"503": map[string]any{"description": "speech is not configured"},
+				},
+			},
+		},
+		"/v1/audio/speech": map[string]any{
+			"post": map[string]any{
+				"summary": "Speak text aloud",
+				"description": `JSON {"input": "…" (up to 4,096 characters), "model" (aura-2, the default, tts-1 or tts-1-hd), ` +
+					`"voice", "response_format" (mp3, the default, opus, aac, flac or wav)}. Answers the audio. Charged per ` +
+					"character at the model's catalog price. 503 when speech is not configured.",
+				"requestBody": map[string]any{"required": true, "content": map[string]any{
+					"application/json": map[string]any{"schema": map[string]any{"type": "object", "required": []string{"input"},
+						"properties": map[string]any{
+							"input":           map[string]any{"type": "string"},
+							"model":           map[string]any{"type": "string"},
+							"voice":           map[string]any{"type": "string"},
+							"response_format": map[string]any{"type": "string"},
+						}}},
+				}},
+				"responses": map[string]any{
+					"200": map[string]any{"description": "the spoken audio"},
+					"402": map[string]any{"description": "the wallet, budget or an agent's rules do not cover it"},
+					"503": map[string]any{"description": "speech is not configured"},
+				},
+			},
+		},
 		"/v1/proxy/anthropic/{path}": map[string]any{
 			"post": map[string]any{
 				"summary": "Proxy to Anthropic",

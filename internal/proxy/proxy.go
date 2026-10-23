@@ -331,6 +331,10 @@ type Proxy struct {
 	anthropicURL string
 	googleURL    string
 
+	// B40.10 — speech (speech.go). An empty key leaves /v1/audio/* answering "not configured".
+	deepgramKey string
+	deepgramURL string
+
 	// Bedrock-specific state. bedrockURL is empty in production (URL is
 	// computed from region); tests set it to an httptest base URL. The
 	// config is set via SetBedrockConfig after construction so New's
@@ -791,6 +795,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// B38.8: a model its provider retired fails there — say so here and name the successor, never serve another.
 	if m, ok := catalog.Get(model); ok && m.RetiredSuccessor != "" {
 		writeError(w, http.StatusGone, fmt.Sprintf("model retired: %s is no longer offered by its provider — use %s", model, m.RetiredSuccessor))
+		return
+	}
+	// B40.10: a speech model has no token rates, so here it would be held and charged nothing — it is served on /v1/audio/*.
+	if m, ok := catalog.Get(model); ok && m.Tier == catalog.TierSpeech {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%s is a speech model — send it to /v1/audio/transcriptions or /v1/audio/speech", model))
 		return
 	}
 
