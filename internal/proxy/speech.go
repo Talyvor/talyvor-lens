@@ -273,8 +273,8 @@ func (p *Proxy) HandleTranscription(w http.ResponseWriter, r *http.Request) {
 	} else {
 		var body bytes.Buffer
 		mw := multipart.NewWriter(&body)
-		fw, _ := mw.CreateFormFile("file", fh.Filename)
-		_, _ = fw.Write(audio)
+		_, _ = mw.CreateFormFile("file", fh.Filename)
+		body.Write(audio) // a part writes straight through to body; the concrete Write keeps the audio off any response writer
 		_ = mw.WriteField("model", m.ID)
 		_ = mw.WriteField("response_format", "verbose_json") // the only shape that says how long the clip was
 		if lang := r.FormValue("language"); lang != "" {

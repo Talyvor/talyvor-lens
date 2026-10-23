@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -189,5 +191,42 @@ func TestB4010_ASpeechModelIsRefusedOnTheChatSeam(t *testing.T) {
 	p.HandleOpenAI(w, req)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "/v1/audio/transcriptions") {
 		t.Errorf("a chat request naming nova-3: %d %s — want 400 pointing at /v1/audio", w.Code, w.Body.String())
+	}
+}
+
+func TestB4010_WhisperTranscribesThroughOpenAI(t *testing.T) {
+	p, _, _ := newLoggingProxy(t, workspace.LoggingFull)
+	p.SetDeepgram("dg-test-key", "http://deepgram.invalid")
+	clip := tenSecondWAV()
+	var form string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		form = r.URL.Path + " " + r.FormValue("model") + " " + r.FormValue("response_format") + " " + strconv.FormatBool(bytes.Equal(b, clip))
+		_, _ = io.WriteString(w, `{"text":"Pay the ACME invoice.","duration":10.0}`)
+	}))
+	t.Cleanup(up.Close)
+	p.openAIURL = up.URL + "/v1/chat/completions"
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "q.wav")
+	_, _ = fw.Write(clip)
+	_ = mw.WriteField("model", "whisper-1")
+	_ = mw.WriteField("response_format", "text")
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	p.HandleTranscription(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "Pay the ACME invoice." {
+		t.Fatalf("%d %q", w.Code, w.Body.String())
+	}
+	if form != "/v1/audio/transcriptions whisper-1 verbose_json true" {
+		t.Errorf("OpenAI received %q", form)
 	}
 }
