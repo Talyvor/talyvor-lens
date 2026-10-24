@@ -3528,6 +3528,15 @@ func (p *Proxy) forwardWithFallback(
 		if i > 0 {
 			attemptBody = setModelInBody(body, a.model)
 		}
+		// B17.217: an Anthropic Messages body goes to another provider rewritten as a chat body, or not at all.
+		crossWire := provider == "anthropic" && a.provider != "anthropic"
+		if crossWire {
+			ob, ok := anthropicToOpenAIChat(attemptBody)
+			if !ok {
+				continue
+			}
+			attemptBody = ob
+		}
 
 		// BuildRequest nil-guards the translator: identity for OpenAI-compatible providers, the gemini/
 		// bedrock request translation otherwise — same result as the prior `if translateRequest != nil`.
@@ -3586,6 +3595,10 @@ func (p *Proxy) forwardWithFallback(
 			// gemini/bedrock → OpenAI shape otherwise — same result as the prior translateResponse branch.
 			if translated, terr := cfg.ParseResponse(rb, a.model); terr == nil {
 				rb = translated
+			}
+			// B17.217: and its answer comes back as an Anthropic message — an Anthropic client reads no `choices`.
+			if crossWire {
+				rb = openAIChatToAnthropic(rb, a.model)
 			}
 		}
 
