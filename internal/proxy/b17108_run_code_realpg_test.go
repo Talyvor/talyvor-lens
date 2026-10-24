@@ -102,6 +102,22 @@ func b17108ToolOutput(body map[string]any) string {
 	return ""
 }
 
+// b17265ChargeFrames is the charged_ulxc of every talyvor.charge frame in a stream, in order.
+func b17265ChargeFrames(t *testing.T, stream string) []int64 {
+	t.Helper()
+	var out []int64
+	for _, part := range strings.Split(stream, "event: "+chargeFrame+"\ndata: ")[1:] {
+		var f struct {
+			Charged int64 `json:"charged_ulxc"`
+		}
+		if err := json.Unmarshal([]byte(part[:strings.Index(part, "\n")]), &f); err != nil {
+			t.Fatalf("charge frame %.200q: %v", part, err)
+		}
+		out = append(out, f.Charged)
+	}
+	return out
+}
+
 func TestB17108_WithRunCodeOnTheHundredthPrimeIs541WorkedOutInTheSandbox(t *testing.T) {
 	runner, err := coderun.NewRunner()
 	if err != nil {
@@ -136,6 +152,7 @@ func TestB17108_WithRunCodeOnTheHundredthPrimeIs541WorkedOutInTheSandbox(t *test
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Talyvor-Workspace", "ws-log")
 			req.Header.Set(RunCodeHeader, "on")
+			req.Header.Set(reportChargeHeader, "true")
 			req = req.WithContext(auth.WithAuthContext(req.Context(), sessionKeyAuthContext(t, "ws-log")))
 			rec := newFlushRecorder()
 			if tc.anthropic {
@@ -178,8 +195,13 @@ func TestB17108_WithRunCodeOnTheHundredthPrimeIs541WorkedOutInTheSandbox(t *test
 			}
 
 			want := b1711CatalogULXC(m)
-			if rows, debited, _ := prepaidDebits(t, pool); rows != 2 || debited != 2*want {
+			rows, debited, _ := prepaidDebits(t, pool)
+			if rows != 2 || debited != 2*want {
 				t.Errorf("prepaid ledger = %d row(s), %d µLXC; want 2 rows of %d µLXC — each request to the model charged", rows, debited, want)
+			}
+			// B17.265: a charge frame for each request charged, summing to its rows.
+			if charges := b17265ChargeFrames(t, string(got)); len(charges) != rows || charges[0]+charges[1] != debited {
+				t.Errorf("charge frames %v; want %d of them summing to the rows' %d µLXC: %.1500s", charges, rows, debited, got)
 			}
 		})
 	}

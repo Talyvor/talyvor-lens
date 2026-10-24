@@ -20,7 +20,8 @@ import (
 // the model calls it, Lens runs the code in its sandbox (internal/coderun), gives the model what it printed and asks
 // again, until the model answers. Every round is an ordinary request through serve — gated, held and charged on its
 // own — and the client gets the last round's answer as it came back. A streaming client gets a talyvor.code_run frame
-// for each run as soon as it is back (talyvor-suite apps/web chatStream.ts CODE_RUN_FRAME), then that answer.
+// for each run as soon as it is back (talyvor-suite apps/web chatStream.ts CODE_RUN_FRAME), and, asked to report the
+// charge, a talyvor.charge frame for each earlier round (B17.265), then that answer.
 
 // RunCodeHeader "on" lets the model run code in Lens's sandbox while it answers.
 const RunCodeHeader = "X-Talyvor-Run-Code"
@@ -88,6 +89,7 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 	tools, _ := req["tools"].([]any)
 	req["tools"] = append(tools, runCodeToolDef(anthropic))
 
+	r, tally := withChargeTally(r)
 	base := r.Context()
 	rc := &runCodeAnswer{}
 	r = r.WithContext(context.WithValue(base, runCodeAnswerKey{}, rc))
@@ -107,6 +109,7 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 		}
 		rec := httptest.NewRecorder()
 		rc.answer = nil
+		charged := len(*tally)
 		p.serve(rec, runCodeRound(r, body, n), cfg)
 		text, calls := answerOf(rec.Body.Bytes(), anthropic, streaming)
 		// shortcut: an answer calling run_code and one of the client's own tools goes to the client whole, run_code
@@ -155,6 +158,10 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 				writeFrame(w, "talyvor.code_run", frame)
 			}
 			reply(c.ID, run)
+		}
+		if committed {
+			// This round's own charge frame stays in rec; the last round's goes out with its answer (B17.265).
+			writeChargeFrames(w, r, (*tally)[charged:])
 		}
 		msgs = append(msgs, assistantTurn(anthropic, text, calls))
 		if anthropic {

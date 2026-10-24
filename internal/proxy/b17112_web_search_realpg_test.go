@@ -130,6 +130,7 @@ func TestB17112_WithSearchTheWebOnANewsAnswerCitesTwoPagesThatOpen(t *testing.T)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Talyvor-Workspace", "ws-log")
 			req.Header.Set(WebSearchHeader, "on")
+			req.Header.Set(reportChargeHeader, "true")
 			req = req.WithContext(auth.WithAuthContext(req.Context(), sessionKeyAuthContext(t, "ws-log")))
 			rec := newFlushRecorder()
 			if tc.anthropic {
@@ -189,8 +190,13 @@ func TestB17112_WithSearchTheWebOnANewsAnswerCitesTwoPagesThatOpen(t *testing.T)
 			}
 
 			want := b1711CatalogULXC(search) + b1711CatalogULXC(m)
-			if rows, debited, _ := prepaidDebits(t, pool); rows != 2 || debited != want {
+			rows, debited, _ := prepaidDebits(t, pool)
+			if rows != 2 || debited != want {
 				t.Errorf("prepaid ledger = %d row(s), %d µLXC; want 2 rows, %d µLXC — the search and the answer each charged at its model's catalog price", rows, debited, want)
+			}
+			// B17.265: a charge frame for the search and one for the answer, summing to their rows.
+			if charges := b17265ChargeFrames(t, string(got)); len(charges) != rows || charges[0]+charges[1] != debited {
+				t.Errorf("charge frames %v; want %d of them summing to the rows' %d µLXC: %.1500s", charges, rows, debited, got)
 			}
 		})
 	}
