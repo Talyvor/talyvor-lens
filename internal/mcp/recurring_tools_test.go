@@ -26,7 +26,7 @@ func TestMCP_RecurringPaymentsOwnerOnly(t *testing.T) {
 	call := func(actx *auth.AuthContext, args string) string {
 		t.Helper()
 		resp := s.dispatch(auth.WithAuthContext(context.Background(), actx), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage("1"),
-			Method: "tools/call", Params: json.RawMessage(`{"name":"prepare_recurring_payments","arguments":`+args+`}`)})
+			Method: "tools/call", Params: json.RawMessage(`{"name":"prepare_recurring_payments","arguments":` + args + `}`)})
 		raw, _ := json.Marshal(resp)
 		return string(raw)
 	}
