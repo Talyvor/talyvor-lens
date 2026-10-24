@@ -369,7 +369,7 @@ func attributeTx(ctx context.Context, tx pgx.Tx, listingID, original string, sha
 		return fmt.Errorf("%w (%s descends from %s): uphold or reject the claim", ErrLineageCycle, original, listingID)
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO market_lineage (id, child_listing_id, child_version, parent_listing_id, parent_version, share_bps, source)
-		SELECT 'lin_' || gen_random_uuid(), v.listing_id, v.version, o.id, o.latest_version, $3, 'claim'
+		SELECT 'lin_' || gen_random_uuid(), v.listing_id, v.version, o.id, coalesce(o.held_version - 1, o.latest_version), $3, 'claim'
 		  FROM market_listing_versions v CROSS JOIN market_listings o
 		 WHERE v.listing_id = $1 AND o.id = $2
 		ORDER BY v.version

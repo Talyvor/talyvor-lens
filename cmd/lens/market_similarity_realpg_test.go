@@ -89,7 +89,7 @@ func TestMarketSimilarity_AnUndeclaredCopyIsHeldNamingTheOriginal(t *testing.T) 
 		t.Fatalf("the seller's own near-copy = %s %q, want approved", own.ReviewStatus, own.ReviewReason)
 	}
 
-	// A new version that copies another seller's listing is held too, and its listing with it.
+	// A new version that copies another seller's listing is held too; version 1 stays live (B17.206).
 	other := publish(stranger, "Recipe converter", "Convert every quantity in the recipe the user sends into grams and millilitres.", nil)
 	code, out := call(stranger, http.MethodPost, "/v1/workspaces/"+stranger+"/marketplace/listings/"+other.ID+"/versions",
 		map[string]any{"artifact": map[string]any{"system_prompt": edited("careful", "thorough", "small", "coastal", "short", "concise"), "model": "gpt-4o-mini"}})
@@ -99,8 +99,9 @@ func TestMarketSimilarity_AnUndeclaredCopyIsHeldNamingTheOriginal(t *testing.T) 
 		t.Fatalf("version 2 copying the original = %d %s, want held naming %s", code, out, original.ID)
 	}
 	var status, reason string
-	if err := pool.QueryRow(ctx, `SELECT review_status, review_reason FROM market_listings WHERE id = $1`, other.ID).Scan(&status, &reason); err != nil ||
-		status != market.ReviewHeld || !strings.HasPrefix(reason, "version 2: it is ") {
-		t.Fatalf("the listing after version 2 = %s %q (%v), want held", status, reason, err)
+	var heldFrom int
+	if err := pool.QueryRow(ctx, `SELECT review_status, review_reason, held_version FROM market_listings WHERE id = $1`, other.ID).Scan(&status, &reason, &heldFrom); err != nil ||
+		status != market.ReviewApproved || heldFrom != 2 || !strings.HasPrefix(reason, "version 2: it is ") {
+		t.Fatalf("the listing after version 2 = %s %q held from %d (%v), want version 2 held", status, reason, heldFrom, err)
 	}
 }
