@@ -97,6 +97,7 @@ import (
 	"github.com/talyvor/lens/internal/modelcapability"
 	"github.com/talyvor/lens/internal/modelwatch"
 	"github.com/talyvor/lens/internal/moderatorkey"
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/monitoring"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/nodelatency"
@@ -1971,6 +1972,13 @@ func run() error {
 	partnerRegistry.UseScreeningList(screeningLists)
 	// B37.5 — every call through a partner rail leaves one audit row in partner_calls.
 	partnerRegistry.UseCallLog(partners.NewCallStore(pool))
+	// B46.3 — the money layer: every switch is off, so the sandbox (the Test partners above) serves every call, and partner
+	// webhooks enter at POST /v1/money/webhooks/{partner}.
+	moneyLayer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
+		Clearances: dualToken, Limits: noLimitsYet{}, Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)})
+	if err != nil {
+		return err
+	}
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
 	// a restart and every Lens process show them.
 	go partnerRegistry.WatchRails(ctx, partners.NewRailStore(pool), 5*time.Minute)
@@ -2789,6 +2797,10 @@ func run() error {
 	if cfg.StripeIssuingWebhookSecret != "" {
 		r.Post("/v1/agent-cards/authorizations", agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates).ServeHTTP)
 	}
+
+	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing
+	// webhook; the partner's adapter verifies the signature and a replayed id is refused.
+	r.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
