@@ -114,6 +114,7 @@ func (p *Proxy) chargeChat(ctx context.Context, workspaceID string, costUSD floa
 	}
 	costULXC := int64(math.Ceil(costUSD / economy.LXCUSDValue * 1e6)) // a charge rounds UP
 	if costULXC <= 0 {
+		tallyCharge(ctx, 0)
 		return 0, true
 	}
 	inPeriod, charged := p.subscriberCharge(ctx, workspaceID, costULXC)
@@ -133,6 +134,7 @@ func (p *Proxy) chargeChat(ctx context.Context, workspaceID string, costUSD floa
 			slog.Warn("billing: chat session spend not recorded", slog.String("err", err.Error()))
 		}
 	}
+	tallyCharge(ctx, charged)
 	return charged, true
 }
 

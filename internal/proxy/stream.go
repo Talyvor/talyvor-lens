@@ -92,6 +92,38 @@ const (
 	sseScannerMax      = 1 << 20 // 1 MiB per SSE line, plenty for any chunk
 )
 
+// chargeTallyKey carries what each chat request served for one client request was charged, in µLXC, in order
+// (B17.265): Run code and web search serve several, and a stream asked to report its charge gets a frame for each.
+type chargeTallyKey struct{}
+
+// withChargeTally is r carrying a tally, the one it carries already if it has one.
+func withChargeTally(r *http.Request) (*http.Request, *[]int64) {
+	if t, ok := r.Context().Value(chargeTallyKey{}).(*[]int64); ok {
+		return r, t
+	}
+	t := &[]int64{}
+	return r.WithContext(context.WithValue(r.Context(), chargeTallyKey{}, t)), t
+}
+
+func tallyCharge(ctx context.Context, ulxc int64) {
+	if t, ok := ctx.Value(chargeTallyKey{}).(*[]int64); ok {
+		*t = append(*t, ulxc)
+	}
+}
+
+// writeChargeFrames sends a stream asked to report its charge one chargeFrame per charge.
+func writeChargeFrames(w io.Writer, r *http.Request, charges []int64) {
+	if r.Header.Get(reportChargeHeader) != "true" {
+		return
+	}
+	for _, c := range charges {
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: {\"type\":%q,\"charged_ulxc\":%d}\n\n", chargeFrame, chargeFrame, c) // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter -- text/event-stream frame of a constant and a number
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // StreamHandler proxies streaming LLM responses back to the client SSE-style
 // while accumulating the assembled text content for caching + learning.
 type StreamHandler struct {

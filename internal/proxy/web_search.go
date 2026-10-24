@@ -56,7 +56,9 @@ func (p *Proxy) serveSearchingWeb(w http.ResponseWriter, r *http.Request, cfg pr
 		p.serve(w, webSearchRound(r, raw, false), cfg) // serve says what is wrong with the body
 		return
 	}
+	r, tally := withChargeTally(r)
 	pages, found := p.searchWeb(r, lastUserText(req["messages"]))
+	searchCharges := append([]int64{}, *tally...)
 	if len(pages) > 0 {
 		addSystemNote(req, cfg.ProviderName() == "anthropic", webSearchNote(pages, found))
 	}
@@ -69,7 +71,7 @@ func (p *Proxy) serveSearchingWeb(w http.ResponseWriter, r *http.Request, cfg pr
 		Type      string    `json:"type"`
 		Citations []webPage `json:"citations"`
 	}{"talyvor.citations", append([]webPage{}, pages...)})
-	p.serve(&citingWriter{ResponseWriter: w, frame: frame}, webSearchRound(r, body, false), cfg)
+	p.serve(&citingWriter{ResponseWriter: w, frame: frame, req: r, charges: searchCharges}, webSearchRound(r, body, false), cfg)
 }
 
 // searchWeb has the cheapest Claude search the web once for q, as its own request through serve, and returns the pages
@@ -231,13 +233,15 @@ func webSearchRound(r *http.Request, body []byte, search bool) *http.Request {
 	return rr
 }
 
-// citingWriter puts the citations frame at the head of a streamed answer. A refusal, or an answer that is not a
-// stream, goes out as it came.
+// citingWriter puts the citations frame at the head of a streamed answer and, asked to report the charge, a
+// talyvor.charge frame for the search round (B17.265). A refusal, or an answer that is not a stream, goes out as it came.
 type citingWriter struct {
 	http.ResponseWriter
-	frame  []byte
-	status int
-	wrote  bool
+	frame   []byte
+	req     *http.Request
+	charges []int64
+	status  int
+	wrote   bool
 }
 
 func (c *citingWriter) WriteHeader(code int) {
@@ -252,6 +256,7 @@ func (c *citingWriter) Write(b []byte) (int, error) {
 		c.wrote = true
 		if (c.status == 0 || c.status == http.StatusOK) && strings.HasPrefix(c.Header().Get("Content-Type"), "text/event-stream") {
 			_, _ = fmt.Fprintf(c.ResponseWriter, "event: talyvor.citations\ndata: %s\n\n", c.frame)
+			writeChargeFrames(c.ResponseWriter, c.req, c.charges)
 		}
 	}
 	return c.ResponseWriter.Write(b)
