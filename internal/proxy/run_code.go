@@ -45,12 +45,13 @@ func (p *Proxy) SetCodeRunner(r codeRunner) { p.codeRunner = r }
 // runCodeAnswer is a code-running request's cache key, read in its first round, and the answer its latest round
 // would have stored (B17.225). No round is stored on its own — one may be a call to run code, and a streamed one is
 // stored as its text alone — so the finished answer is stored under the question as asked, and the same question
-// asked again is served it from the first round's cache read.
+// asked again is served it from the first round's cache read. plainFP is the first round's fingerprint without the
+// run_code tool: the answer is stored under it too, so the question asked with Run code off is served it (B17.248).
 type runCodeAnswer struct {
-	keyed                                                        bool
-	provider, model, cachePrompt, prompt, reqFP, wsID, requestID string
-	turn                                                         cache.Turn
-	answer                                                       []byte
+	keyed                                                                 bool
+	provider, model, cachePrompt, prompt, reqFP, plainFP, wsID, requestID string
+	turn                                                                  cache.Turn
+	answer                                                                []byte
 }
 
 type runCodeAnswerKey struct{}
@@ -114,8 +115,7 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 			writeRunCodeAnswer(w, rec, committed)
 			if rec.Code == http.StatusOK && len(calls) == 0 && rc.keyed && rc.answer != nil {
 				sctx, cancel := detachBounded(base) // B39.4
-				p.storeAnswer(withCacheStoreHeader(sctx, r), rc.provider, rc.model, rc.cachePrompt,
-					rc.prompt, rc.reqFP, rc.turn, rc.wsID, rc.requestID, rc.answer)
+				p.storeRunCodeAnswer(withCacheStoreHeader(sctx, r), rc)
 				cancel()
 			}
 			return
@@ -163,6 +163,47 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 			msgs = append(msgs, results...)
 		}
 	}
+}
+
+// storeRunCodeAnswer stores a finished answer under its question as asked with Run code on and, B17.248, as asked with
+// it off — never the other way round, so a chat with Run code on is served only answers that could run code.
+func (p *Proxy) storeRunCodeAnswer(ctx context.Context, rc *runCodeAnswer) {
+	if cacheStoreOff(ctx) {
+		return
+	}
+	var hashes []string
+	for _, fp := range []string{rc.reqFP, rc.plainFP} {
+		if p.storeCaches(ctx, rc.provider, rc.model, rc.cachePrompt, rc.prompt, fp, rc.turn, rc.wsID, rc.answer) {
+			hashes = append(hashes, answerHashes(rc.provider, rc.model, rc.cachePrompt, rc.prompt, fp)...)
+		}
+	}
+	if hashes != nil {
+		p.rememberServed(ctx, rc.wsID, rc.requestID, "fresh", nil, hashes, "", rc.answer)
+	}
+}
+
+// withoutRunCodeTool is a round's body without the run_code tool serveRunningCode added last to its tools.
+func withoutRunCodeTool(body []byte) []byte {
+	var req map[string]any
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if dec.Decode(&req) != nil {
+		return body
+	}
+	tools, _ := req["tools"].([]any)
+	if len(tools) == 0 {
+		return body
+	}
+	if len(tools) == 1 {
+		delete(req, "tools")
+	} else {
+		req["tools"] = tools[:len(tools)-1]
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // runCodeRound is the request for one round: the original, with body, minus RunCodeHeader so serve serves it.
