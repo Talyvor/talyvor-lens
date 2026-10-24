@@ -101,7 +101,11 @@ func (s *Store) GetCollection(ctx context.Context, viewer, id string) (Collectio
 	if err != nil {
 		return Collection{}, fmt.Errorf("market: collection: %w", err)
 	}
-	c.Listings, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Listing, error) { return scanListing(row) })
+	c.Listings, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Listing, error) {
+		l, err := scanListing(row)
+		l.asSeenBy("")
+		return l, err
+	})
 	if err != nil {
 		return Collection{}, fmt.Errorf("market: collection: %w", err)
 	}

@@ -537,6 +537,8 @@ func (s *Store) resolve(ctx context.Context, buyer, listingID string, version in
 	}
 	if version == 0 {
 		version = l.LatestVersion
+	} else if version > l.LatestVersion {
+		return Listing{}, nil, 0, fmt.Errorf("%w: it has no version %d", ErrNotFound, version) // B17.206: held, or not there
 	}
 	var raw []byte
 	err = s.pool.QueryRow(ctx, `SELECT artifact FROM market_listing_versions WHERE listing_id = $1 AND version = $2`, listingID, version).Scan(&raw)

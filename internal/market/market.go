@@ -64,6 +64,7 @@ type Listing struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 	ReviewStatus    string    `json:"review_status"`           // approved | held | taken_down (review.go)
 	ReviewReason    string    `json:"review_reason,omitempty"` // why it is held or was taken down
+	HeldVersion     int       `json:"held_version,omitempty"`  // B17.206: the first version held for review; its owner's alone, with every later one
 	RemixPolicy     string    `json:"remix_policy"`            // none | free | royalty (lineage.go)
 	RemixShareBPS   int       `json:"remix_share_bps"`         // a royalty's share of each remix's sales
 	Offers          []Offer   `json:"offers"`                  // how it is sold (offers.go); none: it is free
@@ -363,8 +364,9 @@ func (s *Store) publish(ctx context.Context, workspaceID, key string, d Draft) (
 }
 
 // PublishVersion adds a version to one of workspaceID's listings; the earlier ones stay as they were. A
-// version the review holds holds the whole listing; a clean one never releases a hold (an admin does), and
-// a taken-down listing takes no versions. The new version keeps the parents of the one before it and adds
+// version the review holds is held with every later one, the earlier ones staying live (B17.206); a held
+// listing stays held whole. A clean one never releases a hold (an admin does), and a taken-down listing
+// takes no versions. The new version keeps the parents of the one before it and adds
 // those parents declares (B32.24).
 func (s *Store) PublishVersion(ctx context.Context, workspaceID, listingID string, artifact json.RawMessage, changelog string, parents []ParentRef) (Version, error) {
 	// B32.46: fingerprinted before the listing is locked, so the embeddings call never holds its row.
@@ -425,8 +427,11 @@ func (s *Store) PublishVersion(ctx context.Context, workspaceID, listingID strin
 		return Version{}, err
 	}
 	if scan.Held != "" {
-		if _, err := tx.Exec(ctx, `UPDATE market_listings SET review_status = 'held', review_reason = $2 WHERE id = $1`,
-			listingID, fmt.Sprintf("version %d: %s", v.Version, scan.Held)); err != nil {
+		hold, args := `UPDATE market_listings SET review_status = 'held', review_reason = $2 WHERE id = $1`, []any{listingID, fmt.Sprintf("version %d: %s", v.Version, scan.Held)}
+		if review == ReviewApproved {
+			hold, args = `UPDATE market_listings SET held_version = COALESCE(held_version, $3), review_reason = $2 WHERE id = $1`, append(args, v.Version)
+		}
+		if _, err := tx.Exec(ctx, hold, args...); err != nil {
 			return Version{}, fmt.Errorf("market: version: %w", err)
 		}
 	}
@@ -436,18 +441,29 @@ func (s *Store) PublishVersion(ctx context.Context, workspaceID, listingID strin
 	return v, tx.Commit(ctx)
 }
 
-const listingColumns = `id, workspace_id, kind, title, description, price_per_use_ulxc, visibility, latest_version, created_at, updated_at, review_status, review_reason, remix_policy, remix_share_bps, room_id`
+const listingColumns = `id, workspace_id, kind, title, description, price_per_use_ulxc, visibility, latest_version, created_at, updated_at, review_status, review_reason, remix_policy, remix_share_bps, room_id, held_version`
 
 // scanListing reads listingColumns, then into extra any columns the query selects after them.
 func scanListing(row pgx.Row, extra ...any) (Listing, error) {
 	var l Listing
 	var room *string
+	var held *int
 	err := row.Scan(append([]any{&l.ID, &l.WorkspaceID, &l.Kind, &l.Title, &l.Description, &l.PricePerUseULXC, &l.Visibility, &l.LatestVersion, &l.CreatedAt, &l.UpdatedAt,
-		&l.ReviewStatus, &l.ReviewReason, &l.RemixPolicy, &l.RemixShareBPS, &room}, extra...)...)
+		&l.ReviewStatus, &l.ReviewReason, &l.RemixPolicy, &l.RemixShareBPS, &room, &held}, extra...)...)
 	if room != nil {
 		l.RoomID = *room
 	}
+	if held != nil {
+		l.HeldVersion = *held
+	}
 	return l, err
+}
+
+// asSeenBy is l as viewer sees it: to anyone but its owner, a held version and those after it are not there (B17.206).
+func (l *Listing) asSeenBy(viewer string) {
+	if l.HeldVersion > 0 && viewer != l.WorkspaceID {
+		l.LatestVersion, l.HeldVersion, l.ReviewReason = l.HeldVersion-1, 0, ""
+	}
 }
 
 func (s *Store) list(ctx context.Context, where string, args ...any) ([]Listing, error) {
@@ -491,10 +507,15 @@ func (s *Store) OwnListings(ctx context.Context, workspaceID string) ([]Listing,
 
 // Catalog reads the public listings the review approved, of one kind when kind is set.
 func (s *Store) Catalog(ctx context.Context, kind string) ([]Listing, error) {
+	where, args := `visibility = 'public' AND review_status = 'approved'`, []any{}
 	if kind != "" {
-		return s.list(ctx, `visibility = 'public' AND review_status = 'approved' AND kind = $1`, kind)
+		where, args = where+` AND kind = $1`, append(args, kind)
 	}
-	return s.list(ctx, `visibility = 'public' AND review_status = 'approved'`)
+	out, err := s.list(ctx, where, args...)
+	for i := range out {
+		out[i].asSeenBy("")
+	}
+	return out, err
 }
 
 // SearchQuery is what a buyer looks for in the catalog (B32.23). Each field set narrows it.
@@ -559,6 +580,7 @@ func visibleListing(ctx context.Context, q rowQuerier, viewer, listingID, lock s
 	} else if h {
 		return l, pgx.ErrNoRows
 	}
+	l.asSeenBy(viewer)
 	return l, nil
 }
 
@@ -589,7 +611,7 @@ func (s *Store) Get(ctx context.Context, viewerWorkspace, listingID string) (Lis
 		return Listing{}, err
 	}
 	rows, err := s.pool.Query(ctx, `SELECT version, artifact_sha256, changelog, scan, created_at, artifact FROM market_listing_versions
-		WHERE listing_id = $1 ORDER BY version`, listingID)
+		WHERE listing_id = $1 AND version <= $2 ORDER BY version`, listingID, l.LatestVersion)
 	if err != nil {
 		return Listing{}, fmt.Errorf("market: versions: %w", err)
 	}

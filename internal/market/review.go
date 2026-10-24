@@ -149,7 +149,7 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]QueueItem, error) {
 		       COALESCE(array_agg(r.reason ORDER BY r.reason) FILTER (WHERE r.id IS NOT NULL), '{}'),
 		       COALESCE((array_agg(r.details ORDER BY r.created_at DESC) FILTER (WHERE r.details <> ''))[1:5], '{}')
 		FROM market_listings l LEFT JOIN market_listing_reports r ON r.listing_id = l.id AND r.resolved_at IS NULL
-		WHERE (l.review_status = 'held' OR r.id IS NOT NULL) AND l.review_status <> 'taken_down'
+		WHERE (l.review_status = 'held' OR l.held_version IS NOT NULL OR r.id IS NOT NULL) AND l.review_status <> 'taken_down'
 		GROUP BY l.id
 		ORDER BY count(r.id) DESC, l.updated_at DESC LIMIT 200`)
 	if err != nil {
@@ -160,14 +160,9 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]QueueItem, error) {
 	for rows.Next() {
 		var q QueueItem
 		var reasons []string
-		var room *string
-		l := &q.Listing
-		if err := rows.Scan(&l.ID, &l.WorkspaceID, &l.Kind, &l.Title, &l.Description, &l.PricePerUseULXC, &l.Visibility, &l.LatestVersion,
-			&l.CreatedAt, &l.UpdatedAt, &l.ReviewStatus, &l.ReviewReason, &l.RemixPolicy, &l.RemixShareBPS, &room, &q.OpenReports, &reasons, &q.Details); err != nil {
+		var err error
+		if q.Listing, err = scanListing(rows, &q.OpenReports, &reasons, &q.Details); err != nil {
 			return nil, err
-		}
-		if room != nil {
-			l.RoomID = *room
 		}
 		q.Reasons = byFrequency(reasons)
 		out = append(out, q)
@@ -201,13 +196,13 @@ func byFrequency(sorted []string) []string {
 	return out
 }
 
-// Approve keeps a listing up: a held listing is released to everyone who may see it, and its open reports
+// Approve keeps a listing up: a held listing, or its held versions (B17.206), is released to everyone who may see it, and its open reports
 // are resolved as kept. A taken-down listing stays down.
 func (s *Store) Approve(ctx context.Context, listingID string) (Listing, error) {
 	var l Listing
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
-		l, err = scanListing(tx.QueryRow(ctx, `UPDATE market_listings SET review_status = 'approved', review_reason = '', updated_at = now()
+		l, err = scanListing(tx.QueryRow(ctx, `UPDATE market_listings SET review_status = 'approved', review_reason = '', held_version = NULL, updated_at = now()
 			WHERE id = $1 AND review_status <> 'taken_down' RETURNING `+listingColumns, listingID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			if gone, _ := s.takenDown(ctx, tx, listingID); gone {

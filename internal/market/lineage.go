@@ -173,8 +173,10 @@ func (s *Store) declareParents(ctx context.Context, tx pgx.Tx, workspaceID, chil
 		}
 		var owner, visibility, review, policy, roomID string
 		var share, latest int
-		err := tx.QueryRow(ctx, `SELECT workspace_id, visibility, review_status, remix_policy, remix_share_bps, latest_version, coalesce(room_id, '')
-			FROM market_listings WHERE id = $1`, ref.ListingID).Scan(&owner, &visibility, &review, &policy, &share, &latest, &roomID)
+		// B17.206: a held version, and those after it, are not another workspace's to declare.
+		err := tx.QueryRow(ctx, `SELECT workspace_id, visibility, review_status, remix_policy, remix_share_bps,
+				CASE WHEN workspace_id <> $2 THEN coalesce(held_version - 1, latest_version) ELSE latest_version END, coalesce(room_id, '')
+			FROM market_listings WHERE id = $1`, ref.ListingID, workspaceID).Scan(&owner, &visibility, &review, &policy, &share, &latest, &roomID)
 		if err == nil {
 			var h bool
 			if h, err = hidden(ctx, tx, Listing{WorkspaceID: owner, Visibility: visibility, ReviewStatus: review, RoomID: roomID}, workspaceID); err == nil && h {
