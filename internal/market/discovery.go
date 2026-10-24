@@ -328,7 +328,7 @@ func (s *Store) Discover(ctx context.Context, q DiscoverQuery) (DiscoverPage, er
 		if h.Listing, err = scanListing(rows, &h.PricePerUseUSDMicros, &h.TrendingScore, &h.DistinctBuyers7d, &out.Total); err != nil {
 			return DiscoverPage{}, err
 		}
-		h.Listing.asSeenBy("")
+		h.asSeenBy("")
 		out.Listings = append(out.Listings, h)
 		ids = append(ids, h.ID)
 	}
