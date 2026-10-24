@@ -545,6 +545,29 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 	return r, nil
 }
 
+// PendingPaymentRequests lists workspaceID's requests waiting for approval, newest first, each as PaymentRequest reads
+// it; agentID, when not "", only that agent's (B40.38).
+func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests WHERE workspace_id = $1 AND status = 'pending_approval'
+		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
+	}
+	out := []PaymentRequest{}
+	for _, id := range ids {
+		r, err := s.PaymentRequest(ctx, workspaceID, agentID, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // formatMinor writes minor units as the currency's decimal amount: "GBP 120.50".
 func formatMinor(currency string, minor int64) string {
 	d := MoneyCurrencies[currency]
