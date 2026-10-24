@@ -83,6 +83,7 @@ type Server struct {
 	mandates       MandateReader // B40.2: get_mandates; nil leaves it out
 	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B45.14: prepare_transfer_to_contact; nil leaves them out
 	paymentRequests PaymentRequester
+	recurring       RecurringPlanner // B45.13: prepare_recurring_payments; nil leaves it out
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
@@ -366,6 +367,9 @@ func (s *Server) tools() []map[string]any {
 	if s.paymentRequests != nil {
 		all = append(all, paymentRequestToolDefinitions()...)
 	}
+	if s.recurring != nil {
+		all = append(all, recurringToolDefinitions()...)
+	}
 	if s.agentBank == nil {
 		return annotate(all)
 	}
@@ -505,6 +509,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.callPaymentRequestTool(ctx, params.Name, params.Arguments)
+	case "prepare_recurring_payments":
+		if s.recurring == nil {
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
+		}
+		result, err = s.toolPrepareRecurringPayments(ctx, params.Arguments)
 	default:
 		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil)
 		if !known || s.agentBank == nil {

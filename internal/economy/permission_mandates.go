@@ -205,7 +205,8 @@ func (t PermissionMandateTerms) validate() error {
 		return bad(`name at least one client: "chat", "voice", "mcp:<client id>" or "key:<api key id>"`)
 	}
 	for _, c := range t.Clients {
-		named := (strings.HasPrefix(c, "mcp:") || strings.HasPrefix(c, "key:")) && len(c) > 4
+		named := (strings.HasPrefix(c, "mcp:") || strings.HasPrefix(c, "key:")) && len(c) > 4 ||
+			strings.HasPrefix(c, ClientSchedulePrefix) && len(c) > len(ClientSchedulePrefix) // B45.13: a recurring plan's standing orders
 		if c != ClientChat && c != ClientVoice && !named {
 			return bad("%q is not a client: use \"chat\", \"voice\", \"mcp:<client id>\" or \"key:<api key id>\"", c)
 		}
@@ -376,6 +377,9 @@ func (s *DualTokenStore) CreatePermissionMandate(ctx context.Context, workspaceI
 	}
 	if err != nil {
 		return PermissionMandate{}, fmt.Errorf("economy: permission mandate: %w", err)
+	}
+	if err := startRecurringPlan(ctx, tx, workspaceID, t.ID, canonical); err != nil {
+		return PermissionMandate{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return PermissionMandate{}, err
