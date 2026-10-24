@@ -450,6 +450,27 @@ func openAPIPaths() map[string]any {
 				"responses":   map[string]any{"200": map[string]any{"description": "order and plans"}},
 			},
 		},
+		"/v1/workspaces/{wsID}/name": map[string]any{
+			"get": map[string]any{
+				"summary": "Get this workspace's name",
+				"parameters": []map[string]any{
+					{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+				},
+				"responses": map[string]any{"200": map[string]any{"description": "id, name"}},
+			},
+			"put": map[string]any{
+				"summary":     "Name this workspace",
+				"description": "The workspace's owner only. Body {\"name\"}: trimmed, 1 to 80 characters. The change is recorded in the audit trail.",
+				"parameters": []map[string]any{
+					{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+				},
+				"responses": map[string]any{
+					"200": map[string]any{"description": "id, name"},
+					"400": map[string]any{"description": "the name is empty, longer than 80 characters or has control characters"},
+					"403": map[string]any{"description": "not the workspace's owner"},
+				},
+			},
+		},
 		"/v1/workspaces/{wsID}/plan": map[string]any{
 			"get": map[string]any{
 				"summary": "Get this workspace's plan and what it unlocks",

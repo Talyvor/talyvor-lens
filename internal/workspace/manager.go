@@ -391,6 +391,16 @@ func (m *Manager) SetLoggingPolicy(ctx context.Context, wsID string, policy Logg
 	return nil
 }
 
+// CacheName puts wsID's new name in the in-memory cache once its row is written (B46.15), so the roster
+// shows it before the next reload.
+func (m *Manager) CacheName(wsID, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ws, ok := m.workspaces[wsID]; ok {
+		ws.Name = name
+	}
+}
+
 // ListWorkspaces returns copies of every registered workspace. Used by
 // admin endpoints to surface the full tenant list.
 func (m *Manager) ListWorkspaces() []*Workspace {

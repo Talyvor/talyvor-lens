@@ -3381,6 +3381,9 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, ws)
 		})
 
+		// B46.15: the workspace's owner names the workspace.
+		mountWorkspaceNameRoutes(authed, pool, wsManager)
+
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider
 		// allowlists, retention) and workspace-scoped API keys.
