@@ -252,6 +252,10 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	if idempotencyKey = strings.TrimSpace(idempotencyKey); idempotencyKey == "" {
 		return r, false, fmt.Errorf("%w: an Idempotency-Key is required", ErrPaymentRequest)
 	}
+	// B45.13: "schedule:" keys are a recurring plan's ticks', so no caller can take a tick's key before it runs.
+	if strings.HasPrefix(idempotencyKey, ClientSchedulePrefix) != strings.HasPrefix(in.Client, ClientSchedulePrefix) {
+		return r, false, fmt.Errorf("%w: an Idempotency-Key starting %q is reserved for recurring payments", ErrPaymentRequest, ClientSchedulePrefix)
+	}
 	kind, err := in.normalise()
 	if err != nil {
 		return r, false, err

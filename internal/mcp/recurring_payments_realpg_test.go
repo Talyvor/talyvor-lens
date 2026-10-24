@@ -291,6 +291,11 @@ func TestRecurringPaymentsThroughSDKClient(t *testing.T) {
 	if n, minor := paymentsOut(); n != 4 || minor != 128100 {
 		t.Errorf("after the second run the ledger has %d payments out of %d, want 4 of 128100", n, minor)
 	}
+	// No caller takes a tick's key before the tick runs.
+	if _, _, err := store.PreparePaymentRequest(ctx, ws, "jwt:user:ada", "schedule:"+byPayee[cleaner.ID]+":next", economy.PaymentRequestIn{
+		Client: "chat", Items: []economy.PaymentRequestItemIn{{PayeeID: cleaner.ID, Currency: "GBP", AmountMinor: 1}}}); err == nil {
+		t.Error("a chat request took a key reserved for recurring payments")
+	}
 	// Run again at once: nothing is due, nothing is paid twice.
 	tick()
 	if n, _ := paymentsOut(); n != 4 {
