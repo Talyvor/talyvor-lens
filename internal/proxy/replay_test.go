@@ -58,9 +58,6 @@ func TestReplayAsSSE_OpenAI_HeaderSet(t *testing.T) {
 		t.Fatalf("replayAsSSE: %v", err)
 	}
 
-	if got := w.Header().Get("X-Talyvor-Cache-Replay"); got != "true" {
-		t.Errorf("X-Talyvor-Cache-Replay = %q, want true", got)
-	}
 	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}

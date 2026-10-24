@@ -594,11 +594,11 @@ func (pp pooledPrice) setSavingHeaders(w http.ResponseWriter) {
 // clearSavingHeaders removes them again. Needed on exactly one path: an SSE replay that FAILS
 // validation falls through to a live upstream call, and that response must not carry a pooled
 // saving — it was not a pooled serve, the consumer pays full price for it, and a stale header would
-// promise a discount the ledger does not show. Safe because replayAsSSE validates every frame
+// promise a discount the ledger does not show (and a stale replay mark, a free answer). Safe because replayAsSSE validates every frame
 // before writing anything, so nothing has been flushed when it errors.
 func clearSavingHeaders(w http.ResponseWriter) {
 	for _, h := range []string{"X-Talyvor-Pool-List-ULXC", "X-Talyvor-Pool-Charged-ULXC",
-		"X-Talyvor-Pool-Saved-ULXC", "X-Talyvor-Pool-Discount-Rate"} {
+		"X-Talyvor-Pool-Saved-ULXC", "X-Talyvor-Pool-Discount-Rate", "X-Talyvor-Cache-Replay"} {
 		w.Header().Del(h)
 	}
 }
@@ -1386,6 +1386,10 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			}
 			price := p.pricePooledServe(chargedHit, prompt, cached, holdMaxOut)
 			price.setSavingHeaders(w)
+			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
+			if price.ChargedULXC == 0 {
+				w.Header().Set("X-Talyvor-Cache-Replay", "true")
+			}
 			if streaming {
 				// SSE replay: synthesises the provider's streaming wire
 				// format from the cached JSON so strict SSE clients can
@@ -1426,8 +1430,6 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 					slog.String("provider", cfg.ProviderName()),
 				)
 			} else {
-				// B17.122: marked like the streamed replay, so a buffered caller can tell its free repeat from a fresh ask.
-				w.Header().Set("X-Talyvor-Cache-Replay", "true")
 				writeBytes(w, http.StatusOK, cached)
 				metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), layer).Inc()
 				metrics.RecordCacheHit(layer)
@@ -3351,7 +3353,6 @@ func replayAsSSE(w http.ResponseWriter, provider string, cached []byte) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-Talyvor-Cache-Replay", "true")
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)

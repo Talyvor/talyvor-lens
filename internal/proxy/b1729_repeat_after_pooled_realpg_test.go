@@ -63,6 +63,10 @@ func exactRepeatOfAPooledAnswer(t *testing.T, stream bool) {
 		t.Fatalf("setup: B's first ask was not a charged pooled serve (charge rows %d, royalty claims %d)",
 			ledgerRows(charges), ledgerRows(mints))
 	}
+	// B17.207 — the charged serve is no replay: a caller reading it as one books nothing for its spend row.
+	if first.Header().Get("X-Talyvor-Cache-Replay") != "" {
+		t.Errorf("the charged pooled serve is marked a replay, which says it cost nothing")
+	}
 
 	again := chat() // the same question, in a new chat
 	if got := atomic.LoadInt64(calls); got != 1 {
@@ -71,8 +75,8 @@ func exactRepeatOfAPooledAnswer(t *testing.T, stream bool) {
 	if again.Body.String() != first.Body.String() {
 		t.Errorf("the repeat answered %q, want the earlier answer %q", again.Body.String(), first.Body.String())
 	}
-	if stream && again.Header().Get("X-Talyvor-Cache-Replay") != "true" {
-		t.Errorf("the streamed repeat is not marked a replay, so the chat cannot say \"from your earlier answer · 0 LXC\"")
+	if again.Header().Get("X-Talyvor-Cache-Replay") != "true" {
+		t.Errorf("the repeat is not marked a replay, so the chat cannot say \"from your earlier answer · 0 LXC\"")
 	}
 	if h := again.Header().Get("X-Talyvor-Pool-Charged-ULXC"); h != "" {
 		t.Errorf("the repeat was priced as a pooled serve (%s µLXC), want its own earlier answer at 0", h)
