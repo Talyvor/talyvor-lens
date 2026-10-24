@@ -272,7 +272,7 @@ func (s *Store) Discover(ctx context.Context, q DiscoverQuery) (DiscoverPage, er
 		rank = `ts_rank(` + doc + `, ` + query + `)::float8`
 		if len(words) >= sentenceWords {
 			if model, v := s.embedQuery(ctx, q.Q); v != nil {
-				joins += ` LEFT JOIN market_listing_fingerprints f ON f.listing_id = l.id AND f.version = l.latest_version`
+				joins += ` LEFT JOIN market_listing_fingerprints f ON f.listing_id = l.id AND f.version = coalesce(l.held_version - 1, l.latest_version)`
 				near = `CASE WHEN f.embedding_model = ` + arg(model) + ` AND f.embedding IS NOT NULL THEN 1 - (f.embedding <=> ` + arg(vectorText(v)) + `::vector) END`
 			}
 		}
