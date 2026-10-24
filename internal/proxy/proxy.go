@@ -1251,8 +1251,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		}
 	}
 	if rc := runCodeAnswerOf(ctx); rc != nil && !rc.keyed {
+		plainFP := cache.RequestFingerprint(withoutRunCodeTool(body))
+		if p.isSynthetic(wsID) {
+			plainFP = cache.PartitionedFingerprint(plainFP, cache.SyntheticPartition)
+		}
 		*rc = runCodeAnswer{keyed: true, provider: cfg.ProviderName(), model: model, cachePrompt: cachePrompt, prompt: prompt,
-			reqFP: reqFP, wsID: wsID, requestID: requestID, turn: turn}
+			reqFP: reqFP, plainFP: plainFP, wsID: wsID, requestID: requestID, turn: turn}
 	}
 
 	// B15.2: X-Talyvor-Cache: bypass asks for a fresh answer — no cache layer is read, own or
