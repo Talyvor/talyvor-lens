@@ -110,7 +110,7 @@ func (r *Registry) ServeWebhook(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// ReplayStore is Replays in money_webhook_events (migration 0263).
+// ReplayStore is Replays in money_webhook_events (migration 0270).
 type ReplayStore struct{ pool *pgxpool.Pool }
 
 // NewReplayStore is the taken webhook ids in pool.
