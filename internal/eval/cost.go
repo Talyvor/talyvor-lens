@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 
 	"github.com/talyvor/lens/internal/alerts"
 	"github.com/talyvor/lens/internal/economy"
@@ -93,7 +92,7 @@ func (p *Pipeline) chargeRun(ctx context.Context, workspaceID, runID string, cos
 	if p.lxc == nil {
 		return
 	}
-	ulxc := int64(math.Ceil(costUSD / economy.LXCUSDValue * 1e6)) // a charge rounds UP, as the proxy's does
+	ulxc := economy.ChargeULXC(costUSD) // a charge rounds UP, as the proxy's does
 	if ulxc <= 0 {
 		return
 	}
