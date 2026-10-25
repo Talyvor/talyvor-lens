@@ -29,6 +29,7 @@ func (f *fakeRequests) PrepareBillsPayment(_ context.Context, _, _, key, client 
 	}
 	return economy.PaymentRequest{ID: "preq_1", Status: "pending_approval"}, false, nil
 }
+func (f *fakeRequests) Bills(context.Context, string) ([]economy.Bill, error) { return nil, nil }
 func (f *fakeRequests) CancelPaymentRequest(context.Context, string, string, string, string) (economy.PaymentRequest, error) {
 	return economy.PaymentRequest{}, economy.ErrPaymentRequestNotFound
 }

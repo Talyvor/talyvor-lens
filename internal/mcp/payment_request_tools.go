@@ -21,6 +21,21 @@ type PaymentRequester interface {
 	PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (economy.PaymentRequest, error)
 	PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (economy.PaymentRequest, bool, error)
+	Bills(ctx context.Context, workspaceID string) ([]economy.Bill, error)
+}
+
+// dueBill is a bill as list_bills_due shows it (B45.17): what to pay and to whom, never the bank details printed on
+// it — the bill is paid to its saved payee, so an assistant has no use for them.
+type dueBill struct {
+	ID            string   `json:"id"`
+	Supplier      string   `json:"supplier"`
+	InvoiceNumber string   `json:"invoice_number,omitempty"`
+	AmountMinor   int64    `json:"amount_minor"`
+	Currency      string   `json:"currency"`
+	DueDate       string   `json:"due_date,omitempty"`
+	PayeeID       string   `json:"payee_id,omitempty"`
+	PayeeMatch    string   `json:"payee_match"`
+	Missing       []string `json:"missing"`
 }
 
 // SetPaymentRequests offers the payment request tools; nil leaves them out.
@@ -64,6 +79,9 @@ func paymentRequestToolDefinitions() []map[string]any {
 			"description": "Prepares paying the workspace's bills — those named, or every bill due — as one request the person approves once with a passkey. It pays nothing. Returns the count, the total and every payee.",
 			"inputSchema": map[string]any{"type": "object", "properties": with(nil, map[string]any{"bill_ids": map[string]any{"type": "array",
 				"items": str, "description": "Leave out to pay every bill due."}}), "required": []string{"idempotency_key"}}},
+		{"name": "list_bills_due",
+			"description": "The workspace's bills that are due, soonest first: supplier, invoice number, amount, due date and whether the supplier is a saved payee, with the total per currency. Pay them with prepare_bills_payment.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 		{"name": "cancel_request", "description": "Cancels a prepared payment request.", "inputSchema": byID},
 		{"name": "get_request_status", "description": "A prepared payment request: its status, items, decisions and approval link.", "inputSchema": byID},
 	}
@@ -119,6 +137,26 @@ func (s *Server) callPaymentRequestTool(ctx context.Context, name string, raw js
 		return r, nil
 	}
 
+	if name == "list_bills_due" { // B45.17
+		if agentID != "" {
+			return nil, &toolRefusal{"the workspace's bills are its owner's or an admin's, not an agent's key"}
+		}
+		bills, err := s.paymentRequests.Bills(ctx, ws)
+		if err != nil {
+			return nil, err
+		}
+		out, totals := []dueBill{}, map[string]int64{}
+		for _, b := range bills {
+			if b.Status != "due" {
+				continue
+			}
+			out = append(out, dueBill{b.ID, b.Supplier, b.InvoiceNumber, b.AmountMinor, b.Currency, b.DueDate, b.PayeeID, b.PayeeMatch, b.Missing})
+			if b.Currency != "" {
+				totals[b.Currency] += b.AmountMinor
+			}
+		}
+		return map[string]any{"bills": out, "count": len(out), "totals": totals}, nil
+	}
 	if err := economy.RefuseAssistantPayeeDetails(raw); err != nil {
 		return refused(err)
 	}
