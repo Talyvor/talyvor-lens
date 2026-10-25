@@ -102,6 +102,7 @@ type client struct {
 	mu         sync.Mutex
 	entityKey  *rsa.PublicKey
 	notifyKeys map[string]*ecdsa.PublicKey // Circle's notification keys by id: a key id's key never changes
+	keyFetched time.Time                   // when a key id not yet known was last asked of Circle
 	tokens     map[string]bool             // whether a Circle token id is USDC on the chain
 }
 
@@ -381,11 +382,12 @@ func (c *client) transaction(ctx context.Context, id string) (transaction, error
 	return out.Transaction, err
 }
 
-// made is the transfer out of from that Circle was asked for under idem, if there is one.
+// made is the transfer out of from that Circle was asked for under idem, if there is one: it must be of amount to to,
+// or the key was used for another transfer.
 //
 // shortcut: reads the wallet's 50 latest transfers out; a retry made after 50 more is answered insufficient funds.
 // Upgrade when Circle filters transactions by refId.
-func (c *client) made(ctx context.Context, from, idem string) (money.Result, bool, error) {
+func (c *client) made(ctx context.Context, from, to, idem string, amount int64) (money.Result, bool, error) {
 	var out struct {
 		Transactions []transaction `json:"transactions"`
 	}
@@ -394,9 +396,13 @@ func (c *client) made(ctx context.Context, from, idem string) (money.Result, boo
 		return money.Result{}, false, err
 	}
 	for _, t := range out.Transactions {
-		if t.RefID == idem && t.WalletID == from {
-			return money.Result{Ref: t.ID, Status: status(t.State)}, true, nil
+		if t.RefID != idem || t.WalletID != from {
+			continue
 		}
+		if n, err := t.amount(); err != nil || n != amount || !strings.EqualFold(t.DestinationAddress, to) {
+			return money.Result{}, false, fmt.Errorf("%w: transfer %s was another transfer", money.ErrKeyReused, t.ID)
+		}
+		return money.Result{Ref: t.ID, Status: status(t.State)}, true, nil
 	}
 	return money.Result{}, false, nil
 }
@@ -410,7 +416,7 @@ func (c *client) send(ctx context.Context, kind, key, from, to string, amount mo
 		return money.Result{}, err
 	}
 	if held < amount.Minor {
-		if r, ok, err := c.made(ctx, from, idem); err != nil || ok {
+		if r, ok, err := c.made(ctx, from, to, idem, amount.Minor); err != nil || ok {
 			return r, err
 		}
 		return money.Result{}, fmt.Errorf("%w: wallet %s holds %d, not %d", money.ErrInsufficientFunds, from, held, amount.Minor)
@@ -588,9 +594,12 @@ func (s circleScreening) Screen(ctx context.Context, _, address string) error {
 			} `json:"reasons"`
 		} `json:"decision"`
 	}
-	day := time.Now().UTC().Format("2006-01-02") // one screening per address a day: a retry today is the same request
+	fresh := make([]byte, 16) // a new screening every time money goes out: never an earlier decision
+	if _, err := rand.Read(fresh); err != nil {
+		return err
+	}
 	if _, err := s.c.do(ctx, http.MethodPost, "/v1/w3s/compliance/screening/addresses", map[string]any{
-		"idempotencyKey": idempotencyKey("screen", strings.ToLower(address)+"@"+day), "address": address, "chain": s.c.cfg.Blockchain}, &out); err != nil {
+		"idempotencyKey": idempotencyKey("screen", hex.EncodeToString(fresh)), "address": address, "chain": s.c.cfg.Blockchain}, &out); err != nil {
 		return err
 	}
 	for _, r := range out.Decision.Reasons {
@@ -614,15 +623,27 @@ const (
 
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// keyFetchEvery is how often Circle may be asked for a notification key id Lens does not know yet.
+const keyFetchEvery = 10 * time.Second
+
 type webhooks struct{ c *client }
 
 // notifyKey is Circle's notification key id, kept once read.
 func (w webhooks) notifyKey(id string) (*ecdsa.PublicKey, error) {
 	w.c.mu.Lock()
 	k := w.c.notifyKeys[id]
+	// Anyone can post a key id: Circle is asked about a new one at most every keyFetchEvery, and the rest wait for
+	// Circle's retry.
+	wait := k == nil && time.Since(w.c.keyFetched) < keyFetchEvery
+	if k == nil && !wait {
+		w.c.keyFetched = time.Now()
+	}
 	w.c.mu.Unlock()
 	if k != nil {
 		return k, nil
+	}
+	if wait {
+		return nil, fmt.Errorf("%w: circle's key %q is not known yet", money.ErrPartnerDown, id)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

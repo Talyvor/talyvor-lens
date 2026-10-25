@@ -262,8 +262,8 @@ func TestOutboundIsScreenedFirst(t *testing.T) {
 	}
 }
 
-// B46.5 — a transfer asked again after its money left answers the transfer it made, not insufficient funds, and pays
-// once.
+// B46.5 — a transfer asked again after its money left answers the transfer it made, not insufficient funds, pays
+// once, and is screened again; the same key for another transfer is refused.
 func TestARetriedTransferAfterTheMoneyLeftFindsIt(t *testing.T) {
 	l := newLayer(t, moneytest.PayeeFor(money.USDC).Address)
 	w := l.wallet(t, "re", 3_000_000)
@@ -278,6 +278,13 @@ func TestARetriedTransferAfterTheMoneyLeftFindsIt(t *testing.T) {
 	}
 	if n := l.fake.Outbound(); n != 1 {
 		t.Fatalf("Circle made %d transfers, want 1", n)
+	}
+	if n := len(l.fake.Screened); n != 2 {
+		t.Fatalf("the payee was screened %d times, want once per attempt", n)
+	}
+	req.Amount.Minor = 2_000_000
+	if _, err := l.trans.Outbound(ctx, req); !errors.Is(err, money.ErrKeyReused) {
+		t.Fatalf("the same key for another amount: err = %v, want ErrKeyReused", err)
 	}
 }
 
