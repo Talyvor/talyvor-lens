@@ -24,9 +24,9 @@ import (
 	"github.com/talyvor/lens/internal/screening"
 )
 
-// B41.103 — invoice risk checks: on the approval card a first-time payee, a duplicate invoice, a changed bank detail
-// and an amount far above the payee's usual each show their own flag; a duplicate is approved only with a passkey and
-// a reason, which the person signs with the statement; and then it is paid.
+// B41.103 — invoice risk checks: on the approval card a first-time payee, a duplicate invoice (paid before, or twice in
+// one batch), a changed bank detail and an amount far above the payee's usual each show their own flag; a duplicate is
+// approved only with a passkey and a reason, which the person signs with the statement; and then it is paid.
 func TestMoneyBillsRisk_FlagsOnTheCardAndADuplicateNeedsAReason(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -160,12 +160,13 @@ func TestMoneyBillsRisk_FlagsOnTheCardAndADuplicateNeedsAReason(t *testing.T) {
 	dup := addBill("Ada Plumbing Ltd", "INV-101", "£120.00", "55779911")
 	changed := addBill("Grace Groceries", "INV-201", "£45.50", "12345678")
 	large := addBill("Ada Plumbing", "INV-102", "£400.00", "55779911")
+	inBatch := addBill("Ada Plumbing Co", "INV-102", "£400.00", "55779911") // the same invoice again, in the same batch
 	code, card = call(http.MethodPost, "/v1/money/bills/pay", "second", `{"client":"chat"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("pay all due = %d %v", code, card)
 	}
 	got := flags(card)
-	for bill, want := range map[string]string{dup: "duplicate", changed: "bank_details_changed,first_payment", large: "unusual_amount"} {
+	for bill, want := range map[string]string{dup: "duplicate", changed: "bank_details_changed,first_payment", large: "unusual_amount", inBatch: "unusual_amount,duplicate"} {
 		if strings.Join(got[bill], ",") != want {
 			t.Errorf("bill %s is flagged %v, want %s", bill, got[bill], want)
 		}
@@ -182,7 +183,7 @@ func TestMoneyBillsRisk_FlagsOnTheCardAndADuplicateNeedsAReason(t *testing.T) {
 	if n, _ := paymentsOut(); n != 1 {
 		t.Fatalf("after the refused approval the ledger has %d payments out, want still 1", n)
 	}
-	// With a reason it is signed with the statement, and the three bills are paid.
+	// With a reason it is signed with the statement, and the four bills are paid.
 	code, statement := call(http.MethodPost, "/v1/money/payment-requests/"+id+"/approval", "", `{"reason":"Ada re-sent INV-101 for a second visit"}`)
 	if code != http.StatusOK || !strings.Contains(statement["statement"].(string), `"overrides":["duplicate"]`) ||
 		!strings.Contains(statement["statement"].(string), `"reason":"Ada re-sent INV-101 for a second visit"`) {
@@ -191,7 +192,7 @@ func TestMoneyBillsRisk_FlagsOnTheCardAndADuplicateNeedsAReason(t *testing.T) {
 	if code, out := approve(id, `{"reason":"Ada re-sent INV-101 for a second visit"}`); code != http.StatusOK || out["status"] != "approved" {
 		t.Fatalf("approving with a reason = %d %v", code, out)
 	}
-	if n, minor := paymentsOut(); n != 4 || minor != 12000+12000+4550+40000 {
-		t.Errorf("after the approval with a reason the ledger has %d payments out of %d, want 4 of %d", n, minor, 12000+12000+4550+40000)
+	if n, minor := paymentsOut(); n != 5 || minor != 12000+12000+4550+40000+40000 {
+		t.Errorf("after the approval with a reason the ledger has %d payments out of %d, want 5 of %d", n, minor, 12000+12000+4550+40000+40000)
 	}
 }

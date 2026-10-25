@@ -387,6 +387,21 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		}
 		out[i], resolved[i] = it, p
 	}
+	// B41.103: an item repeating an earlier one of this request — its payee's invoice number or amount — is a duplicate.
+	for i := range out {
+		it := &out[i]
+		if it.Decision == ItemBlocked || it.ListingID != "" || slices.ContainsFunc(it.Flags, func(f ItemFlag) bool { return f.Code == FlagDuplicate }) {
+			continue
+		}
+		for _, e := range out[:i] {
+			if e.Decision != ItemBlocked && e.ListingID == "" && e.PayeeID == it.PayeeID && ((it.Reference != "" && strings.EqualFold(e.Reference, it.Reference)) ||
+				(e.AmountMinor == it.AmountMinor && e.Currency == it.Currency)) {
+				it.Flags = append(it.Flags, ItemFlag{FlagDuplicate, fmt.Sprintf("item %d of this request pays %s %s too (reference %q)",
+					e.Position, it.PayeeName, formatMinor(e.Currency, e.AmountMinor), e.Reference)})
+				break
+			}
+		}
+	}
 
 	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do.
 	type spentKey struct{ mandate, currency string }
