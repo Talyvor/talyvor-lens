@@ -302,9 +302,10 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 	for _, it := range items {
+		flags, _ := json.Marshal(it.Flags)
 		if _, err := tx.Exec(ctx, `INSERT INTO payment_request_items (request_id, position, payee_id, payee_name, listing_id, currency,
-			amount_minor, reference, decision, reason, rule, mandate_id, bill_id, flags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-			id, it.Position, it.PayeeID, it.PayeeName, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.Decision, it.Reason, it.Rule, it.MandateID, it.BillID, it.Flags); err != nil {
+			amount_minor, reference, decision, reason, rule, mandate_id, bill_id, flags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`,
+			id, it.Position, it.PayeeID, it.PayeeName, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.Decision, it.Reason, it.Rule, it.MandateID, it.BillID, string(flags)); err != nil {
 			return r, false, fmt.Errorf("economy: payment request item: %w", err)
 		}
 	}
