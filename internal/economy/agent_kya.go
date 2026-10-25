@@ -133,16 +133,8 @@ func agentKYAFacts(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 	case paused || allPaused:
 		f.Standing = KYARevokedFrozen
 	}
-	checks, err := readVerificationChecks(ctx, q, workspaceID)
-	if err != nil {
+	if f.Owner, err = kyaOwner(ctx, q, workspaceID); err != nil {
 		return f, err
-	}
-	f.Owner.Level, f.Owner.LiveLevel = reachedLevels(checks)
-	named := VerificationLevel(0)
-	for _, c := range checks { // the name the highest check within the level reached confirmed
-		if c.Status == string(partners.StatusCompleted) && c.VerifiedName != "" && c.Level <= f.Owner.Level && c.Level > named {
-			f.Owner.Name, named = c.VerifiedName, c.Level
-		}
 	}
 	for _, c := range Capabilities {
 		refusal, err := capabilityLive(ctx, q, workspaceID, c)
@@ -176,6 +168,24 @@ func agentKYAFacts(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 		f.Limits.ActiveHours = r.ActiveFrom + "-" + r.ActiveUntil + " " + r.Timezone
 	}
 	return f, nil
+}
+
+// kyaOwner is who answers for workspaceID's agents: the levels its checks reach and the name the highest check within
+// them confirmed.
+func kyaOwner(ctx context.Context, q pgxDB, workspaceID string) (KYAOwner, error) {
+	o := KYAOwner{WorkspaceID: workspaceID}
+	checks, err := readVerificationChecks(ctx, q, workspaceID)
+	if err != nil {
+		return o, err
+	}
+	o.Level, o.LiveLevel = reachedLevels(checks)
+	named := VerificationLevel(0)
+	for _, c := range checks {
+		if c.Status == string(partners.StatusCompleted) && c.VerifiedName != "" && c.Level <= o.Level && c.Level > named {
+			o.Name, named = c.VerifiedName, c.Level
+		}
+	}
+	return o, nil
 }
 
 const kyaColumns = `id, workspace_id, agent_id, kid, public_key, claims_digest, token, issued_at, expires_at, revoked_at, revoked_reason`

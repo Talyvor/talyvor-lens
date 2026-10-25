@@ -11,6 +11,7 @@ package kya
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -96,6 +97,16 @@ func keyOf(priv ed25519.PrivateKey) Key {
 // Kid is the key's id: its RFC 7638 thumbprint.
 func (k Key) Kid() string { return k.kid }
 
+// Derive is an Ed25519 key of its own for info, derived from this one with HKDF-SHA256 (RFC 5869): B45.23 signs each
+// agent's Agent Card with one, so no private key is stored and none leaves the process.
+func (k Key) Derive(info string) ed25519.PrivateKey {
+	seed, err := hkdf.Key(sha256.New, k.priv.Seed(), nil, info, ed25519.SeedSize)
+	if err != nil {
+		panic(err) // only for a length HKDF-SHA256 cannot give, and 32 bytes it always can
+	}
+	return ed25519.NewKeyFromSeed(seed)
+}
+
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // thumbprint is pub's RFC 7638 JWK thumbprint: SHA-256 over its required members in lexicographic order.
@@ -117,6 +128,9 @@ type JWK struct {
 func jwkOf(kid string, pub ed25519.PublicKey) JWK {
 	return JWK{Kty: "OKP", Crv: "Ed25519", X: b64url(pub), Kid: kid, Alg: "EdDSA", Use: "sig"}
 }
+
+// JWKOf is pub as a published key, its kid its RFC 7638 thumbprint.
+func JWKOf(pub ed25519.PublicKey) JWK { return jwkOf(thumbprint(pub), pub) }
 
 // JWKS is the published key set.
 type JWKS struct {
