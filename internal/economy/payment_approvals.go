@@ -62,7 +62,7 @@ type ApprovalStatement struct {
 func frozenIntact(workspaceID string, r PaymentRequest) bool {
 	c := canonicalRequest{Version: PaymentRequestVersion, ID: r.ID, WorkspaceID: workspaceID, Kind: r.Kind, Items: []canonicalItem{}}
 	for _, it := range r.Items {
-		c.Items = append(c.Items, canonicalItem{it.PayeeID, it.ListingID, it.Currency, it.AmountMinor, it.Reference})
+		c.Items = append(c.Items, canonicalItem{it.PayeeID, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.BillID})
 	}
 	b, _ := json.Marshal(c)
 	return string(b) == r.Canonical && sha256Hex(r.Canonical) == r.PayloadHash
@@ -343,6 +343,12 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 				payStatus, detail, call["error"] = PayFailed, err.Error(), err.Error()
 			} else {
 				paymentID, payStatus, detail = p.ID, p.Status, p.Detail
+				// shortcut: a payment returned later leaves its bill paid; reopen the bill once returns are reconciled.
+				if it.BillID != "" && p.Status != PaymentFailed {
+					if _, err := tx.Exec(ctx, `UPDATE money_bills SET status = 'paid' WHERE id = $1 AND workspace_id = $2`, it.BillID, workspaceID); err != nil {
+						return r, fmt.Errorf("economy: bill paid: %w", err)
+					}
+				}
 				call["payment_id"], call["partner"], call["partner_ref"], call["status"], call["detail"] = p.ID, p.Partner, p.PartnerRef, p.Status, p.Detail
 			}
 		}

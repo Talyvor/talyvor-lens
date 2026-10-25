@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,11 @@ import (
 //	                          the bill already there when this invoice was added before
 //	GET  /v1/money/bills      — the workspace's bills, due first, soonest due first
 //	GET  /v1/money/bills/{id} — one bill
+//	POST /v1/money/bills/pay  Idempotency-Key: <key>  {"client", "bill_ids": [...]} — B41.102: prepares paying those bills,
+//	                          or every bill due when none is named, as one payment request: one card with the count, the
+//	                          total and every payee, approved once with a passkey and each bill then paid under its own
+//	                          key through /v1/money/payment-requests/{id}/approval and …/approve (B40.5). 201 with the
+//	                          request; the same key again: 200, the same request
 //
 // The workspace is the key's; only its owner or an admin may use these. Mounted in the authed group. The invoice is
 // read through conv — the isolated distill worker in production — never in this process.
@@ -33,6 +39,7 @@ type moneyBillBank interface {
 	AddBill(ctx context.Context, workspaceID, source, filename string, document []byte, text string) (economy.Bill, bool, error)
 	Bills(ctx context.Context, workspaceID string) ([]economy.Bill, error)
 	BillByID(ctx context.Context, workspaceID, billID string) (economy.Bill, error)
+	PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (economy.PaymentRequest, bool, error)
 }
 
 func mountMoneyBillRoutes(r chi.Router, bank moneyBillBank, conv distill.IsolatedConverter) {
@@ -121,6 +128,45 @@ func mountMoneyBillRoutes(r chi.Router, bank moneyBillBank, conv distill.Isolate
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, b)
+		}
+	})
+	r.Post("/v1/money/bills/pay", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Client  string   `json:"client"`
+			BillIDs []string `json:"bill_ids"`
+		}
+		dec := json.NewDecoder(io.LimitReader(req.Body, 1<<20))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"client", "bill_ids": [...]}; leave bill_ids out to pay every bill due`)
+			return
+		}
+		keyID := ""
+		if actx := auth.GetAuthContext(req.Context()); actx != nil {
+			keyID = actx.APIKeyID
+		}
+		by, _ := storedanswers.OwnerOrAdmin(req.Context())
+		client, err := economy.PaymentRequestClient(keyID, "", in.Client)
+		var pr economy.PaymentRequest
+		again := false
+		if err == nil {
+			pr, again, err = bank.PrepareBillsPayment(req.Context(), ws, by, req.Header.Get("Idempotency-Key"), client, in.BillIDs)
+		}
+		switch {
+		case errors.Is(err, economy.ErrPaymentRequest):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPaymentRequestConflict):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		case again:
+			writeJSONOK(w, http.StatusOK, pr)
+		default:
+			writeJSONOK(w, http.StatusCreated, pr)
 		}
 	})
 }

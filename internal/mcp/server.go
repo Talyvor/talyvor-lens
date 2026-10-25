@@ -80,7 +80,7 @@ type Server struct {
 	rooms          *rooms.Store // B32.36: the room tools; nil leaves them out
 	roomDeps       RoomDeps
 	mandates       MandateReader // B40.2: get_mandates; nil leaves it out
-	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; nil leaves them out
+	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; nil leaves them out
 	paymentRequests PaymentRequester
 
 	sseMu sync.Mutex
@@ -490,7 +490,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.toolGetMandates(ctx, params.Arguments)
-	case "prepare_payment", "prepare_batch", "request_marketplace_purchase", "cancel_request", "get_request_status":
+	case "prepare_payment", "prepare_batch", "prepare_bills_payment", "request_marketplace_purchase", "cancel_request", "get_request_status":
 		if s.paymentRequests == nil {
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
