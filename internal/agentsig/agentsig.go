@@ -317,12 +317,13 @@ func unquote(s string) (string, error) {
 	}
 	var b strings.Builder
 	for i := 1; i < len(s)-1; i++ {
-		if s[i] == '\\' {
+		switch s[i] {
+		case '\\':
 			i++
 			if i == len(s)-1 || (s[i] != '"' && s[i] != '\\') {
 				return "", fmt.Errorf("bad escape in %q", s)
 			}
-		} else if s[i] == '"' {
+		case '"':
 			return "", fmt.Errorf("stray quote in %q", s)
 		}
 		b.WriteByte(s[i])
@@ -514,7 +515,7 @@ func checkDigest(header string, body []byte) error {
 			continue
 		}
 		if len(v) < 2 || v[0] != ':' || v[len(v)-1] != ':' {
-			return fmt.Errorf("%s is not a :byte sequence:", alg)
+			return fmt.Errorf("%s is not a byte sequence", alg)
 		}
 		got, err := base64.StdEncoding.DecodeString(v[1 : len(v)-1])
 		if err != nil || subtle.ConstantTimeCompare(got, sum) != 1 {
