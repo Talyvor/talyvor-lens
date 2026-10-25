@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/ap2"
 	"github.com/talyvor/lens/internal/dbjson"
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/metrics"
@@ -339,6 +340,8 @@ type DualTokenStore struct {
 	deviceVerifier devicekey.Verifier
 	// B40.15: the native push sent to each phone with a push token for each approval filed or request prepared.
 	nativePusher NativePusher
+	// B45.28: the key the owner's AP2 mandates and agents' approval evidence are signed with.
+	mandateSigner *ap2.Signer
 	// B19.11: what the verified-agent badge follows.
 	ownerVerifier OwnerVerifier
 	// cashOutPartner pays cash-outs out as money (B22.9); nil, cash-out is unavailable.
