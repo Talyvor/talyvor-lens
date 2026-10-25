@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -55,7 +54,7 @@ func n1coCommand(ctx context.Context, pool *pgxpool.Pool, bank *economy.DualToke
 	budget := fs.Float64("monthly-budget", 0, "")
 	testMoney := fs.Float64("test-money", -1, "")
 	if err := fs.Parse(args); err != nil || *issuer == "" || *subject == "" || fs.NArg() != 0 {
-		return errors.New(n1coUsage)
+		return fmt.Errorf("%s", n1coUsage)
 	}
 	if *budget <= 0 {
 		return fmt.Errorf("n1co: -monthly-budget must be a positive number of LXC\n%s", n1coUsage)
