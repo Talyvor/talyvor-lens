@@ -181,16 +181,11 @@ func (s *Service) agentCard(f economy.AgentCardFacts) Card {
 	if desc == "" {
 		desc = f.Name + " is an AI agent with a Talyvor wallet."
 	}
+	// Who answers for the agent is said only in provider and the principal extension, never in the description the
+	// owner writes, so no description can pass for Talyvor's word.
 	org := f.Owner.Name
 	if org == "" {
 		org = "Owner not yet verified"
-		desc += " Talyvor has not yet confirmed who answers for it."
-	} else {
-		desc += " " + org + " answers for it; Talyvor has verified them to level " + f.Owner.Level.String()
-		if f.Owner.LiveLevel < f.Owner.Level { // the Test provider's checks count toward level, never live level
-			desc += " with test checks, and to " + f.Owner.LiveLevel.String() + " with live ones"
-		}
-		desc += "."
 	}
 	return Card{Name: f.Name, Description: desc, SupportedInterfaces: []Interface{},
 		Provider: Provider{Organization: org, URL: s.base + CardPath(f.AgentID)}, Version: "1",
@@ -301,11 +296,14 @@ type Verification struct {
 // that it still says what is true — a card whose agent was renamed or whose owner's verification changed is
 // superseded, and fetched again from its agent's path.
 func (s *Service) Verify(ctx context.Context, raw []byte) (Verification, error) {
-	d := json.NewDecoder(strings.NewReader(string(raw)))
-	d.UseNumber()
-	var card map[string]any
-	if err := d.Decode(&card); err != nil || card == nil {
-		return Verification{Reason: "not an Agent Card: it is not a JSON object"}, nil
+	parsed, err := jcs.Parse(raw)
+	card, _ := parsed.(map[string]any)
+	if err != nil || card == nil {
+		reason := "it is not a JSON object"
+		if err != nil {
+			reason = err.Error()
+		}
+		return Verification{Reason: "not an Agent Card: " + reason}, nil
 	}
 	sigs, _ := card["signatures"].([]any)
 	if len(sigs) == 0 {

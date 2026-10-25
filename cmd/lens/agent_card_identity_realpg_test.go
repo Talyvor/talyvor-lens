@@ -119,7 +119,7 @@ func TestAgentCard_VerifiesWithThePublishedKeyAndFailsAfterAChangedByteOrRevocat
 	if err := verifyCardWithPublishedKey(get(jwksPath), card); err != nil {
 		t.Fatalf("anyone holding only the published key could not verify the card: %v\n%s", err, card)
 	}
-	for _, want := range []string{`"name":"Research bot"`, `"organization":"Ada Lovelace"`, `"level":"L2"`, `"liveLevel":"L0"`, `to L0 with live ones`,
+	for _, want := range []string{`"name":"Research bot"`, `"organization":"Ada Lovelace"`, `"level":"L2"`, `"liveLevel":"L0"`,
 		`"agentId":"` + agent.ID + `"`, `"jku":"https://lens.example/v1/a2a/agents/` + agent.ID + `/jwks.json"`, `"supportedInterfaces":[]`} {
 		header := ""
 		var c a2acard.Card
@@ -145,6 +145,11 @@ func TestAgentCard_VerifiesWithThePublishedKeyAndFailsAfterAChangedByteOrRevocat
 	}
 	if v := verify(forged); v.Valid || !strings.Contains(v.Reason, "changed") {
 		t.Fatalf("Talyvor vouched for a card with one byte changed: %+v", v)
+	}
+
+	// The same card with a name given twice — another parser may keep the first — is refused, not vouched for.
+	if v := verify(bytes.Replace(card, []byte(`{"name":`), []byte(`{"name":"Evil bot","name":`), 1)); v.Valid {
+		t.Fatalf("a card with its name given twice was vouched for: %+v", v)
 	}
 
 	// Another workspace's owner cannot rotate this agent's key.

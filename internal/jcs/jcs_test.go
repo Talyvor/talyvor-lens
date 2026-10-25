@@ -64,3 +64,12 @@ func TestNumberMatchesRFC8785AppendixB(t *testing.T) {
 		}
 	}
 }
+
+// RFC 8785 §3.1: the input is I-JSON, so a name twice in one object, invalid UTF-8 or a second value is refused.
+func TestCanonicalizeRefusesWhatIJSONForbids(t *testing.T) {
+	for _, in := range []string{`{"a":1,"a":2}`, `{"x":{"b":true,"b":false}}`, "{\"a\":\"\xff\"}", `{"a":1} {"b":2}`} {
+		if out, err := Canonicalize([]byte(in)); err == nil {
+			t.Errorf("%q was canonicalised to %s; want it refused", in, out)
+		}
+	}
+}

@@ -8,29 +8,79 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Canonicalize is the RFC 8785 form of the JSON value in raw.
 func Canonicalize(raw []byte) ([]byte, error) {
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.UseNumber()
-	var v any
-	if err := d.Decode(&v); err != nil {
-		return nil, fmt.Errorf("jcs: %w", err)
-	}
-	if d.More() {
-		return nil, errors.New("jcs: more than one JSON value")
-	}
-	var b bytes.Buffer
-	if err := write(&b, v); err != nil {
+	v, err := Parse(raw)
+	if err != nil {
 		return nil, err
 	}
-	return b.Bytes(), nil
+	return Value(v)
+}
+
+// Parse reads the one I-JSON value (RFC 7493) in raw, as RFC 8785 requires: valid UTF-8, no name twice in one object,
+// nothing after it. Objects are map[string]any, numbers json.Number. A signature checked over a parse that kept one of
+// two duplicate names would vouch for a card another parser reads differently.
+func Parse(raw []byte) (any, error) {
+	if !utf8.Valid(raw) {
+		return nil, errors.New("jcs: not valid UTF-8")
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	v, err := parse(d)
+	if err != nil {
+		return nil, fmt.Errorf("jcs: %w", err)
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errors.New("jcs: more than one JSON value")
+	}
+	return v, nil
+}
+
+func parse(d *json.Decoder) (any, error) {
+	t, err := d.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch t {
+	case json.Delim('{'):
+		m := map[string]any{}
+		for d.More() {
+			k, err := d.Token()
+			if err != nil {
+				return nil, err
+			}
+			name := k.(string)
+			if _, dup := m[name]; dup {
+				return nil, fmt.Errorf("the name %q appears twice in one object", name)
+			}
+			if m[name], err = parse(d); err != nil {
+				return nil, err
+			}
+		}
+		_, err := d.Token() // '}'
+		return m, err
+	case json.Delim('['):
+		a := []any{}
+		for d.More() {
+			e, err := parse(d)
+			if err != nil {
+				return nil, err
+			}
+			a = append(a, e)
+		}
+		_, err := d.Token() // ']'
+		return a, err
+	}
+	return t, nil
 }
 
 // Marshal is the RFC 8785 form of v as encoding/json marshals it.
