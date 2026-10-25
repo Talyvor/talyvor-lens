@@ -44,11 +44,18 @@ func PayeeFor(asset string) money.Payee {
 	return money.Payee{Name: "Grace Hopper", SortCode: "040004", AccountNumber: "12345678"}
 }
 
+// Depositor is a partner's fake that money comes into from outside, as a chain deposit does: the contract pays into
+// it before it credits what came in. The sandbox needs none: its Credit is the deposit.
+type Depositor interface {
+	Deposit(walletRef, partnerRef string, amount money.Amount)
+}
+
 // env is one case's registry and route.
 type env struct {
-	reg   *money.Registry
-	rt    money.Route
-	asset string
+	reg     *money.Registry
+	rt      money.Route
+	asset   string
+	deposit Depositor
 }
 
 func (e env) wallets(t *testing.T) money.Wallets {
@@ -63,6 +70,9 @@ func (e env) wallet(t *testing.T, key string, fund int64) money.Wallet {
 	t.Helper()
 	w := must(e.wallets(t).Create(context.Background(), money.CreateWallet{Key: key, AgentID: "agent-" + key, Asset: e.asset}))(t)
 	if fund > 0 {
+		if e.deposit != nil {
+			e.deposit.Deposit(w.Ref, "in-"+key, money.Amount{Minor: fund, Asset: e.asset})
+		}
 		must(e.transfers(t).Credit(context.Background(), money.Credit{Key: "fund-" + key, To: w.Ref,
 			Amount: money.Amount{Minor: fund, Asset: e.asset}, PartnerRef: "in-" + key}))(t)
 	}
@@ -283,11 +293,17 @@ var contract = map[money.Capability][]contractCase{
 // Contract runs every case of every capability adapter offers, in each of assets, each case on a fresh adapter from
 // newAdapter. Every call goes through a Registry, as Lens's do.
 func Contract(t *testing.T, newAdapter func() *money.Adapter, country string, assets ...string) {
+	ContractWithDeposits(t, func() (*money.Adapter, Depositor) { return newAdapter(), nil }, country, assets...)
+}
+
+// ContractWithDeposits is Contract for a partner money comes into from outside: newPartner answers a fresh adapter and
+// the fake it talks to, which the contract pays into before it credits a wallet.
+func ContractWithDeposits(t *testing.T, newPartner func() (*money.Adapter, Depositor), country string, assets ...string) {
 	for _, c := range money.Capabilities {
 		for _, cc := range contract[c] {
 			for _, asset := range assets {
 				t.Run(string(c)+"/"+asset+"/"+cc.name, func(t *testing.T) {
-					a := newAdapter()
+					a, dep := newPartner()
 					reg, err := money.NewRegistry(money.Config{Sandbox: a, Limits: Allow{}, Audit: &Trail{}})
 					if err != nil {
 						t.Fatal(err)
@@ -296,7 +312,7 @@ func Contract(t *testing.T, newAdapter func() *money.Adapter, country string, as
 					if _, err := reg.Partner(ctx, c, rt); err != nil {
 						t.Skipf("%s does not offer %s", a.Name, c)
 					}
-					cc.run(t, env{reg: reg, rt: rt, asset: asset})
+					cc.run(t, env{reg: reg, rt: rt, asset: asset, deposit: dep})
 				})
 			}
 		}
