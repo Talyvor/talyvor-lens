@@ -756,6 +756,8 @@ func run() error {
 	// by id instead of carrying the file in its 4 MiB body; converted on the way to the model.
 	docStore := documents.NewStore(pool)
 	p.SetDocuments(docStore)
+	// B41.101 — invoices uploaded as bills are read through the same isolated distill worker.
+	billReader := &distill.ProcessIsolator{WorkerBin: cfg.DistillWorkerBin}
 	// Phase-2 Stage 2.0 shared-cache governance gate (exact cache). Read-only:
 	// reads the global switch + each workspace's cache_poolable opt-in, mutates
 	// nothing. Inert by default — pooling stays off until LENS_CACHE_POOLABLE_ENABLED
@@ -4673,6 +4675,7 @@ func run() error {
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
+		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3

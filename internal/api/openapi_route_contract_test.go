@@ -420,6 +420,9 @@ const undocumentedB4038Routes = 1
 // /v1/workspaces/{wsID}/agents/{id}/agent-card/rotate — on a line of their own.
 const undocumentedB4523Routes = 4
 
+// B41.101: POST and GET /v1/money/bills and GET /v1/money/bills/{id} — on a line of their own, as B30.19's are.
+const undocumentedB41101Routes = 3
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -433,10 +436,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes)
 	}
 }
