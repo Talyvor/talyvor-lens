@@ -355,3 +355,69 @@ func (s *DualTokenStore) Bills(ctx context.Context, workspaceID string) ([]Bill,
 func (s *DualTokenStore) BillByID(ctx context.Context, workspaceID, billID string) (Bill, error) {
 	return scanBill(s.pool.QueryRow(ctx, `SELECT `+billCols+` FROM money_bills WHERE id = $1 AND workspace_id = $2`, billID, workspaceID))
 }
+
+// billTaken is the live request a bill is in already, if any: one not cancelled whose item for the bill was not
+// blocked, left out of the approval, refused, or failed with nothing paid.
+const billTaken = `SELECT r.id FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
+	WHERE r.workspace_id = $1 AND i.bill_id = $2 AND r.status <> 'cancelled' AND i.decision <> 'blocked'
+	AND i.pay_status NOT IN ('not_approved', 'refused') AND NOT (i.pay_status = 'failed' AND i.payment_id <> '')`
+
+// resolveBill (B41.102) fills in an item that names a bill: its saved payee, amount and currency, and its invoice
+// number as the reference. It is blocked, with why, when the bill was paid, is in another live request, has no saved
+// payee, or has no amount read; otherwise its payee is checked as any saved payee is.
+func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID string, it *PaymentRequestItem, p *PreparedPayment) (string, error) {
+	b, err := scanBill(tx.QueryRow(ctx, `SELECT `+billCols+` FROM money_bills WHERE id = $1 AND workspace_id = $2`, it.BillID, workspaceID))
+	if errors.Is(err, ErrBillNotFound) {
+		return "", fmt.Errorf("%w: item %d: no bill of this workspace has the id %q", ErrPaymentRequest, it.Position, it.BillID)
+	}
+	if err != nil {
+		return "", err
+	}
+	it.PayeeID, it.PayeeName, it.Currency, it.AmountMinor, it.Reference = b.PayeeID, b.Supplier, b.Currency, b.AmountMinor, b.InvoiceNumber
+	if it.Reference == "" {
+		it.Reference = b.Supplier
+	}
+	var taken string
+	if err := tx.QueryRow(ctx, billTaken, workspaceID, b.ID).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("economy: bill taken: %w", err)
+	}
+	_, held := MoneyCurrencies[b.Currency]
+	switch {
+	case b.Status == "paid":
+		return "the bill was paid already", nil
+	case taken != "":
+		return "the bill is in payment request " + taken + " already: approve or cancel that one", nil
+	case b.PayeeID == "":
+		return "the supplier is not a saved payee yet: save it as a payee first", nil
+	case b.AmountMinor <= 0 || !held:
+		return "the bill's amount or currency could not be read", nil
+	}
+	return s.resolvePayee(ctx, workspaceID, it, p)
+}
+
+// PrepareBillsPayment (B41.102) prepares paying workspaceID's bills as one payment request, for one approval: the
+// bills named, or else every bill due that no other live request holds. Each bill is an item (resolveBill); the
+// request is approved once with a passkey over its count, total and payees, and each bill is then paid under its own
+// key (B40.5). The same key again returns the same request.
+func (s *DualTokenStore) PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (PaymentRequest, bool, error) {
+	if len(billIDs) == 0 {
+		// Each bill due that no live request holds — but this key's own, so a retry finds its bills again.
+		rows, err := s.pool.Query(ctx, `SELECT b.id FROM money_bills b WHERE b.workspace_id = $1 AND b.status = 'due'
+			AND NOT EXISTS (`+strings.Replace(billTaken, "$2", "b.id", 1)+` AND r.idempotency_key <> $2)
+			ORDER BY b.due_date NULLS LAST, b.created_at, b.id`, workspaceID, strings.TrimSpace(idempotencyKey))
+		if err != nil {
+			return PaymentRequest{}, false, fmt.Errorf("economy: bills due: %w", err)
+		}
+		if billIDs, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return PaymentRequest{}, false, fmt.Errorf("economy: bills due: %w", err)
+		}
+		if len(billIDs) == 0 {
+			return PaymentRequest{}, false, fmt.Errorf("%w: no bill is due", ErrPaymentRequest)
+		}
+	}
+	in := PaymentRequestIn{Client: client}
+	for _, id := range billIDs {
+		in.Items = append(in.Items, PaymentRequestItemIn{BillID: id})
+	}
+	return s.PreparePaymentRequest(ctx, workspaceID, by, idempotencyKey, in)
+}

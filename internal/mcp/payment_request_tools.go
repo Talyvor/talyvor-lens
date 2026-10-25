@@ -20,6 +20,7 @@ type PaymentRequester interface {
 	PreparePaymentRequest(ctx context.Context, workspaceID, by, idempotencyKey string, in economy.PaymentRequestIn) (economy.PaymentRequest, bool, error)
 	PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (economy.PaymentRequest, error)
+	PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (economy.PaymentRequest, bool, error)
 }
 
 // SetPaymentRequests offers the payment request tools; nil leaves them out.
@@ -59,6 +60,10 @@ func paymentRequestToolDefinitions() []map[string]any {
 			"description": "Prepares the purchase of a marketplace listing at its price for the person to approve. It pays nothing.",
 			"inputSchema": map[string]any{"type": "object", "properties": with(nil, map[string]any{"listing_id": str, "reference": item["reference"]}),
 				"required": []string{"idempotency_key", "listing_id"}}},
+		{"name": "prepare_bills_payment",
+			"description": "Prepares paying the workspace's bills — those named, or every bill due — as one request the person approves once with a passkey. It pays nothing. Returns the count, the total and every payee.",
+			"inputSchema": map[string]any{"type": "object", "properties": with(nil, map[string]any{"bill_ids": map[string]any{"type": "array",
+				"items": str, "description": "Leave out to pay every bill due."}}), "required": []string{"idempotency_key"}}},
 		{"name": "cancel_request", "description": "Cancels a prepared payment request.", "inputSchema": byID},
 		{"name": "get_request_status", "description": "A prepared payment request: its status, items, decisions and approval link.", "inputSchema": byID},
 	}
@@ -116,6 +121,28 @@ func (s *Server) callPaymentRequestTool(ctx context.Context, name string, raw js
 
 	if err := economy.RefuseAssistantPayeeDetails(raw); err != nil {
 		return refused(err)
+	}
+	if name == "prepare_bills_payment" { // B41.102
+		var a struct {
+			IdempotencyKey string   `json:"idempotency_key"`
+			Client         string   `json:"client"`
+			BillIDs        []string `json:"bill_ids"`
+		}
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, &toolRefusal{"the arguments are not the tool's: " + err.Error()}
+		}
+		if agentID != "" {
+			return nil, &toolRefusal{"the workspace's bills are paid by its owner or an admin, not an agent's key"}
+		}
+		client, err := economy.PaymentRequestClient(keyID, "", a.Client)
+		if err != nil {
+			return refused(err)
+		}
+		r, _, err := s.paymentRequests.PrepareBillsPayment(ctx, ws, by, a.IdempotencyKey, client, a.BillIDs)
+		if err != nil {
+			return refused(err)
+		}
+		return r, nil
 	}
 	var a struct {
 		IdempotencyKey string                         `json:"idempotency_key"`
