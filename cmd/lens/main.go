@@ -37,6 +37,7 @@ import (
 	"github.com/talyvor/lens/internal/agentcard"
 	"github.com/talyvor/lens/internal/alerts"
 	"github.com/talyvor/lens/internal/anomaly"
+	"github.com/talyvor/lens/internal/ap2"
 	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/attest"
 	"github.com/talyvor/lens/internal/attribution"
@@ -1827,6 +1828,9 @@ func run() error {
 	kyaSvc := kya.New(dualToken, kyaKey, cfg.KYACredentialTTL)
 	// B45.23: every agent's A2A Agent Card, signed with a key derived from the same secret.
 	agentCards := a2acard.New(dualToken, kyaKey.Derive, cfg.PublicURL)
+	// B45.28: the owner's approvals as AP2 v0.2 mandates, and agents' approval evidence, signed with a key derived from it too.
+	mandateSigner := ap2.NewSigner(kyaKey.Derive("talyvor/ap2/mandates/v1").Seed(), cfg.PublicURL)
+	dualToken.SetMandateSigner(mandateSigner)
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2486,6 +2490,8 @@ func run() error {
 		mountKYAPublicRoutes(pub, kyaSvc)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
 		mountAgentCardPublicRoutes(pub, agentCards)
+		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
+		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
 		mountInvoicePayRoutes(pub, dualToken, invoiceCards)
 	})
@@ -4662,6 +4668,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3

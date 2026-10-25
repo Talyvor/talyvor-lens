@@ -801,14 +801,18 @@ type AgentApproval struct {
 	Status     string     `json:"status"`           // pending | approved | denied | used
 	CreatedAt  time.Time  `json:"created_at"`
 	DecidedAt  *time.Time `json:"decided_at,omitempty"`
+	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
+	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
 }
 
-const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo, status, created_at, decided_at`
+const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo, status, created_at, decided_at,
+	approved_by_agent_id`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
-	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt)
+	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
+		&a.ApprovedByAgentID)
 	if p.Kind != "" {
 		a.Payee = &p
 	}

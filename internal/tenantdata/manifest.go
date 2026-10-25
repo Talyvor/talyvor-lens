@@ -233,6 +233,7 @@ var Manifest = map[string]Entry{
 	"agent_card_keys":              {Delete, "B45.23: the public half of each key the workspace's agents' Agent Cards were signed with, and whether it is revoked; deleting it makes every card signed with it fail to verify"},
 	"agent_cards":                  {Delete, "B19.12: an agent's test-mode card — Stripe's card and cardholder ids, last 4, expiry"},
 	"agent_approvals":              {Delete, ""},
+	"agent_approvers":              {Delete, "B45.28: which agent approves which agent's requests, up to what, and the owner's signed AP2 open mandate that said so"},
 	"agent_lxc_subbudgets":         {Delete, ""},
 	"agent_workspace_pauses":       {Delete, ""},
 	"market_listings":              {Delete, "B20.1: the listings a workspace published; their versions cascade"},
