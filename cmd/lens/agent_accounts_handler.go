@@ -144,6 +144,7 @@ type agentBank interface {
 	EndAgentBoost(ctx context.Context, workspaceID, agentID, rule string) error
 	ListAgentApprovals(ctx context.Context, workspaceID string) ([]economy.AgentApproval, error)
 	DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (economy.AgentApproval, error)
+	DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, a passkey.Assertion) (economy.AgentApproval, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
@@ -507,16 +508,18 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				Assertion *passkey.Assertion `json:"assertion"`
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
-			if err := bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.Assertion); err != nil {
-				if errors.Is(err, economy.ErrPasskeyRequired) || errors.Is(err, passkey.ErrInvalid) {
-					writeJSONErr(w, http.StatusForbidden, err.Error())
-				} else {
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				}
-				return
+			var a economy.AgentApproval
+			var err error
+			if in.Assertion != nil {
+				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
+				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
+				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, *in.Assertion)
+			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, nil); err == nil {
+				a, err = bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
 			}
-			a, err := bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
 			switch {
+			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
 			case err != nil:
