@@ -100,7 +100,7 @@ func (p *Proxy) speechAdmit(w http.ResponseWriter, r *http.Request, wsID string,
 		metrics.RequestsTotal.WithLabelValues(m.Provider, "workspace_limit_blocked").Inc()
 		return ctx, false
 	}
-	estULXC := int64(math.Ceil(estUSD / economy.LXCUSDValue * 1e6))
+	estULXC := economy.ChargeULXC(estUSD)
 	if agentKeyID := agentKeyIDFromContext(ctx); agentKeyID != "" {
 		ctx = withAgentCall(ctx, agentKeyID, m.ID, m.Provider, "", r.Header.Get("Idempotency-Key"))
 		// shortcut: with reservations off (LENS_LXC_RESERVATION_ENABLED=false) an agent's speech is charged to its

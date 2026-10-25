@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,7 +26,7 @@ const costWireFunded = int64(100_000_000) // $10 in µLXC
 
 // settleULXC mirrors settleReservation's exact USD→µLXC conversion (ceil), so the expected charge is
 // computed the same way the code computes it — no float drift in the assertion.
-func settleULXC(usd float64) int64 { return int64(math.Ceil(usd / economy.LXCUSDValue * 1e6)) }
+func settleULXC(usd float64) int64 { return economy.ChargeULXC(usd) }
 
 // costWireProxy wires a full proxy (buffered serve path) onto a real-PG reservation store, funded and
 // reservation-active, with a deterministic served model. The caller sets p.openAIURL to a usage upstream.

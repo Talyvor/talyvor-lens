@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/talyvor/lens/internal/auth"
@@ -112,7 +111,7 @@ func (p *Proxy) chargeChat(ctx context.Context, workspaceID string, costUSD floa
 	if !ok || p == nil || workspaceID == "" {
 		return 0, false
 	}
-	costULXC := int64(math.Ceil(costUSD / economy.LXCUSDValue * 1e6)) // a charge rounds UP
+	costULXC := economy.ChargeULXC(costUSD) // a charge rounds UP
 	if costULXC <= 0 {
 		tallyCharge(ctx, 0)
 		return 0, true
