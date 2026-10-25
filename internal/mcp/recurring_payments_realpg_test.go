@@ -224,7 +224,7 @@ func TestRecurringPaymentsThroughSDKClient(t *testing.T) {
 	}
 	approve := func(requestID string) {
 		t.Helper()
-		statement, challenge, _, err := store.PrepareRequestApproval(ctx, ws, requestID, nil)
+		statement, challenge, _, err := store.PrepareRequestApproval(ctx, ws, requestID, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}

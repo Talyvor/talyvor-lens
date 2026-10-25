@@ -370,7 +370,7 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		} else if x.ListingID != "" {
 			blocked, err = s.resolveListing(ctx, workspaceID, &it, &p)
 		} else if blocked, err = s.resolvePayee(ctx, workspaceID, &it, &p); err == nil && blocked == "" {
-			err = s.riskFlags(ctx, workspaceID, &it, it.Reference, p.NewPayee)
+			err = s.riskFlags(ctx, workspaceID, &it, it.Reference, p.NewPayee, strings.HasPrefix(in.Client, ClientSchedulePrefix))
 		}
 		if err != nil {
 			return nil, err
