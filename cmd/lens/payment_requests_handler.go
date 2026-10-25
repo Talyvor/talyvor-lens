@@ -48,7 +48,7 @@ type paymentRequestBank interface {
 	PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]economy.PaymentRequest, error)
 	CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (economy.PaymentRequest, error)
-	PrepareRequestApproval(ctx context.Context, workspaceID, id string, positions []int) (statement, challenge string, credentialIDs []string, err error)
+	PrepareRequestApproval(ctx context.Context, workspaceID, id string, positions []int, reason string) (statement, challenge string, credentialIDs []string, err error)
 	ApprovePaymentRequest(ctx context.Context, workspaceID, id, by, statement string, a *passkey.Assertion) (economy.PaymentRequest, error)
 	PayPaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	AuditRecord(ctx context.Context, workspaceID, subject string) ([]economy.AuditEntry, error)
@@ -178,13 +178,14 @@ func mountPaymentRequestRoutes(r chi.Router, bank paymentRequestBank) {
 			return
 		}
 		var in struct {
-			Positions []int `json:"positions"`
+			Positions []int  `json:"positions"`
+			Reason    string `json:"reason"` // B41.103: why items flagged a duplicate or a changed bank detail are approved
 		}
 		if req.ContentLength != 0 && json.NewDecoder(req.Body).Decode(&in) != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"positions": [1, 2]}, or empty for every item that needs approval`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"positions": [1, 2], "reason": "…"}, or empty for every item that needs approval`)
 			return
 		}
-		statement, challenge, creds, err := bank.PrepareRequestApproval(req.Context(), ws, chi.URLParam(req, "id"), in.Positions)
+		statement, challenge, creds, err := bank.PrepareRequestApproval(req.Context(), ws, chi.URLParam(req, "id"), in.Positions, in.Reason)
 		if refuse(w, err) {
 			return
 		}

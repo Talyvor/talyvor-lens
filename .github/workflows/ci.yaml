@@ -288,7 +288,7 @@ jobs:
       - name: install the official MCP SDK
         run: npm ci --prefix internal/mcp/testdata/sdk-client
       - name: the official MCP SDK client against /mcp
-        run: go test -count=1 -v -run '^TestOfficialTypeScriptSDKClient$' ./internal/mcp
+        run: go test -count=1 -v -run '^TestOfficialTypeScriptSDKClient' ./internal/mcp
 
   # Supply-chain gate: govulncheck against the Go vulnerability DB. This is the
   # standing guard for the unmaintained-but-sandboxed github.com/ledongthuc/pdf

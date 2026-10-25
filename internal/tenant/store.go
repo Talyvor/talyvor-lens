@@ -297,6 +297,24 @@ func (s *Store) CreateAPIKey(
 	scopes []string,
 	expiresAt *time.Time,
 ) (string, *WorkspaceAPIKey, error) {
+	var q rowQuerier
+	if s.pool != nil {
+		q = s.pool
+	}
+	return createAPIKey(ctx, q, workspaceID, name, scopes, expiresAt)
+}
+
+// CreateAPIKeyTx is CreateAPIKey in the caller's transaction, so the key exists only if the rest of tx commits.
+func CreateAPIKeyTx(ctx context.Context, tx pgx.Tx, workspaceID, name string, scopes []string, expiresAt *time.Time) (string, *WorkspaceAPIKey, error) {
+	return createAPIKey(ctx, tx, workspaceID, name, scopes, expiresAt)
+}
+
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// createAPIKey inserts the key through q; a nil q is the in-memory mode tests use.
+func createAPIKey(ctx context.Context, q rowQuerier, workspaceID, name string, scopes []string, expiresAt *time.Time) (string, *WorkspaceAPIKey, error) {
 	if strings.TrimSpace(workspaceID) == "" {
 		return "", nil, errors.New("tenant: workspace id required")
 	}
@@ -319,7 +337,7 @@ func (s *Store) CreateAPIKey(
 		Scopes:      append([]string{}, scopes...),
 		ExpiresAt:   expiresAt,
 	}
-	if s.pool == nil {
+	if q == nil {
 		// In-memory mode (tests): synthesise an ID + timestamp
 		// so the returned struct mirrors what the DB path
 		// produces.
@@ -327,7 +345,7 @@ func (s *Store) CreateAPIKey(
 		key.CreatedAt = time.Now().UTC()
 		return raw, key, nil
 	}
-	row := s.pool.QueryRow(ctx, insertKeySQL,
+	row := q.QueryRow(ctx, insertKeySQL,
 		workspaceID, key.KeyHash, key.KeyPrefix, key.Name,
 		scopes, expiresAt,
 	)

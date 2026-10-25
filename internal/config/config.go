@@ -1106,6 +1106,12 @@ type Config struct {
 	// requires of the pair — this value is not a recommendation.
 	SubscriptionAllowanceULXC int64
 
+	// StarterTestMoneyULXC is the test money a new workspace starts with, in µLXC, funded to its first agent
+	// (B45.7). Env: LENS_STARTER_TEST_MONEY_ULXC, default 0 — Nicolai's to set: test credits still pay for
+	// real model calls, so the amount is a cost per signup. At 0 a new workspace still gets its first agent,
+	// key and rules, with no money.
+	StarterTestMoneyULXC int64
+
 	// SessionKeysEnabled gates W4.6.1 step 4 — SESSION-SCOPED KEYS, the credential a browser chat
 	// holds instead of a workspace key. Env: LENS_SESSION_KEYS_ENABLED. DEFAULT FALSE.
 	//
@@ -2394,6 +2400,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_SUBSCRIPTION_ALLOWANCE_ULXC must be a non-negative integer (µLXC), got %q", v)
 		}
 		c.SubscriptionAllowanceULXC = n
+	}
+	if v := os.Getenv("LENS_STARTER_TEST_MONEY_ULXC"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_STARTER_TEST_MONEY_ULXC must be a non-negative integer (µLXC), got %q", v)
+		}
+		c.StarterTestMoneyULXC = n
 	}
 
 	// W4.6.1 step 4 — session-scoped keys. OFF unless explicitly enabled.

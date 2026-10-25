@@ -757,6 +757,8 @@ func run() error {
 	// by id instead of carrying the file in its 4 MiB body; converted on the way to the model.
 	docStore := documents.NewStore(pool)
 	p.SetDocuments(docStore)
+	// B41.101 — invoices uploaded as bills are read through the same isolated distill worker.
+	billReader := &distill.ProcessIsolator{WorkerBin: cfg.DistillWorkerBin}
 	// Phase-2 Stage 2.0 shared-cache governance gate (exact cache). Read-only:
 	// reads the global switch + each workspace's cache_poolable opt-in, mutates
 	// nothing. Inert by default — pooling stays off until LENS_CACHE_POOLABLE_ENABLED
@@ -2188,6 +2190,8 @@ func run() error {
 	}
 	moneyMonitor := monitoring.New(pool, monitorSettings, ecbRates)
 	dualToken.SetMonitor(moneyMonitor)
+	// B41.103: an approval card flags an amount far above the payee's usual by monitoring's own thresholds.
+	dualToken.SetUnusualAmount(monitorSettings.NewPayeeLarge.TimesUsual, monitorSettings.NewPayeeLarge.FromPayments, monitorSettings.HistoryDays)
 	go haComps.leader.Run(ctx, "transaction-monitoring", 30*time.Second, func(lctx context.Context) {
 		sweepTransactionMonitoring(lctx, moneyMonitor)
 	})
@@ -2652,7 +2656,7 @@ func run() error {
 	mcpServer.SetAgentBank(dualToken)       // B19.9: agents use their wallets with their own keys
 	mcpServer.SetCredentials(kyaSvc)        // B30.5: and show their Know Your Agent credential
 	mcpServer.SetMandates(dualToken)        // B40.2: get_mandates
-	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status
+	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -2836,6 +2840,7 @@ func run() error {
 		due: syntheticDue,
 	})
 	mountProvisionRoute(r, cfg.ProvisionSecret, wsManager,
+		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
@@ -4680,6 +4685,7 @@ func run() error {
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
+		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
