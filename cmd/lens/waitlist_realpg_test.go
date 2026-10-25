@@ -87,3 +87,76 @@ func TestWaitlist_OneRowPerEmail_OnlyOnTheProvisionSecret_ReadByTheOperator(t *t
 		t.Errorf("no key: %d, want 401", code)
 	}
 }
+
+// B45.35 — a signup through a code adds exactly one referral to that code's row; the same email again, and an email
+// using its own code, add none; each email's code is random, distinct, and carries nothing of the email.
+func TestWaitlist_ReferralCode_CountsOnceAndRevealsNothing(t *testing.T) {
+	pool := agentRoutesDB(t)
+	post := newWaitlistSignupHandler("prov-secret", pool)
+	signup := func(email, ref string) (out struct {
+		Stored  bool   `json:"stored"`
+		RefCode string `json:"ref_code"`
+	}) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/waitlist", strings.NewReader(`{"email":"`+email+`","ref":"`+ref+`"}`))
+		req.Header.Set(provisionSecretHeader, "prov-secret")
+		w := httptest.NewRecorder()
+		post(w, req)
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.RefCode) != 10 {
+			t.Fatalf("signup %s ref=%q: %d %s", email, ref, w.Code, w.Body.String())
+		}
+		return out
+	}
+	referrals := func(email string) (n int) {
+		t.Helper()
+		list := requireAdminOrOperatorRead(credentialAuth{}, newWaitlistListHandler(pool))
+		req := httptest.NewRequest(http.MethodGet, "/v1/admin/waitlist", nil)
+		req.Header.Set("Authorization", "Bearer operator-read-key")
+		w := httptest.NewRecorder()
+		list(w, req)
+		var got struct{ Signups []waitlistSignup }
+		if json.Unmarshal(w.Body.Bytes(), &got) != nil {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		for _, s := range got.Signups {
+			if s.Email == email {
+				return s.Referrals
+			}
+		}
+		t.Fatalf("%s not listed", email)
+		return 0
+	}
+
+	ada := signup("ada@example.com", "")
+	bob := signup("bob@example.com", ada.RefCode)
+	if !bob.Stored || referrals("ada@example.com") != 1 {
+		t.Fatalf("a signup through ada's code: stored=%v, ada has %d referrals, want 1", bob.Stored, referrals("ada@example.com"))
+	}
+	if again := signup("bob@example.com", ada.RefCode); again.Stored || again.RefCode != bob.RefCode {
+		t.Fatalf("bob again: %+v, want stored=false with bob's own code %s", again, bob.RefCode)
+	}
+	if self := signup("ada@example.com", ada.RefCode); self.Stored || self.RefCode != ada.RefCode {
+		t.Fatalf("ada through her own code: %+v", self)
+	}
+	if n := referrals("ada@example.com"); n != 1 {
+		t.Fatalf("after a repeat and a self-referral ada has %d referrals, want 1", n)
+	}
+	if n := referrals("bob@example.com"); n != 0 {
+		t.Fatalf("bob has %d referrals, want 0", n)
+	}
+	unknown := signup("cy@example.com", "nosuchcode")
+	if !unknown.Stored {
+		t.Fatal("an unknown code refused the signup")
+	}
+
+	if ada.RefCode == bob.RefCode {
+		t.Fatalf("two emails share the code %s", ada.RefCode)
+	}
+	for email, code := range map[string]string{"ada@example.com": ada.RefCode, "bob@example.com": bob.RefCode} {
+		for _, part := range []string{"ada", "bob", "example", "com"} {
+			if strings.Contains(email, part) && strings.Contains(code, part) {
+				t.Errorf("%s's code %s contains %q", email, code, part)
+			}
+		}
+	}
+}
