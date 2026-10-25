@@ -97,6 +97,8 @@ type PaymentRequestItemIn struct {
 	Currency    string `json:"currency,omitempty"`
 	AmountMinor int64  `json:"amount_minor,omitempty"`
 	Reference   string `json:"reference,omitempty"`
+	// B41.102: a bill the workspace received, paid to its saved payee at its amount, its invoice number the reference.
+	BillID string `json:"bill_id,omitempty"`
 }
 
 // PaymentRequestIn is what is prepared, and by whom: Client as the mandates name it ("chat", "voice", "mcp:<id>",
@@ -120,6 +122,9 @@ type PaymentRequestItem struct {
 	Reason      string `json:"reason"`
 	Rule        string `json:"rule,omitempty"`
 	MandateID   string `json:"mandate_id,omitempty"`
+	BillID      string `json:"bill_id,omitempty"` // B41.102
+	// B41.103: the risks found on it, for the approval card.
+	Flags []ItemFlag `json:"flags"`
 	// B40.5: once paying it was tried, the payment out that paid it, where it stands, and under what authority:
 	// "approval" or "mandate:<id>".
 	PaymentID string `json:"payment_id,omitempty"`
@@ -169,6 +174,7 @@ type canonicalItem struct {
 	Currency    string `json:"currency"`
 	AmountMinor int64  `json:"amount_minor"`
 	Reference   string `json:"reference"`
+	BillID      string `json:"bill_id,omitempty"` // omitted when empty, so requests frozen before B41.102 hash as they did
 }
 
 type canonicalRequest struct {
@@ -193,14 +199,27 @@ func (in *PaymentRequestIn) normalise() (kind string, err error) {
 		return bad("name at least one item")
 	}
 	listings := 0
+	bills := map[string]bool{}
 	for i := range in.Items {
 		it := &in.Items[i]
 		it.PayeeID, it.ListingID, it.Reference = strings.TrimSpace(it.PayeeID), strings.TrimSpace(it.ListingID), strings.TrimSpace(it.Reference)
+		it.BillID = strings.TrimSpace(it.BillID)
 		it.Currency = strings.ToUpper(strings.TrimSpace(it.Currency))
 		if len(it.Reference) > 140 {
 			return bad("item %d: a reference is up to 140 characters", i+1)
 		}
 		switch {
+		case it.BillID != "":
+			if in.AgentID != "" {
+				return bad("item %d: the workspace's bills are paid by its owner or an admin, not an agent's key", i+1)
+			}
+			if it.PayeeID != "" || it.ListingID != "" || it.Currency != "" || it.AmountMinor != 0 || it.Reference != "" {
+				return bad("item %d: a bill is paid as received: name the bill_id alone", i+1)
+			}
+			if bills[it.BillID] {
+				return bad("item %d: bill %s is named twice", i+1, it.BillID)
+			}
+			bills[it.BillID] = true
 		case it.ListingID != "":
 			if it.PayeeID != "" || it.Currency != "" || it.AmountMinor != 0 {
 				return bad("item %d: a listing is bought at its own price: name the listing_id alone", i+1)
@@ -268,7 +287,7 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	c := canonicalRequest{Version: PaymentRequestVersion, ID: id, WorkspaceID: workspaceID, Kind: kind, Items: []canonicalItem{}}
 	status := ItemBlocked
 	for _, it := range items {
-		c.Items = append(c.Items, canonicalItem{it.PayeeID, it.ListingID, it.Currency, it.AmountMinor, it.Reference})
+		c.Items = append(c.Items, canonicalItem{it.PayeeID, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.BillID})
 		switch {
 		case it.Decision == ItemNeedsApproval:
 			status = "pending_approval"
@@ -283,9 +302,10 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 	for _, it := range items {
+		flags, _ := json.Marshal(it.Flags)
 		if _, err := tx.Exec(ctx, `INSERT INTO payment_request_items (request_id, position, payee_id, payee_name, listing_id, currency,
-			amount_minor, reference, decision, reason, rule, mandate_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			id, it.Position, it.PayeeID, it.PayeeName, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.Decision, it.Reason, it.Rule, it.MandateID); err != nil {
+			amount_minor, reference, decision, reason, rule, mandate_id, bill_id, flags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`,
+			id, it.Position, it.PayeeID, it.PayeeName, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.Decision, it.Reason, it.Rule, it.MandateID, it.BillID, string(flags)); err != nil {
 			return r, false, fmt.Errorf("economy: payment request item: %w", err)
 		}
 	}
@@ -296,7 +316,8 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	}
 	decisions := []map[string]any{}
 	for _, it := range items {
-		decisions = append(decisions, map[string]any{"position": it.Position, "decision": it.Decision, "reason": it.Reason, "rule": it.Rule, "mandate_id": it.MandateID})
+		decisions = append(decisions, map[string]any{"position": it.Position, "decision": it.Decision, "reason": it.Reason, "rule": it.Rule, "mandate_id": it.MandateID,
+			"flags": it.Flags})
 	}
 	if err := appendAudit(ctx, tx, workspaceID, id, "decision", map[string]any{"items": decisions}); err != nil {
 		return r, false, err
@@ -334,13 +355,16 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 	out := make([]PaymentRequestItem, len(in.Items))
 	resolved := make([]PreparedPayment, len(in.Items))
 	for i, x := range in.Items {
-		it := PaymentRequestItem{Position: i + 1, PayeeID: x.PayeeID, ListingID: x.ListingID, Currency: x.Currency, AmountMinor: x.AmountMinor, Reference: x.Reference}
+		it := PaymentRequestItem{Position: i + 1, PayeeID: x.PayeeID, ListingID: x.ListingID, Currency: x.Currency, AmountMinor: x.AmountMinor,
+			Reference: x.Reference, BillID: x.BillID, Flags: []ItemFlag{}}
 		p := PreparedPayment{Client: in.Client, AgentID: in.AgentID}
 		var blocked string
-		if x.ListingID != "" {
+		if x.BillID != "" {
+			blocked, err = s.resolveBill(ctx, tx, workspaceID, &it, &p)
+		} else if x.ListingID != "" {
 			blocked, err = s.resolveListing(ctx, workspaceID, &it, &p)
-		} else {
-			blocked, err = s.resolvePayee(ctx, workspaceID, &it, &p)
+		} else if blocked, err = s.resolvePayee(ctx, workspaceID, &it, &p); err == nil && blocked == "" {
+			err = s.riskFlags(ctx, workspaceID, &it, it.Reference, p.NewPayee)
 		}
 		if err != nil {
 			return nil, err
@@ -363,6 +387,21 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 			batchTotal[it.Currency] += it.AmountMinor
 		}
 		out[i], resolved[i] = it, p
+	}
+	// B41.103: an item repeating an earlier one of this request — its payee's invoice number or amount — is a duplicate.
+	for i := range out {
+		it := &out[i]
+		if it.Decision == ItemBlocked || it.ListingID != "" || slices.ContainsFunc(it.Flags, func(f ItemFlag) bool { return f.Code == FlagDuplicate }) {
+			continue
+		}
+		for _, e := range out[:i] {
+			if e.Decision != ItemBlocked && e.ListingID == "" && e.PayeeID == it.PayeeID && ((it.Reference != "" && strings.EqualFold(e.Reference, it.Reference)) ||
+				(e.AmountMinor == it.AmountMinor && e.Currency == it.Currency)) {
+				it.Flags = append(it.Flags, ItemFlag{FlagDuplicate, fmt.Sprintf("item %d of this request pays %s %s too (reference %q)",
+					e.Position, it.PayeeName, formatMinor(e.Currency, e.AmountMinor), e.Reference)})
+				break
+			}
+		}
 	}
 
 	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do.
@@ -395,6 +434,11 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 	for i := range out {
 		it := &out[i]
 		if it.Decision == ItemBlocked {
+			continue
+		}
+		// B41.103: a duplicate or a changed bank detail is never paid under a mandate.
+		if codes := reasonFlags(it.Flags); len(codes) > 0 {
+			it.Decision, it.Reason, it.Rule = ItemNeedsApproval, "flagged "+strings.Join(codes, " and ")+": a person approves it with a passkey and a reason", "risk"
 			continue
 		}
 		p := resolved[i]
@@ -510,7 +554,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 		return r, fmt.Errorf("economy: payment request: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT position, payee_id, payee_name, listing_id, currency, amount_minor, reference, decision,
-		reason, rule, mandate_id, payment_id, pay_status, pay_detail, authority FROM payment_request_items WHERE request_id = $1 ORDER BY position`, id)
+		reason, rule, mandate_id, payment_id, pay_status, pay_detail, authority, bill_id, flags FROM payment_request_items WHERE request_id = $1 ORDER BY position`, id)
 	if err != nil {
 		return r, fmt.Errorf("economy: payment request items: %w", err)
 	}
@@ -520,7 +564,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 	for rows.Next() {
 		var it PaymentRequestItem
 		if err := rows.Scan(&it.Position, &it.PayeeID, &it.PayeeName, &it.ListingID, &it.Currency, &it.AmountMinor, &it.Reference,
-			&it.Decision, &it.Reason, &it.Rule, &it.MandateID, &it.PaymentID, &it.PayStatus, &it.PayDetail, &it.Authority); err != nil {
+			&it.Decision, &it.Reason, &it.Rule, &it.MandateID, &it.PaymentID, &it.PayStatus, &it.PayDetail, &it.Authority, &it.BillID, &it.Flags); err != nil {
 			return r, err
 		}
 		if it.Decision != ItemBlocked {

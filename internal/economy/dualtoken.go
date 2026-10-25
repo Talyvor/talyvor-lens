@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,6 +77,13 @@ const (
 	// the ledger writes and the string that supply subtracts provably identical.
 	LENSTypeConvertToLXC = mining.TypeConvertToLXC
 )
+
+// ChargeULXC prices a USD amount as a charge: µLXC at the peg, rounded UP. B17.224 — the quotient is first
+// rounded to a millionth of a µLXC, so float noise (1 in / 3 out tokens of GPT-4.1 nano comes to
+// 13.000000000000002) is never billed as one µLXC more than the catalog price.
+func ChargeULXC(usd float64) int64 {
+	return int64(math.Ceil(math.Round(usd/LXCUSDValue*1e12) / 1e6))
+}
 
 // ─── errors ──────────────────────────────────────
 
@@ -347,6 +355,8 @@ type DualTokenStore struct {
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
 	payeeScreener PayeeScreener
+	// unusual is when a payment request item's amount is far above its payee's usual (B41.103); zero, never.
+	unusual unusualAmount
 	// B19.17: the marketplace a schedule pays a listing through.
 	listings ListingCharger
 	// B19.15: the marketplace a payment to another company's agent goes through.

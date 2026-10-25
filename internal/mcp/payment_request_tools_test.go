@@ -22,6 +22,14 @@ func (f *fakeRequests) PreparePaymentRequest(_ context.Context, _, _, key string
 func (f *fakeRequests) PaymentRequest(context.Context, string, string, string) (economy.PaymentRequest, error) {
 	return economy.PaymentRequest{}, economy.ErrPaymentRequestNotFound
 }
+func (f *fakeRequests) PrepareBillsPayment(_ context.Context, _, _, key, client string, billIDs []string) (economy.PaymentRequest, bool, error) {
+	f.key, f.in = key, economy.PaymentRequestIn{Client: client}
+	for _, id := range billIDs {
+		f.in.Items = append(f.in.Items, economy.PaymentRequestItemIn{BillID: id})
+	}
+	return economy.PaymentRequest{ID: "preq_1", Status: "pending_approval"}, false, nil
+}
+func (f *fakeRequests) Bills(context.Context, string) ([]economy.Bill, error) { return nil, nil }
 func (f *fakeRequests) CancelPaymentRequest(context.Context, string, string, string, string) (economy.PaymentRequest, error) {
 	return economy.PaymentRequest{}, economy.ErrPaymentRequestNotFound
 }
@@ -51,6 +59,11 @@ func TestMCP_PaymentRequestToolsPrepareOnly(t *testing.T) {
 	call(`{"name":"request_marketplace_purchase","arguments":{"idempotency_key":"k2","client":"chat","listing_id":"lst_1","amount_minor":1}}`)
 	if len(f.in.Items) != 1 || f.in.Items[0] != (economy.PaymentRequestItemIn{ListingID: "lst_1"}) {
 		t.Errorf("request_marketplace_purchase prepared %+v", f.in)
+	}
+	// B41.102: prepare_bills_payment prepares the bills named, as the owner's named client.
+	call(`{"name":"prepare_bills_payment","arguments":{"idempotency_key":"k4","client":"chat","bill_ids":["bill_1","bill_2"]}}`)
+	if f.key != "k4" || f.in.Client != "chat" || len(f.in.Items) != 2 || f.in.Items[1].BillID != "bill_2" {
+		t.Errorf("prepare_bills_payment prepared %q %+v", f.key, f.in)
 	}
 	f.key = ""
 	res := call(`{"name":"prepare_batch","arguments":{"idempotency_key":"k3","client":"chat","items":[{"payee_id":"p","currency":"GBP","amount_minor":1,"sort_code":"200000"}]}}`)

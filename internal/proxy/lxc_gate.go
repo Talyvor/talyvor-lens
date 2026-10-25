@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/talyvor/lens/internal/alerts"
@@ -110,7 +109,7 @@ func lxcEstimate(model, prompt string) int64 {
 	if prov == catalog.ProvenanceFallback && len(prompt) > 0 {
 		alerts.WarnUnpricedModel(model, catalog.PurposeCharge, estUSD)
 	}
-	return int64(math.Ceil(estUSD / economy.LXCUSDValue * 1e6)) // µLXC
+	return economy.ChargeULXC(estUSD) // µLXC
 }
 
 // reserveEstimateLXC is the CONSERVATIVE (output-aware) pre-serve HOLD, in µLXC: input tokens from the
@@ -137,7 +136,7 @@ func reserveEstimateLXC(model, prompt string, maxOutTokens int) int64 {
 		maxOutTokens = 0
 	}
 	estUSD, _ := alerts.CostUSDResolved(model, catalog.PurposeHold, len(prompt)/4, 0, 0, maxOutTokens)
-	return int64(math.Ceil(estUSD / economy.LXCUSDValue * 1e6)) // µLXC
+	return economy.ChargeULXC(estUSD) // µLXC
 }
 
 // agentHoldLXC is the hold an agent's request takes (B17.106): reserveEstimateLXC with its input counted by
@@ -149,7 +148,7 @@ func agentHoldLXC(model, prompt string, maxOutTokens int) int64 {
 		maxOutTokens = 0
 	}
 	estUSD, _ := alerts.CostUSDResolved(model, catalog.PurposeHold, holdInputTokens(prompt), 0, 0, maxOutTokens)
-	return int64(math.Ceil(estUSD / economy.LXCUSDValue * 1e6)) // µLXC
+	return economy.ChargeULXC(estUSD) // µLXC
 }
 
 // holdFramingTokens is what a provider adds to a request's text before counting it: the roles and turn markers

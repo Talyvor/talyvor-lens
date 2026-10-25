@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -624,6 +625,10 @@ type Config struct {
 
 	// KYACredentialTTL is how long a Know Your Agent credential is valid (env: LENS_KYA_CREDENTIAL_TTL). Default 24h.
 	KYACredentialTTL time.Duration
+
+	// PublicURL is the address the world reaches Lens at (env: LENS_PUBLIC_URL, default https://lens.talyvor.com): an
+	// agent's Agent Card names its own URL and its key's under it (B45.23).
+	PublicURL string
 	// PersonaAPIKey and PersonaTemplateID are Persona's API key and the inquiry template of its "KYC" solution (env:
 	// LENS_PERSONA_API_KEY, LENS_PERSONA_TEMPLATE_ID, B30.112): with both set a person's identity check (L2) goes to
 	// Persona, and otherwise to the Test provider.
@@ -2052,6 +2057,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid LENS_KYA_CREDENTIAL_TTL (must be a positive duration): %s", v)
 		}
 		c.KYACredentialTTL = d
+	}
+	c.PublicURL = getEnv("LENS_PUBLIC_URL", "https://lens.talyvor.com")
+	if u, err := url.Parse(c.PublicURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("invalid LENS_PUBLIC_URL (must be an absolute http(s) URL): %s", c.PublicURL)
 	}
 	c.PersonaAPIKey, c.PersonaTemplateID = os.Getenv("LENS_PERSONA_API_KEY"), os.Getenv("LENS_PERSONA_TEMPLATE_ID")
 	c.CompaniesHouseAPIKey = os.Getenv("LENS_COMPANIES_HOUSE_API_KEY")
