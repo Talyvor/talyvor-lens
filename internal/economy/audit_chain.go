@@ -60,6 +60,20 @@ func appendAudit(ctx context.Context, tx pgx.Tx, workspaceID, subject, kind stri
 	return nil
 }
 
+// AppendAudit adds one entry of kind to subject's chain, in a transaction of its own: the money layer's record of every
+// call and every partner webhook (B46.3).
+func (s *DualTokenStore) AppendAudit(ctx context.Context, workspaceID, subject, kind string, body map[string]any) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("economy: audit entry: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := appendAudit(ctx, tx, workspaceID, subject, kind, body); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // AuditRecord is subject's chain in workspaceID, first entry first.
 func (s *DualTokenStore) AuditRecord(ctx context.Context, workspaceID, subject string) ([]AuditEntry, error) {
 	rows, err := s.pool.Query(ctx, `SELECT seq, kind, body, prev_hash, hash FROM audit_chain WHERE workspace_id = $1 AND subject = $2 ORDER BY seq`,

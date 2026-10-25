@@ -251,6 +251,10 @@ var credentialExemptions = map[string]string{
 	"LENS_COMPANIES_HOUSE_API_KEY": "B30.112's Companies House key reaches the process through env_file: lens.env, " +
 		"with LENS_PERSONA_API_KEY and for the same reason.",
 
+	"LENS_MONEY_SANDBOX_WEBHOOK_SECRET": "B46.3's money-layer sandbox webhook secret reaches the process through " +
+		"env_file: lens.env, like LENS_STRIPE_ISSUING_WEBHOOK_SECRET and for the same reason: an environment: entry " +
+		"would arrive as \"\" and override the lens.env value, so the sandbox would take no webhook.",
+
 	// ⚠ FOUR MORE EXEMPTIONS WERE WRITTEN HERE AND REMOVED, because
 	// TestCredentialExemptionsAreStillRead refused them: LENS_TEST_NVIDIA_EAT{,_NONCE},
 	// LENS_POVI_KEY_VALUE and LENS_POVI_KEY_CRASHER are read ONLY from _test.go files, which the

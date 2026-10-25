@@ -289,3 +289,15 @@ func (r *Registry) Tax() TaxPartner {
 	r.mu.RUnlock()
 	return observedTax{p, r.observer(ServiceTax)}
 }
+
+// TestAccount, TestStablecoin and TestKYC are the registry's Test partners whatever is cleared or configured, observed
+// as every other call is: the money layer's sandbox adapter (B46.3) answers with them.
+func (r *Registry) TestAccount() AccountPartner {
+	return observedAccount{r.account, r.observer(ServiceAccount)}
+}
+
+func (r *Registry) TestStablecoin() StablecoinPartner {
+	return observedStablecoin{r.stablecoin, r.observer(ServiceStablecoin)}
+}
+
+func (r *Registry) TestKYC() KYCProvider { return observedKYC{r.kyc, r.observer(ServiceKYC)} }

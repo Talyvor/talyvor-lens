@@ -978,6 +978,11 @@ type Config struct {
 	StripeIssuingWebhookSecret string
 	StripeIssuingCurrency      string
 
+	// MoneySandboxWebhookSecret signs the money layer sandbox's webhooks (B46.3), POST
+	// /v1/money/webhooks/sandbox. A SECRET, never logged. Empty ⇒ that endpoint refuses every webhook.
+	// Env: LENS_MONEY_SANDBOX_WEBHOOK_SECRET, default EMPTY.
+	MoneySandboxWebhookSecret string
+
 	// TrackWebhookURL / TrackWebhookSecret (SEC-7) configure the outbound Lens→Track
 	// spend-alert emitter. TrackWebhookURL is Track's POST /v1/lens/webhook;
 	// TrackWebhookSecret is the shared HMAC secret (must equal Track's
@@ -1402,6 +1407,7 @@ func Load() (*Config, error) {
 		StripeTestSubscriptionPlans: parsePlans(os.Getenv("LENS_STRIPE_TEST_SUBSCRIPTION_PLANS")),
 		StripeTestMarketBillPriceID: getEnv("LENS_STRIPE_TEST_MARKET_BILL_PRICE_ID", ""),
 		StripeIssuingWebhookSecret:  os.Getenv("LENS_STRIPE_ISSUING_WEBHOOK_SECRET"),
+		MoneySandboxWebhookSecret:   os.Getenv("LENS_MONEY_SANDBOX_WEBHOOK_SECRET"),
 		StripeIssuingCurrency:       getEnv("LENS_STRIPE_ISSUING_CURRENCY", "gbp"),
 		// Catalog-drift detection (internal/modelwatch). Poller default-ON: it is read-only, costs one
 		// provider GET an hour, and its absence is what let a whole model family be served free. The
