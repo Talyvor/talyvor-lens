@@ -632,8 +632,9 @@ type webhooks struct{ c *client }
 func (w webhooks) notifyKey(id string) (*ecdsa.PublicKey, error) {
 	w.c.mu.Lock()
 	k := w.c.notifyKeys[id]
-	// Anyone can post a key id: Circle is asked about a new one at most every keyFetchEvery, and the rest wait for
-	// Circle's retry.
+	// Anyone can post a key id, and asking Circle spends our API key's rate limit, which real money calls share: a new
+	// id is asked about at most every keyFetchEvery. A flood of forged ids can delay a genuinely new key's
+	// notifications until Circle retries them — that, not a throttled API key, is the cost chosen.
 	wait := k == nil && time.Since(w.c.keyFetched) < keyFetchEvery
 	if k == nil && !wait {
 		w.c.keyFetched = time.Now()
