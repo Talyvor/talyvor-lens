@@ -27,6 +27,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"prepare_batch":                {"Prepare payments for approval", moves},
 	"prepare_bills_payment":        {"Prepare paying the bills due for approval", moves},
 	"list_bills_due":               {"Bills due", reads},
+	"prepare_transfer_to_contact":  {"Prepare a transfer to a saved contact for approval", moves},
 	"request_marketplace_purchase": {"Prepare a marketplace purchase for approval", moves},
 	"cancel_request":               {"Cancel a payment request", moves},
 	"get_request_status":           {"Payment request status", reads},
