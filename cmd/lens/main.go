@@ -32,6 +32,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
 	capabilityterms "github.com/talyvor/lens/docs/terms"
+	"github.com/talyvor/lens/internal/a2acard"
 	"github.com/talyvor/lens/internal/ab"
 	"github.com/talyvor/lens/internal/agentcard"
 	"github.com/talyvor/lens/internal/alerts"
@@ -1824,6 +1825,8 @@ func run() error {
 			"kid", kyaKey.Kid())
 	}
 	kyaSvc := kya.New(dualToken, kyaKey, cfg.KYACredentialTTL)
+	// B45.23: every agent's A2A Agent Card, signed with a key derived from the same secret.
+	agentCards := a2acard.New(dualToken, kyaKey.Derive, cfg.PublicURL)
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2481,6 +2484,8 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
+		mountAgentCardPublicRoutes(pub, agentCards)
 		// B30.20: an invoice's pay link — the page, and its card button.
 		mountInvoicePayRoutes(pub, dualToken, invoiceCards)
 	})
@@ -4682,6 +4687,7 @@ func run() error {
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
+		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
 		mountMarketReceiptRoutes(authed, marketStore)                                   // B32.40
 		mountMarketPayoutRoutes(authed, marketStore, stripeKinds.connectFor, dualToken, // B20.5
