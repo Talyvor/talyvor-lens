@@ -204,6 +204,11 @@ func TestAgentApprovers_ApproveWithinTheirLimitsAndAboveThemTheOwnerSignsAMandat
 		t.Fatalf("the payment above the approver's limits was paid before the owner approved it: %v, %d", err, paid())
 	}
 	_, oc := call(owner, http.MethodPost, base+"approvals/"+big.ID+"/challenge", "")
+	forged := assertion(oc["challenge"].(string))
+	forged["signature"] = sign("another challenge")
+	if code, _ := call(owner, http.MethodPost, base+"approvals/"+big.ID+"/approve", jsonOf(map[string]any{"assertion": forged})); code != http.StatusForbidden || status(big.ID) != "pending" {
+		t.Fatalf("the owner's approval with a signature over something else = %d, status %q; want 403 and pending, no mandate", code, status(big.ID))
+	}
 	if code, out := call(owner, http.MethodPost, base+"approvals/"+big.ID+"/approve", jsonOf(map[string]any{
 		"assertion": assertion(oc["challenge"].(string))})); code != http.StatusOK || status(big.ID) != "approved" {
 		t.Fatalf("the owner approves, signed = %d %v", code, out)

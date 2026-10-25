@@ -321,20 +321,39 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	return a, tx.Commit(ctx)
 }
 
-// DecideAgentApprovalSigned is DecideAgentApproval for a decision the owner signed with a, which
-// AuthorizeApprovalDecision has checked: an approval is kept with the owner's AP2 v0.2 closed Payment Mandate.
+// DecideAgentApprovalSigned decides approvalID with the owner's signature a: checked, and its challenge spent, as
+// AuthorizeApprovalDecision does, in the same transaction that keeps an approval with the owner's AP2 v0.2 closed Payment
+// Mandate. A workspace with no passkey or device key decides as before, unsigned, and keeps no mandate.
 func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, a passkey.Assertion) (AgentApproval, error) {
-	if !approve {
-		return s.DecideAgentApproval(ctx, workspaceID, approvalID, false)
-	}
-	if s.mandateSigner == nil { // only a store built without one, as older tests build it: Lens always sets one at start
-		return s.DecideAgentApproval(ctx, workspaceID, approvalID, true)
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return AgentApproval{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var keys int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&keys); err != nil {
+		return AgentApproval{}, fmt.Errorf("economy: passkeys: %w", err)
+	}
+	if keys == 0 {
+		_ = tx.Rollback(ctx)
+		return s.DecideAgentApproval(ctx, workspaceID, approvalID, approve)
+	}
+	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, a); err != nil {
+		return AgentApproval{}, err
+	}
+	if !approve || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
+		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now()
+			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' RETURNING `+agentApprovalColumns, approvalID, workspaceID,
+			map[bool]string{true: "approved", false: "denied"}[approve]))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ap, ErrApprovalNotFound
+		}
+		if err != nil {
+			return ap, fmt.Errorf("economy: decide approval: %w", err)
+		}
+		return ap, tx.Commit(ctx)
+	}
 	ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = 'approved', decided_at = now()
 		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' RETURNING `+agentApprovalColumns, approvalID, workspaceID))
 	if errors.Is(err, pgx.ErrNoRows) {

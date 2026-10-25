@@ -508,22 +508,18 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				Assertion *passkey.Assertion `json:"assertion"`
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
-			if err := bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.Assertion); err != nil {
-				if errors.Is(err, economy.ErrPasskeyRequired) || errors.Is(err, passkey.ErrInvalid) {
-					writeJSONErr(w, http.StatusForbidden, err.Error())
-				} else {
-					writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				}
-				return
-			}
 			var a economy.AgentApproval
 			var err error
-			if in.Assertion != nil { // B45.28: a signed approval is kept as the owner's AP2 v0.2 closed Payment Mandate
+			if in.Assertion != nil {
+				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
+				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
 				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, *in.Assertion)
-			} else {
+			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, nil); err == nil {
 				a, err = bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
 			}
 			switch {
+			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
 			case err != nil:
