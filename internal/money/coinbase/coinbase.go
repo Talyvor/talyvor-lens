@@ -485,6 +485,13 @@ func (t transfers) Outbound(ctx context.Context, req money.Outbound) (money.Resu
 	if _, err := t.c.ours(ctx, req.From); err != nil {
 		return money.Result{}, err
 	}
+	// Money to one of ours is Internal: a webhook does not credit a transfer between two of ours (Verify).
+	if _, err := t.c.ours(ctx, req.Payee.Address); !errors.Is(err, money.ErrNotFound) {
+		if err != nil {
+			return money.Result{}, err
+		}
+		return money.Result{}, fmt.Errorf("%w: %s is one of Talyvor's wallets: move money to it with Internal", money.ErrInvalid, req.Payee.Address)
+	}
 	ok, err := t.c.cfg.Allowlist.Approved(ctx, req.From, Network, req.Payee.Address)
 	if err != nil {
 		return money.Result{}, fmt.Errorf("%w: the owner's allowlist could not be read: %v", money.ErrRefused, err)

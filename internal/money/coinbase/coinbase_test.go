@@ -252,6 +252,10 @@ func TestANotificationThatIsNotAUSDCDepositPostsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := l.trans.Outbound(ctx, money.Outbound{Key: "out-own", From: paid.Ref, Payee: money.Payee{Name: "Own", Network: "base", Address: other.Ref},
+		Amount: money.Amount{Minor: 1, Asset: money.USDC}}); !errors.Is(err, money.ErrInvalid) {
+		t.Fatalf("paying one of ours out: err = %v, want ErrInvalid", err)
+	}
 	body, h = l.fake.Notify("evt_moved", moved.Ref)
 	if got := l.post(body, h); got != http.StatusOK {
 		t.Fatalf("a transfer between two of ours = %d, want 200", got)
