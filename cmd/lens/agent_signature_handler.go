@@ -40,7 +40,7 @@ func mountAgentSignatureRoutes(pub chi.Router, v *agentsig.Verifier) {
 type checkedOperatorStore interface {
 	CheckedOperators(ctx context.Context) ([]agentsig.CheckedOperator, error)
 	SetChecked(ctx context.Context, domain, business, by string) (agentsig.CheckedOperator, error)
-	RemoveChecked(ctx context.Context, domain string) (bool, error)
+	RemoveChecked(ctx context.Context, domain, by string) (bool, error)
 }
 
 func newCheckedOperatorsListHandler(s checkedOperatorStore) http.HandlerFunc {
@@ -55,7 +55,8 @@ func newCheckedOperatorsListHandler(s checkedOperatorStore) http.HandlerFunc {
 }
 
 // newCheckedOperatorSetHandler records that a signing domain belongs to a business Talyvor has checked. Gated by
-// requireStepUp at the mount, which also makes X-Talyvor-Operator present: it is the row's checked_by.
+// requireStepUp at the mount, which also makes X-Talyvor-Operator present: it is the row's checked_by and the operator
+// audit row's actor.
 func newCheckedOperatorSetHandler(s checkedOperatorStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		domain, ok := agentsig.NormaliseDomain(chi.URLParam(req, "domain"))
@@ -87,7 +88,7 @@ func newCheckedOperatorSetHandler(s checkedOperatorStore) http.HandlerFunc {
 func newCheckedOperatorRemoveHandler(s checkedOperatorStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		domain, _ := agentsig.NormaliseDomain(chi.URLParam(req, "domain"))
-		gone, err := s.RemoveChecked(req.Context(), domain)
+		gone, err := s.RemoveChecked(req.Context(), domain, strings.TrimSpace(req.Header.Get(moderatorOperatorHeader)))
 		switch {
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, "could not remove the checked operator")

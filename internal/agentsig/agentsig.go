@@ -187,8 +187,11 @@ func (v *Verifier) Check(ctx context.Context, r *http.Request, body []byte, p Pr
 		}
 	}
 	pub, err := v.Keys.Key(ctx, origin, keyID)
-	if err != nil {
-		return refuse("key %s from %s: %v", keyID, domain, err)
+	if errors.Is(err, ErrUnknownKey) {
+		return refuse("key %s is not in %s's directory", keyID, domain)
+	} else if err != nil {
+		// Not the fetch's own error: it would tell the caller what Lens's network can and cannot reach.
+		return refuse("could not read %s's key directory", domain)
 	}
 	base, err := signatureBase(r, v.PublicURL, *m)
 	if err != nil {
@@ -492,10 +495,11 @@ func agentOrigin(vals []string, c component) (origin, domain string, err error) 
 		v = s
 	}
 	u, err := url.Parse(v)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
-		return "", "", fmt.Errorf("%q is not an https URL", v)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return "", "", fmt.Errorf("%q is not an https URL on the default port", v)
 	}
-	return "https://" + strings.ToLower(u.Host), strings.ToLower(u.Hostname()), nil
+	// A checked business is a domain, so another port on its host must not borrow its name.
+	return "https://" + strings.ToLower(u.Hostname()), strings.ToLower(u.Hostname()), nil
 }
 
 // checkDigest holds the body to its RFC 9530 Content-Digest: every sha-256 or sha-512 member must match, and at

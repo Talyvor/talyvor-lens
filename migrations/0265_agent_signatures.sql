@@ -5,7 +5,7 @@
 --
 -- checked_agent_operators: the signing domains Talyvor has checked belong to a business. A signature from one of
 -- these domains is "Verified agent of <business>"; from any other, only "Signed by <domain>". An operator adds or
--- removes a row behind step-up; checked_by names who.
+-- removes a row behind step-up; checked_by names who, and each change is an operator_audit row.
 --
 -- Neither table names a workspace: they describe outside agents, not customers.
 

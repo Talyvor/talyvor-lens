@@ -96,7 +96,7 @@ var operatorMustNotReach = map[string]string{
 	"/v1/admin/rooms/{roomID}/moderate":                          "B32.52: KEEPS, LOCKS, UNLOCKS OR CLOSES A ROOM — a closed room's budget is spent no more — and writes an operator audit row. A write.",
 	"/v1/admin/operator-audit/record":                            "B27.28: appends to the append-only operator audit trail. A write is a write even when it is not money; the web app writes it on its moderator key.",
 	"/v1/admin/screening/cases/{caseID}/release":                 "B30.6: RELEASES A HELD SANCTIONS MATCH — the payment or payee it held may then move money. requireStepUp (B30.8), with an operator audit row.",
-	"/v1/admin/agent-operators/{domain}":                         "B45.24: MAKES AN OUTSIDE AGENT'S DOMAIN \"Verified agent of <business>\" on every approval card, or takes that away. requireStepUp (B30.8); the row names who checked it.",
+	"/v1/admin/agent-operators/{domain}":                         "B45.24: MAKES AN OUTSIDE AGENT'S DOMAIN \"Verified agent of <business>\" on every approval card, or takes that away. requireStepUp (B30.8), with an operator audit row.",
 	"/v1/admin/screening/cases/{caseID}/refuse":                  "B30.6: refuses a held sanctions match, so the payment or payee never moves money, and records who decided. requireStepUp (B30.8), with an operator audit row.",
 	"/v1/admin/compliance/cases":                                 "B30.8: the compliance cases and a workspace's freeze. requireAdmin only.",
 	"/v1/admin/compliance/cases/{caseID}":                        "B30.8: the case file — the owner's verified name and company number, the agents, the alerts, the notes. requireAdmin only.",

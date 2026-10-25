@@ -95,6 +95,10 @@ func TestAgentSignatures_TrustLevelsAndReplayOnRealPostgres(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM agent_signature_nonces WHERE key_id = $1`, kid).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("nonces stored = %d %v, want 2", n, err)
 	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM operator_audit WHERE actor = 'ops@talyvor.com'
+		AND action = 'agent_operator.check' AND target = 'agent.acme.example' AND detail = 'Acme Inc.'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("operator audit rows for the check = %d %v, want 1", n, err)
+	}
 
 	// The A2A routes run under the same check: a tampered signature on Talyvor's own card is refused.
 	cards := chi.NewRouter()
