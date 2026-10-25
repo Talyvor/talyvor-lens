@@ -212,9 +212,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 			cdpError(w, http.StatusUnprocessableEntity, "idempotency_error", "the key was used for another request")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(prev.code)
-		_, _ = w.Write(prev.body)
+		writeJSON(w, prev.code, json.RawMessage(prev.body))
 		return
 	}
 	rec := httptest.NewRecorder()
@@ -222,11 +220,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	if key != "" && r.Method == http.MethodPost && rec.Code < 500 {
 		f.idem[key] = reply{hash: hex.EncodeToString(sum[:]), code: rec.Code, body: rec.Body.Bytes()}
 	}
-	for k, v := range rec.Header() {
-		w.Header()[k] = v
-	}
-	w.WriteHeader(rec.Code)
-	_, _ = w.Write(rec.Body.Bytes())
+	writeJSON(w, rec.Code, json.RawMessage(rec.Body.Bytes()))
 }
 
 func (f *Fake) route(w http.ResponseWriter, r *http.Request, body []byte) {
