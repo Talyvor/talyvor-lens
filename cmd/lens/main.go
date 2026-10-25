@@ -2834,6 +2834,7 @@ func run() error {
 		due: syntheticDue,
 	})
 	mountProvisionRoute(r, cfg.ProvisionSecret, wsManager,
+		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
