@@ -559,7 +559,7 @@ const signatureTolerance = 5 * time.Minute
 type webhooks struct{ c *client }
 
 // Verify checks CDP's signature — v0, an HMAC-SHA256 of the timestamp and the raw body with the subscription's secret,
-// no older than five minutes — and reads a USDC Transfer into one of the adapter's wallets as an Event. Any other
+// no older than five minutes — and reads a USDC Transfer from outside into one of the adapter's wallets as an Event. Any other
 // genuine notification is money.ErrNotACredit.
 func (w webhooks) Verify(h http.Header, body []byte, now time.Time) (money.Event, error) {
 	var ts, v0 string
@@ -609,8 +609,15 @@ func (w webhooks) Verify(h http.Header, body []byte, now time.Time) (money.Event
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Money between two of ours is the transfer that moved it, not a deposit: posting it would count it twice.
+	if _, err := w.c.ours(ctx, d.From); !errors.Is(err, money.ErrNotFound) {
+		if err != nil {
+			return money.Event{}, err
+		}
+		return money.Event{}, money.ErrNotACredit
+	}
 	to, err := w.c.ours(ctx, d.To)
-	if errors.Is(err, money.ErrNotFound) { // money out of one of ours, or into someone else's
+	if errors.Is(err, money.ErrNotFound) { // money into someone else's
 		return money.Event{}, money.ErrNotACredit
 	}
 	if err != nil {

@@ -219,8 +219,8 @@ func TestAnUnsignedNotificationIsRefused(t *testing.T) {
 	}
 }
 
-// B46.6 — a genuine notification that brings no USDC in — a token that calls itself USDC at another address, or money
-// going out — is answered and posts nothing.
+// B46.6 — a genuine notification that brings no USDC in — a token that calls itself USDC at another address, money
+// going out, or money moved between two of Talyvor's own wallets — is answered and posts nothing.
 func TestANotificationThatIsNotAUSDCDepositPostsNothing(t *testing.T) {
 	l := newLayer(t, nil, moneytest.PayeeFor(money.USDC).Address)
 	w := l.wallet(t, "spoof", 0)
@@ -246,6 +246,15 @@ func TestANotificationThatIsNotAUSDCDepositPostsNothing(t *testing.T) {
 	}
 	if _, err := l.trans.Credit(ctx, money.Credit{Key: "c-out", To: paid.Ref, Amount: money.Amount{Minor: 1_000_000, Asset: money.USDC}, PartnerRef: out.Ref}); !errors.Is(err, money.ErrRefused) {
 		t.Fatalf("crediting a transfer out: err = %v, want ErrRefused", err)
+	}
+	other := l.wallet(t, "other", 0)
+	moved, err := l.trans.Internal(ctx, money.Internal{Key: "move-paid", From: paid.Ref, To: other.Ref, Amount: money.Amount{Minor: 500_000, Asset: money.USDC}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, h = l.fake.Notify("evt_moved", moved.Ref)
+	if got := l.post(body, h); got != http.StatusOK {
+		t.Fatalf("a transfer between two of ours = %d, want 200", got)
 	}
 	if len(l.ledger.credits) != 0 {
 		t.Fatalf("posted %+v", l.ledger.credits)
