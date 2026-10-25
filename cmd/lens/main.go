@@ -2186,6 +2186,8 @@ func run() error {
 	}
 	moneyMonitor := monitoring.New(pool, monitorSettings, ecbRates)
 	dualToken.SetMonitor(moneyMonitor)
+	// B41.103: an approval card flags an amount far above the payee's usual by monitoring's own thresholds.
+	dualToken.SetUnusualAmount(monitorSettings.NewPayeeLarge.TimesUsual, monitorSettings.NewPayeeLarge.FromPayments, monitorSettings.HistoryDays)
 	go haComps.leader.Run(ctx, "transaction-monitoring", 30*time.Second, func(lctx context.Context) {
 		sweepTransactionMonitoring(lctx, moneyMonitor)
 	})

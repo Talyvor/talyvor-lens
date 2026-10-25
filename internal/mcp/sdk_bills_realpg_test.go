@@ -184,7 +184,7 @@ func TestOfficialTypeScriptSDKClient_PayMyBills(t *testing.T) {
 		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: attested}); err != nil {
 		t.Fatal(err)
 	}
-	statement, challenge, _, err := store.PrepareRequestApproval(ctx, ws, req.ID, nil)
+	statement, challenge, _, err := store.PrepareRequestApproval(ctx, ws, req.ID, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

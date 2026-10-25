@@ -392,7 +392,15 @@ func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID
 	case b.AmountMinor <= 0 || !held:
 		return "the bill's amount or currency could not be read", nil
 	}
-	return s.resolvePayee(ctx, workspaceID, it, p)
+	if blocked, err := s.resolvePayee(ctx, workspaceID, it, p); blocked != "" || err != nil {
+		return blocked, err
+	}
+	// B41.103: the bill's risks, for the approval card.
+	if b.PayeeMatch == BillPayeeDetailsDiff {
+		it.Flags = append(it.Flags, ItemFlag{FlagBankDetailsChanged, "the bank details on invoice " + it.Reference +
+			" differ from those saved for " + it.PayeeName + ": the saved ones are paid"})
+	}
+	return "", s.riskFlags(ctx, workspaceID, it, b.InvoiceNumber, p.NewPayee)
 }
 
 // PrepareBillsPayment (B41.102) prepares paying workspaceID's bills as one payment request, for one approval: the
