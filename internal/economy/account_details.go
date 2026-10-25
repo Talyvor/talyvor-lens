@@ -113,7 +113,8 @@ type InboundPayment struct {
 var paymentReference = regexp.MustCompile(`TLV[0-9A-F]{12}`)
 
 // ReceivePayment posts money that arrived at a company account's details: into the open agent account under it whose
-// payment reference the payer quoted, or else into the company account. It is one entry from the partner account
+// payment reference the payer quoted, or else into the company account. Money that arrived at an agent's wallet
+// (B46.4) goes into the wallet. It is one entry from the partner account
 // that mirrors the company's, screened against the payer first (B30.6), and the partner's reference for the payment
 // is its idempotency key, so a payment reported twice posts once.
 func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) (MoneyEntry, error) {
@@ -129,7 +130,7 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 	var ws, companyID, partnerID string
 	err := s.pool.QueryRow(ctx, `SELECT c.workspace_id, c.id, p.id FROM money_accounts c
 		JOIN money_accounts p ON p.workspace_id = c.workspace_id AND p.partner_account_ref = c.partner_account_ref AND p.purpose = 'partner'
-		WHERE c.partner_account_ref = $1 AND c.purpose = 'company' AND c.status = 'open'`, in.PartnerAccountRef).Scan(&ws, &companyID, &partnerID)
+		WHERE c.partner_account_ref = $1 AND c.purpose IN ('company', 'agent') AND c.status = 'open'`, in.PartnerAccountRef).Scan(&ws, &companyID, &partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyEntry{}, fmt.Errorf("%w: no open company account is at the partner's %s", ErrMoneyAccountNotFound, in.PartnerAccountRef)
 	}

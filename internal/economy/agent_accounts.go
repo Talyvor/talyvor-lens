@@ -264,7 +264,11 @@ func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, own
 	if err != nil {
 		return Agent{}, err
 	}
-	return a, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return Agent{}, err
+	}
+	s.openNewAgentWallet(ctx, workspaceID, a.ID) // B46.4
+	return a, nil
 }
 
 // lockWorkspaceAgents takes workspaceID's agents lock for the rest of tx: what counts or creates its agents

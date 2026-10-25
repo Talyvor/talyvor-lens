@@ -29,6 +29,7 @@ import (
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -354,6 +355,8 @@ type DualTokenStore struct {
 	monitor MoneyMonitor
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
+	// moneyLayer opens and reads every agent's wallet (B46.4); nil, no agent has one.
+	moneyLayer *money.Registry
 	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
