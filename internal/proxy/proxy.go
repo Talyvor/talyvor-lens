@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -1344,7 +1345,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		}
 		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
 		// request goes upstream and its fresh answer replaces the stored one.
-		if cached != nil && emptyAnswer(cached) {
+		if cached != nil && (emptyAnswer(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached)) {
 			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
 			metrics.RecordCacheMiss("cache_miss")
 		}
@@ -3051,6 +3052,10 @@ func (p *Proxy) storeCaches(ctx context.Context, provider, model, cachePrompt, r
 	}
 	// B17.178: an answer that says nothing is passed to its asker, never stored for the next one.
 	if emptyAnswer(response) {
+		return false
+	}
+	// B17.238: nor is an answer that gets its question's sum wrong.
+	if wrongSum(cmp.Or(turn.Latest, rawPrompt), response) {
 		return false
 	}
 	if p.exact != nil {
