@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/talyvor/lens/internal/economy"
@@ -77,7 +76,7 @@ func (p *Proxy) chargeSubscriberUsage(ctx context.Context, workspaceID string, c
 	if p == nil || p.allowance == nil || workspaceID == "" || costUSD <= 0 || agentKeyIDFromContext(ctx) != "" {
 		return false
 	}
-	costULXC := int64(math.Ceil(costUSD / economy.LXCUSDValue * 1e6)) // a charge rounds UP, as shadowSpendLXC
+	costULXC := economy.ChargeULXC(costUSD) // a charge rounds UP, as shadowSpendLXC
 	if costULXC <= 0 {
 		return false
 	}

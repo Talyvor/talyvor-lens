@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"log/slog"
-	"math"
 
 	"github.com/talyvor/lens/internal/economy"
 )
@@ -68,7 +67,7 @@ func (p *Proxy) shadowSpendLXC(ctx context.Context, workspaceID string, costUSD 
 	// smallest-unit (1e-6 LXC, the old roundTo(_,6) precision). This is a CHARGE
 	// (billing debit) for the served call, so it rounds UP (ceil) — the shadow
 	// debit never under-bills a sub-µLXC.
-	lxcAmount := int64(math.Ceil(costUSD / economy.LXCUSDValue * 1e6)) // µLXC
+	lxcAmount := economy.ChargeULXC(costUSD) // µLXC
 	if lxcAmount <= 0 {
 		// A sub-threshold positive cost rounds to 0 — nothing to debit, and no
 		// spurious SpendLXC(0) / "debit failed" warning.

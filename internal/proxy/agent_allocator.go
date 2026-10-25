@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -370,7 +369,7 @@ func (p *Proxy) settleReservationBasis(ctx context.Context, deliveredUSD float64
 	defer cancel()
 	finalLXC := int64(0)
 	if deliveredUSD > 0 {
-		finalLXC = int64(math.Ceil(deliveredUSD / economy.LXCUSDValue * 1e6))
+		finalLXC = economy.ChargeULXC(deliveredUSD)
 	}
 	settledLXC, _, err := p.agentSpender.SettleLXCReservation(ctx, h.reservationID, finalLXC,
 		economy.AgentDebitMeta{ServedModel: servedModel, PriceBasis: priceBasis})
@@ -394,7 +393,7 @@ func (p *Proxy) settleReservationBasis(ctx context.Context, deliveredUSD float64
 func (p *Proxy) settleAgentDebit(ctx context.Context, wsID string, deliveredUSD float64, servedModel, priceBasis string) {
 	deliveredLXC := int64(0)
 	if deliveredUSD > 0 {
-		deliveredLXC = int64(math.Ceil(deliveredUSD / economy.LXCUSDValue * 1e6))
+		deliveredLXC = economy.ChargeULXC(deliveredUSD)
 	}
 	p.settleAgentDebitULXC(ctx, wsID, deliveredLXC, economy.AgentDebitMeta{ServedModel: servedModel, PriceBasis: priceBasis})
 }

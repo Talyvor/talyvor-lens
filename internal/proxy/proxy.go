@@ -558,7 +558,7 @@ func chargeULXC(usd float64) int64 {
 	if usd <= 0 {
 		return 0
 	}
-	return int64(math.Ceil(usd / economy.LXCUSDValue * 1e6))
+	return economy.ChargeULXC(usd)
 }
 
 // pricePooledHit applies the consumer discount to a pooled hit's avoided cost. Pure — no I/O, no
