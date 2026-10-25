@@ -355,6 +355,8 @@ type DualTokenStore struct {
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
 	payeeScreener PayeeScreener
+	// unusual is when a payment request item's amount is far above its payee's usual (B41.103); zero, never.
+	unusual unusualAmount
 	// B19.17: the marketplace a schedule pays a listing through.
 	listings ListingCharger
 	// B19.15: the marketplace a payment to another company's agent goes through.

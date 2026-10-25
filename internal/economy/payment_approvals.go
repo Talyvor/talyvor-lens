@@ -45,6 +45,8 @@ type ApprovalStatementItem struct {
 	Currency    string `json:"currency"`
 	AmountMinor int64  `json:"amount_minor"`
 	Reference   string `json:"reference"`
+	// B41.103: the flags the person approves the item despite — a duplicate or a changed bank detail.
+	Overrides []string `json:"overrides,omitempty"`
 }
 
 // ApprovalStatement is what the person signs.
@@ -55,7 +57,9 @@ type ApprovalStatement struct {
 	PayloadHash string                  `json:"payload_hash"`
 	Items       []ApprovalStatementItem `json:"items"`
 	Totals      map[string]int64        `json:"totals"`
-	ExpiresAt   time.Time               `json:"expires_at"`
+	// B41.103: why the person approves the flagged items it overrides; required when any item has overrides.
+	Reason    string    `json:"reason,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // frozenIntact says whether r's items still hash to the payload frozen when it was prepared.
@@ -68,10 +72,11 @@ func frozenIntact(workspaceID string, r PaymentRequest) bool {
 	return string(b) == r.Canonical && sha256Hex(r.Canonical) == r.PayloadHash
 }
 
-// statementFor is the statement approving positions of r: those that need approval, all of them when none is named.
-func statementFor(workspaceID string, r PaymentRequest, positions []int, expires time.Time) (ApprovalStatement, error) {
+// statementFor is the statement approving positions of r: those that need approval, all of them when none is named;
+// reason is why flagged items are approved (B41.103).
+func statementFor(workspaceID string, r PaymentRequest, positions []int, reason string, expires time.Time) (ApprovalStatement, error) {
 	st := ApprovalStatement{Version: ApprovalStatementVersion, RequestID: r.ID, WorkspaceID: workspaceID, PayloadHash: r.PayloadHash,
-		Items: []ApprovalStatementItem{}, Totals: map[string]int64{}, ExpiresAt: expires}
+		Items: []ApprovalStatementItem{}, Totals: map[string]int64{}, Reason: reason, ExpiresAt: expires}
 	for _, it := range r.Items {
 		named := slices.Contains(positions, it.Position)
 		if it.Decision != ItemNeedsApproval {
@@ -83,7 +88,8 @@ func statementFor(workspaceID string, r PaymentRequest, positions []int, expires
 		if len(positions) > 0 && !named {
 			continue // the person left it out
 		}
-		st.Items = append(st.Items, ApprovalStatementItem{it.Position, it.PayeeID, it.PayeeName, it.Currency, it.AmountMinor, it.Reference})
+		st.Items = append(st.Items, ApprovalStatementItem{it.Position, it.PayeeID, it.PayeeName, it.Currency, it.AmountMinor, it.Reference,
+			reasonFlags(it.Flags)})
 		st.Totals[it.Currency] += it.AmountMinor
 	}
 	for _, p := range positions {
@@ -94,7 +100,7 @@ func statementFor(workspaceID string, r PaymentRequest, positions []int, expires
 	if len(st.Items) == 0 {
 		return st, fmt.Errorf("%w: no item of this request needs approval", ErrPaymentRequest)
 	}
-	return st, nil
+	return st, approvalReason(st)
 }
 
 // approvable reads workspaceID's request id and refuses one that cannot be approved now.
@@ -114,13 +120,14 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 }
 
 // PrepareRequestApproval writes the statement approving positions of workspaceID's request id (every item that needs
-// approval when none is named), the challenge it is signed over, and the passkeys that may sign it.
-func (s *DualTokenStore) PrepareRequestApproval(ctx context.Context, workspaceID, id string, positions []int) (statement, challenge string, credentialIDs []string, err error) {
+// approval when none is named), the challenge it is signed over, and the passkeys that may sign it. reason is why
+// items flagged a duplicate or a changed bank detail are approved: without one they cannot be (B41.103).
+func (s *DualTokenStore) PrepareRequestApproval(ctx context.Context, workspaceID, id string, positions []int, reason string) (statement, challenge string, credentialIDs []string, err error) {
 	r, err := s.approvable(ctx, workspaceID, id)
 	if err != nil {
 		return "", "", nil, err
 	}
-	st, err := statementFor(workspaceID, r, positions, time.Now().Add(approvalStatementTTL).UTC().Truncate(time.Second))
+	st, err := statementFor(workspaceID, r, positions, strings.TrimSpace(reason), time.Now().Add(approvalStatementTTL).UTC().Truncate(time.Second))
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -210,7 +217,7 @@ func (s *DualTokenStore) ApprovePaymentRequest(ctx context.Context, workspaceID,
 	for _, it := range st.Items {
 		positions = append(positions, it.Position)
 	}
-	want, err := statementFor(workspaceID, r, positions, st.ExpiresAt)
+	want, err := statementFor(workspaceID, r, positions, st.Reason, st.ExpiresAt)
 	if err != nil {
 		return r, err
 	}
