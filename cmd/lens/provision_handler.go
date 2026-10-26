@@ -36,8 +36,13 @@ type workspaceStarter func(ctx context.Context, workspaceID, ownerUserID string)
 // newWorkspaceStarter starts a workspace in bank with testMoneyULXC of test money and a first agent whose proxy key
 // is minted in the same transaction.
 func newWorkspaceStarter(bank *economy.DualTokenStore, testMoneyULXC int64) workspaceStarter {
+	return newWorkspaceStarterNamed(bank, economy.FirstAgentName, nil, testMoneyULXC)
+}
+
+// newWorkspaceStarterNamed is newWorkspaceStarter with the agent called name and its rules changed by adjust (B45.33).
+func newWorkspaceStarterNamed(bank *economy.DualTokenStore, name string, adjust func(*economy.AgentRules), testMoneyULXC int64) workspaceStarter {
 	return func(ctx context.Context, workspaceID, ownerUserID string) (economy.WorkspaceStart, bool, error) {
-		return bank.StartWorkspace(ctx, workspaceID, ownerUserID, testMoneyULXC,
+		return bank.StartWorkspaceAgent(ctx, workspaceID, ownerUserID, name, adjust, testMoneyULXC,
 			func(ctx context.Context, tx pgx.Tx, workspaceID, name string) (string, string, error) {
 				raw, key, err := tenant.CreateAPIKeyTx(ctx, tx, workspaceID, name, []string{"proxy"}, nil)
 				if err != nil {

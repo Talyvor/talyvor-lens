@@ -256,6 +256,14 @@ func main() {
 		}
 		return
 	}
+	// `lens n1co` gives N1CO, the AI CEO, its workspace and agent wallet on test money (B45.33, docs/n1co-wallet.md).
+	if len(os.Args) > 1 && os.Args[1] == "n1co" {
+		if err := runN1CO(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `lens platform-report` (B32.44): the annual platform-reporting export for the UK reporting rules and EU DAC7.
 	if len(os.Args) > 1 && os.Args[1] == "platform-report" {
 		if err := runPlatformReport(os.Args[2:]); err != nil {
