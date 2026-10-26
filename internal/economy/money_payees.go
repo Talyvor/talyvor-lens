@@ -220,6 +220,27 @@ func (s *DualTokenStore) OutsidePayees(ctx context.Context, workspaceID string) 
 	return out, rows.Err()
 }
 
+// PayeesNamed is workspaceID's saved payees whose name holds name as whole words, in any case ("mike" finds "Mike
+// Jones", never "Mikel"), oldest first (B45.14).
+func (s *DualTokenStore) PayeesNamed(ctx context.Context, workspaceID, name string) ([]OutsidePayee, error) {
+	q := " " + strings.ToLower(strings.Join(strings.Fields(name), " ")) + " "
+	if strings.TrimSpace(q) == "" {
+		return nil, fmt.Errorf("%w: name the saved contact", ErrPayee)
+	}
+	// shortcut: reads every payee of the workspace; a SQL filter when a workspace keeps thousands.
+	all, err := s.OutsidePayees(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := []OutsidePayee{}
+	for _, p := range all {
+		if strings.Contains(" "+strings.ToLower(p.Name)+" ", q) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 func (s *DualTokenStore) outsidePayee(ctx context.Context, q pgxDB, workspaceID, payeeID, lock string) (OutsidePayee, error) {
 	return scanOutsidePayee(q.QueryRow(ctx, `SELECT `+payeeCols+` FROM money_payees WHERE id = $1 AND workspace_id = $2`+lock, payeeID, workspaceID))
 }

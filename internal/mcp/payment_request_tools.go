@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
@@ -22,6 +24,7 @@ type PaymentRequester interface {
 	CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (economy.PaymentRequest, error)
 	PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (economy.PaymentRequest, bool, error)
 	Bills(ctx context.Context, workspaceID string) ([]economy.Bill, error)
+	PayeesNamed(ctx context.Context, workspaceID, name string) ([]economy.OutsidePayee, error)
 }
 
 // dueBill is a bill as list_bills_due shows it (B45.17): what to pay and to whom, never the bank details printed on
@@ -82,6 +85,11 @@ func paymentRequestToolDefinitions() []map[string]any {
 		{"name": "list_bills_due",
 			"description": "The workspace's bills that are due, soonest first: supplier, invoice number, amount, due date and whether the supplier is a saved payee, with the total per currency. Pay them with prepare_bills_payment.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
+		{"name": "prepare_transfer_to_contact",
+			"description": "Prepares one payment to the person's saved, confirmed contact named contact (\"Mike\") for them to approve. It pays nothing, and takes no payment details: when no contact or several match, it returns a question to ask the person instead.",
+			"inputSchema": map[string]any{"type": "object", "properties": with(map[string]any{"contact": map[string]any{"type": "string", "maxLength": 140,
+				"description": "The contact's name as the person said it."}, "currency": item["currency"], "amount_minor": item["amount_minor"], "reference": item["reference"]}, nil),
+				"required": []string{"idempotency_key", "contact", "currency", "amount_minor"}}},
 		{"name": "cancel_request", "description": "Cancels a prepared payment request.", "inputSchema": byID},
 		{"name": "get_request_status", "description": "A prepared payment request: its status, items, decisions and approval link.", "inputSchema": byID},
 	}
@@ -182,6 +190,9 @@ func (s *Server) callPaymentRequestTool(ctx context.Context, name string, raw js
 		}
 		return r, nil
 	}
+	if name == "prepare_transfer_to_contact" {
+		return s.prepareTransferToContact(ctx, ws, by, keyID, agentID, raw, refused)
+	}
 	var a struct {
 		IdempotencyKey string                         `json:"idempotency_key"`
 		Client         string                         `json:"client"`
@@ -205,6 +216,61 @@ func (s *Server) callPaymentRequestTool(ctx context.Context, name string, raw js
 		return refused(err)
 	}
 	r, _, err := s.paymentRequests.PreparePaymentRequest(ctx, ws, by, a.IdempotencyKey, in)
+	if err != nil {
+		return refused(err)
+	}
+	return r, nil
+}
+
+// prepareTransferToContact — B45.14: "Transfer $500 to Mike through Taly". The name resolves only to a saved payee
+// whose name matched its account or the owner confirmed: exactly one prepares one payment for approval; none, an
+// unconfirmed one or several return a question for the assistant to ask, and prepare nothing.
+func (s *Server) prepareTransferToContact(ctx context.Context, ws, by, keyID, agentID string, raw json.RawMessage, refused func(error) (any, error)) (any, error) {
+	var a struct {
+		IdempotencyKey string `json:"idempotency_key"`
+		Client         string `json:"client"`
+		Contact        string `json:"contact"`
+		Currency       string `json:"currency"`
+		AmountMinor    int64  `json:"amount_minor"`
+		Reference      string `json:"reference"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, &toolRefusal{"the arguments are not the tool's: " + err.Error()}
+	}
+	named, err := s.paymentRequests.PayeesNamed(ctx, ws, a.Contact)
+	if errors.Is(err, economy.ErrPayee) {
+		return nil, &toolRefusal{err.Error()}
+	}
+	if err != nil {
+		return nil, err
+	}
+	type contact struct {
+		PayeeID string `json:"payee_id"`
+		Name    string `json:"name"`
+	}
+	confirmed, unconfirmed := []contact{}, []string{}
+	for _, p := range named {
+		if p.NeedsConfirmation {
+			unconfirmed = append(unconfirmed, p.Name)
+		} else {
+			confirmed = append(confirmed, contact{p.ID, p.Name})
+		}
+	}
+	ask := func(q string) (any, error) { return map[string]any{"question": q, "contacts": confirmed}, nil }
+	switch {
+	case len(confirmed) > 1:
+		return ask(fmt.Sprintf("Which %s? Ask the person which saved contact they mean, then prepare_payment to that contact's payee_id.", strings.TrimSpace(a.Contact)))
+	case len(confirmed) == 0 && len(unconfirmed) > 0:
+		return ask(fmt.Sprintf("%s is saved but not confirmed yet: ask the person to confirm them in the app first.", strings.Join(unconfirmed, ", ")))
+	case len(confirmed) == 0:
+		return ask(fmt.Sprintf("No saved contact is called %q: ask the person to add them in the app. Payment details from the chat are never used.", strings.TrimSpace(a.Contact)))
+	}
+	client, err := economy.PaymentRequestClient(keyID, agentID, a.Client)
+	if err != nil {
+		return refused(err)
+	}
+	r, _, err := s.paymentRequests.PreparePaymentRequest(ctx, ws, by, a.IdempotencyKey, economy.PaymentRequestIn{Client: client, AgentID: agentID,
+		Items: []economy.PaymentRequestItemIn{{PayeeID: confirmed[0].PayeeID, Currency: a.Currency, AmountMinor: a.AmountMinor, Reference: a.Reference}}})
 	if err != nil {
 		return refused(err)
 	}
