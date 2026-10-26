@@ -1955,37 +1955,40 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// forwardWithFallback always returns OpenAI-shape JSON, so we default
 	// Content-Type to application/json. Streaming responses are handled in
 	// a different code path (stream.go) and don't pass through here.
-	if bufferedStream && clientStatus == http.StatusOK {
-		// The client asked for a stream; we buffered the full response so the
-		// output guardrails could inspect it. Deliver the (possibly redacted)
-		// result as a single SSE event so the client still gets a stream-shaped
-		// response — just not incrementally. A blocked output falls through to
-		// the JSON 422 below (errors aren't streamed).
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Content-Length", strconv.Itoa(len("data: ")+len(clientBody)+len("\n\ndata: [DONE]\n\n")))
-		w.WriteHeader(clientStatus)
-		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/event-stream or application/json model answer, never HTML
-		_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
-	} else {
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/json")
+	// B17.245: an answer that is billed goes on the wire once its bill is booked, so a client reading its statement
+	// straight after it sees the settle and the platform fee, not only the hold; any other answer goes at once.
+	answer := func() {
+		if bufferedStream && clientStatus == http.StatusOK {
+			// The client asked for a stream; we buffered the full response so the
+			// output guardrails could inspect it. Deliver the (possibly redacted)
+			// result as a single SSE event so the client still gets a stream-shaped
+			// response — just not incrementally. A blocked output falls through to
+			// the JSON 422 below (errors aren't streamed).
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len("data: ")+len(clientBody)+len("\n\ndata: [DONE]\n\n")))
+			w.WriteHeader(clientStatus)
+			_, _ = w.Write([]byte("data: "))
+			_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- text/event-stream or application/json model answer, never HTML
+			_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
+		} else {
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/json")
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(clientBody)))
+			w.WriteHeader(clientStatus)
+			_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json unless the upstream set its own type; nosniff is set on every response
 		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(clientBody)))
-		w.WriteHeader(clientStatus)
-		_, _ = w.Write(clientBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json unless the upstream set its own type; nosniff is set on every response
+		// B39.5: the answer is complete on the wire now, so the client is not kept waiting on the writes below
+		// (each bounded at postAnswerWriteTimeout, but run one after another — 20 s with Postgres frozen, #174).
+		_ = http.NewResponseController(w).Flush()
 	}
-	// B39.5: the answer is complete on the wire now, so the client is not kept waiting on the writes below
-	// (each bounded at postAnswerWriteTimeout, but run one after another — 20 s with Postgres frozen, #174).
-	_ = http.NewResponseController(w).Flush()
 
 	// A blocked output is treated like a blocked request: no caching, no
 	// spend, no attribution. The guardrail block itself is recorded
 	// (metric + log + the 422 response); the workspace isn't billed for a
 	// response we refused to return.
 	if statusCode == http.StatusOK && !outputBlocked {
-		// B17.282: the bill first. The answer is already on the wire, and the cache writes below can take seconds
-		// (an embedding call, the pooled write); a client reading its ledger meanwhile saw the hold and no spend row.
+		// B17.282: the bill first — the cache writes below can take seconds (an embedding call, the pooled write).
 		// Bill on the provider's REPORTED usage when it surfaces one — that
 		// is the exact count the provider charged (and for multimodal it
 		// already folds in the image cost, beating the flat per-image
@@ -2071,6 +2074,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		if !p.reservationActive() && !subscriber {
 			p.shadowSpendLXC(ctx, wsID, servedCostUSD)
 		}
+		answer()
 		// Cache iff the prompt has no PII AND the response is judged
 		// cacheable by the quality scorer. Low-quality responses are
 		// forwarded to the client but never persisted.
@@ -2265,6 +2269,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		)
 		span.SetStatus(codes.Ok, "")
 	} else {
+		answer()
 		// B17.128: a refused request or a blocked output is charged nothing, so its hold goes back now
 		// rather than staying taken until the stranded sweeper refunds it.
 		released := fmt.Sprintf("upstream status %d", statusCode)
