@@ -12,6 +12,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 )
@@ -19,7 +20,14 @@ import (
 // B30.17 — on test money an agent pays a saved payee outside Talyvor: the payment holds the money and then moves it
 // out through the partner; one that fails (an amount ending 13) and one returned (ending 14) give it back; one above
 // the agent's approval amount files an approval and moves nothing until the owner approves it. All read off postings.
+// B46.8: the same again with the money layer set, as main.go sets it, where every payment goes through the sandbox
+// adapter's Transfers.
 func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T) {
+	t.Run("through the account partner", func(t *testing.T) { moneyPaymentRoutesHoldThenComplete(t, false) })
+	t.Run("through the money layer's sandbox", func(t *testing.T) { moneyPaymentRoutesHoldThenComplete(t, true) })
+}
+
+func moneyPaymentRoutesHoldThenComplete(t *testing.T, layered bool) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b3017-payments"
@@ -29,6 +37,11 @@ func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T
 	store.SetAccountPartners(registry)
 	store.SetPayeeScreener(screener)
 	store.SetScreener(screener)
+	partnerName := "test"
+	if layered {
+		store.SetMoneyLayer(sandboxMoneyLayer(t, pool, store, registry))
+		partnerName = money.SandboxName
+	}
 	agent, err := store.CreateAgent(ctx, ws, "Payer", "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -115,8 +128,9 @@ func TestMoneyPaymentRoutes_HoldThenCompleteFailOrReturnAndApproval(t *testing.T
 	}
 
 	code, out := pay("ok", 2000)
-	if code != http.StatusCreated || out["status"] != "completed" || out["partner_ref"] == "" || out["value_ulxc"] != float64(250_000_000) {
-		t.Fatalf("pay £20.00 = %d %v, want 201 completed at the partner, worth 250 LXC", code, out)
+	if code != http.StatusCreated || out["status"] != "completed" || out["partner_ref"] == "" || out["value_ulxc"] != float64(250_000_000) ||
+		out["partner"] != partnerName {
+		t.Fatalf("pay £20.00 = %d %v, want 201 completed at the partner %q, worth 250 LXC", code, out, partnerName)
 	}
 	if got, want := postings("ok"), "payment_out_hold agent -2000; payment_out_hold hold 2000; payment_out hold -2000; payment_out partner 2000"; got != want {
 		t.Errorf("£20.00 posted %q, want %q", got, want)

@@ -23,3 +23,9 @@ func (l moneyLedger) PostCredit(ctx context.Context, partner string, e money.Eve
 		Reference: e.Reference, AmountMinor: e.Amount.Minor, Currency: e.Amount.Asset, Funding: funding})
 	return entry.WorkspaceID, err
 }
+
+// SettleTransfer moves the payment out a partner's webhook settles (B46.8).
+func (l moneyLedger) SettleTransfer(ctx context.Context, partner string, e money.Event) (string, string, error) {
+	p, err := l.store.SettleOutsidePayment(ctx, partner, e)
+	return p.WorkspaceID, p.ID, err
+}

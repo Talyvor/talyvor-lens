@@ -22,18 +22,27 @@ import (
 // ErrBadSignature: a webhook whose signature does not verify, or that is too old to be taken.
 var ErrBadSignature = errors.New("money: the webhook's signature does not verify")
 
-// ErrNotACredit: a notification whose signature verified but that brings no money in — a payment going out, a state
-// change, a token Talyvor does not hold. It is answered 200 so the partner stops sending it, and nothing is posted.
+// ErrNotACredit: a notification whose signature verified but that neither brings money in nor settles a transfer out —
+// a state change on the way, a token Talyvor does not hold. It is answered 200 so the partner stops sending it, and
+// nothing is posted.
 var ErrNotACredit = errors.New("money: the notification brings no money in")
 
-// Event is a partner's notification that money came into an account or a wallet, once its signature has verified.
+// EventTransfer is the Kind of a notification that says where a transfer out stands (B46.8): completed, failed or
+// returned.
+const EventTransfer = "transfer"
+
+// Event is a partner's notification, once its signature has verified: money that came into an account or a wallet, or
+// — Kind EventTransfer — where a transfer out of one stands.
 type Event struct {
-	ID         string `json:"id"`          // the partner's id for the notification: it is taken once
-	To         string `json:"to"`          // the partner's reference for the account or wallet the money came into
-	Amount     Amount `json:"amount"`      //
-	PartnerRef string `json:"partner_ref"` // the partner's reference for the payment: it posts once
+	ID         string `json:"id"`             // the partner's id for the notification: it is taken once
+	Kind       string `json:"kind,omitempty"` // "" for money in; EventTransfer for a transfer out
+	To         string `json:"to"`             // the partner's reference for the account or wallet the money came into
+	Amount     Amount `json:"amount"`         //
+	PartnerRef string `json:"partner_ref"`    // the partner's reference for the payment: it posts once
 	Payer      string `json:"payer"`
 	Reference  string `json:"reference,omitempty"` // what the payer quoted
+	Status     Status `json:"status,omitempty"`    // a transfer out's: completed, failed or returned
+	Detail     string `json:"detail,omitempty"`    // why a transfer out failed or came back, in the partner's words
 }
 
 // Webhooks verifies a partner's notification and reads it into an Event: ErrBadSignature when it does not verify, and
@@ -42,9 +51,12 @@ type Webhooks interface {
 	Verify(h http.Header, body []byte, now time.Time) (Event, error)
 }
 
-// Ledger posts the money a verified webhook reports, and answers the workspace it went to.
+// Ledger posts the money a verified webhook reports, and answers the workspace it went to. SettleTransfer moves the
+// payment out the partner knows as e.PartnerRef to e.Status — once, however often it is told — and answers the
+// payment's id too; ErrNotFound when no payment is that partner's transfer (yet), so the partner sends it again.
 type Ledger interface {
 	PostCredit(ctx context.Context, partner string, e Event) (workspaceID string, err error)
+	SettleTransfer(ctx context.Context, partner string, e Event) (workspaceID, paymentID string, err error)
 }
 
 // Replays is the webhook ids already taken, per partner.
@@ -55,8 +67,9 @@ type Replays interface {
 
 // ServeWebhook is POST /v1/money/webhooks/{partner}: one endpoint per adapter, and the one path a partner's
 // notification becomes a ledger posting by. The adapter verifies the signature (401 when it does not); an id already
-// taken is refused (409); the money is posted, the webhook is linked into the audit trail, and its id is taken last, so
-// a notification whose posting failed is posted when the partner sends it again.
+// taken is refused (409); the money is posted — or the transfer out it settles is moved on (B46.8) — the webhook is
+// linked into the audit trail, and its id is taken last, so a notification whose posting failed is posted when the
+// partner sends it again.
 func (r *Registry) ServeWebhook(w http.ResponseWriter, req *http.Request) {
 	partner := chi.URLParam(req, "partner")
 	a := r.adapter(partner)
@@ -88,7 +101,11 @@ func (r *Registry) ServeWebhook(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	if e.ID == "" || e.To == "" || e.PartnerRef == "" || e.Amount.check() != nil {
+	transfer := e.Kind == EventTransfer
+	switch {
+	case e.Kind != "" && !transfer, e.ID == "" || e.PartnerRef == "",
+		!transfer && (e.To == "" || e.Amount.check() != nil),
+		transfer && e.Status != StatusCompleted && e.Status != StatusFailed && e.Status != StatusReturned:
 		http.Error(w, "the notification is incomplete", http.StatusBadRequest)
 		return
 	}
@@ -101,15 +118,22 @@ func (r *Registry) ServeWebhook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "this notification was already taken", http.StatusConflict)
 		return
 	}
-	ws, err := r.cfg.Ledger.PostCredit(ctx, partner, e)
+	kind, link := "money.webhook.credit", map[string]any{"partner": partner, "event_id": e.ID, "partner_ref": e.PartnerRef}
+	var ws string
+	if transfer {
+		var payment string
+		ws, payment, err = r.cfg.Ledger.SettleTransfer(ctx, partner, e)
+		kind, link["payment_id"], link["status"] = "money.webhook.transfer", payment, string(e.Status)
+	} else {
+		ws, err = r.cfg.Ledger.PostCredit(ctx, partner, e)
+		link["to"], link["amount_minor"], link["asset"] = e.To, e.Amount.Minor, e.Amount.Asset
+	}
 	if err != nil {
 		slog.Warn("money: a webhook's money was not posted", slog.String("partner", partner), slog.String("id", e.ID), slog.String("err", err.Error()))
 		http.Error(w, "not posted", http.StatusUnprocessableEntity)
 		return
 	}
-	if err := r.cfg.Audit.AppendAudit(ctx, ws, "money_webhook:"+partner+":"+e.ID, "money.webhook.credit", map[string]any{
-		"partner": partner, "event_id": e.ID, "to": e.To, "partner_ref": e.PartnerRef, "amount_minor": e.Amount.Minor, "asset": e.Amount.Asset,
-	}); err != nil {
+	if err := r.cfg.Audit.AppendAudit(ctx, ws, "money_webhook:"+partner+":"+e.ID, kind, link); err != nil {
 		http.Error(w, "try again", http.StatusServiceUnavailable)
 		return
 	}

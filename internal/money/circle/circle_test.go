@@ -66,8 +66,9 @@ type cleared struct{}
 func (cleared) CapabilityCleared(context.Context, string) (bool, error) { return true, nil }
 
 type ledger struct {
-	mu      sync.Mutex
-	credits []money.Event
+	mu        sync.Mutex
+	credits   []money.Event
+	transfers []money.Event
 }
 
 func (l *ledger) PostCredit(_ context.Context, _ string, e money.Event) (string, error) {
@@ -75,6 +76,13 @@ func (l *ledger) PostCredit(_ context.Context, _ string, e money.Event) (string,
 	defer l.mu.Unlock()
 	l.credits = append(l.credits, e)
 	return "ws", nil
+}
+
+func (l *ledger) SettleTransfer(_ context.Context, _ string, e money.Event) (string, string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.transfers = append(l.transfers, e)
+	return "ws", "mpay_" + e.PartnerRef, nil
 }
 
 type replays struct{ taken sync.Map }
@@ -211,6 +219,32 @@ func TestANotificationThatIsNotAUSDCDepositPostsNothing(t *testing.T) {
 	}
 	if len(l.ledger.credits) != 0 {
 		t.Fatalf("posted %+v", l.ledger.credits)
+	}
+}
+
+// B46.8 — Circle's signed notification that a transfer out completed settles its payment once: the same notification
+// again is refused and settles nothing more, and one while the transfer is still on its way settles nothing.
+func TestATransferOutSettlesOnceFromCirclesNotification(t *testing.T) {
+	l := newLayer(t, moneytest.PayeeFor(money.USDC).Address)
+	w := l.wallet(t, "settle", 3_000_000)
+	out, err := l.trans.Outbound(ctx, money.Outbound{Key: "out-settle", From: w.Ref, Payee: moneytest.PayeeFor(money.USDC), Amount: money.Amount{Minor: 2_000_000, Asset: money.USDC}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, h := l.fake.Notify("f5b4a7e6-0000-4000-8000-0000000notif", "transactions.outbound", out.Ref)
+	if got := l.post(body, h); got != http.StatusOK || len(l.ledger.transfers) != 0 {
+		t.Fatalf("a transfer on its way = %d, settled %+v; want 200 and nothing settled", got, l.ledger.transfers)
+	}
+	l.fake.Complete(out.Ref)
+	body, h = l.fake.Notify("a6c5b8f7-0000-4000-8000-0000000notif", "transactions.outbound", out.Ref)
+	for i, want := range []int{http.StatusOK, http.StatusConflict} {
+		if got := l.post(body, h); got != want {
+			t.Fatalf("notification %d = %d, want %d", i+1, got, want)
+		}
+	}
+	want := money.Event{ID: "a6c5b8f7-0000-4000-8000-0000000notif", Kind: money.EventTransfer, To: w.Ref, PartnerRef: out.Ref, Status: money.StatusCompleted}
+	if len(l.ledger.transfers) != 1 || l.ledger.transfers[0] != want || len(l.ledger.credits) != 0 {
+		t.Fatalf("settled %+v and credited %+v; want the one settlement %+v", l.ledger.transfers, l.ledger.credits, want)
 	}
 }
 
