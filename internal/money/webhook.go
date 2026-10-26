@@ -22,6 +22,10 @@ import (
 // ErrBadSignature: a webhook whose signature does not verify, or that is too old to be taken.
 var ErrBadSignature = errors.New("money: the webhook's signature does not verify")
 
+// ErrNotACredit: a notification whose signature verified but that brings no money in — a payment going out, a state
+// change, a token Talyvor does not hold. It is answered 200 so the partner stops sending it, and nothing is posted.
+var ErrNotACredit = errors.New("money: the notification brings no money in")
+
 // Event is a partner's notification that money came into an account or a wallet, once its signature has verified.
 type Event struct {
 	ID         string `json:"id"`          // the partner's id for the notification: it is taken once
@@ -32,7 +36,8 @@ type Event struct {
 	Reference  string `json:"reference,omitempty"` // what the payer quoted
 }
 
-// Webhooks verifies a partner's notification and reads it into an Event.
+// Webhooks verifies a partner's notification and reads it into an Event: ErrBadSignature when it does not verify, and
+// ErrNotACredit — only once it has — when it brings no money in.
 type Webhooks interface {
 	Verify(h http.Header, body []byte, now time.Time) (Event, error)
 }
@@ -70,6 +75,10 @@ func (r *Registry) ServeWebhook(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx := req.Context()
 	e, err := a.Webhooks.Verify(req.Header, body, time.Now())
+	if errors.Is(err, ErrNotACredit) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if err != nil {
 		slog.Warn("money: a webhook was refused", slog.String("partner", partner), slog.String("err", err.Error()))
 		if errors.Is(err, ErrBadSignature) {
