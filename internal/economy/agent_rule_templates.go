@@ -22,7 +22,8 @@ func ruleTemplate(id, name, summary string, set func(*AgentRules)) RuleTemplate 
 		AllowedModels: []string{}, AllowedProviders: []string{}, AllowedListings: []string{},
 		AllowedPayees: []string{}, BlockedPayees: []string{}, ModelDailyLimitsULXC: map[string]int64{},
 		PayeeDailyLimitsULXC: map[string]int64{}, Timezone: "UTC",
-		MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe}
+		MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
+		PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{}}
 	set(&r)
 	return RuleTemplate{ID: id, Name: name, Summary: summary, Rules: r}
 }
