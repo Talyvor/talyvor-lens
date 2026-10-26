@@ -1352,8 +1352,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			metrics.RecordCacheMiss("cache_miss")
 		}
 		if cached != nil {
-			// B17.246: a code-running answer is stored with the runs that worked it out; it is priced, counted and
-			// replayed as answered, without them — serveRunningCode sends them as frames of their own.
+			// B17.246: a code-running answer is stored with the runs that worked it out; it is priced, counted,
+			// served and replayed as answered, without them — serveRunningCode sends them as frames of their own.
 			answered := withoutCodeRuns(cached)
 			// Record the session turn first so the headers below reflect
 			// the count + cost AFTER this turn lands. Cache hits have
@@ -1439,7 +1439,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 					slog.String("provider", cfg.ProviderName()),
 				)
 			} else {
-				writeBytes(w, http.StatusOK, cached)
+				writeBytes(w, http.StatusOK, answered)
 				metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), layer).Inc()
 				metrics.RecordCacheHit(layer)
 				// SERVE point. FUNDING INVARIANT (settle-then-mint): resolve the pre-serve HOLD FIRST — a

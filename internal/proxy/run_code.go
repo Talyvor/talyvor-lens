@@ -190,6 +190,8 @@ func (p *Proxy) storeRunCodeAnswer(ctx context.Context, rc *runCodeAnswer) {
 	if cacheStoreOff(ctx) {
 		return
 	}
+	// Only runs Lens ran are stored with an answer: an upstream body carrying the field of its own loses it.
+	rc.answer = withoutCodeRuns(rc.answer)
 	if len(rc.runs) > 0 {
 		rc.answer = withCodeRuns(rc.answer, rc.runs)
 	}
