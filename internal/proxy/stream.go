@@ -482,13 +482,14 @@ func (s *StreamHandler) serve(
 			flusher.Flush()
 		}
 	}
-	// B17.129: asked to report the charge, the terminator and anything after it are held back, so the
-	// charge frame, written once the answer is booked, comes before it — Chat's reader stops at the terminator.
+	// B17.129, B17.245: the terminator and anything after it are held back until the answer is booked, so a client
+	// reading its statement once the stream ends sees the bill; asked to report the charge, its frame comes first
+	// — Chat's reader stops at the terminator.
 	reportCharge := r.Header.Get(reportChargeHeader) == "true"
 	var held [][]byte
 	send := func(lines [][]byte) {
 		for i, l := range lines {
-			if reportCharge && (held != nil || endsClientStream(l)) {
+			if held != nil || endsClientStream(l) {
 				held = append(held, lines[i:]...)
 				lines = lines[:i]
 				break
@@ -544,12 +545,10 @@ func (s *StreamHandler) serve(
 	spendCtx, cancelSpend := detachBounded(storeCtx)
 	settled, chatULXC := s.proxy.recordStreamSpend(spendCtx, sc, usage, accumulated.String())
 	cancelSpend()
-	if reportCharge {
-		if chatULXC >= 0 {
-			write([][]byte{[]byte("event: " + chargeFrame), []byte(fmt.Sprintf(`data: {"type":%q,"charged_ulxc":%d}`, chargeFrame, chatULXC)), {}})
-		}
-		write(held)
+	if reportCharge && chatULXC >= 0 {
+		write([][]byte{[]byte("event: " + chargeFrame), []byte(fmt.Sprintf(`data: {"type":%q,"charged_ulxc":%d}`, chargeFrame, chatULXC)), {}})
 	}
+	write(held)
 	cached := ops.synthesizeCachePayload(accumulated.String())
 	// B15.2: a streamed answer is stored only if it ENDED (a stream cut off before the provider's
 	// end event is a partial answer; a cancelled one already returned above) and, where the
