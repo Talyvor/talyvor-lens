@@ -222,17 +222,19 @@ func withCodeRuns(answer []byte, runs []coderun.Result) []byte {
 
 // codeRunsIn is the runs a stored answer carries; withoutCodeRuns is the answer without them, as it was answered — what
 // a cache hit is priced and counted on, so the code never adds to its tokens.
+// Both read the exact key from the decoded object, so they agree on what an answer carries.
 func codeRunsIn(answer []byte) []coderun.Result {
-	var m struct {
-		Runs []coderun.Result `json:"talyvor_code_runs"`
+	var m map[string]json.RawMessage
+	var runs []coderun.Result
+	if json.Unmarshal(answer, &m) == nil {
+		_ = json.Unmarshal(m[codeRunsField], &runs)
 	}
-	_ = json.Unmarshal(answer, &m)
-	return m.Runs
+	return runs
 }
 
 func withoutCodeRuns(answer []byte) []byte {
 	var m map[string]json.RawMessage
-	if !bytes.Contains(answer, []byte(codeRunsField)) || json.Unmarshal(answer, &m) != nil {
+	if json.Unmarshal(answer, &m) != nil {
 		return answer
 	}
 	if _, ok := m[codeRunsField]; !ok {
