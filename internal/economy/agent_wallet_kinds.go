@@ -204,7 +204,7 @@ func (s *DualTokenStore) closeAgentWallet(ctx context.Context, workspaceID strin
 		}
 		_, err = accounts.Close(ctx, "agent_wallet_close:"+w.AccountID, ref)
 		// The sandbox forgets its wallets when Lens restarts: one it has no record of holds nothing.
-		if err != nil && !(errors.Is(err, money.ErrNotFound) && w.Partner == money.SandboxName) {
+		if err != nil && (!errors.Is(err, money.ErrNotFound) || w.Partner != money.SandboxName) {
 			return fmt.Errorf("economy: close agent wallet: %w", err)
 		}
 	}
