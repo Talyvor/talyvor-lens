@@ -1976,53 +1976,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// (metric + log + the 422 response); the workspace isn't billed for a
 	// response we refused to return.
 	if statusCode == http.StatusOK && !outputBlocked {
-		// Cache iff the prompt has no PII AND the response is judged
-		// cacheable by the quality scorer. Low-quality responses are
-		// forwarded to the client but never persisted.
-		shouldCache := !piiDetected
-		if qualityScore != nil && !qualityScore.ShouldCache {
-			shouldCache = false
-		}
-		if shouldCache {
-			// Cache against the workspace-scoped (uncompressed) prompt +
-			// originally requested model so repeat callers in the same
-			// workspace get cache hits but other workspaces don't. The raw
-			// prompt + wsID also feed the opt-in pooled (cross-tenant) write.
-			p.storeAnswer(ctx, cfg.ProviderName(), model, cachePrompt, prompt, reqFP, turn, wsID, requestID, upstreamBody)
-		}
-		// W4.9 SHADOW POOL LOG — void, post-serve, default-off. Records that a fresh cacheable
-		// response was produced, so the cross-tenant pooled hit rate is computable from repeats
-		// while pooling stays OFF. Gated on the SAME shouldCache as the cache write above: a
-		// response the product would not cache could never have been pooled either, so including
-		// it would deflate the rate by construction.
-		//
-		// It honours LoggingNone, as storeCaches does since B18.4: a LoggingNone workspace's
-		// response is neither cached nor pooled, so leaving it out of the observations is exact —
-		// and writing a metadata row for a tenant that asked for no rows would not be acceptable.
-		if shouldCache && loggingPolicy != workspace.LoggingNone {
-			p.shadowPoolObservation(ctx, wsID, cfg.ProviderName(), model, prompt, reqFP,
-				p.sharesAnswers(ctx, wsID))
-		}
-		eventPrompt := prompt
-		if piiDetected {
-			eventPrompt = redactedPrompt
-		}
-		// Logging policy gates the per-request observability writes. None
-		// is the privacy escape hatch — every DB and NATS sink is bypassed.
-		// Metadata keeps cost/token rows but strips prompt_text. Full keeps
-		// everything (the historic behaviour).
-		spendPrompt := eventPrompt
-		if loggingPolicy == workspace.LoggingMetadata {
-			spendPrompt = ""
-		}
-		if loggingPolicy == workspace.LoggingFull {
-			// Learner publishes to NATS — too verbose for metadata mode.
-			p.recordTokenEvent(ctx, cfg.ProviderName(), model, eventPrompt, upstreamBody, savingsPct, piiDetected, wsID)
-		}
-		// RecordSpend prices the model that was actually billed by the
-		// LLM (the upstream model, after any router or circuit override).
-		// Fire-and-forget — alert manager failures must never break a
-		// successful request.
+		// B17.282: the bill first. The answer is already on the wire, and the cache writes below can take seconds
+		// (an embedding call, the pooled write); a client reading its ledger meanwhile saw the hold and no spend row.
 		// Bill on the provider's REPORTED usage when it surfaces one — that
 		// is the exact count the provider charged (and for multimodal it
 		// already folds in the image cost, beating the flat per-image
@@ -2108,6 +2063,53 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		if !p.reservationActive() && !subscriber {
 			p.shadowSpendLXC(ctx, wsID, servedCostUSD)
 		}
+		// Cache iff the prompt has no PII AND the response is judged
+		// cacheable by the quality scorer. Low-quality responses are
+		// forwarded to the client but never persisted.
+		shouldCache := !piiDetected
+		if qualityScore != nil && !qualityScore.ShouldCache {
+			shouldCache = false
+		}
+		if shouldCache {
+			// Cache against the workspace-scoped (uncompressed) prompt +
+			// originally requested model so repeat callers in the same
+			// workspace get cache hits but other workspaces don't. The raw
+			// prompt + wsID also feed the opt-in pooled (cross-tenant) write.
+			p.storeAnswer(ctx, cfg.ProviderName(), model, cachePrompt, prompt, reqFP, turn, wsID, requestID, upstreamBody)
+		}
+		// W4.9 SHADOW POOL LOG — void, post-serve, default-off. Records that a fresh cacheable
+		// response was produced, so the cross-tenant pooled hit rate is computable from repeats
+		// while pooling stays OFF. Gated on the SAME shouldCache as the cache write above: a
+		// response the product would not cache could never have been pooled either, so including
+		// it would deflate the rate by construction.
+		//
+		// It honours LoggingNone, as storeCaches does since B18.4: a LoggingNone workspace's
+		// response is neither cached nor pooled, so leaving it out of the observations is exact —
+		// and writing a metadata row for a tenant that asked for no rows would not be acceptable.
+		if shouldCache && loggingPolicy != workspace.LoggingNone {
+			p.shadowPoolObservation(ctx, wsID, cfg.ProviderName(), model, prompt, reqFP,
+				p.sharesAnswers(ctx, wsID))
+		}
+		eventPrompt := prompt
+		if piiDetected {
+			eventPrompt = redactedPrompt
+		}
+		// Logging policy gates the per-request observability writes. None
+		// is the privacy escape hatch — every DB and NATS sink is bypassed.
+		// Metadata keeps cost/token rows but strips prompt_text. Full keeps
+		// everything (the historic behaviour).
+		spendPrompt := eventPrompt
+		if loggingPolicy == workspace.LoggingMetadata {
+			spendPrompt = ""
+		}
+		if loggingPolicy == workspace.LoggingFull {
+			// Learner publishes to NATS — too verbose for metadata mode.
+			p.recordTokenEvent(ctx, cfg.ProviderName(), model, eventPrompt, upstreamBody, savingsPct, piiDetected, wsID)
+		}
+		// RecordSpend prices the model that was actually billed by the
+		// LLM (the upstream model, after any router or circuit override).
+		// Fire-and-forget — alert manager failures must never break a
+		// successful request.
 		if p.alertManager != nil && loggingPolicy != workspace.LoggingNone {
 			// spendPrompt is "" in metadata mode (no prompt text persisted)
 			// and the redacted form in full mode when PII was detected.
