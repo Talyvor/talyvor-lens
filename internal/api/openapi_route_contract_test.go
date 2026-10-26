@@ -368,7 +368,8 @@ func TestTheHeaderNamesOnlySurfacesTheDocumentCovers(t *testing.T) {
 // 272 → 275 (B30.17): POST and GET /v1/money/payments and GET /v1/money/payments/{id}.
 // 275 → 276 (B30.18): POST /v1/workspaces/{wsID}/agents/schedules/{sid}/skip.
 // 276 → 277 (B30.22): POST /v1/money/payments/quote.
-const undocumentedNonAdminV1Routes = 277
+// 277 → 278 (B46.4): GET /v1/workspaces/{wsID}/agents/{agentID}/wallet, an agent's wallet on the money layer.
+const undocumentedNonAdminV1Routes = 278
 
 // 272 → 276 (B30.19): POST and GET /v1/money/mandates, POST /v1/money/mandates/{id}/revoke and /pull — counted on a
 // line of their own, so a branch adding routes beside another's adds a line rather than rewriting the other's.
@@ -432,9 +433,6 @@ const undocumentedB463Routes = 1
 // 321 → 323 (B45.24): GET /v1/a2a/signature-check and POST /v1/a2a/signature-check/money — on a line of their own.
 const undocumentedB4524Routes = 2
 
-// B46.4: GET /v1/workspaces/{wsID}/agents/{agentID}/wallet, an agent's wallet on the money layer — on a line of its own.
-const undocumentedB464Routes = 1
-
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -448,10 +446,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB464Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB464Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes)
 	}
 }
