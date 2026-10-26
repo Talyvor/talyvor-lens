@@ -66,6 +66,12 @@ func TestB17225_WithRunCodeOnAKeptAnswerIsServedFromTheCacheAndATemporaryOneNeve
 		t.Errorf("the third ask was not the finished answer replayed from the cache: replay=%q body=%.400q",
 			w.Header().Get("X-Talyvor-Cache-Replay"), w.Body.String())
 	}
+	// B17.246 — and it shows the code that worked it out, as the fresh answer did, ahead of the answer.
+	stream := w.Body.String()
+	run := strings.Index(stream, `"type":"talyvor.code_run"`)
+	if run < 0 || run > strings.Index(stream, "The 100th prime is 541.") || !strings.Contains(stream[run:], `"stdout":"541`) {
+		t.Errorf("the answer served from the cache carries no code_run frame printing 541 ahead of it: %.600q", stream)
+	}
 	if _, asked := ask(temporary...); asked != 2 {
 		t.Errorf("a temporary chat after the answer was cached asked the model %d times; want 2 — it was served the cached answer", asked)
 	}

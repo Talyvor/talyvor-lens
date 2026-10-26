@@ -1345,11 +1345,16 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		}
 		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
 		// request goes upstream and its fresh answer replaces the stored one.
-		if cached != nil && (emptyAnswer(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached)) {
+		// B17.246: with Run code on, nor is one stored without the runs that worked it out — it would show no code.
+		if cached != nil && (emptyAnswer(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
+			runCodeAnswerOf(ctx) != nil && len(codeRunsIn(cached)) == 0) {
 			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
 			metrics.RecordCacheMiss("cache_miss")
 		}
 		if cached != nil {
+			// B17.246: a code-running answer is stored with the runs that worked it out; it is priced, counted and
+			// replayed as answered, without them — serveRunningCode sends them as frames of their own.
+			answered := withoutCodeRuns(cached)
 			// Record the session turn first so the headers below reflect
 			// the count + cost AFTER this turn lands. Cache hits have
 			// zero cost.
@@ -1358,7 +1363,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			// must not retain them — exactly like the upstream turn write
 			// (~1390), which already gates on None. This cache-hit path did not.
 			if sess != nil && loggingPolicy != workspace.LoggingNone {
-				p.recordSessionTurn(ctx, sessionID, prompt, string(cached), model, len(prompt)/4, len(cached)/4, 0, true)
+				p.recordSessionTurn(ctx, sessionID, prompt, string(answered), model, len(prompt)/4, len(answered)/4, 0, true)
 				setSessionHeaders(w, p, sessionID)
 			}
 			// PRICE THE HIT BEFORE ANY BYTES GO OUT. The serve precedes the settle by design (a
@@ -1385,7 +1390,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			if byok || p.pooledPaidBefore(ctx, wsID, pooledHit, cached) {
 				chargedHit = nil
 			}
-			price := p.pricePooledServe(chargedHit, prompt, cached, holdMaxOut)
+			price := p.pricePooledServe(chargedHit, prompt, answered, holdMaxOut)
 			price.setSavingHeaders(w)
 			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
 			if price.ChargedULXC == 0 {
@@ -1397,7 +1402,10 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				// consume cache hits the same way they consume live
 				// responses. On parse failure we fall through and let
 				// the regular streaming path call the LLM.
-				if err := replayAsSSE(w, cfg.ProviderName(), cached); err == nil {
+				if err := replayAsSSE(w, cfg.ProviderName(), answered); err == nil {
+					if rc := runCodeAnswerOf(ctx); rc != nil {
+						rc.served = cached
+					}
 					metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), layer).Inc()
 					metrics.RecordCacheHit(layer)
 					// SERVE point. FUNDING INVARIANT (settle-then-mint): resolve the pre-serve HOLD FIRST — a
@@ -1409,7 +1417,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 					// Cache-serve spend visibility (0100): the served request
 					// becomes a zero-provider-cost token_events row tagged with
 					// its layer, so hit rate is countable next to every miss.
-					p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
+					p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, answered, modSet, sessionID, requestID, loggingPolicy, layer, price)
 					p.rememberServed(ctx, wsID, requestID, layer, hitIDs, hitHashes, hitContributor(pooledHit), cached)
 					span.SetAttributes(
 						attribute.Bool("lens.cached", true),
@@ -1441,7 +1449,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				p.mintPooledRoyalty(ctx, chargedHit, prompt, cached, funded, loggingPolicy)
 				p.markPooledPaid(ctx, wsID, chargedHit, cached)
 				// Cache-serve spend visibility (0100): see recordCacheServe.
-				p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, cached, modSet, sessionID, requestID, loggingPolicy, layer, price)
+				p.recordCacheServe(ctx, wsID, team, sprint, feature, servedModel, prompt, answered, modSet, sessionID, requestID, loggingPolicy, layer, price)
 				p.rememberServed(ctx, wsID, requestID, layer, hitIDs, hitHashes, hitContributor(pooledHit), cached)
 				span.SetAttributes(
 					attribute.Bool("lens.cached", true),
