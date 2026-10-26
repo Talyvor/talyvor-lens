@@ -172,26 +172,20 @@ func (s *DualTokenStore) SetAgentWalletKind(ctx context.Context, workspaceID, ag
 	return s.AgentWallets(ctx, workspaceID, agentID) // opens the wallet of a kind it gained
 }
 
-// closeAgentWallet closes an empty wallet at its partner, under its reference ref, and in the ledger.
+// closeAgentWallet closes an empty wallet in the ledger and at its partner, under its reference ref: the ledger's row
+// is locked, closed and its balance read again first, and kept closed only once the partner has closed it too.
 //
-// shortcut: money a partner reported for the wallet just before it closed can still post to it, and the closing
-// re-reads its balance only in the ledger; upgrade when a closed wallet's money must be swept back (B48.15).
+// shortcut: the partner is asked through the accounts capability, so a wallet must close where it opened; upgrade when
+// the money layer's Wallets gains a close of its own.
 func (s *DualTokenStore) closeAgentWallet(ctx context.Context, workspaceID string, w AgentWallet, ref string) error {
-	if ref != "" {
-		accounts, err := s.moneyLayer.Accounts(ctx, agentWalletRoute(workspaceID, w.AgentID, w.Asset))
-		if err != nil {
-			return err
-		}
-		// A partner with no record of it holds nothing under it: the sandbox forgets its wallets when Lens restarts.
-		if _, err := accounts.Close(ctx, "agent_wallet_close:"+w.AccountID, ref); err != nil && !errors.Is(err, money.ErrNotFound) {
-			return fmt.Errorf("economy: close agent wallet: %w", err)
-		}
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("economy: close agent wallet: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = $1 FOR UPDATE`, w.AccountID); err != nil {
+		return fmt.Errorf("economy: close agent wallet: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE money_accounts SET status = 'closed' WHERE id = $1 AND status = 'open'`, w.AccountID); err != nil {
 		return fmt.Errorf("economy: close agent wallet: %w", err)
 	}
@@ -202,6 +196,17 @@ func (s *DualTokenStore) closeAgentWallet(ctx context.Context, workspaceID strin
 	}
 	if held != 0 {
 		return fmt.Errorf("%w: its %s wallet holds %s", ErrWalletNotEmpty, w.Asset, minorString(held, w.Asset))
+	}
+	if ref != "" {
+		accounts, err := s.moneyLayer.Accounts(ctx, agentWalletRoute(workspaceID, w.AgentID, w.Asset))
+		if err != nil {
+			return err
+		}
+		_, err = accounts.Close(ctx, "agent_wallet_close:"+w.AccountID, ref)
+		// The sandbox forgets its wallets when Lens restarts: one it has no record of holds nothing.
+		if err != nil && !(errors.Is(err, money.ErrNotFound) && w.Partner == money.SandboxName) {
+			return fmt.Errorf("economy: close agent wallet: %w", err)
+		}
 	}
 	return tx.Commit(ctx)
 }
