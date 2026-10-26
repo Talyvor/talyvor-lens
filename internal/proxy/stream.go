@@ -536,6 +536,20 @@ func (s *StreamHandler) serve(
 	// the reservation handle threaded onto r in serve(), so the streamed settle actually FIRES in-band
 	// instead of stranding the hold for the sweeper to refund (which made streaming requests free).
 	storeCtx := withCacheStoreHeader(context.WithoutCancel(r.Context()), r)
+	// B17.282: the bill first, as on the buffered seam — the guardrail, the scorer and the cache writes below can
+	// take seconds, and a client reading its ledger meanwhile saw the hold and no spend row.
+	// Close the streamed-spend gap: bill on the captured provider usage when
+	// present, else the len/4 estimate. A streamed request must never again
+	// be invisible to budgets/alerts.
+	spendCtx, cancelSpend := detachBounded(storeCtx)
+	settled, chatULXC := s.proxy.recordStreamSpend(spendCtx, sc, usage, accumulated.String())
+	cancelSpend()
+	if reportCharge {
+		if chatULXC >= 0 {
+			write([][]byte{[]byte("event: " + chargeFrame), []byte(fmt.Sprintf(`data: {"type":%q,"charged_ulxc":%d}`, chargeFrame, chatULXC)), {}})
+		}
+		write(held)
+	}
 	cached := ops.synthesizeCachePayload(accumulated.String())
 	// B15.2: a streamed answer is stored only if it ENDED (a stream cut off before the provider's
 	// end event is a partial answer; a cancelled one already returned above) and, where the
@@ -582,21 +596,9 @@ func (s *StreamHandler) serve(
 		eventPrompt = s.proxy.piiDetector.Detect(prompt).Redacted
 	}
 	// Gated on the logging policy inside recordTokenEvent (full only) — sc.wsID
-	// is the same workspace recordStreamSpend below reads its policy from, so a
+	// is the same workspace recordStreamSpend above reads its policy from, so a
 	// none/metadata streamed request feeds neither the learner nor the spend row.
 	s.proxy.recordTokenEvent(storeCtx, provider, model, eventPrompt, cached, sc.post.savingsPct, piiDetected, sc.wsID)
-	// Close the streamed-spend gap: bill on the captured provider usage when
-	// present, else the len/4 estimate. A streamed request must never again
-	// be invisible to budgets/alerts.
-	spendCtx, cancelSpend := detachBounded(storeCtx)
-	settled, chatULXC := s.proxy.recordStreamSpend(spendCtx, sc, usage, accumulated.String())
-	cancelSpend()
-	if reportCharge {
-		if chatULXC >= 0 {
-			write([][]byte{[]byte("event: " + chargeFrame), []byte(fmt.Sprintf(`data: {"type":%q,"charged_ulxc":%d}`, chargeFrame, chatULXC)), {}})
-		}
-		write(held)
-	}
 	postCtx, cancelPost := detachBounded(storeCtx)
 	defer cancelPost()
 	s.proxy.recordStreamPostServe(postCtx, r, sc, usage, prompt, accumulated.String(), cached, qualityScore, scored, settled)
