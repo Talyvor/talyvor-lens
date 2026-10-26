@@ -31,8 +31,8 @@ import (
 // ErrAgentWalletsOff: the money layer is not set, so no agent has a wallet.
 var ErrAgentWalletsOff = errors.New("economy: agent wallets are not set up")
 
-// testWalletNotice is what a wallet whose details the sandbox made up says.
-const testWalletNotice = "Preview — test money only. This address is made up and on no chain: nothing sent to it moves real money."
+// TestWalletNotice is what a wallet whose details the sandbox made up says, in plain words (B46.17).
+const TestWalletNotice = "This address is a preview. It isn't on any chain yet, so don't send money to it."
 
 // AgentWallet is an agent's wallet: what it holds, and how to pay into it.
 type AgentWallet struct {
@@ -147,7 +147,7 @@ func (s *DualTokenStore) AgentWallet(ctx context.Context, workspaceID, agentID s
 	}
 	w.Mode = DetailsLive
 	if w.Partner == money.SandboxName {
-		w.Mode, w.Notice = DetailsTest, testWalletNotice
+		w.Mode, w.Notice = DetailsTest, TestWalletNotice
 	}
 	return w, nil
 }
