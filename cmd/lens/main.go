@@ -1992,12 +1992,14 @@ func run() error {
 	// B37.5 — every call through a partner rail leaves one audit row in partner_calls.
 	partnerRegistry.UseCallLog(partners.NewCallStore(pool))
 	// B46.3 — the money layer: every switch is off, so the sandbox (the Test partners above) serves every call, and partner
-	// webhooks enter at POST /v1/money/webhooks/{partner}.
+	// webhooks enter at POST /v1/money/webhooks/{partner}. B46.4 — every agent's wallet is opened and read through it,
+	// and money leaving one is judged by the agent's rules first.
 	moneyLayer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
-		Clearances: dualToken, Limits: noLimitsYet{}, Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)})
+		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)})
 	if err != nil {
 		return err
 	}
+	dualToken.SetMoneyLayer(moneyLayer)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
 	// a restart and every Lens process show them.
 	go partnerRegistry.WatchRails(ctx, partners.NewRailStore(pool), 5*time.Minute)

@@ -107,5 +107,6 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	if err := tx.Commit(ctx); err != nil {
 		return out, false, fmt.Errorf("economy: workspace start: %w", err)
 	}
+	s.openNewAgentWallet(ctx, workspaceID, out.Agent.ID) // B46.4
 	return out, true, nil
 }

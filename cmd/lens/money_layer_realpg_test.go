@@ -33,7 +33,7 @@ func TestMoneyWebhook_ASignedCreditPostsOnceToTheLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, secret), Clearances: store, Limits: noLimitsYet{},
+	layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, secret), Clearances: store, Limits: store.MoneyLimits(),
 		Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool)})
 	if err != nil {
 		t.Fatal(err)

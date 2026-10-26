@@ -24,6 +24,7 @@ type AgentBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
 	GetAgentRules(ctx context.Context, workspaceID, agentID string) (economy.AgentRules, error)
+	AgentWallet(ctx context.Context, workspaceID, agentID string) (economy.AgentWallet, error)
 	RequestPaymentApproval(ctx context.Context, workspaceID, agentID, toAgentID string, amount int64, memo, reason string) (economy.AgentApproval, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentReceipt(ctx context.Context, workspaceID, agentID, entryID string) (economy.AgentReceipt, error)
@@ -52,7 +53,7 @@ func agentToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "agent_balance",
-			"description": "Your own wallet: balance, what you have spent, whether you are paused, and your spending rules.",
+			"description": "Your own wallet: balance, what you have spent, whether you are paused, your spending rules, and your USDC wallet with its balance and the address that pays into it.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
@@ -156,9 +157,19 @@ func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID st
 			return nil, err
 		}
 		for _, a := range book.Agents {
-			if a.ID == agentID {
-				return map[string]any{"agent": a, "rules": rules, "workspace_paused": book.AllPausedAt != nil}, nil
+			if a.ID != agentID {
+				continue
 			}
+			out := map[string]any{"agent": a, "rules": rules, "workspace_paused": book.AllPausedAt != nil}
+			// B46.4: the agent's wallet on the money layer — the same one, and the same balance, its owner sees.
+			wallet, err := s.agentBank.AgentWallet(ctx, workspaceID, agentID)
+			switch {
+			case err == nil:
+				out["wallet"] = wallet
+			case !errors.Is(err, economy.ErrAgentWalletsOff):
+				return nil, err
+			}
+			return out, nil
 		}
 		return nil, &toolRefusal{economy.ErrAgentNotFound.Error()}
 	case "agent_request_approval":

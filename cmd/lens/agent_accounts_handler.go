@@ -15,6 +15,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/tenant"
@@ -117,6 +118,11 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{id}/rules/template {"template"}   apply one; returns the rules
 //	POST /v1/workspaces/{wsID}/agents  {"name", "template"}          create an agent that starts from one
 //
+// B46.4 — every agent has its own USDC wallet on the money layer (internal/economy/agent_wallets.go):
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/wallet   its balance and the address that pays into it; mode TEST and a
+//	                                                notice while the sandbox made the address up
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -138,6 +144,7 @@ type agentBank interface {
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
 	SetAgentRules(ctx context.Context, workspaceID, agentID string, r economy.AgentRules) (economy.AgentRules, error)
 	GetAgentRules(ctx context.Context, workspaceID, agentID string) (economy.AgentRules, error)
+	AgentWallet(ctx context.Context, workspaceID, agentID string) (economy.AgentWallet, error)
 	SimulateAgentRules(ctx context.Context, workspaceID, agentID string, in economy.SimulatedRequest) (economy.RuleSimulation, error)
 	AgentRulesHistory(ctx context.Context, workspaceID, agentID string) ([]economy.AgentRulesVersion, error)
 	RollbackAgentRules(ctx context.Context, workspaceID, agentID string, version int) (economy.AgentRules, error)
@@ -383,6 +390,21 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/rules", func(w http.ResponseWriter, req *http.Request) {
 		rules, err := bank.GetAgentRules(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeRules(w, rules, err)
+	})
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet", func(w http.ResponseWriter, req *http.Request) {
+		wallet, err := bank.AgentWallet(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrAgentWalletsOff):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, money.ErrPartnerDown):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, wallet)
+		}
 	})
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
