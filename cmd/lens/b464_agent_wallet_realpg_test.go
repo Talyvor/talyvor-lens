@@ -79,8 +79,8 @@ func TestB464_ANewAgentHasAWalletItsBalanceAgreesAndBigPaymentsWaitForApproval(t
 		t.Fatalf("GET wallet = %d", code)
 	}
 	if wallet.Asset != money.USDC || wallet.Partner != money.SandboxName || wallet.Receive.Network != money.SandboxNetwork ||
-		!strings.HasPrefix(wallet.Receive.Address, "0x") || wallet.Mode != economy.DetailsTest || wallet.BalanceMinor != 0 {
-		t.Fatalf("a new agent's wallet = %+v; want an empty sandbox USDC wallet with an address on Base, marked TEST", wallet)
+		!strings.HasPrefix(wallet.Receive.Address, "0x") || wallet.Mode != economy.DetailsTest || wallet.Notice != economy.TestWalletNotice || wallet.BalanceMinor != 0 {
+		t.Fatalf("a new agent's wallet = %+v; want an empty sandbox USDC wallet with an address on Base, marked TEST with the preview notice", wallet)
 	}
 
 	// 2.5 USDC arrive at the wallet's address, reported by the sandbox twice.
@@ -144,5 +144,82 @@ func TestB464_ANewAgentHasAWalletItsBalanceAgreesAndBigPaymentsWaitForApproval(t
 	}
 	if code := call(owner, http.MethodGet, base+"/"+agent.ID+"/wallet", "", &wallet); code != http.StatusOK || wallet.BalanceMinor != 2_500_000 {
 		t.Fatalf("after the held payment the wallet = %+v; want it untouched at 2500000", wallet)
+	}
+}
+
+// clearedForTest clears every capability, so a switched-on adapter serves real money.
+type clearedForTest struct{}
+
+func (clearedForTest) CapabilityCleared(context.Context, string) (bool, error) { return true, nil }
+
+// B46.17 — once a live partner serves the wallet, its address is real, so neither the owner's GET …/wallet nor the
+// agent's agent_balance tool carries the preview notice.
+func TestB4617_ALiveWalletCarriesNoPreviewNotice(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws, partner = "ws-b4617", "fake-live"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	reg := partners.NewRegistry(nil)
+	store.SetAccountPartners(reg)
+	live := money.NewSandbox(reg, "whsec_b4617")
+	live.Name = partner
+	layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, "whsec_b4617"), Clearances: clearedForTest{},
+		Switches: money.SwitchSet{{Capability: money.CapWallets, Partner: partner}: true},
+		Limits:   store.MoneyLimits(), Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := layer.Register(live); err != nil {
+		t.Fatal(err)
+	}
+	store.SetMoneyLayer(layer)
+	mcpServer := mcp.New(pool, nil, nil, nil, nil, "test")
+	mcpServer.SetAgentBank(store)
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	r.Post("/mcp", mcpServer.HandleRPC)
+	call := func(who *auth.AuthContext, method, path, body string, out any) int {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+			t.Fatalf("%s %s: %v in %s", method, path, err, w.Body.String())
+		}
+		return w.Code
+	}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	base := "/v1/workspaces/" + ws + "/agents"
+	var agent economy.Agent
+	if code := call(owner, http.MethodPost, base, `{"name":"Buyer"}`, &agent); code != http.StatusCreated {
+		t.Fatalf("create the agent = %d", code)
+	}
+	var wallet economy.AgentWallet
+	if code := call(owner, http.MethodGet, base+"/"+agent.ID+"/wallet", "", &wallet); code != http.StatusOK ||
+		wallet.Partner != partner || wallet.Mode != economy.DetailsLive || wallet.Notice != "" {
+		t.Fatalf("GET wallet = %d %+v; want the live partner's wallet, marked LIVE, with no preview notice", code, wallet)
+	}
+
+	if err := store.AttachAgentKey(ctx, ws, agent.ID, "key-b4617"); err != nil {
+		t.Fatal(err)
+	}
+	var rpc struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	agentKey := &auth.AuthContext{WorkspaceID: ws, APIKeyID: "key-b4617"}
+	if code := call(agentKey, http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_balance","arguments":{}}}`, &rpc); code != http.StatusOK ||
+		len(rpc.Result.Content) == 0 {
+		t.Fatalf("agent_balance = %d %+v", code, rpc)
+	}
+	var balance struct {
+		Wallet economy.AgentWallet `json:"wallet"`
+	}
+	if err := json.Unmarshal([]byte(rpc.Result.Content[0].Text), &balance); err != nil || balance.Wallet != wallet {
+		t.Fatalf("agent_balance's wallet = %+v (%v); want the owner's view %+v, with no preview notice", balance.Wallet, err, wallet)
 	}
 }
