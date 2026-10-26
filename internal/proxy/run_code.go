@@ -21,15 +21,18 @@ import (
 // again, until the model answers. Every round is an ordinary request through serve — gated, held and charged on its
 // own — and the client gets the last round's answer as it came back. A streaming client gets a talyvor.code_run frame
 // for each run as soon as it is back (talyvor-suite apps/web chatStream.ts CODE_RUN_FRAME), and, asked to report the
-// charge, a talyvor.charge frame for each earlier round (B17.265), then that answer.
+// charge, a talyvor.charge frame for each earlier round (B17.265), then that answer. The finished answer is stored
+// with the runs that worked it out, and an answer served from the cache sends them again as its code_run frames
+// (B17.246), so a cached answer shows the code that worked it out just as a fresh one does.
 
 // RunCodeHeader "on" lets the model run code in Lens's sandbox while it answers.
 const RunCodeHeader = "X-Talyvor-Run-Code"
 
 const (
 	runCodeTool     = "run_code"
-	maxCodeRounds   = 4 // rounds that may run code; the round after them is asked to answer with what it has
-	maxRunsPerRound = 4 // runs one answer may ask for; the rest are answered "not run"
+	codeRunsField   = "talyvor_code_runs" // where a stored answer keeps the runs that worked it out
+	maxCodeRounds   = 4                   // rounds that may run code; the round after them is asked to answer with what it has
+	maxRunsPerRound = 4                   // runs one answer may ask for; the rest are answered "not run"
 	runCodeToolDesc = "Runs JavaScript and returns what it printed. Use it to work out anything that needs computing — " +
 		"arithmetic, counting, searching, checking — rather than answering from memory, then answer with the result. " +
 		"Print with console.log; if nothing is printed, the value of the last expression is shown. There is no network, " +
@@ -53,6 +56,8 @@ type runCodeAnswer struct {
 	provider, model, cachePrompt, prompt, reqFP, plainFP, wsID, requestID string
 	turn                                                                  cache.Turn
 	answer                                                                []byte
+	runs                                                                  []coderun.Result // the runs this request ran
+	served                                                                []byte           // the stored answer a streamed first round was served
 }
 
 type runCodeAnswerKey struct{}
@@ -115,6 +120,16 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 		// shortcut: an answer calling run_code and one of the client's own tools goes to the client whole, run_code
 		// included; split the calls if a client ever offers both and the model asks for both at once.
 		if rec.Code != http.StatusOK || n == maxCodeRounds || !onlyRunCode(calls) {
+			if runs := codeRunsIn(rc.served); n == 0 && streaming && rec.Code == http.StatusOK && len(runs) > 0 {
+				for k, v := range rec.Header() {
+					w.Header()[k] = v
+				}
+				w.WriteHeader(http.StatusOK)
+				committed = true
+				for _, run := range runs {
+					writeCodeRunFrame(w, run)
+				}
+			}
 			writeRunCodeAnswer(w, rec, committed)
 			if rec.Code == http.StatusOK && len(calls) == 0 && rc.keyed && rc.answer != nil {
 				sctx, cancel := detachBounded(base) // B39.4
@@ -150,12 +165,9 @@ func (p *Proxy) serveRunningCode(w http.ResponseWriter, r *http.Request, cfg pro
 			}
 			_ = json.Unmarshal([]byte(c.Args), &in)
 			run := p.codeRunner.Run(r.Context(), in.Code)
+			rc.runs = append(rc.runs, run)
 			if committed {
-				frame, _ := json.Marshal(struct {
-					Type string `json:"type"`
-					coderun.Result
-				}{"talyvor.code_run", run})
-				writeFrame(w, "talyvor.code_run", frame)
+				writeCodeRunFrame(w, run)
 			}
 			reply(c.ID, run)
 		}
@@ -178,6 +190,11 @@ func (p *Proxy) storeRunCodeAnswer(ctx context.Context, rc *runCodeAnswer) {
 	if cacheStoreOff(ctx) {
 		return
 	}
+	// Only runs Lens ran are stored with an answer: an upstream body carrying the field of its own loses it.
+	rc.answer = withoutCodeRuns(rc.answer)
+	if len(rc.runs) > 0 {
+		rc.answer = withCodeRuns(rc.answer, rc.runs)
+	}
 	var hashes []string
 	for _, fp := range []string{rc.reqFP, rc.plainFP} {
 		if p.storeCaches(ctx, rc.provider, rc.model, rc.cachePrompt, rc.prompt, fp, rc.turn, rc.wsID, rc.answer) {
@@ -187,6 +204,48 @@ func (p *Proxy) storeRunCodeAnswer(ctx context.Context, rc *runCodeAnswer) {
 	if hashes != nil {
 		p.rememberServed(ctx, rc.wsID, rc.requestID, "fresh", nil, hashes, "", rc.answer)
 	}
+}
+
+// withCodeRuns is a stored answer carrying the runs that worked it out, under codeRunsField.
+func withCodeRuns(answer []byte, runs []coderun.Result) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(answer, &m) != nil || m == nil {
+		return answer
+	}
+	m[codeRunsField], _ = json.Marshal(runs)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return answer
+	}
+	return out
+}
+
+// codeRunsIn is the runs a stored answer carries; withoutCodeRuns is the answer without them, as it was answered — what
+// a cache hit is priced and counted on, so the code never adds to its tokens.
+// Both read the exact key from the decoded object, so they agree on what an answer carries.
+func codeRunsIn(answer []byte) []coderun.Result {
+	var m map[string]json.RawMessage
+	var runs []coderun.Result
+	if json.Unmarshal(answer, &m) == nil {
+		_ = json.Unmarshal(m[codeRunsField], &runs)
+	}
+	return runs
+}
+
+func withoutCodeRuns(answer []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(answer, &m) != nil {
+		return answer
+	}
+	if _, ok := m[codeRunsField]; !ok {
+		return answer
+	}
+	delete(m, codeRunsField)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return answer
+	}
+	return out
 }
 
 // withoutRunCodeTool is a round's body without the run_code tool serveRunningCode added last to its tools.
@@ -443,6 +502,14 @@ func writeRunCodeAnswer(w http.ResponseWriter, rec *httptest.ResponseRecorder, c
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func writeCodeRunFrame(w http.ResponseWriter, run coderun.Result) {
+	frame, _ := json.Marshal(struct {
+		Type string `json:"type"`
+		coderun.Result
+	}{"talyvor.code_run", run})
+	writeFrame(w, "talyvor.code_run", frame)
 }
 
 func writeFrame(w http.ResponseWriter, event string, data []byte) {
