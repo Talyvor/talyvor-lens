@@ -17,7 +17,8 @@ import (
 // with enforceAgentRules itself, the very judgement a hold or a debit makes, inside a transaction that is always
 // rolled back. Whatever the judgement writes on the way (the payee ledger's row, an unusual-spend alert, a used
 // approval) goes with it, so a simulation posts nothing, files no approval and pauses no one. The spend it counts
-// is the agent's real spend so far. A licence to a listing (B32.22) is judged by the licence rules too.
+// is the agent's real spend so far. A licence to a listing (B32.22) is judged by the licence rules too. With AlwaysAllow
+// it is judged as though the owner had always allowed its payee so (B41.104): the preview before that rule is saved.
 
 // ErrBadSimulation: the simulated request cannot be judged as given.
 var ErrBadSimulation = errors.New("economy: the simulated request cannot be judged")
@@ -32,6 +33,8 @@ type SimulatedRequest struct {
 	Payee      *Payee      `json:"payee"`
 	Licence    *Commitment `json:"licence"`
 	At         *time.Time  `json:"at"` // when it is asked, for the active hours and the periods; now when absent
+	// AlwaysAllow judges a payment as though this allowance for its payee were saved (B41.104); it is not.
+	AlwaysAllow *PayeeAllowance `json:"always_allow"`
 }
 
 // RuleSimulation is the rules' answer: allowed, refused, or approval_required (it would wait for the workspace's
@@ -82,6 +85,10 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 		req.Commitment, what = Commitment{Kind: in.Licence.Kind, Licence: in.Licence.Licence, ULXC: in.AmountULXC}, in.Licence.Kind
 	}
 
+	if in.AlwaysAllow != nil && in.Payee == nil {
+		return out, fmt.Errorf("%w: always_allow is for a payment: name its payee", ErrBadSimulation)
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -97,6 +104,13 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 	}
 	if out.BalanceULXC, err = accountBalance(ctx, tx, workspaceID, agentAccount(agentID)); err != nil {
 		return out, err
+	}
+	if in.AlwaysAllow != nil { // saved in tx only, which is rolled back
+		if err := allowPayeeTx(ctx, tx, workspaceID, agentID, in.Payee.ID, *in.AlwaysAllow); errors.Is(err, ErrAgentRule) {
+			return out, fmt.Errorf("%w: %s", ErrBadSimulation, strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": "))
+		} else if err != nil {
+			return out, err
+		}
 	}
 	// The fingerprint is new, so no approval matches it: a request above the approval amount answers that it
 	// needs one rather than using one a person granted to a real request.

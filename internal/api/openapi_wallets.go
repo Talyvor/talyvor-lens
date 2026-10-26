@@ -74,6 +74,10 @@ func openAPIWalletSchemas() map[string]any {
 					"description": "a model, named as the agent asks for it, to what the agent may spend on it in a day, in timezone; absent keeps the stored caps"},
 				"payee_daily_limits_ulxc": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
 					"description": "µLXC it may pay one payee in a day, by the payee's id as the payee lists name it (a company's counts its agents and listings); a payment past it is refused and posts nothing. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_monthly_limits_ulxc": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
+					"description": "payee_daily_limits_ulxc over the month, in timezone. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_allowances": map[string]any{"type": "object", "additionalProperties": map[string]any{"$ref": "#/components/schemas/PayeeAllowance"},
+					"description": "the owner's \"always allow\": by payee id, what the agent may pay that payee in a day or a month without approval; past it, a payment above approval_above_ulxc waits for approval again. Absent keeps the stored allowances; saved, it replaces them whole"},
 				"requests_per_minute":    map[string]any{"type": "integer", "description": "the requests to models it may make in any sixty seconds; one more is refused 429 and holds nothing. Absent keeps the stored cap"},
 				"approval_above_ulxc":    map[string]any{"type": "integer", "format": "int64", "description": "a request that could cost more waits for a person's approval"},
 				"allowed_models":         strs,
@@ -87,6 +91,10 @@ func openAPIWalletSchemas() map[string]any {
 				"pause_on_unusual_spend": map[string]any{"type": "boolean"},
 			},
 		},
+		"PayeeAllowance": map[string]any{"type": "object", "required": []string{"amount_ulxc", "per"}, "properties": map[string]any{
+			"amount_ulxc": map[string]any{"type": "integer", "format": "int64", "minimum": 1},
+			"per":         map[string]any{"type": "string", "enum": []string{"day", "month"}},
+		}},
 		"RuleTemplate": map[string]any{
 			"type":        "object",
 			"description": "Rules an agent can start from. They name every rule, so applying them replaces the agent's rules whole.",
@@ -276,7 +284,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/rules/simulate": map[string]any{
 			"post": withBody(op("Ask whether the agent's rules would let a request through",
-				"Moves nothing: the rules judge the request exactly as a real one, against what the agent has really spent, and everything the judgement would write is rolled back — no posting, no approval filed. With payee it is a payment to that payee; without, a question to model through provider. at (RFC 3339) asks about another time, for the active hours and the periods; now when absent.",
+				"Moves nothing: the rules judge the request exactly as a real one, against what the agent has really spent, and everything the judgement would write is rolled back — no posting, no approval filed. With payee it is a payment to that payee; without, a question to model through provider. at (RFC 3339) asks about another time, for the active hours and the periods; now when absent. always_allow, with payee, judges the payment as though that allowance for its payee were saved: the preview of approving with always allow.",
 				[]map[string]any{ws, agent},
 				map[string]any{"200": ok("the rules' answer", obj([]string{"verdict", "reason", "amount_ulxc", "at", "balance_ulxc"}, map[string]any{
 					"verdict":      map[string]any{"type": "string", "enum": []string{"allowed", "refused", "approval_required"}},
@@ -290,7 +298,8 @@ func openAPIWalletPaths() map[string]any {
 					"model":       str, "provider": str,
 					"payee": obj([]string{"kind", "id"}, map[string]any{
 						"kind": map[string]any{"type": "string", "enum": []string{"agent", "listing", "company", "merchant"}}, "id": str}),
-					"at": map[string]any{"type": "string", "format": "date-time"},
+					"at":           map[string]any{"type": "string", "format": "date-time"},
+					"always_allow": ref("PayeeAllowance"),
 				}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}": map[string]any{
@@ -386,10 +395,13 @@ func openAPIWalletPaths() map[string]any {
 				map[string]any{"200": ok("the approvals", listOf("approvals", "AgentApproval"))}),
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/approve": map[string]any{
-			"post": op("Approve a request, once",
-				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body is {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge.`,
+			"post": withBody(op("Approve a request, once — or approve it and always allow its payee",
+				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body carries {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge. With always_allow, a payment's approval also saves that allowance for its payee on the agent's rules (payee_allowances), and the answer adds the rules as saved.`,
 				[]map[string]any{ws, approval},
-				map[string]any{"200": ok("the approval, approved", ref("AgentApproval")), "403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"}}),
+				map[string]any{"200": ok("the approval, approved", ref("AgentApproval")), "400": map[string]any{"description": "always_allow without an amount above 0 and per day or month"},
+					"403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"},
+					"409": map[string]any{"description": "approved once, but always_allow was not saved: the approval names no payee"}}),
+				body(obj(nil, map[string]any{"assertion": map[string]any{"type": "object"}, "always_allow": ref("PayeeAllowance")}))),
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/deny": map[string]any{
 			"post": op("Deny a request",
