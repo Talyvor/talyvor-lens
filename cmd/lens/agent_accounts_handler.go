@@ -46,7 +46,9 @@ import (
 //	DELETE /v1/workspaces/{wsID}/agents/{id}/rules/boosts/{rule}   end a boost before its time
 //	GET  /v1/workspaces/{wsID}/agents/approvals                requests that needed approval, newest first;
 //	                                                           a payment's names its payee and memo (B23.5)
-//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/approve   let that request through, once
+//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/approve   let that request through, once; with
+//	                                                           {"always_allow": {"amount_ulxc", "per": "day"|"month"}} (B41.104)
+//	                                                           also let the agent pay that payee up to it without approval
 //	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it
 //
 // B19.3 — one company's agents pay each other, inside the closed loop:
@@ -145,6 +147,7 @@ type agentBank interface {
 	ListAgentApprovals(ctx context.Context, workspaceID string) ([]economy.AgentApproval, error)
 	DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (economy.AgentApproval, error)
 	DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, a passkey.Assertion) (economy.AgentApproval, error)
+	AllowPayee(ctx context.Context, workspaceID, approvalID string, a economy.PayeeAllowance) (economy.AgentRules, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
@@ -505,9 +508,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			wsID, approvalID := chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID")
 			// B19.16: once the workspace has a passkey, the decision carries an assertion over this approval's challenge.
 			var in struct {
-				Assertion *passkey.Assertion `json:"assertion"`
+				Assertion   *passkey.Assertion      `json:"assertion"`
+				AlwaysAllow *economy.PayeeAllowance `json:"always_allow"` // B41.104: approve, and make it a rule
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
+			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.ULXC <= 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
+				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
+				return
+			}
 			var a economy.AgentApproval
 			var err error
 			if in.Assertion != nil {
@@ -524,6 +532,21 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusNotFound, err.Error())
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			case in.AlwaysAllow != nil:
+				// After the decision, so a refused signature saves no rule; the approval stands either way.
+				rules, err := bank.AllowPayee(rulesChange(req, "always allow"), wsID, approvalID, *in.AlwaysAllow)
+				if errors.Is(err, economy.ErrAgentRule) {
+					writeJSONErr(w, http.StatusConflict, "approved once, but not made a rule: "+err.Error())
+					return
+				}
+				if err != nil {
+					writeJSONErr(w, http.StatusInternalServerError, "approved once, but not made a rule: "+err.Error())
+					return
+				}
+				writeJSONOK(w, http.StatusOK, struct {
+					economy.AgentApproval
+					Rules economy.AgentRules `json:"rules"`
+				}{a, rules})
 			default:
 				writeJSONOK(w, http.StatusOK, a)
 			}
