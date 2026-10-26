@@ -90,6 +90,8 @@ class AgentRules(TypedDict, total=False):
     allowed_payees: list[str]
     blocked_payees: list[str]
     payee_daily_limits_ulxc: dict[str, int]
+    payee_monthly_limits_ulxc: dict[str, int]
+    payee_allowances: dict[str, dict[str, object]]
     max_commitment_ulxc: int
     allowed_licences: list[str]
     may_subscribe: bool

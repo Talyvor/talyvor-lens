@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,6 +36,7 @@ import (
 	"github.com/talyvor/lens/internal/a2acard"
 	"github.com/talyvor/lens/internal/ab"
 	"github.com/talyvor/lens/internal/agentcard"
+	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/alerts"
 	"github.com/talyvor/lens/internal/anomaly"
 	"github.com/talyvor/lens/internal/ap2"
@@ -249,6 +251,14 @@ func main() {
 	// `lens tax` (B32.37): load the tax rates and Talyvor's registrations the tax partner decides from.
 	if len(os.Args) > 1 && os.Args[1] == "tax" {
 		if err := runTax(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	// `lens n1co` gives N1CO, the AI CEO, its workspace and agent wallet on test money (B45.33, docs/n1co-wallet.md).
+	if len(os.Args) > 1 && os.Args[1] == "n1co" {
+		if err := runN1CO(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -1834,6 +1844,11 @@ func run() error {
 	// B45.28: the owner's approvals as AP2 v0.2 mandates, and agents' approval evidence, signed with a key derived from it too.
 	mandateSigner := ap2.NewSigner(kyaKey.Derive("talyvor/ap2/mandates/v1").Seed(), cfg.PublicURL)
 	dualToken.SetMandateSigner(mandateSigner)
+	// B45.24: outside agents' signatures — Web Bot Auth, and Talyvor's own profile on money endpoints.
+	agentSigStore := agentsig.Store{Pool: pool}
+	lensPublicURL, _ := url.Parse(cfg.PublicURL) // config.Load already refused a malformed one
+	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: &agentsig.HTTPDirectory{Client: safehttp.Client(5 * time.Second)},
+		Nonces: agentSigStore, Businesses: agentSigStore, Now: time.Now}
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2501,7 +2516,12 @@ func run() error {
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
-		mountAgentCardPublicRoutes(pub, agentCards)
+		// B45.24: every A2A request is checked against Web Bot Auth; a bad signature is 401.
+		pub.Group(func(a2a chi.Router) {
+			a2a.Use(agentSigs.Middleware(agentsig.WebBotAuth))
+			mountAgentCardPublicRoutes(a2a, agentCards)
+		})
+		mountAgentSignatureRoutes(pub, agentSigs)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -2547,6 +2567,10 @@ func run() error {
 	// B30.6 — the sanctions lists and the compliance cases screening opened; an admin releases or refuses a held one.
 	r.Get("/v1/admin/screening", requireAdminOrOperatorRead(authManager, newScreeningOverviewHandler(screeningLists, screener)))
 	// B30.8: a decision is behind step-up, and an operator audit row.
+	// B45.24 — the signing domains Talyvor has checked belong to a business; adding or removing one is behind step-up.
+	r.Get("/v1/admin/agent-operators", requireAdminOrOperatorRead(authManager, newCheckedOperatorsListHandler(agentSigStore)))
+	r.Put("/v1/admin/agent-operators/{domain}", requireStepUp(authManager, stepUp, newCheckedOperatorSetHandler(agentSigStore)))
+	r.Delete("/v1/admin/agent-operators/{domain}", requireStepUp(authManager, stepUp, newCheckedOperatorRemoveHandler(agentSigStore)))
 	r.Post("/v1/admin/screening/cases/{caseID}/release", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, true)))
 	r.Post("/v1/admin/screening/cases/{caseID}/refuse", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, false)))
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.

@@ -41,6 +41,13 @@ type KeyIssuer func(ctx context.Context, tx pgx.Tx, workspaceID, name string) (r
 // and funded to that agent (none when it is 0). A workspace that already has an agent is left as it is:
 // started is false and nothing changes, so a retried create moves no money and makes no second agent.
 func (s *DualTokenStore) StartWorkspace(ctx context.Context, workspaceID, ownerUserID string, testMoneyULXC int64, issue KeyIssuer) (out WorkspaceStart, started bool, err error) {
+	return s.StartWorkspaceAgent(ctx, workspaceID, ownerUserID, FirstAgentName, nil, testMoneyULXC, issue)
+}
+
+// StartWorkspaceAgent is StartWorkspace with the first agent called name and, when adjust is not nil, its
+// FirstAgentTemplate rules changed by adjust before they are saved (B45.33: N1CO's monthly budget).
+func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, ownerUserID, name string, adjust func(*AgentRules),
+	testMoneyULXC int64, issue KeyIssuer) (out WorkspaceStart, started bool, err error) {
 	if testMoneyULXC < 0 {
 		return out, false, errors.New("economy: starting test money cannot be negative")
 	}
@@ -67,10 +74,10 @@ func (s *DualTokenStore) StartWorkspace(ctx context.Context, workspaceID, ownerU
 	if has {
 		return out, false, nil
 	}
-	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, FirstAgentName, ownerUserID); err != nil {
+	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, name, ownerUserID); err != nil {
 		return out, false, err
 	}
-	if out.Key, out.KeyID, err = issue(ctx, tx, workspaceID, FirstAgentName); err != nil {
+	if out.Key, out.KeyID, err = issue(ctx, tx, workspaceID, name); err != nil {
 		return out, false, fmt.Errorf("economy: first agent's key: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO agent_account_keys (scoped_key_id, agent_id) VALUES ($1, $2)`, out.KeyID, out.Agent.ID); err != nil {
@@ -78,7 +85,11 @@ func (s *DualTokenStore) StartWorkspace(ctx context.Context, workspaceID, ownerU
 	}
 	out.Agent.Keys = []string{out.KeyID}
 	rulesCtx := WithRulesChange(ctx, ownerUserID, "template "+tmpl.ID)
-	if out.Rules, err = s.setAgentRulesTx(rulesCtx, tx, workspaceID, out.Agent.ID, tmpl.Rules); err != nil {
+	rules := tmpl.Rules
+	if adjust != nil {
+		adjust(&rules)
+	}
+	if out.Rules, err = s.setAgentRulesTx(rulesCtx, tx, workspaceID, out.Agent.ID, rules); err != nil {
 		return out, false, err
 	}
 	out.Template = tmpl.ID
