@@ -20,6 +20,8 @@ import (
 //	GET  /v1/money/accounts   ?agent_id= — the accounts and what each holds, test and live apart
 //	GET  /v1/money/accounts/{id}/details — what a payer pays into it (B30.14): the company account's details, and an
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
+//	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
+//	                          test money into a company account, a payment in from the Test partner
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.
@@ -29,6 +31,7 @@ type moneyAccountBank interface {
 	OpenCurrencyAccount(ctx context.Context, workspaceID, agentID, currency, funding string) (economy.CurrencyAccount, error)
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
+	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -95,6 +98,30 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"accounts": accounts})
+	})
+	r.Post("/v1/money/accounts/{id}/test-money", func(w http.ResponseWriter, req *http.Request) {
+		ws, _ := auth.WorkspaceIdentity(req.Context())
+		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); ws == "" || !owner {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may add test money")
+			return
+		}
+		var in struct {
+			AmountMinor    int64  `json:"amount_minor"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"amount_minor": <positive>, "idempotency_key": "<key>"}`)
+			return
+		}
+		e, err := bank.AddTestMoney(req.Context(), ws, chi.URLParam(req, "id"), in.AmountMinor, in.IdempotencyKey)
+		switch {
+		case errors.Is(err, economy.ErrTestMoney):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusCreated, e)
+		}
 	})
 	r.Get("/v1/money/accounts/{id}/details", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req, "")

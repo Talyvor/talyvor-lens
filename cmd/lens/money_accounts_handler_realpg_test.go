@@ -192,3 +192,62 @@ func TestMoneyAccountRoutes_DetailsReadTESTAndAnAgentsReferenceRoutesMoneyToIt(t
 		t.Errorf("the company's GBP balance = %+v; want 0: the money was the agent's", b)
 	}
 }
+
+// B17.255 — the owner adds test money to the company's GBP account: one balanced payment in from the partner account,
+// funding test; the same key again posts nothing more; a key without the owner's scope is refused and moves nothing.
+func TestMoneyAccountRoutes_TheOwnerAddsTestMoneyToTheCompanyAccountOnce(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b17255-test-money"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetAccountPartners(partners.NewRegistry(nil))
+	store.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
+	company, err := store.OpenCurrencyAccount(ctx, ws, "", "GBP", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountMoneyAccountRoutes(r, store)
+	add := func(who *auth.AuthContext, body string) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/money/accounts/"+company.ID+"/test-money", strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	agentKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-agent"}
+	if code, body := add(agentKey, `{"amount_minor":5000,"idempotency_key":"k1"}`); code != http.StatusForbidden {
+		t.Errorf("a key without the owner's scope = %d %s, want 403", code, body)
+	}
+	for range 2 {
+		if code, body := add(owner, `{"amount_minor":5000,"idempotency_key":"k1"}`); code != http.StatusCreated {
+			t.Fatalf("the owner adds £50.00 of test money = %d %s, want 201", code, body)
+		}
+	}
+	if code, body := add(owner, `{"amount_minor":0,"idempotency_key":"k2"}`); code != http.StatusBadRequest {
+		t.Errorf("no amount = %d %s, want 400", code, body)
+	}
+	var got []string
+	rows, err := pool.Query(ctx, `SELECT a.purpose, p.amount_minor, p.funding FROM money_postings p JOIN money_accounts a ON a.id = p.account_id
+		WHERE a.workspace_id = $1 ORDER BY p.amount_minor`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var purpose, funding string
+		var amount int64
+		if err := rows.Scan(&purpose, &amount, &funding); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %d %s", purpose, amount, funding))
+	}
+	rows.Close()
+	if want := "partner -5000 test; company 5000 test"; strings.Join(got, "; ") != want {
+		t.Fatalf("the ledger holds %v; want %s: one payment in, posted once", got, want)
+	}
+	if b, _ := store.Balance(ctx, ws, company.ID); b.TestMinor != 5000 || b.LiveMinor != 0 {
+		t.Errorf("the company's GBP balance = %+v; want 5000 test pence and no live money", b)
+	}
+}

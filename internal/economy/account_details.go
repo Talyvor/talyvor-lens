@@ -108,6 +108,29 @@ type InboundPayment struct {
 	Funding           string `json:"funding"` // test ("" too) or live
 }
 
+// ErrTestMoney: test money asked for in an amount, or with a key, it cannot have.
+var ErrTestMoney = errors.New("economy: invalid test money")
+
+// AddTestMoney is B17.255: the owner puts amountMinor of test money into workspaceID's company account accountID, so
+// a preview can pay out of it. It is a payment in from the Test partner through ReceivePayment — screened, asked of
+// payments_in, posted once per key and funding test, so it never counts as real money.
+func (s *DualTokenStore) AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (MoneyEntry, error) {
+	if amountMinor <= 0 || strings.TrimSpace(key) == "" {
+		return MoneyEntry{}, fmt.Errorf("%w: it needs a positive amount_minor and an idempotency_key", ErrTestMoney)
+	}
+	var ref, currency string
+	err := s.pool.QueryRow(ctx, `SELECT partner_account_ref, currency FROM money_accounts
+		WHERE id = $1 AND workspace_id = $2 AND purpose = 'company' AND status = 'open'`, accountID, workspaceID).Scan(&ref, &currency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MoneyEntry{}, fmt.Errorf("%w: no open company account %s in this workspace", ErrMoneyAccountNotFound, accountID)
+	}
+	if err != nil {
+		return MoneyEntry{}, fmt.Errorf("economy: add test money: %w", err)
+	}
+	return s.ReceivePayment(ctx, InboundPayment{PartnerAccountRef: ref, PartnerRef: "test_money:" + accountID + ":" + key,
+		Payer: "Talyvor test money", Reference: "Test money", AmountMinor: amountMinor, Currency: currency, Funding: FundingTest})
+}
+
 // paymentReference is an agent account's payment reference, found in what a payer quoted once it is upper-cased and
 // stripped of everything but letters and digits.
 var paymentReference = regexp.MustCompile(`TLV[0-9A-F]{12}`)
