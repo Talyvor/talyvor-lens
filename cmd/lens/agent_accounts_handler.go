@@ -123,6 +123,15 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/wallet   its balance and the address that pays into it; mode TEST and a
 //	                                                notice while the sandbox made the address up
 //
+// B48.1 — an agent is fiat, crypto or both, and owns one wallet of each kind it is (agent_wallet_kinds.go):
+//
+//	POST /v1/workspaces/{wsID}/agents  {"name", "wallet_kind"?: "fiat"|"crypto"|"both", "fiat_currency"?: "GBP"|"EUR"|"USD"}
+//	                                                     create an agent of a kind (default crypto; fiat wallet in EUR)
+//	GET  /v1/workspaces/{wsID}/agents/{id}/wallets       its wallets, their balances and how to pay into each
+//	PUT  /v1/workspaces/{wsID}/agents/{id}/wallet-kind  {"wallet_kind", "fiat_currency"?}   add or remove a kind:
+//	                                                     409 while a wallet it would close holds money
+//	GET  /v1/workspaces/{wsID}/agents/owner-wallets      the owner's wallet in each asset their agents use
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -134,7 +143,10 @@ import (
 // agents and issuing keys take the workspace's owner or an admin; reading takes any of its credentials.
 
 type agentBank interface {
-	CreateAgent(ctx context.Context, workspaceID, name, ownerUserID string) (economy.Agent, error)
+	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string) (economy.Agent, error)
+	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
+	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
+	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -212,6 +224,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			Owner string `json:"owner_user_id"` // an admin credential names the person; anyone else owns what they create
 			// B28.29: the rule template it starts from; the agent is created with exactly its rules.
 			Template string `json:"template"`
+			// B48.1: fiat, crypto (the default) or both, and the currency of its fiat wallet.
+			WalletKind   string `json:"wallet_kind"`
+			FiatCurrency string `json:"fiat_currency"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.Name == "" {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<agent name>"}`)
@@ -229,7 +244,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				owner = in.Owner
 			}
 		}
-		a, err := bank.CreateAgent(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner)
+		if in.WalletKind == "" {
+			in.WalletKind = economy.WalletKindCrypto
+		}
+		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency)
+		if errors.Is(err, economy.ErrWalletKind) {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if errors.Is(err, economy.ErrAgentOwnerless) {
 			writeJSONErr(w, http.StatusBadRequest, "an agent needs an owner: create it signed in as the person who will own it")
 			return
@@ -405,6 +427,44 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		default:
 			writeJSONOK(w, http.StatusOK, wallet)
 		}
+	})
+	writeWallets := func(w http.ResponseWriter, out economy.AgentWallets, err error) {
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrWalletKind):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrWalletNotEmpty), errors.Is(err, economy.ErrAgentArchived):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrAgentWalletsOff):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, money.ErrPartnerDown):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, out)
+		}
+	}
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallets", func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.AgentWallets(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeWallets(w, out, err)
+	})
+	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/wallet-kind", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			WalletKind   string `json:"wallet_kind"`
+			FiatCurrency string `json:"fiat_currency"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.WalletKind == "" {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"wallet_kind": "fiat"|"crypto"|"both", "fiat_currency"?: "GBP"|"EUR"|"USD"}`)
+			return
+		}
+		out, err := bank.SetAgentWalletKind(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.WalletKind, in.FiatCurrency)
+		writeWallets(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/owner-wallets", func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.OwnerWallets(req.Context(), chi.URLParam(req, "wsID"))
+		writeWallets(w, out, err)
 	})
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules

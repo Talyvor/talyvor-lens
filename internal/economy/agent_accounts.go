@@ -60,6 +60,9 @@ type Agent struct {
 	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
 	// Kind is agent, or room for a room's wallet (B32.32): its owner funds it and sets its rules as any agent's.
 	Kind string `json:"kind"`
+	// B48.1: fiat, crypto or both — the wallets it owns — and the currency its fiat wallet is in.
+	WalletKind   string `json:"wallet_kind"`
+	FiatCurrency string `json:"fiat_currency"`
 }
 
 // AgentKindRoom is a room's wallet (B32.32). It does not count toward the agents a plan allows.
@@ -246,6 +249,16 @@ func lockAgent(ctx context.Context, tx pgx.Tx, workspaceID, agentID string) erro
 // CreateAgent creates an agent account in workspaceID, with no balance, owned by ownerUserID — the person
 // creating it (B19.11) — or refuses it with a *plans.Refusal past the agents its plan allows (B32.12).
 func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, ownerUserID string) (Agent, error) {
+	return s.CreateAgentOfKind(ctx, workspaceID, name, ownerUserID, WalletKindCrypto, "")
+}
+
+// CreateAgentOfKind creates an agent that is kind — fiat, crypto or both — and opens its wallets (B48.1); its fiat
+// wallet is in fiat, EUR when "".
+func (s *DualTokenStore) CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string) (Agent, error) {
+	fiat, err := checkWalletKind(kind, fiat)
+	if err != nil {
+		return Agent{}, err
+	}
 	if workspaceID == "" || name == "" {
 		return Agent{}, errors.New("economy: an agent needs a workspace and a name")
 	}
@@ -260,14 +273,14 @@ func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, own
 	if err := lockWorkspaceAgents(ctx, tx, workspaceID); err != nil {
 		return Agent{}, err
 	}
-	a, err := createAgentTx(ctx, tx, workspaceID, name, ownerUserID)
+	a, err := createAgentTx(ctx, tx, workspaceID, name, ownerUserID, kind, fiat)
 	if err != nil {
 		return Agent{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Agent{}, err
 	}
-	s.openNewAgentWallet(ctx, workspaceID, a.ID) // B46.4
+	s.openNewAgentWallet(ctx, workspaceID, a.ID, kind, fiat) // B46.4, B48.1
 	return a, nil
 }
 
@@ -281,7 +294,7 @@ func lockWorkspaceAgents(ctx context.Context, tx pgx.Tx, workspaceID string) err
 }
 
 // createAgentTx is CreateAgent in tx, which holds the workspace's agents lock.
-func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserID string) (Agent, error) {
+func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserID, kind, fiat string) (Agent, error) {
 	// B32.12: no more agents than the workspace's plan allows (LENS_PLAN_GATES); an archived agent is retired
 	// for good and does not count, nor does a room's wallet (B32.32). Counted under the workspace's lock, so two
 	// creates cannot both take the last place.
@@ -297,9 +310,9 @@ func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserI
 	if !plans.Within(n+1, plan.Agents) {
 		return Agent{}, plan.RefuseCount(plans.Current(), "agents", plan.Agents)
 	}
-	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{}, OwnerUserID: ownerUserID, Kind: "agent"}
-	err = tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id) VALUES ($1, $2, $3, $4) RETURNING created_at`,
-		a.ID, workspaceID, name, ownerUserID).Scan(&a.CreatedAt)
+	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{}, OwnerUserID: ownerUserID, Kind: "agent", WalletKind: kind, FiatCurrency: fiat}
+	err = tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id, wallet_kind, wallet_fiat_currency)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at`, a.ID, workspaceID, name, ownerUserID, kind, fiat).Scan(&a.CreatedAt)
 	if err != nil {
 		return Agent{}, fmt.Errorf("economy: create agent: %w", err)
 	}
@@ -527,7 +540,7 @@ func (s *DualTokenStore) AgentBook(ctx context.Context, workspaceID string) (Age
 		}
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT a.id, a.name, a.kind, a.description, a.archived_at, a.created_at, a.paused_at, a.paused_reason, a.owner_user_id, COALESCE(a.handle, ''),
+		SELECT a.id, a.name, a.kind, a.wallet_kind, a.wallet_fiat_currency, a.description, a.archived_at, a.created_at, a.paused_at, a.paused_reason, a.owner_user_id, COALESCE(a.handle, ''),
 		       COALESCE((SELECT b.balance_ulxc FROM agent_account_balances b WHERE b.workspace_id = a.workspace_id AND b.account = 'agent:' || a.id), 0)::bigint,
 		       COALESCE((SELECT sum(amount_ulxc) FROM agent_postings p WHERE p.workspace_id = a.workspace_id AND p.account = 'agent:' || a.id
 		                   AND p.kind IN ('spend', 'hold', 'settle', 'release', 'card', 'platform_fee')), 0)::bigint,
@@ -542,7 +555,7 @@ func (s *DualTokenStore) AgentBook(ctx context.Context, workspaceID string) (Age
 	for rows.Next() {
 		var a Agent
 		var spendLegs int64
-		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Description, &a.ArchivedAt, &a.CreatedAt, &a.PausedAt, &a.PausedReason, &a.OwnerUserID, &a.Handle, &a.BalanceULXC, &spendLegs, &a.Keys, &a.PotsULXC); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.WalletKind, &a.FiatCurrency, &a.Description, &a.ArchivedAt, &a.CreatedAt, &a.PausedAt, &a.PausedReason, &a.OwnerUserID, &a.Handle, &a.BalanceULXC, &spendLegs, &a.Keys, &a.PotsULXC); err != nil {
 			return book, err
 		}
 		a.SpentULXC = -spendLegs
