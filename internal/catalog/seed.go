@@ -58,7 +58,9 @@ func seedModels() []Model {
 		{ID: "tts-1", Provider: "openai", DisplayName: "TTS 1", ReleaseDate: "2023-11-06", Tier: TierSpeech, Per1MChars: 15.00},
 		{ID: "tts-1-hd", Provider: "openai", DisplayName: "TTS 1 HD", ReleaseDate: "2023-11-06", Tier: TierSpeech, Per1MChars: 30.00},
 		// B38.1: cached input $0.025 from the pricing page (read 2026-10-09) — see the gpt-4.1 rows below.
-		{ID: "gpt-4.1-nano", Provider: "openai", DisplayName: "GPT-4.1 nano", ReleaseDate: "2025-04-14", Tier: TierFast, InputPer1M: 0.10, OutputPer1M: 0.40, CachedInputPer1M: 0.025, Capabilities: vision, ContextTokens: 1000000, MaxOutput: 32768},
+		// B17.277 — OpenAI answers gpt-4.1-nano with 404 model_not_found ("has been deprecated"; e2e run of
+		// 2026-10-26): out of the picker, price kept for history. No successor: OpenAI's page names none.
+		{ID: "gpt-4.1-nano", Provider: "openai", DisplayName: "GPT-4.1 nano", ReleaseDate: "2025-04-14", Tier: TierFast, InputPer1M: 0.10, OutputPer1M: 0.40, CachedInputPer1M: 0.025, Capabilities: vision, ContextTokens: 1000000, MaxOutput: 32768, Deprecated: true},
 		// B38.3: its LongPrompt — see gpt-5.5 in the GPT-5.5 / 5.6 block below.
 		{ID: "gpt-5.4", Provider: "openai", DisplayName: "GPT-5.4", ReleaseDate: "2026-03-05", Tier: TierBalanced, InputPer1M: 2.50, OutputPer1M: 15.00, CachedInputPer1M: 0.25, Capabilities: vision, ContextTokens: 400000, MaxOutput: 128000,
 			LongPrompt: &LongPromptRates{AboveTokens: 272000, InputPer1M: 5.00, OutputPer1M: 22.50, CachedInputPer1M: 0.50}},

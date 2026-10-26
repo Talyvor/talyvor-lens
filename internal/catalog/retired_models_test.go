@@ -37,3 +37,17 @@ func TestCatalog_RetiredOpus41LeavesThePickerKeepsItsPriceAndNamesOpus48(t *test
 		t.Errorf("successor %s is not an offered model (ok=%v, %+v)", m.RetiredSuccessor, ok, s)
 	}
 }
+
+// B17.277 — OpenAI retired GPT-4.1 nano (404 model_not_found): out of the picker, its price kept for history.
+func TestCatalog_RetiredGPT41NanoLeavesThePickerAndKeepsItsPrice(t *testing.T) {
+	m, ok := Get("gpt-4.1-nano")
+	if !ok {
+		t.Fatal("gpt-4.1-nano is gone from the catalog — a past request under it could no longer price")
+	}
+	if !m.Deprecated {
+		t.Error("gpt-4.1-nano is not deprecated — the chat picker still offers a model OpenAI retired")
+	}
+	if m.InputPer1M != 0.10 || m.OutputPer1M != 0.40 || m.CachedInputPer1M != 0.025 {
+		t.Errorf("gpt-4.1-nano prices changed: %+v", m)
+	}
+}
