@@ -61,8 +61,8 @@ type acct struct {
 }
 
 type tx struct {
-	ID, Account, Type, Status, Counterparty, Label, Debtor string
-	Amount                                                 int64
+	ID, Account, Type, Status, Counterparty, Label, Debtor, Payment string
+	Amount                                                          int64
 }
 
 type payment struct {
@@ -331,7 +331,8 @@ func (f *Fake) grant(in map[string]any) any {
 	from.Available -= p.Amount
 	p.Status = "Initiated"
 	f.sent++
-	out := &tx{ID: f.id("tx"), Account: from.ID, Type: "SepaCreditTransferOut", Status: "Pending", Counterparty: p.Name, Label: p.Label, Amount: p.Amount}
+	out := &tx{ID: f.id("tx"), Account: from.ID, Type: "SepaCreditTransferOut", Status: "Pending", Counterparty: p.Name, Label: p.Label,
+		Payment: p.ID, Amount: p.Amount}
 	f.txs[out.ID] = out
 	for _, to := range f.accounts {
 		if to.IBAN == p.IBAN && to.Status == "Opened" {
@@ -353,6 +354,9 @@ func (f *Fake) txJSON(id string) any {
 		"statusInfo": map[string]any{"status": t.Status}, "account": map[string]any{"id": t.Account}, "counterparty": t.Counterparty, "label": t.Label}
 	if t.Debtor != "" {
 		j["debtor"] = map[string]any{"IBAN": t.Debtor}
+	}
+	if t.Payment != "" {
+		j["paymentId"] = t.Payment
 	}
 	return j
 }
@@ -422,9 +426,30 @@ func (f *Fake) Sent() int {
 	return f.sent
 }
 
+// Settle books the SEPA transfer out that payment paymentID made, as SEPA settling it does — or, with status
+// "Rejected", rejects it and gives the money back to the account — and answers its transaction.
+func (f *Fake) Settle(paymentID, status string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.txs {
+		if t.Payment == paymentID && t.Type == "SepaCreditTransferOut" {
+			if t.Status = status; status == "Rejected" {
+				f.accounts[t.Account].Available += t.Amount
+			}
+			return t.ID
+		}
+	}
+	return ""
+}
+
 // Notify is Swan's webhook that transaction txID was booked: its body and headers.
 func (f *Fake) Notify(eventID, txID string) ([]byte, http.Header) {
-	body, _ := json.Marshal(map[string]any{"eventType": "Transaction.Booked", "eventId": eventID, "eventDate": time.Now().UTC().Format(time.RFC3339),
+	return f.NotifyEvent("Transaction.Booked", eventID, txID)
+}
+
+// NotifyEvent is Swan's webhook of eventType about transaction txID: its body and headers.
+func (f *Fake) NotifyEvent(eventType, eventID, txID string) ([]byte, http.Header) {
+	body, _ := json.Marshal(map[string]any{"eventType": eventType, "eventId": eventID, "eventDate": time.Now().UTC().Format(time.RFC3339),
 		"projectId": f.ProjectID, "resourceId": txID})
 	return body, http.Header{"X-Swan-Secret": {f.WebhookSecret}}
 }

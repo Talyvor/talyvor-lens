@@ -95,8 +95,9 @@ type cleared struct{}
 func (cleared) CapabilityCleared(context.Context, string) (bool, error) { return true, nil }
 
 type ledger struct {
-	mu      sync.Mutex
-	credits []money.Event
+	mu        sync.Mutex
+	credits   []money.Event
+	transfers []money.Event
 }
 
 func (l *ledger) PostCredit(_ context.Context, _ string, e money.Event) (string, error) {
@@ -104,6 +105,13 @@ func (l *ledger) PostCredit(_ context.Context, _ string, e money.Event) (string,
 	defer l.mu.Unlock()
 	l.credits = append(l.credits, e)
 	return "ws", nil
+}
+
+func (l *ledger) SettleTransfer(_ context.Context, _ string, e money.Event) (string, string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.transfers = append(l.transfers, e)
+	return "ws", "mpay_" + e.PartnerRef, nil
 }
 
 type replays struct{ taken sync.Map }

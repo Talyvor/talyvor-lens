@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 )
@@ -22,7 +23,8 @@ import (
 // money_payments.go — B30.17: SEND MONEY TO PEOPLE AND COMPANIES OUTSIDE TALYVOR.
 //
 // A payment out pays a saved payee (B30.16) from the company's account in one currency or from one of its agents'
-// sub-accounts, through the account partner — the Test partner until payments_out (RED) is cleared. From an agent's
+// sub-accounts, through the money layer's Transfers (B46.8, money_payments_layer.go) — the sandbox, on the Test
+// partner, until payments_out (RED) is cleared and a partner is switched on. From an agent's
 // account it is judged by the agent's rules as spending, at what it is worth in LXC at the conversion partner's rate:
 // its limits per payment, hour, day, week and month, its payee lists and caps, and its approval amount — a payment
 // above that files an approval and moves nothing until the owner approves it and the agent asks again. Then it is
@@ -192,13 +194,12 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	case s.screener == nil:
 		return OutsidePayment{}, fmt.Errorf("%w: no screener is set, so no money moves out", partners.ErrScreeningUnavailable)
 	}
-	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
-	if err != nil {
+	p := in
+	p.ID, p.WorkspaceID, p.AccountID, p.AgentID, p.PayeeName, p.Status =
+		"mpay_"+uuid.NewString(), workspaceID, from.id, from.agentID, payee.Name, PaymentPending
+	if p.Partner, err = s.outsidePartner(ctx, p, payee); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
-	p := in
-	p.ID, p.WorkspaceID, p.AccountID, p.AgentID, p.PayeeName, p.Status, p.Partner =
-		"mpay_"+uuid.NewString(), workspaceID, from.id, from.agentID, payee.Name, PaymentPending, partner.Name()
 	var payer string
 	if p.QuoteID == "" && payeeCurrency(payee) != p.Currency { // B30.22: never sent without its fee and rate shown first
 		return OutsidePayment{}, fmt.Errorf("%w: %s's account is in %s: an international payment is made at a quote — POST /v1/money/payments/quote first, then pay with its quote_id",
@@ -290,11 +291,8 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
 
-	res, err := partner.SendPayment(partners.WithWorkspace(ctx, workspaceID), p.sendRequest(from, payee))
-	switch {
-	case errors.Is(err, partners.ErrInvalid), errors.Is(err, partners.ErrNotFound), errors.Is(err, partners.ErrIDReused):
-		res = partners.Result{Status: partners.StatusFailed, Detail: err.Error()}
-	case err != nil: // the partner did not answer: the money stays held, and the payment is sent again when it is read
+	res, ok := s.sendOutside(ctx, p, from, payee)
+	if !ok { // the partner did not answer: the money stays held, and the payment is sent again when it is read
 		return p, nil
 	}
 	return s.applyPartnerResult(ctx, p, from.partnerID, res)
@@ -408,7 +406,7 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		}
 		return err
 	}
-	status := p.Status
+	status, was := p.Status, p.Status
 	switch res.Status {
 	case partners.StatusPending:
 		if status == PaymentPending {
@@ -451,6 +449,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 	for _, e := range moved {
 		s.monitorMoved(ctx, e)
 	}
+	if status == PaymentFailed && was != PaymentFailed {
+		s.notifyPaymentFailed(p)
+	}
 	return p, nil
 }
 
@@ -471,18 +472,19 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 		return p, err
 	}
 	var res partners.Result
-	pctx := partners.WithWorkspace(ctx, workspaceID)
 	if p.PartnerRef == "" {
 		payee, err := s.outsidePayee(ctx, s.pool, workspaceID, p.PayeeID, "")
 		if err != nil {
 			return p, err
 		}
-		res, err = partner.SendPayment(pctx, p.sendRequest(from, payee))
-		if errors.Is(err, partners.ErrInvalid) || errors.Is(err, partners.ErrNotFound) || errors.Is(err, partners.ErrIDReused) {
-			res, err = partners.Result{Status: partners.StatusFailed, Detail: err.Error()}, nil
+		ok := false
+		if res, ok = s.sendOutside(ctx, p, from, payee); !ok {
+			return p, nil
 		}
-	} else {
-		res, err = partner.PaymentStatus(pctx, p.PartnerRef)
+	} else if p.Partner != partner.Name() && p.Partner != money.SandboxName {
+		return p, nil // B46.8: a live adapter tells where its transfer stands by its webhook (SettleOutsidePayment)
+	} else { // the sandbox's transfers are the Test account partner's
+		res, err = partner.PaymentStatus(partners.WithWorkspace(ctx, workspaceID), p.PartnerRef)
 	}
 	if err != nil { // shortcut: a partner that forgot the payment (the Test partner after a restart) leaves it as it was; upgrade with a real partner's webhooks
 		return p, nil

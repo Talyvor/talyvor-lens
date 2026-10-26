@@ -665,6 +665,7 @@ type transaction struct {
 	} `json:"account"`
 	Counterparty string `json:"counterparty"`
 	Label        string `json:"label"`
+	PaymentID    string `json:"paymentId"` // the payment a transfer out was made by
 	Debtor       struct {
 		IBAN string `json:"IBAN"`
 	} `json:"debtor"`
@@ -673,12 +674,15 @@ type transaction struct {
 // incoming is the SEPA credits Swan books into an account from outside.
 var incoming = map[string]bool{"SepaCreditTransferIn": true, "SepaInstantCreditTransferIn": true}
 
+// outgoing is the SEPA transfers out of an account that Swan books, or rejects, after a payment is initiated.
+var outgoing = map[string]bool{"SepaCreditTransferOut": true, "SepaInstantCreditTransferOut": true}
+
 func (c *client) transaction(ctx context.Context, id string) (transaction, error) {
 	var out struct {
 		Transaction *transaction `json:"transaction"`
 	}
 	if err := c.do(ctx, "Transaction", `query Transaction($id: ID!) { transaction(id: $id) { id type amount { value currency } statusInfo { status }
-		account { id } counterparty label ... on SEPACreditTransferTransaction { debtor { IBAN } } } }`, map[string]any{"id": id}, &out); err != nil {
+		account { id } counterparty label paymentId ... on SEPACreditTransferTransaction { debtor { IBAN } } } }`, map[string]any{"id": id}, &out); err != nil {
 		return transaction{}, err
 	}
 	if out.Transaction == nil {
@@ -803,9 +807,29 @@ func (o onboarding) verification() money.Verification {
 
 type webhooks struct{ c *client }
 
+// settled is a transfer out of one of the project's accounts as the Event that settles its payment, by where Swan's API
+// says it stands: booked is completed, rejected or cancelled is failed, and anything else is still on its way.
+func (w webhooks) settled(ctx context.Context, eventID string, tx transaction) (money.Event, error) {
+	st := map[string]money.Status{"Booked": money.StatusCompleted, "Rejected": money.StatusFailed, "Canceled": money.StatusFailed}[tx.StatusInfo.Status]
+	if st == "" {
+		return money.Event{}, money.ErrNotACredit
+	}
+	if _, err := w.c.ours(ctx, tx.Account.ID); errors.Is(err, money.ErrNotFound) {
+		return money.Event{}, money.ErrNotACredit
+	} else if err != nil {
+		return money.Event{}, err
+	}
+	e := money.Event{ID: eventID, Kind: money.EventTransfer, To: tx.Account.ID, PartnerRef: tx.PaymentID, Status: st}
+	if st == money.StatusFailed {
+		e.Detail = "Swan " + strings.ToLower(tx.StatusInfo.Status) + " the transfer"
+	}
+	return e, nil
+}
+
 // Verify checks the secret Swan sends with every webhook, and reads a booked SEPA credit from outside into one of the
-// project's accounts as an Event, from Swan's API: the notification itself carries only the transaction's id. Any other
-// genuine notification is money.ErrNotACredit.
+// project's accounts as an Event, from Swan's API: the notification itself carries only the transaction's id. A SEPA
+// transfer out of one of them that Swan booked, rejected or cancelled is the Event that settles its payment (B46.8).
+// Any other genuine notification is money.ErrNotACredit.
 func (w webhooks) Verify(h http.Header, body []byte, _ time.Time) (money.Event, error) {
 	if got := h.Get(SecretHeader); got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(w.c.cfg.WebhookSecret)) != 1 {
 		return money.Event{}, money.ErrBadSignature
@@ -822,7 +846,9 @@ func (w webhooks) Verify(h http.Header, body []byte, _ time.Time) (money.Event, 
 	if n.ProjectID != w.c.cfg.ProjectID {
 		return money.Event{}, fmt.Errorf("%w: a notification for project %q", money.ErrBadSignature, n.ProjectID)
 	}
-	if n.EventType != "Transaction.Booked" {
+	switch n.EventType {
+	case "Transaction.Booked", "Transaction.Rejected", "Transaction.Canceled":
+	default:
 		return money.Event{}, money.ErrNotACredit
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second) // Swan waits 10 seconds for the answer
@@ -830,6 +856,9 @@ func (w webhooks) Verify(h http.Header, body []byte, _ time.Time) (money.Event, 
 	tx, err := w.c.transaction(ctx, n.ResourceID)
 	if err != nil {
 		return money.Event{}, err
+	}
+	if outgoing[tx.Type] && tx.PaymentID != "" {
+		return w.settled(ctx, n.EventID, tx)
 	}
 	if !incoming[tx.Type] || tx.StatusInfo.Status != "Booked" || tx.Amount.Currency != money.EUR {
 		return money.Event{}, money.ErrNotACredit

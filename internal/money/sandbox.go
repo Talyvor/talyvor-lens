@@ -160,11 +160,16 @@ func (s *sandbox) debitable(from string, amount Amount) (*holding, error) {
 }
 
 // send pays amount out of from to a payee through the Test partners, and debits it unless the partner refused it.
-// The caller holds s.mu.
+// From an account in pounds, euros or dollars the sandbox did not open — one the economy opened at the Test account
+// partner itself (B30.13), whose money the ledger keeps (B46.8) — the Test partner alone answers, and refuses an
+// account it does not hold. The caller holds s.mu.
 func (s *sandbox) send(ctx context.Context, key, from string, to Payee, amount Amount, reference string) (Result, error) {
-	h, err := s.debitable(from, amount)
-	if err != nil {
-		return Result{}, err
+	var h *holding
+	var err error
+	if _, ours := s.holdings[from]; ours || amount.Asset == USDC {
+		if h, err = s.debitable(from, amount); err != nil {
+			return Result{}, err
+		}
 	}
 	var r partners.Result
 	if amount.Asset == USDC {
@@ -181,7 +186,9 @@ func (s *sandbox) send(ctx context.Context, key, from string, to Payee, amount A
 	if r.Status == partners.StatusFailed {
 		return Result{}, fmt.Errorf("%w: %s", ErrRefused, r.Detail)
 	}
-	h.balance -= amount.Minor
+	if h != nil {
+		h.balance -= amount.Minor
+	}
 	return fromResult(r), nil
 }
 

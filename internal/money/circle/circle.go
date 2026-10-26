@@ -674,7 +674,8 @@ func (w webhooks) notifyKey(id string) (*ecdsa.PublicKey, error) {
 }
 
 // Verify checks Circle's signature — ECDSA SHA-256 over the raw body, by the key its id names — and reads a completed
-// USDC deposit into one of the adapter's wallets as an Event. Any other genuine notification is money.ErrNotACredit.
+// USDC deposit into one of the adapter's wallets as an Event, and a transfer out that completed or failed as the Event
+// that settles its payment (B46.8). Any other genuine notification is money.ErrNotACredit.
 // Circle's signature covers no timestamp: a notification is taken once by its id (ServeWebhook's replay check).
 func (w webhooks) Verify(h http.Header, body []byte, _ time.Time) (money.Event, error) {
 	id := h.Get(KeyIDHeader)
@@ -699,6 +700,18 @@ func (w webhooks) Verify(h http.Header, body []byte, _ time.Time) (money.Event, 
 		return money.Event{}, fmt.Errorf("%w: the body is not a notification: %v", money.ErrInvalid, err)
 	}
 	tx := n.Notification
+	if n.NotificationType == "transactions.outbound" && tx.TransactionType == "OUTBOUND" && tx.Blockchain == w.c.cfg.Blockchain && tx.ID != "" {
+		// B46.8: a transfer out has finished, one way or the other; a state on the way settles nothing.
+		st := status(tx.State)
+		if st == money.StatusPending {
+			return money.Event{}, money.ErrNotACredit
+		}
+		e := money.Event{ID: n.NotificationID, Kind: money.EventTransfer, To: tx.WalletID, PartnerRef: tx.ID, Status: st}
+		if st == money.StatusFailed {
+			e.Detail = "Circle answered " + tx.State
+		}
+		return e, nil
+	}
 	if n.NotificationType != "transactions.inbound" || tx.TransactionType != "INBOUND" || tx.State != "COMPLETE" || tx.Blockchain != w.c.cfg.Blockchain {
 		return money.Event{}, money.ErrNotACredit
 	}
