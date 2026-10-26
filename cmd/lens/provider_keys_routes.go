@@ -30,7 +30,11 @@ func newProviderKeysListHandler(s *byok.Store) http.HandlerFunc {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSONOK(w, http.StatusOK, map[string]any{"byok": on, "providers": byok.Providers, "keys": keys})
+		providers := byok.Providers
+		if !on {
+			providers = []string{} // B17.278: off the plan a key can be added for no provider
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"byok": on, "providers": providers, "keys": keys})
 	}
 }
 

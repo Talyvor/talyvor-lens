@@ -155,6 +155,11 @@ func TestB2726_ATestUserSubscribesToBYOKAt199AndAddsTheirKey(t *testing.T) {
 	if w := do(http.MethodPut, "/v1/workspaces/"+testWS+"/provider-keys/openai", putKey); w.Code != http.StatusPaymentRequired {
 		t.Fatalf("a key before the BYOK subscription = %d %s; want 402", w.Code, w.Body.String())
 	}
+	// B17.278: and the list offers no provider to add one for, and holds none.
+	if w := do(http.MethodGet, "/v1/workspaces/"+testWS+"/provider-keys", ""); w.Code != http.StatusOK ||
+		w.Body.String() != `{"byok":false,"keys":[],"providers":[]}`+"\n" {
+		t.Fatalf("the key list before the BYOK subscription = %d %q; want byok false, no keys, no providers", w.Code, w.Body.String())
+	}
 
 	// Plans → Choose BYOK: a Stripe test-mode checkout for the BYOK Price.
 	if w := do(http.MethodPost, "/v1/workspaces/"+testWS+"/billing/subscribe", `{"plan":"byok"}`); w.Code != http.StatusOK {
@@ -191,7 +196,7 @@ func TestB2726_ATestUserSubscribesToBYOKAt199AndAddsTheirKey(t *testing.T) {
 	}
 	w = do(http.MethodGet, "/v1/workspaces/"+testWS+"/provider-keys", "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"byok":true`) ||
-		!strings.Contains(w.Body.String(), `"provider":"openai","last4":"9f3c"`) || strings.Contains(w.Body.String(), ownKey) {
+		!strings.Contains(w.Body.String(), `"provider":"openai","last4":"9f3c"`) || !strings.Contains(w.Body.String(), `"providers":["anthropic",`) || strings.Contains(w.Body.String(), ownKey) {
 		t.Fatalf("the key list = %d %s; want byok and openai ending 9f3c, never the key", w.Code, w.Body.String())
 	}
 	var row []byte
