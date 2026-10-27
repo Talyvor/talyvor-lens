@@ -2163,6 +2163,12 @@ func run() error {
 				} else if res != (economy.LoanRunResult{}) {
 					slog.Info("agents: loan instalments", slog.Int("paid", res.Paid), slog.Int("missed", res.Missed), slog.Int("defaulted", res.Defaulted))
 				}
+				// B46.10: single-use cards unused 24 hours after issue, closed and their caps given back.
+				if n, err := dualToken.RunCardExpiries(ctx, now); err != nil {
+					slog.Warn("agents: card expiries failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: unused cards closed", slog.Int("closed", n))
+				}
 				// B22.6: escrows whose deadline passed without a dispute, released to their payees.
 				if n, err := dualToken.RunEscrowDeadlines(ctx, now); err != nil {
 					slog.Warn("agents: escrow deadlines failed", slog.String("err", err.Error()))
@@ -4730,6 +4736,7 @@ func run() error {
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
+		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50

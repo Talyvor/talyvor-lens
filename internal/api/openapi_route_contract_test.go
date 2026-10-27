@@ -439,6 +439,8 @@ const undocumentedB17255Routes = 1
 // 332 (B48.1): GET …/agents/{agentID}/wallets, PUT …/agents/{agentID}/wallet-kind and GET …/agents/owner-wallets — an
 // agent's wallets of each kind it is, and its owner's — on a line of their own.
 const undocumentedB481Routes = 3
+// B46.10: POST and GET /v1/money/cards, GET /v1/money/cards/{id} and POST …/{id}/approve — on a line of their own.
+const undocumentedB4610Routes = 4
 
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
@@ -453,10 +455,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes)
 	}
 }
