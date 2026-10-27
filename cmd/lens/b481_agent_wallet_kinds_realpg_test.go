@@ -22,7 +22,7 @@ import (
 )
 
 // B48.1 — through the sandbox adapter: an agent is fiat, crypto or both, and owns one wallet of each kind it is, each
-// with receive details of its own; the owner changes its kind, and a kind whose wallet still holds money is not removed;
+// with receive details of its own at the partner (shown only once a live partner serves them, B49.1); the owner changes its kind, and a kind whose wallet still holds money is not removed;
 // the owner has a wallet of each asset their agents use.
 func TestB481_AgentsAreFiatCryptoOrBothAndEachOwnsItsWallets(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -93,10 +93,26 @@ func TestB481_AgentsAreFiatCryptoOrBothAndEachOwnsItsWallets(t *testing.T) {
 	seen := map[string]string{}
 	own := func(agentID string, w economy.AgentWallet) {
 		t.Helper()
-		d := w.Receive
-		key := d.Address + d.IBAN + d.AccountNumber + "/" + w.PaymentReference
-		if key == "/" || w.AgentID != agentID || w.Mode != economy.DetailsTest {
-			t.Fatalf("%s's %s wallet = %+v; want its own TEST receive details", agentID, w.Asset, w)
+		if w.AgentID != agentID || w.Mode != economy.DetailsTest || w.Receive != (money.Details{}) || w.PaymentReference != "" {
+			t.Fatalf("%s's %s wallet = %+v; want a TEST wallet showing no made-up details", agentID, w.Asset, w)
+		}
+		// Its receive details are its own at the partner; the sandbox's reach nothing, so they are read there, never shown.
+		var ref string
+		if err := pool.QueryRow(ctx, `SELECT partner_account_ref FROM money_accounts WHERE id = $1`, w.AccountID).Scan(&ref); err != nil {
+			t.Fatal(err)
+		}
+		c := economy.CapabilityCurrencyAccounts
+		if w.Asset == money.USDC {
+			c = economy.CapabilityStablecoins
+		}
+		at, err := layer.Wallets(ctx, money.Route{Workspace: ws, Agent: agentID, Capability: c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := at.Receive(ctx, ref)
+		key := d.Address + d.IBAN + d.AccountNumber
+		if err != nil || key == "" {
+			t.Fatalf("%s's %s wallet has no receive details of its own at the partner: %+v (%v)", agentID, w.Asset, d, err)
 		}
 		if other, ok := seen[key]; ok {
 			t.Fatalf("%s's %s wallet pays into the same details as %s's", agentID, w.Asset, other)
@@ -167,8 +183,8 @@ func TestB481_AgentsAreFiatCryptoOrBothAndEachOwnsItsWallets(t *testing.T) {
 		t.Fatalf("owner wallets = %d %s, want GBP,USD,USDC", code, assets(ownerWallets))
 	}
 	for _, w := range ownerWallets.Wallets {
-		if w.AgentID != "" || w.Receive.Address+w.Receive.IBAN+w.Receive.AccountNumber == "" {
-			t.Fatalf("owner's %s wallet = %+v; want the workspace's, with receive details", w.Asset, w)
+		if w.AgentID != "" || w.AccountID == "" || w.Mode != economy.DetailsTest || w.Receive != (money.Details{}) {
+			t.Fatalf("owner's %s wallet = %+v; want the workspace's, showing no made-up details", w.Asset, w)
 		}
 	}
 }

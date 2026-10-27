@@ -220,7 +220,7 @@ func (s *DualTokenStore) subAccountWallet(ctx context.Context, workspaceID strin
 	}
 	w.Receive = money.Details{Asset: w.Asset, Holder: d.Holder, IBAN: d.IBAN, BIC: d.BIC, SortCode: d.SortCode,
 		AccountNumber: d.AccountNumber, RoutingNumber: d.RoutingNumber}
-	w.PaymentReference, w.Mode, w.Notice = d.PaymentReference, d.Mode, d.Notice
+	w.PaymentReference, w.Mode = d.PaymentReference, d.Mode
 	return w, nil
 }
 
@@ -295,23 +295,18 @@ func (s *DualTokenStore) ownerWallet(ctx context.Context, workspaceID, asset str
 		}
 		w.Receive = money.Details{Asset: asset, Holder: d.Holder, IBAN: d.IBAN, BIC: d.BIC, SortCode: d.SortCode,
 			AccountNumber: d.AccountNumber, RoutingNumber: d.RoutingNumber}
-		w.Mode, w.Notice = d.Mode, d.Notice
+		w.Mode = d.Mode
 		return w, nil
 	}
-	w.Receive, err = accounts.Details(ctx, ref)
-	if errors.Is(err, money.ErrNotFound) && w.Partner == money.SandboxName {
-		// As an agent's wallet: the sandbox forgets it when Lens restarts, and opening it again gives back the same one.
-		if again, oerr := accounts.Open(ctx, open); oerr == nil && again.Ref == ref {
-			w.Receive, err = accounts.Details(ctx, ref)
-		}
+	if w.Partner == money.SandboxName {
+		// As an agent's wallet: the sandbox's details reach nothing, so it shows none rather than made-up ones (B49.1).
+		w.Mode = DetailsTest
+		return w, nil
 	}
-	if err != nil {
+	if w.Receive, err = accounts.Details(ctx, ref); err != nil {
 		return AgentWallet{}, fmt.Errorf("economy: owner wallet's details: %w", err)
 	}
 	w.Mode = DetailsLive
-	if w.Partner == money.SandboxName {
-		w.Mode, w.Notice = DetailsTest, TestWalletNotice
-	}
 	return w, nil
 }
 
