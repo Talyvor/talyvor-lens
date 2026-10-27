@@ -4767,6 +4767,7 @@ func run() error {
 		roomStore.SetContextMessages(cfg.RoomContextMessages)     // B32.33: what the room's AI reads
 		roomStore.SetReportsHide(cfg.RoomReportsHide)             // B32.52: reports that take a public room off the list
 		mountRoomRoutes(authed, roomStore)
+		mountMoneyEarningsRoutes(authed, dualToken, roomStore) // B46.11: payouts of earnings on the money layer
 		// B32.52: the operator's queue of reported rooms, and keeping, locking, unlocking or closing one (operator audit).
 		r.Get("/v1/admin/rooms/reports", requireAdminOrModerator(authManager, moderatorKeys, newRoomReportQueueHandler(roomStore)))
 		r.Post("/v1/admin/rooms/{roomID}/moderate", requireAdminOrModerator(authManager, moderatorKeys, newRoomModerateHandler(roomStore)))
