@@ -51,7 +51,7 @@ Claims:
 | `owner.name` | the name the owner's verification confirmed — a person's or a company's; absent before any |
 | `owner.level` | the verification level the owner's checks reach: `L0` signed in, `L1` email and phone confirmed, `L2` identity checked, `L3` company checked (number, directors, people with significant control) |
 | `owner.live_level` | the level counting only checks by a real verification provider. Talyvor's test provider's passes count toward `level` and never toward `live_level` |
-| `capabilities` | every wallet capability, each with `money`: `live` when this agent may use it with real money now, `test` when it takes test money only |
+| `capabilities` | every wallet capability, each with `money`: `live` when this agent may use it with real money now, `test` when it takes sandbox funds only |
 | `limits` | a summary of the agent's spending rules in force now, temporary raises included, in µLXC (1 LXC = 1,000,000 µLXC). An absent limit is not set |
 
 `limits` may hold:

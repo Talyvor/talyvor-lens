@@ -82,7 +82,7 @@ func TestStatus_MoneyRails(t *testing.T) {
 	}
 
 	html := renderHTML(&got)
-	for _, want := range []string{"Money rails", "Preview — test money only",
+	for _, want := range []string{"Money rails",
 		`Sanctions screening<div class="msg">Test partner · no clearance needed</div></td><td><span class="pill bad">outage</span>`,
 		`Currency conversion<div class="msg">Test partner · cleared</div></td><td><span class="pill">no calls yet</span>`,
 		`Accounts and payments<div class="msg">Test partner · not cleared</div></td><td><span class="pill good">operational</span>`} {

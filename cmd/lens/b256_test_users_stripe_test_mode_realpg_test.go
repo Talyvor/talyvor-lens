@@ -357,7 +357,7 @@ func TestB256_ATestUsersBillPayoutsAndCardsStayInStripeTestModeAfterTheLiveSwitc
 	}
 	calls = fake.during(func() {
 		if code, body := call(r, rBuyer, http.MethodPost, "/v1/workspaces/"+rBuyer+"/agents/"+rAgent+"/card", holder); code != http.StatusConflict ||
-			!strings.Contains(body, "test money only") {
+			!strings.Contains(body, "no real money") {
 			t.Fatalf("the real agent's card with the live key = %d %s; want 409, as before", code, body)
 		}
 	})

@@ -148,7 +148,7 @@ func walletToolDefinitions() []map[string]any {
 		tool("wallet_account_open", "Open your account in GBP, EUR or USD: a sub-account of your company's in that currency, which opens first. "+
 			"It opens at zero.", map[string]any{"currency": str("GBP, EUR or USD"), "funding": str("test (the default) or live")}, "currency"),
 		tool("wallet_account_details", "The details a payer pays into your account in GBP, EUR or USD: your company's account details and "+
-			"your payment reference, which the payer quotes so the money reaches you. Mode TEST details are made up and reach no bank.",
+			"your payment reference, which the payer quotes so the money reaches you. Mode TEST answers carry no details: they come once a partner gives real ones.",
 			map[string]any{"currency": str("GBP, EUR or USD")}, "currency"),
 		tool("wallet_pay_external", "Pay a person or company outside Talyvor, saved by your owner as a payee, from your account in the "+
 			"currency, within your spending rules: one above your approval amount waits for your owner's approval, then ask again with the "+
@@ -159,7 +159,7 @@ func walletToolDefinitions() []map[string]any {
 				"funding":         str("test (the default) or live")}, "payee_id", "amount_minor", "currency", "idempotency_key"),
 		tool("wallet_invoice_create", "Issue an invoice, paid into your account in its currency: lines, a due date and optional VAT. "+
 			"It answers a pay_url the customer pays by card, by transfer or from their own agent; send true sends it at once, "+
-			"otherwise it waits as a draft. Preview — test money only.",
+			"otherwise it waits as a draft.",
 			map[string]any{"currency": str("GBP, EUR or USD: your account it is paid into"), "customer_name": str("who it is to"),
 				"customer_email": str("where its reminders go"), "customer_address": str("the customer's address"),
 				"customer_vat_number": str("the customer's VAT number"), "seller_vat_number": str("your company's VAT number"),
@@ -172,7 +172,7 @@ func walletToolDefinitions() []map[string]any {
 				"memo": str("a note on the invoice"), "send": map[string]any{"type": "boolean", "description": "send it now"}},
 			"currency", "customer_name", "lines", "due_date"),
 		tool("wallet_invoices", "The invoices you issued: draft, sent, overdue, paid or void, what is paid and due, and the reminders sent.", none),
-		tool("wallet_invoice_pay", "Pay an invoice from your account in its currency, with its pay link or the token at its end. Preview — test money only.",
+		tool("wallet_invoice_pay", "Pay an invoice from your account in its currency, with its pay link or the token at its end.",
 			map[string]any{"pay_token": str("the invoice's pay link, or its token"), "funding": str("test (the default) or live")}, "pay_token"),
 		tool("wallet_credential", "Your Know Your Agent credential: a signed token any platform can check against Talyvor's published keys. "+
 			"It says who you are, who answers for you and how far they are verified, what you may do with live money and your limits.", none),

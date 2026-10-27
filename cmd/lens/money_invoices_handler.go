@@ -146,9 +146,6 @@ type invoiceCardCheckout interface {
 	CreateInvoiceCheckoutSession(ctx context.Context, p billing.InvoiceCheckout) (string, error)
 }
 
-// invoicePayNotice is on every pay page: invoices are paid in test money only until their capabilities are cleared.
-const invoicePayNotice = "Preview — test money only. Nothing paid here moves real money."
-
 // mountInvoicePayRoutes mounts the pay link's public routes on r; cards is nil when no Stripe test-mode key is set,
 // and the page then offers no card.
 func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCardCheckout) {
@@ -161,10 +158,11 @@ func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCar
 			writeInvoiceErr(w, err)
 			return
 		}
-		page := map[string]any{"notice": invoicePayNotice, "card": cards != nil && payable(inv)}
+		page := map[string]any{"card": cards != nil && payable(inv)}
 		if payable(inv) {
 			// A transfer quotes the agent's payment reference, which routes it to the agent, and the invoice's.
-			if d, err := pages.CurrencyAccountDetails(req.Context(), inv.WorkspaceID, inv.AgentID, inv.AccountID); err == nil {
+			// The Test partner's details reach no bank, so a page on them offers no transfer (B49.1).
+			if d, err := pages.CurrencyAccountDetails(req.Context(), inv.WorkspaceID, inv.AgentID, inv.AccountID); err == nil && d.Mode == economy.DetailsLive {
 				page["transfer"] = map[string]any{"details": d.AccountDetails, "mode": d.Mode, "reference": d.PaymentReference + " " + inv.Reference}
 			} else {
 				slog.Info("invoice pay page: no account details to pay by transfer", "invoice", inv.ID, "err", err)

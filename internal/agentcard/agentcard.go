@@ -28,7 +28,7 @@ import (
 )
 
 // ErrLiveKey: the Stripe key is a live one, and cards are test money only.
-var ErrLiveKey = errors.New("agentcard: agent cards are test money only until a licensed partner issues them (class RED) — Lens holds a live Stripe key, so it issues none")
+var ErrLiveKey = errors.New("agentcard: agent cards take no real money until a licensed partner issues them (class RED) — Lens holds a live Stripe key, so it issues none")
 
 // ErrNotConfigured: Lens has no Stripe key.
 var ErrNotConfigured = errors.New("agentcard: no Stripe key is configured, so no card can be issued")

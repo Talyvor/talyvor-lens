@@ -188,7 +188,7 @@ func lotFunding(ledgerType string, amount int64, metadata map[string]interface{}
 }
 
 // ErrCapabilityNotCleared: live money for an AMBER or RED capability that has no clearance.
-var ErrCapabilityNotCleared = errors.New("economy: this capability takes test money only until Talyvor records a clearance")
+var ErrCapabilityNotCleared = errors.New("economy: this capability takes no real money until Talyvor records a clearance")
 
 // CapabilityRefusal says which capability refused live money, and its class — or, when the capability is
 // cleared but the workspace's plan keeps it on test money (B32.12), the plan's refusal; or, when the workspace's
@@ -236,7 +236,7 @@ func (e *CapabilityRefusal) Error() string {
 	case e.Country != nil:
 		return e.Country.message(e.Capability)
 	}
-	return fmt.Sprintf("%s is class %s: it takes test money only until Talyvor records a clearance for it, and this would use real money",
+	return fmt.Sprintf("%s is class %s: it takes no real money until Talyvor records a clearance for it, and this would use real money",
 		e.Capability.Name, e.Capability.Class)
 }
 

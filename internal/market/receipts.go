@@ -405,10 +405,9 @@ func (s *Store) Receipt(ctx context.Context, buyerWorkspaceID, id string) (Recei
 		r.MatchesStripe = &match
 	}
 	switch {
-	case r.Series == "test":
-		r.Preview, r.PreviewReason = true, "Preview — test money only"
+	case r.Series == "test": // its TEST- number marks it; it carries no preview line (B49.1)
 	case r.Supplier.VATNumber == "":
-		r.Preview, r.PreviewReason = true, "Preview — "+VATRegistrationPending
+		r.Preview, r.PreviewReason = true, VATRegistrationPending
 	}
 	return r, nil
 }

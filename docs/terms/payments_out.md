@@ -15,13 +15,13 @@ for the whole workspace, before its first use. They add to Talyvor's terms of se
    gave may not be recoverable.
 5. **Once it is sent.** A payment that has left the account cannot be cancelled by Talyvor. Talyvor will help you
    ask for it back, but cannot promise it will be returned.
-6. **Preview — test money only.** While this is a preview, it moves test money only: nothing you do with it moves
-   real money, and test money cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
+6. **Before real money.** Until Talyvor tells you otherwise, nothing you do with it moves real money, and what it
+   holds cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
    accept these terms again, before it moves real money.
 7. **Your agents.** Your agents use it only within the rules you set, and you are responsible for what they do with
    it, as if you had done it yourself.
-8. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money while it moves test money
-   only.
+8. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money before it moves
+   real money.
 9. **Checks and refusals.** Talyvor may refuse, hold or report a use where the law requires it, where a check fails,
    or where an operator has frozen your workspace while a case is reviewed.
 10. **New versions.** Talyvor may publish a new version of these terms. You will be asked to accept it, and your

@@ -78,9 +78,9 @@ func TestB464_ANewAgentHasAWalletItsBalanceAgreesAndBigPaymentsWaitForApproval(t
 	if code := call(owner, http.MethodGet, base+"/"+agent.ID+"/wallet", "", &wallet); code != http.StatusOK {
 		t.Fatalf("GET wallet = %d", code)
 	}
-	if wallet.Asset != money.USDC || wallet.Partner != money.SandboxName || wallet.Receive.Network != money.SandboxNetwork ||
-		!strings.HasPrefix(wallet.Receive.Address, "0x") || wallet.Mode != economy.DetailsTest || wallet.Notice != economy.TestWalletNotice || wallet.BalanceMinor != 0 {
-		t.Fatalf("a new agent's wallet = %+v; want an empty sandbox USDC wallet with an address on Base, marked TEST with the preview notice", wallet)
+	if wallet.Asset != money.USDC || wallet.Partner != money.SandboxName || wallet.Receive != (money.Details{}) ||
+		wallet.Mode != economy.DetailsTest || wallet.BalanceMinor != 0 {
+		t.Fatalf("a new agent's wallet = %+v; want an empty sandbox USDC wallet marked TEST, showing no made-up address", wallet)
 	}
 
 	// 2.5 USDC arrive at the wallet's address, reported by the sandbox twice.
@@ -152,8 +152,8 @@ type clearedForTest struct{}
 
 func (clearedForTest) CapabilityCleared(context.Context, string) (bool, error) { return true, nil }
 
-// B46.17 — once a live partner serves the wallet, its address is real, so neither the owner's GET …/wallet nor the
-// agent's agent_balance tool carries the preview notice.
+// B46.17, B49.1 — once a live partner serves the wallet, its address is real, so the owner's GET …/wallet and the
+// agent's agent_balance tool both show it, and neither carries a notice.
 func TestB4617_ALiveWalletCarriesNoPreviewNotice(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -197,8 +197,8 @@ func TestB4617_ALiveWalletCarriesNoPreviewNotice(t *testing.T) {
 	}
 	var wallet economy.AgentWallet
 	if code := call(owner, http.MethodGet, base+"/"+agent.ID+"/wallet", "", &wallet); code != http.StatusOK ||
-		wallet.Partner != partner || wallet.Mode != economy.DetailsLive || wallet.Notice != "" {
-		t.Fatalf("GET wallet = %d %+v; want the live partner's wallet, marked LIVE, with no preview notice", code, wallet)
+		wallet.Partner != partner || wallet.Mode != economy.DetailsLive || wallet.Receive.Address == "" {
+		t.Fatalf("GET wallet = %d %+v; want the live partner's wallet, marked LIVE, with its address", code, wallet)
 	}
 
 	if err := store.AttachAgentKey(ctx, ws, agent.ID, "key-b4617"); err != nil {
@@ -220,6 +220,6 @@ func TestB4617_ALiveWalletCarriesNoPreviewNotice(t *testing.T) {
 		Wallet economy.AgentWallet `json:"wallet"`
 	}
 	if err := json.Unmarshal([]byte(rpc.Result.Content[0].Text), &balance); err != nil || balance.Wallet != wallet {
-		t.Fatalf("agent_balance's wallet = %+v (%v); want the owner's view %+v, with no preview notice", balance.Wallet, err, wallet)
+		t.Fatalf("agent_balance's wallet = %+v (%v); want the owner's view %+v, with its address", balance.Wallet, err, wallet)
 	}
 }
