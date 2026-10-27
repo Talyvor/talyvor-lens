@@ -74,7 +74,7 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	if has {
 		return out, false, nil
 	}
-	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, name, ownerUserID); err != nil {
+	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, name, ownerUserID, WalletKindCrypto, CurrencyEUR); err != nil {
 		return out, false, err
 	}
 	if out.Key, out.KeyID, err = issue(ctx, tx, workspaceID, name); err != nil {
@@ -107,6 +107,6 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	if err := tx.Commit(ctx); err != nil {
 		return out, false, fmt.Errorf("economy: workspace start: %w", err)
 	}
-	s.openNewAgentWallet(ctx, workspaceID, out.Agent.ID) // B46.4
+	s.openNewAgentWallet(ctx, workspaceID, out.Agent.ID, WalletKindCrypto, CurrencyEUR) // B46.4
 	return out, true, nil
 }
