@@ -14,7 +14,8 @@ import (
 //
 // The room's owner pays out an amount from the room's wallet to its members, split by the room's terms at their
 // current version: equal shares, shares by the votes on each member's accepted contributions, or the shares the owner
-// decides (in basis points summing to 10,000). Only a live member who is not a viewer and has accepted the current
+// decides (in basis points summing to 10,000); a member's votes on their own work, and votes of anyone no longer a
+// voting member, do not count. Only a live member who is not a viewer and has accepted the current
 // terms is paid. The parts sum to the amount exactly (economy.SplitEarnings), and economy.PayEarnings pays each member
 // once, on the money layer, under the agreement "room <id> terms v<n> <rule>".
 
@@ -49,7 +50,9 @@ func (s *Store) Split(ctx context.Context, roomID, callerWS, key string, in Spli
 		return e, invalid("the room has no wallet to pay out from")
 	}
 	rows, err := s.pool.Query(ctx, `SELECT m.workspace_id, COALESCE((SELECT sum(GREATEST(v.tally, 0)) FROM (SELECT COALESCE(sum(rv.value), 0) AS tally
-			FROM room_contributions c LEFT JOIN room_votes rv ON rv.contribution_id = c.id
+			FROM room_contributions c LEFT JOIN room_votes rv ON rv.contribution_id = c.id AND rv.workspace_id <> c.author_workspace_id
+				AND EXISTS (SELECT 1 FROM room_members vm WHERE vm.room_id = c.room_id AND vm.workspace_id = rv.workspace_id
+					AND vm.removed_at IS NULL AND vm.role <> 'viewer')
 			WHERE c.room_id = m.room_id AND c.author_workspace_id = m.workspace_id AND c.status = 'accepted' GROUP BY c.id) v), 0)::bigint
 		FROM room_members m WHERE m.room_id = $1 AND m.removed_at IS NULL AND m.role <> 'viewer' AND m.terms_version = $2
 		ORDER BY m.joined_at, m.workspace_id`, roomID, version)

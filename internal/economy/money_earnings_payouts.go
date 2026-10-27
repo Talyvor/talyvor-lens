@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -145,7 +147,9 @@ func SplitEarnings(totalMinor int64, weights []int64) ([]int64, error) {
 	parts, rems := make([]int64, len(weights)), make([]int64, len(weights))
 	left := totalMinor
 	for i, w := range weights {
-		// shortcut: totalMinor×w overflows past ~9.2e18 combined, far beyond any one payout; use math/big if it ever is not
+		if w > 0 && totalMinor > math.MaxInt64/w {
+			return nil, fmt.Errorf("%w: %d is more than one split can be", ErrEarningsPayout, totalMinor)
+		}
 		parts[i], rems[i] = totalMinor*w/sum, totalMinor*w%sum
 		left -= parts[i]
 	}
@@ -324,7 +328,10 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 	if err != nil {
 		return nil, err
 	}
+	// Each share already paid out answers as it stands; the rest are new, and their total leaves the account.
 	var out []EarningsPayout
+	var fresh []int // indexes into out of the new shares
+	var freshTotal int64
 	for _, sh := range e.Shares {
 		if sh.AmountMinor == 0 {
 			continue
@@ -342,16 +349,37 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("economy: earnings payout: %w", err)
 		}
-		if balance < sh.AmountMinor {
-			return nil, fmt.Errorf("%w: the account holds %s of %s money, and these earnings are more", ErrAgentFunds,
-				minorString(balance, e.Currency), e.Funding)
+		fresh, freshTotal = append(fresh, len(out)), freshTotal+sh.AmountMinor
+		out = append(out, EarningsPayout{RecipientWorkspaceID: sh.WorkspaceID, ShareBPS: sh.ShareBPS, AmountMinor: sh.AmountMinor})
+	}
+	if freshTotal > balance {
+		return nil, fmt.Errorf("%w: the account holds %s of %s money, and these earnings are %s", ErrAgentFunds,
+			minorString(balance, e.Currency), e.Funding, minorString(freshTotal, e.Currency))
+	}
+	if e.AgentID != "" && freshTotal > 0 { // money leaving an agent's wallet is judged by its rules, as every payment it makes is
+		if err := lockAgent(ctx, tx, workspaceID, e.AgentID); err != nil {
+			return nil, err
 		}
-		balance -= sh.AmountMinor
-		if p, err = scanEarningsPayout(tx.QueryRow(ctx, `INSERT INTO money_earnings_payouts (id, workspace_id, agent_id, kind, source, agreement,
+		key := "earnings:" + e.Kind + ":" + e.Source
+		value, err := s.moneyValue(ctx, money.Op{Route: money.Route{Workspace: workspaceID}, Key: key, Amount: money.Amount{Minor: freshTotal, Asset: e.Currency}})
+		if err != nil {
+			return nil, err
+		}
+		fp := sha256.Sum256([]byte("earnings\x00" + e.AgentID + "\x00" + key + "\x00" + strconv.FormatInt(freshTotal, 10) + "\x00" + e.Currency))
+		rctx := WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Payee: Payee{Kind: "outside", ID: e.Source,
+			Name: e.Kind + " " + e.Source}, Memo: minorString(freshTotal, e.Currency) + " of " + e.Kind + " " + e.Source + " paid out"})
+		if err := enforceAgentRules(rctx, tx, workspaceID, e.AgentID, value, key); err != nil {
+			return nil, s.refusedMovement(rctx, tx, err)
+		}
+	}
+	for _, i := range fresh {
+		sh := out[i]
+		p, err := scanEarningsPayout(tx.QueryRow(ctx, `INSERT INTO money_earnings_payouts (id, workspace_id, agent_id, kind, source, agreement,
 			recipient_workspace_id, share_bps, amount_minor, currency, funding, account_id, hold_account_id, status)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+earningsPayoutCols,
-			"mpo_"+uuid.NewString(), workspaceID, e.AgentID, e.Kind, e.Source, e.Agreement, sh.WorkspaceID, sh.ShareBPS, sh.AmountMinor, e.Currency,
-			e.Funding, from.id, hold, PayoutHeld)); err != nil {
+			"mpo_"+uuid.NewString(), workspaceID, e.AgentID, e.Kind, e.Source, e.Agreement, sh.RecipientWorkspaceID, sh.ShareBPS, sh.AmountMinor, e.Currency,
+			e.Funding, from.id, hold, PayoutHeld))
+		if err != nil {
 			return nil, fmt.Errorf("economy: earnings payout: %w", err)
 		}
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "earnings_payout_hold",
@@ -359,7 +387,7 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 				{AccountID: from.id, AmountMinor: -p.AmountMinor}, {AccountID: hold, AmountMinor: p.AmountMinor}}}, s.screener); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out[i] = p
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("economy: earnings payout: %w", err)

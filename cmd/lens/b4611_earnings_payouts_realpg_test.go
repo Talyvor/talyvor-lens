@@ -161,6 +161,19 @@ func TestB4611_EarningsArePaidOutOnceOnTheMoneyLayerAndAPayeeWithoutVerifiedDeta
 	if got, want := b4611Postings(t, pool, held.ID), "earnings_payout_hold agent -333; earnings_payout_hold hold 333; earnings_payout hold -333; earnings_payout partner 333"; got != want {
 		t.Errorf("the released payout posted %q, want %q", got, want)
 	}
+
+	// Money leaving the agent's wallet is judged by its rules: over its limit per request, nothing is held or paid.
+	if _, err := b.store.SetAgentRules(ctx, ws, agent, economy.AgentRules{MaxPerRequestULXC: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := b.store.PayEarnings(ctx, ws, economy.Earnings{Kind: economy.EarningsRoyalty, Source: "royalty:over-limit", AgentID: agent,
+		Currency: "GBP", Shares: []economy.EarningsShare{{WorkspaceID: creator, AmountMinor: 100}}}); err == nil {
+		t.Fatalf("a payout over the agent's limit paid %+v, want refused", p)
+	}
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM money_earnings_payouts WHERE source = 'royalty:over-limit'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d payouts made over the agent's limit, want none", n)
+	}
 	b.balance(t, 50000-1500-250-1000)
 }
 
