@@ -174,7 +174,7 @@ func (s *DualTokenStore) AuthorizeAgentCard(ctx context.Context, a CardAuthoriza
 	case err != nil:
 		return d, fmt.Errorf("economy: card's agent: %w", err)
 	case a.Livemode:
-		return s.declineCard(ctx, a, d, "agent cards are test money only until a licensed partner issues them (class RED)")
+		return s.declineCard(ctx, a, d, "agent cards take no real money until a licensed partner issues them (class RED)")
 	case a.Refusal != "":
 		return s.declineCard(ctx, a, d, a.Refusal)
 	case a.AmountMinor <= 0:

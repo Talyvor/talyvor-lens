@@ -12,13 +12,13 @@ for the whole workspace, before its first use. They add to Talyvor's terms of se
 3. **Transfers are final.** A transfer on a public network cannot be reversed. USDC sent to a wrong address is
    usually lost, and Talyvor cannot recover it.
 4. **Checks first.** Addresses and transfers are screened before any USDC moves, and a match is refused or held.
-5. **Preview — test money only.** While this is a preview, it moves test money only: nothing you do with it moves
-   real money, and test money cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
+5. **Before real money.** Until Talyvor tells you otherwise, nothing you do with it moves real money, and what it
+   holds cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
    accept these terms again, before it moves real money.
 6. **Your agents.** Your agents use it only within the rules you set, and you are responsible for what they do with
    it, as if you had done it yourself.
-7. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money while it moves test money
-   only.
+7. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money before it moves
+   real money.
 8. **Checks and refusals.** Talyvor may refuse, hold or report a use where the law requires it, where a check fails,
    or where an operator has frozen your workspace while a case is reviewed.
 9. **New versions.** Talyvor may publish a new version of these terms. You will be asked to accept it, and your

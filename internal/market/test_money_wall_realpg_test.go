@@ -103,7 +103,7 @@ func TestMoneyWall_TestToRealIsRefusedAndWritesNoRow(t *testing.T) {
 
 	refused := func(what string, err error) {
 		t.Helper()
-		if !errors.Is(err, workspace.ErrMoneyWall) || !strings.Contains(err.Error(), "test money and real money never mix") {
+		if !errors.Is(err, workspace.ErrMoneyWall) || !strings.Contains(err.Error(), "a test workspace and a real one never pay each other") {
 			t.Errorf("%s across the wall = %v, want refused with the rule's words", what, err)
 		}
 	}

@@ -56,7 +56,7 @@ type TestCrossing struct {
 }
 
 // crossingNote is the reason every reversal gives.
-const crossingNote = "test money crossed the wall between a test workspace and a real one (B26.15)"
+const crossingNote = "money crossed the wall between a test workspace and a real one (B26.15)"
 
 // TestCrossings reads every transfer, escrow and market use whose two workspaces are one test and one real,
 // oldest first.
@@ -279,8 +279,8 @@ func reverseCrossingTx(ctx context.Context, tx pgx.Tx, c TestCrossing, paidWS, p
 		ws, other, otherAgent, desc string
 		delta                       int64
 	}{
-		{paidWS, payerWS, payerAgent, "test money that crossed the wall, taken back", -c.AmountULXC},
-		{payerWS, paidWS, paidAgent, "test money that crossed the wall, returned", c.AmountULXC},
+		{paidWS, payerWS, payerAgent, "money from a test workspace, taken back", -c.AmountULXC},
+		{payerWS, paidWS, paidAgent, "money from a test workspace, returned", c.AmountULXC},
 	} {
 		bal, minted, spent, err := readLXCBalance(ctx, tx, m.ws)
 		if err != nil {

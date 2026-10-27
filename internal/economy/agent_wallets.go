@@ -31,9 +31,6 @@ import (
 // ErrAgentWalletsOff: the money layer is not set, so no agent has a wallet.
 var ErrAgentWalletsOff = errors.New("economy: agent wallets are not set up")
 
-// TestWalletNotice is what a wallet whose details the sandbox made up says, in plain words (B46.17).
-const TestWalletNotice = "This address is a preview. It isn't on any chain yet, so don't send money to it."
-
 // AgentWallet is an agent's wallet: what it holds, and how to pay into it.
 type AgentWallet struct {
 	AccountID    string        `json:"account_id"`
@@ -43,35 +40,61 @@ type AgentWallet struct {
 	BalanceMinor int64         `json:"balance_minor"`
 	TestMinor    int64         `json:"test_minor"`
 	LiveMinor    int64         `json:"live_minor"`
-	Receive      money.Details `json:"receive"`
-	Mode         string        `json:"mode"` // TEST or LIVE
-	Notice       string        `json:"notice,omitempty"`
+	Receive      money.Details `json:"receive"` // empty while the sandbox serves the wallet: its address is on no chain
+	// PaymentReference is quoted with Receive when they are the owner's details, not the wallet's own (B48.1).
+	PaymentReference string `json:"payment_reference,omitempty"`
+	Mode             string `json:"mode"` // TEST or LIVE
 }
 
 // SetMoneyLayer opens every new agent's wallet on r, and reads them through it (B46.4).
 func (s *DualTokenStore) SetMoneyLayer(r *money.Registry) { s.moneyLayer = r }
 
-func agentWalletRoute(workspaceID, agentID string) money.Route {
-	return money.Route{Workspace: workspaceID, Agent: agentID, Capability: CapabilityStablecoins}
+func agentWalletRoute(workspaceID, agentID, asset string) money.Route {
+	c := CapabilityStablecoins
+	if asset != money.USDC {
+		c = CapabilityCurrencyAccounts
+	}
+	return money.Route{Workspace: workspaceID, Agent: agentID, Capability: c}
 }
 
-// agentWalletKey is the one idempotency key an agent's wallet is created under, so asking again opens no second one.
-func agentWalletKey(agentID string) string { return "agent_wallet:" + agentID + ":" + money.USDC }
+// agentWalletKey is the one idempotency key an agent's wallet in asset is created under, so asking again opens no
+// second one; a wallet opened again after its kind was removed (B48.1) is the reopened'th, under a key of its own.
+func agentWalletKey(agentID, asset string, reopened int) string {
+	k := "agent_wallet:" + agentID + ":" + asset
+	if reopened > 0 {
+		k += ":" + strconv.Itoa(reopened)
+	}
+	return k
+}
 
-// openNewAgentWallet opens a just-created agent's wallet. A failure leaves the agent without one until it is read.
-func (s *DualTokenStore) openNewAgentWallet(ctx context.Context, workspaceID, agentID string) {
+// openNewAgentWallet opens a just-created agent's wallets. A failure leaves the agent without one until it is read.
+func (s *DualTokenStore) openNewAgentWallet(ctx context.Context, workspaceID, agentID, kind, fiat string) {
 	if s.moneyLayer == nil {
 		return
 	}
-	if err := s.openAgentWallet(ctx, workspaceID, agentID); err != nil {
-		slog.Warn("economy: a new agent's wallet was not opened; it opens when it is first read",
-			slog.String("agent_id", agentID), slog.String("err", err.Error()))
+	for _, asset := range walletKindAssets(kind, fiat) {
+		if err := s.openAgentWallet(ctx, workspaceID, agentID, asset); err != nil {
+			slog.Warn("economy: a new agent's wallet was not opened; it opens when it is first read",
+				slog.String("agent_id", agentID), slog.String("asset", asset), slog.String("err", err.Error()))
+		}
 	}
 }
 
-// openAgentWallet creates agentID's wallet at the partner serving it and keeps it in the ledger, unless it has one.
-func (s *DualTokenStore) openAgentWallet(ctx context.Context, workspaceID, agentID string) error {
-	rt := agentWalletRoute(workspaceID, agentID)
+// closedAgentWallets is how many of agentID's wallets in asset were closed: the reopened count of its next one.
+func (s *DualTokenStore) closedAgentWallets(ctx context.Context, agentID, asset string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM money_accounts WHERE agent_id = $1 AND currency = $2 AND purpose = 'agent'
+		AND status = 'closed'`, agentID, asset).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("economy: open agent wallet: %w", err)
+	}
+	return n, nil
+}
+
+// openAgentWallet creates agentID's wallet in asset at the partner serving it and keeps it in the ledger, unless it has
+// one — an agent's account in that currency (B30.13) is its wallet too.
+func (s *DualTokenStore) openAgentWallet(ctx context.Context, workspaceID, agentID, asset string) error {
+	rt := agentWalletRoute(workspaceID, agentID, asset)
 	partner, err := s.moneyLayer.Partner(ctx, money.CapWallets, rt)
 	if err != nil {
 		return err
@@ -80,7 +103,22 @@ func (s *DualTokenStore) openAgentWallet(ctx context.Context, workspaceID, agent
 	if err != nil {
 		return err
 	}
-	wallet, err := wallets.Create(ctx, money.CreateWallet{Key: agentWalletKey(agentID), AgentID: agentID, Asset: money.USDC})
+	reopened, err := s.closedAgentWallets(ctx, agentID, asset)
+	if err != nil {
+		return err
+	}
+	wallet, err := wallets.Create(ctx, money.CreateWallet{Key: agentWalletKey(agentID, asset, reopened), AgentID: agentID, Asset: asset})
+	if errors.Is(err, money.ErrInvalid) && asset != money.USDC {
+		// B48.1: a partner that gives an agent no account of its own: the agent's sub-account of its owner's, paid
+		// into at the owner's details with the agent's payment reference.
+		if _, err := s.ownerWallet(ctx, workspaceID, asset); err != nil {
+			return err
+		}
+		if _, err := s.openAgentCurrencyAccount(ctx, workspaceID, agentID, asset); err != nil && !errors.Is(err, ErrCurrencyAccountExists) {
+			return err
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("economy: open agent wallet: %w", err)
 	}
@@ -94,82 +132,90 @@ func (s *DualTokenStore) openAgentWallet(ctx context.Context, workspaceID, agent
 	}
 	var name string
 	var has bool
-	if err := tx.QueryRow(ctx, `SELECT name, EXISTS (SELECT 1 FROM money_accounts WHERE agent_id = $1 AND currency = 'USDC'
-		AND purpose = 'agent' AND status <> 'closed') FROM agent_accounts WHERE id = $1`, agentID).Scan(&name, &has); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT name, EXISTS (SELECT 1 FROM money_accounts WHERE agent_id = $1 AND currency = $2
+		AND purpose = 'agent' AND status <> 'closed') FROM agent_accounts WHERE id = $1`, agentID, asset).Scan(&name, &has); err != nil {
 		return fmt.Errorf("economy: open agent wallet: %w", err)
 	}
 	if has {
 		return nil
 	}
 	insert := `INSERT INTO money_accounts (id, workspace_id, agent_id, currency, purpose, name, partner_account_ref)
-		VALUES ($1, $2, NULLIF($3, ''), 'USDC', $4, $5, $6)`
-	if _, err := tx.Exec(ctx, insert, "macc_"+uuid.NewString(), workspaceID, agentID, MoneyAgent, name, wallet.Ref); err != nil {
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7)`
+	if _, err := tx.Exec(ctx, insert, "macc_"+uuid.NewString(), workspaceID, agentID, asset, MoneyAgent, name, wallet.Ref); err != nil {
 		return fmt.Errorf("economy: open agent wallet: %w", err)
 	}
 	// shortcut: reconciliation reads statements from the account partner, which holds no USDC, so money through this
 	// mirror shows as missing there; upgrade when the stablecoin adapter (B46.5) gives statements.
-	if _, err := tx.Exec(ctx, insert, "macc_"+uuid.NewString(), workspaceID, "", MoneyPartner, partner, wallet.Ref); err != nil {
+	if _, err := tx.Exec(ctx, insert, "macc_"+uuid.NewString(), workspaceID, "", asset, MoneyPartner, partner, wallet.Ref); err != nil {
 		return fmt.Errorf("economy: open agent wallet: %w", err)
 	}
 	return tx.Commit(ctx)
 }
 
-// AgentWallet is agentID's wallet in workspaceID, opened now if it has none yet.
+// AgentWallet is agentID's wallet in workspaceID — its USDC wallet unless it is a fiat agent (B48.1), then its fiat
+// one — opened now if it has none yet.
 func (s *DualTokenStore) AgentWallet(ctx context.Context, workspaceID, agentID string) (AgentWallet, error) {
 	if s.moneyLayer == nil {
 		return AgentWallet{}, ErrAgentWalletsOff
 	}
-	w, ref, err := s.readAgentWallet(ctx, workspaceID, agentID)
+	kind, fiat, err := s.agentWalletKind(ctx, workspaceID, agentID)
+	if err != nil {
+		return AgentWallet{}, err
+	}
+	assets := walletKindAssets(kind, fiat)
+	return s.agentWalletIn(ctx, workspaceID, agentID, assets[len(assets)-1])
+}
+
+// agentWalletIn is agentID's wallet in asset, opened now if it has none yet.
+func (s *DualTokenStore) agentWalletIn(ctx context.Context, workspaceID, agentID, asset string) (AgentWallet, error) {
+	w, ref, sub, err := s.readAgentWallet(ctx, workspaceID, agentID, asset)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if err := s.openAgentWallet(ctx, workspaceID, agentID); err != nil {
+		if err := s.openAgentWallet(ctx, workspaceID, agentID, asset); err != nil {
 			return AgentWallet{}, err
 		}
-		w, ref, err = s.readAgentWallet(ctx, workspaceID, agentID)
+		w, ref, sub, err = s.readAgentWallet(ctx, workspaceID, agentID, asset)
 	}
 	if err != nil {
 		return AgentWallet{}, err
 	}
-	rt := agentWalletRoute(workspaceID, agentID)
-	wallets, err := s.moneyLayer.Wallets(ctx, rt)
+	if sub {
+		return s.subAccountWallet(ctx, workspaceID, w)
+	}
+	if w.Partner == money.SandboxName {
+		// The sandbox's address is on no chain: the wallet shows no details rather than made-up ones (B49.1).
+		w.Mode = DetailsTest
+		return w, nil
+	}
+	wallets, err := s.moneyLayer.Wallets(ctx, agentWalletRoute(workspaceID, agentID, asset))
 	if err != nil {
 		return AgentWallet{}, err
 	}
-	w.Receive, err = wallets.Receive(ctx, ref)
-	if errors.Is(err, money.ErrNotFound) && w.Partner == money.SandboxName {
-		// The sandbox keeps its wallets in memory, so after Lens restarts it is asked to create the wallet again: creating
-		// is idempotent on the key, and gives back the same reference and address.
-		if again, cerr := wallets.Create(ctx, money.CreateWallet{Key: agentWalletKey(agentID), AgentID: agentID, Asset: money.USDC}); cerr == nil && again.Ref == ref {
-			w.Receive, err = wallets.Receive(ctx, ref)
-		}
-	}
-	if err != nil {
+	if w.Receive, err = wallets.Receive(ctx, ref); err != nil {
 		return AgentWallet{}, fmt.Errorf("economy: agent wallet's details: %w", err)
 	}
 	w.Mode = DetailsLive
-	if w.Partner == money.SandboxName {
-		w.Mode, w.Notice = DetailsTest, TestWalletNotice
-	}
 	return w, nil
 }
 
-// readAgentWallet is agentID's open wallet as the ledger keeps it, and the partner's reference for it; pgx.ErrNoRows
-// when it has none.
-func (s *DualTokenStore) readAgentWallet(ctx context.Context, workspaceID, agentID string) (AgentWallet, string, error) {
-	w := AgentWallet{AgentID: agentID, Asset: money.USDC}
+// readAgentWallet is agentID's open wallet in asset as the ledger keeps it, the partner's reference for it, and whether
+// it is a sub-account of its owner's (B30.13); pgx.ErrNoRows when it has none.
+func (s *DualTokenStore) readAgentWallet(ctx context.Context, workspaceID, agentID, asset string) (AgentWallet, string, bool, error) {
+	w := AgentWallet{AgentID: agentID, Asset: asset}
 	var ref string
-	err := s.pool.QueryRow(ctx, `SELECT a.id, a.partner_account_ref, COALESCE(p.name, ''),
+	var sub bool
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.partner_account_ref, a.parent_account_id IS NOT NULL, COALESCE(p.name, ''),
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'test'), 0)::bigint,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'live'), 0)::bigint
 		FROM money_accounts a
 		LEFT JOIN money_accounts p ON p.workspace_id = a.workspace_id AND p.partner_account_ref = a.partner_account_ref AND p.purpose = 'partner'
 		LEFT JOIN money_account_balances b ON b.account_id = a.id
-		WHERE a.workspace_id = $1 AND a.agent_id = $2 AND a.currency = 'USDC' AND a.purpose = 'agent' AND a.status = 'open'
-		GROUP BY a.id, p.name`, workspaceID, agentID).Scan(&w.AccountID, &ref, &w.Partner, &w.TestMinor, &w.LiveMinor)
+		WHERE a.workspace_id = $1 AND a.agent_id = $2 AND a.currency = $3 AND a.purpose = 'agent' AND a.status = 'open'
+		GROUP BY a.id, p.name`, workspaceID, agentID, asset).Scan(&w.AccountID, &ref, &sub, &w.Partner, &w.TestMinor, &w.LiveMinor)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		err = fmt.Errorf("economy: agent wallet: %w", err)
 	}
 	w.BalanceMinor = w.TestMinor + w.LiveMinor
-	return w, ref, err
+	return w, ref, sub, err
 }
 
 // MoneyLimits is the owner's limits and one-tap approval the money layer asks before money leaves (money.Limits).

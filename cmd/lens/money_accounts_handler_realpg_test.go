@@ -93,10 +93,10 @@ func TestMoneyAccountRoutes_ACompanyAndItsAgentOpenAccountsAtZero(t *testing.T) 
 	}
 }
 
-// B30.14 — each company account's details read TEST and in its currency's form, an agent's account reads the company's
-// details and its own payment reference, and a test £120.00 quoting that reference — as a payer types it — lands in
-// the agent's account as one balanced entry from the partner account. Details still read after Lens restarts, when
-// the Test partner has forgotten the account.
+// B30.14, B49.1 — each company account's details read TEST and carry none of the Test partner's made-up details, an
+// agent's account reads its own payment reference, and a test £120.00 quoting that reference — as a payer types it —
+// lands in the agent's account as one balanced entry from the partner account. Details still read after Lens
+// restarts, when the Test partner has forgotten the account.
 func TestMoneyAccountRoutes_DetailsReadTESTAndAnAgentsReferenceRoutesMoneyToIt(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -136,23 +136,17 @@ func TestMoneyAccountRoutes_DetailsReadTESTAndAnAgentsReferenceRoutesMoneyToIt(t
 		}
 		return d
 	}
-	for cur, want := range map[string]func(d economy.CurrencyAccountDetails) bool{
-		"GBP": func(d economy.CurrencyAccountDetails) bool {
-			return d.SortCode == "00-00-00" && len(d.AccountNumber) == 8
-		},
-		"EUR": func(d economy.CurrencyAccountDetails) bool { return strings.Contains(d.IBAN, "TEST") && d.BIC != "" },
-		"USD": func(d economy.CurrencyAccountDetails) bool {
-			return d.RoutingNumber == "000000000" && len(d.AccountNumber) == 8
-		},
-	} {
+	// B49.1: the Test partner's details reach no bank, so the answer carries none of them — only TEST, and for an
+	// agent's account the payment reference that routes money to it.
+	for _, cur := range []string{"GBP", "EUR", "USD"} {
 		d := details(company[cur].ID)
-		if !want(d) || d.Mode != economy.DetailsTest || !strings.Contains(d.Notice, "test money only") || d.Currency != cur || d.PaymentReference != "" {
-			t.Errorf("the company's %s details = %+v; want made-up %s details, mode TEST, no payment reference", cur, d, cur)
+		if d.AccountDetails != (partners.AccountDetails{Currency: cur}) || d.Mode != economy.DetailsTest || d.PaymentReference != "" {
+			t.Errorf("the company's %s details = %+v; want no made-up details, mode TEST, no payment reference", cur, d)
 		}
 	}
 	ad := details(agentGBP.ID)
-	if ad.AccountNumber != details(company["GBP"].ID).AccountNumber || ad.Mode != economy.DetailsTest || len(ad.PaymentReference) != 15 {
-		t.Fatalf("the agent's GBP details = %+v; want the company's GBP details, TEST, and a TLV payment reference", ad)
+	if ad.AccountDetails != (partners.AccountDetails{Currency: "GBP"}) || ad.Mode != economy.DetailsTest || len(ad.PaymentReference) != 15 {
+		t.Fatalf("the agent's GBP details = %+v; want no made-up details, TEST, and a TLV payment reference", ad)
 	}
 
 	// The payer types the reference in lower case, split up, after an invoice number.

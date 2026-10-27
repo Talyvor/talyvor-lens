@@ -4,7 +4,7 @@ Each agent can hold one virtual card, issued through Stripe Issuing. Lens approv
 purchase made with it **in real time**, by the agent's spending rules (B19.2) and its balance. Every
 purchase request, approved or declined, is written to the ledger.
 
-Cards are **class RED** (B22): test money only until a licensed partner issues them. With a live Stripe
+Cards are **class RED** (B22): no real money until a licensed partner issues them. With a live Stripe
 key Lens issues no card, and it declines any purchase made in live mode. A purchase is also paid only from
 the workspace's **test-funded** credits (bought in Stripe test mode) until the operator clears cards for
 real money; past them it is declined as class RED. See docs/wallet-capabilities.md.

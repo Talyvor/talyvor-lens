@@ -53,7 +53,7 @@ func agentToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "agent_balance",
-			"description": "Your own wallet: balance, what you have spent, whether you are paused, your spending rules, and your USDC wallet with its balance and the address that pays into it.",
+			"description": "Your own wallet: balance, what you have spent, whether you are paused, your spending rules, and your USDC wallet with its balance and, once a partner serves it, the address that pays into it.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{

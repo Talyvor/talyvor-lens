@@ -805,7 +805,7 @@ func renderHTML(s *StatusResponse) string {
 
 	if len(s.Rails) > 0 {
 		b.WriteString(`<section><h2 class="eyebrow">Money rails</h2>
-<p class="note">Preview — test money only. A live partner moves real money only for a cleared capability.</p>
+<p class="note">A live partner moves real money only for a cleared capability.</p>
 <div class="tbl"><table class="rails"><thead><tr><th>Rail</th><th>Status</th></tr></thead><tbody>`)
 		// The times sit under the status rather than in columns of their own, so the table fits a 390px phone.
 		for _, r := range s.Rails {

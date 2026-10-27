@@ -67,7 +67,7 @@ func Report(f File, now time.Time) string {
 		line("Verified:  no completed verification on record")
 	}
 	if o.TestWorkspace {
-		line("This is a test workspace: all of its money is test money.")
+		line("This is a test workspace: none of its money is real.")
 	}
 
 	section("Agents involved")

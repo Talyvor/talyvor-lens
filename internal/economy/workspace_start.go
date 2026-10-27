@@ -49,7 +49,7 @@ func (s *DualTokenStore) StartWorkspace(ctx context.Context, workspaceID, ownerU
 func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, ownerUserID, name string, adjust func(*AgentRules),
 	testMoneyULXC int64, issue KeyIssuer) (out WorkspaceStart, started bool, err error) {
 	if testMoneyULXC < 0 {
-		return out, false, errors.New("economy: starting test money cannot be negative")
+		return out, false, errors.New("economy: starting credits cannot be negative")
 	}
 	tmpl, ok := RuleTemplateByID(FirstAgentTemplate)
 	if !ok {
@@ -74,7 +74,7 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	if has {
 		return out, false, nil
 	}
-	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, name, ownerUserID); err != nil {
+	if out.Agent, err = createAgentTx(ctx, tx, workspaceID, name, ownerUserID, WalletKindCrypto, CurrencyEUR); err != nil {
 		return out, false, err
 	}
 	if out.Key, out.KeyID, err = issue(ctx, tx, workspaceID, name); err != nil {
@@ -94,7 +94,7 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	}
 	out.Template = tmpl.ID
 	if testMoneyULXC > 0 {
-		if _, err := s.creditLXCTxTyped(ctx, tx, workspaceID, testMoneyULXC, LXCTypeStarterTest, "starting test money",
+		if _, err := s.creditLXCTxTyped(ctx, tx, workspaceID, testMoneyULXC, LXCTypeStarterTest, "starting credits",
 			map[string]interface{}{"funding": FundingTest, "agent_id": out.Agent.ID}); err != nil {
 			return out, false, err
 		}
@@ -107,6 +107,6 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	if err := tx.Commit(ctx); err != nil {
 		return out, false, fmt.Errorf("economy: workspace start: %w", err)
 	}
-	s.openNewAgentWallet(ctx, workspaceID, out.Agent.ID) // B46.4
+	s.openNewAgentWallet(ctx, workspaceID, out.Agent.ID, WalletKindCrypto, CurrencyEUR) // B46.4
 	return out, true, nil
 }

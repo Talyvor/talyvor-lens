@@ -86,7 +86,7 @@ func (s *DualTokenStore) SettleAgentCard(ctx context.Context, st CardSettlement)
 		return done, err
 	}
 	if st.Livemode {
-		return CardSettled{Reason: "agent cards are test money only (class RED): a live-mode event moves nothing"}, nil
+		return CardSettled{Reason: "agent cards take no real money yet (class RED): a live-mode event moves nothing"}, nil
 	}
 	var ws, agentID string
 	err := s.pool.QueryRow(ctx, `SELECT workspace_id, agent_id FROM agent_cards WHERE id = $1`, st.CardID).Scan(&ws, &agentID)

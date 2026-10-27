@@ -18,7 +18,7 @@ import (
 // it out: LENS supply (the backing value) and what a live payout run pays.
 
 // ErrMoneyWall is the refusal. Its text names the rule, so whoever meets it knows why.
-var ErrMoneyWall = errors.New("test money and real money never mix: a test workspace transacts only with other test workspaces, and a real workspace only with real ones")
+var ErrMoneyWall = errors.New("a test workspace and a real one never pay each other: a test workspace transacts only with other test workspaces, and a real workspace only with real ones")
 
 // RowQuerier is a transaction, a connection or a pool.
 type RowQuerier interface {
@@ -39,7 +39,7 @@ func CheckMoneyWall(ctx context.Context, q RowQuerier, a, b string) error {
 	}
 	var across bool
 	if err := q.QueryRow(ctx, moneyWallSQL, a, b).Scan(&across); err != nil {
-		return fmt.Errorf("workspace: check the test-money wall: %w", err)
+		return fmt.Errorf("workspace: check the test-workspace wall: %w", err)
 	}
 	if across {
 		return ErrMoneyWall

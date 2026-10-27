@@ -12,13 +12,13 @@ for the whole workspace, before its first use. They add to Talyvor's terms of se
    which you accept with these.
 3. **The risk.** Cryptoassets are high risk: their value can rise and fall sharply, and you may lose all you put in.
    They are not protected in the way money in an account may be. Nothing Talyvor shows is a promise of any return.
-4. **Preview — test money only.** While this is a preview, it moves test money only: nothing you do with it moves
-   real money, and test money cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
+4. **Before real money.** Until Talyvor tells you otherwise, nothing you do with it moves real money, and what it
+   holds cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
    accept these terms again, before it moves real money.
 5. **Your agents.** Your agents use it only within the rules you set, and you are responsible for what they do with
    it, as if you had done it yourself.
-6. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money while it moves test money
-   only.
+6. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money before it moves
+   real money.
 7. **Checks and refusals.** Talyvor may refuse, hold or report a use where the law requires it, where a check fails,
    or where an operator has frozen your workspace while a case is reviewed.
 8. **New versions.** Talyvor may publish a new version of these terms. You will be asked to accept it, and your
