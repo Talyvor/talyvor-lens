@@ -47,7 +47,7 @@ the payee.
   - Between different owners it is **AMBER**. It may use test-funded credits only, until the operator
     clears `pay_another_owner`. With live credits and no clearance it is refused with 403, and the
     message names the class.
-- **Test money stays test money.** The credits' funding moves with them, so test-funded credits arrive
+- **Sandbox funds stay sandbox funds.** The credits' funding moves with them, so test-funded credits arrive
   test-funded.
 
 ## On the ledgers

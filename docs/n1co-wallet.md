@@ -1,7 +1,7 @@
 # N1CO's own wallet (B45.33)
 
 N1CO, Talyvor's AI CEO, spends through Talyvor first. It has its own workspace and an agent wallet called N1CO.
-The wallet holds test money only. Every payment it makes is judged by the same rules any customer's agent has.
+The wallet holds sandbox funds only. Every payment it makes is judged by the same rules any customer's agent has.
 
 ## Creating it (operator, once)
 
@@ -18,7 +18,7 @@ The command does four things in one go:
 - adds an agent called N1CO, owned by that workspace;
 - starts the agent on the first agent's rules (the `support-bot` template), with `-monthly-budget` as its monthly
   limit;
-- funds the agent with `-test-money` LXC of test money. Without the flag it uses `LENS_STARTER_TEST_MONEY_ULXC`, which
+- funds the agent with `-test-money` LXC of sandbox funds. Without the flag it uses `LENS_STARTER_TEST_MONEY_ULXC`, which
   is 0 until Nicolai sets it.
 
 It prints the agent's key once. Give that key to N1CO.
@@ -45,5 +45,5 @@ there with the phone's key. A payment request waiting for approval writes no led
 
 ## Real money
 
-The wallet stays on test money until a partner signs and Nicolai records the clearance for the capability. N1CO's
+The wallet stays on sandbox funds until a partner signs and Nicolai records the clearance for the capability. N1CO's
 spend then runs on the same workspace and rules.

@@ -13,7 +13,7 @@ lens platform-report --year 2026 [--test] [--out <dir>] [--operator <name>]
 
 Run it inside the lens container: it reads the same Postgres as the server and opens the sellers' sealed details with
 the same `LENS_PROVIDER_SECRET_KEK`. It writes `platform-report-2026.csv` and `platform-report-2026.json` to `--out`
-(the current directory by default) and prints each file's record count and sha256. `--test` reports test money instead,
+(the current directory by default) and prints each file's record count and sha256. `--test` reports sandbox funds instead,
 into `platform-report-2026-test.*`. `--operator` names who ran it (default `$USER`).
 
 The operator can also download one file at a time with the global admin key:

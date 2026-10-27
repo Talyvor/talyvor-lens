@@ -78,7 +78,7 @@ func TestAgentCards_ApprovedWithinRulesDeclinedOutsideEveryAuthorisationALedgerR
 	live := chi.NewRouter()
 	mountAgentCardRoutes(live, store, agentcard.NewStripe("sk_live_not_a_real_key", "gbp"))
 	holder := `{"first_name":"Nicolai","last_name":"Gaborac","line1":"1 High Street","city":"London","postal_code":"EC1A 1BB"}`
-	if code, body := call(live, http.MethodPost, base+"/"+agent.ID+"/card", holder); code != http.StatusConflict || !strings.Contains(body, "test money only") {
+	if code, body := call(live, http.MethodPost, base+"/"+agent.ID+"/card", holder); code != http.StatusConflict || !strings.Contains(body, "no real money") {
 		t.Fatalf("issuing with a live key = %d %s, want 409", code, body)
 	}
 	if code, body := call(r, http.MethodPost, base+"/"+agent.ID+"/card", holder); code != http.StatusCreated {
@@ -131,7 +131,7 @@ func TestAgentCards_ApprovedWithinRulesDeclinedOutsideEveryAuthorisationALedgerR
 		t.Fatalf("£25 above the limit per purchase: approved=%t %q, want declined by the limit", ok, why)
 	}
 	// Live mode is declined whatever the rules say (class RED).
-	if ok, why := purchase("evt_c", "iauth_c", 100, true); ok || !strings.Contains(why, "test money only") {
+	if ok, why := purchase("evt_c", "iauth_c", 100, true); ok || !strings.Contains(why, "no real money") {
 		t.Fatalf("a live-mode purchase: approved=%t %q, want declined", ok, why)
 	}
 	// Stripe sending the approved request again moves nothing.

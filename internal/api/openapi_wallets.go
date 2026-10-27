@@ -504,8 +504,8 @@ func openAPIWalletPaths() map[string]any {
 				"Newest first, approved and declined; each authorisation was decided by the agent's rules and balance.",
 				[]map[string]any{ws, agent},
 				map[string]any{"200": map[string]any{"description": "the card and its authorisations"}}),
-			"post": withBody(op("Issue the agent a virtual card — test mode",
-				"Owner or admin; the agent's owner is the cardholder. Test mode only: with a live Stripe key it is 409 and nothing is issued.",
+			"post": withBody(op("Issue the agent a virtual card",
+				"Owner or admin; the agent's owner is the cardholder. With a live Stripe key it is 409 and nothing is issued: cards take no real money until a licensed partner issues them.",
 				[]map[string]any{ws, agent},
 				map[string]any{"201": map[string]any{"description": "the card"}, "409": map[string]any{"description": "a live Stripe key, or the agent already has a card — no card is issued"}}),
 				body(obj(nil, map[string]any{

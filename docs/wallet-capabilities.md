@@ -8,32 +8,32 @@ Every wallet capability has a class, and the class decides whether it may use re
 | **AMBER** | Only after the lawyer confirms | Sending and requesting money between different owners, loans between companies, escrow, topping up by a payment from your own bank, credit lines and loans to companies, advances against marketplace earnings, companies lending to companies through the marketplace, and prepaid usage at today's prices |
 | **RED** | Only once a licence or a licensed partner exists | Cashing credits out, any loan or credit involving a private user, interest or yield, investing and trading (simulated trading), cards, accounts in pounds, euros, dollars and USDC, account details others can pay into, receiving money from outside Talyvor, paying people and companies outside Talyvor, converting between currencies, stablecoin balances and transfers, paying and being paid over HTTP 402, accepting payments from agents as a business, trading shares, crypto and prediction markets through a broker partner, idle money in a money-market fund, cover for agent mistakes, and paying people for tasks |
 
-An AMBER or RED capability takes **test money only** until the operator records a clearance for it. A GREEN
+An AMBER or RED capability takes **sandbox funds only** until the operator records a clearance for it. A GREEN
 one takes any money.
 
 The screens read `GET /v1/wallets/capabilities`. It lists every capability with its class and
 `real_money`, which is true for GREEN, and for AMBER or RED only while a clearance is in force.
 
-## What counts as test money
+## What counts as sandbox funds
 
 - **Credits.** Every credit lot records its funding on its `lxc_ledger` row, as `metadata.funding`:
-  - `test`: bought in Stripe test mode. It stays test money for ever.
+  - `test`: bought in Stripe test mode. It stays sandbox funds for ever.
   - `live`: bought with real money.
   - `grant`: comped by the operator.
   - `synthetic`: LENS converted to LXC.
 
   `lxc_balances.test_funded_ulxc` holds the test-funded part of a workspace's balance. An uncleared AMBER
   or RED spend is paid out of it, and is refused when it does not cover the amount. Every other spend
-  uses the credits that are not test money first. If a test purchase on a card is reversed or refunded,
-  the credits come back as test money.
+  uses the credits that are not sandbox funds first. If a test purchase on a card is reversed or refunded,
+  the credits come back as sandbox funds.
 - **A Stripe bill.** A payment to another company's agent goes on the paying company's marketplace
   bill. That bill is real money when Lens's Stripe key is live (`sk_live_…`).
 
 A refusal names the class, for example: *"Sending and requesting money between different owners is
-class AMBER: it takes test money only until Talyvor records a clearance for it, and this would use real
+class AMBER: it takes no real money until Talyvor records a clearance for it, and this would use real
 money"*. A refused card purchase is recorded as declined with those words.
 
-## Test money never reaches a live payout
+## Sandbox funds never reach a live payout
 
 Each marketplace earning is `livemode` if the invoice that paid it was, and each Stripe payout is
 `livemode` if the key that made it was. A live key pays a seller only their live earnings. Earnings taken
@@ -68,7 +68,7 @@ docker compose exec lens /lens clearances log
 - Live money is used from the owner's country: the one their verification confirmed (the company's at L3,
   the person's at L2, from a real provider's check). An owner verified in a country the clearance does not
   list is refused as if there were no clearance, and the refusal names their country and the ones the
-  clearance lists; so is an owner whose checks confirm no country. Test money is used from everywhere.
+  clearance lists; so is an owner whose checks confirm no country. Sandbox funds are used from everywhere.
   Once the expiry passes, live money is refused again.
 - A clearance recorded before these terms existed names no country, so it no longer lets live money
   through. Record it again with its terms.
@@ -96,8 +96,8 @@ needs. Each capability lists its level as `level_needed` in `GET /v1/wallets/cap
   an email or a phone number.
 - The record is append-only (`workspace_verifications`). If a provider later withdraws a pass, a new row is
   added and the level drops.
-- A pass by the Test provider shows on the record and counts for test money only. Live money is judged by
-  `live_level`, which counts only the checks a real provider passed. With test money, every level can try
+- A pass by the Test provider shows on the record and counts for sandbox funds only. Live money is judged by
+  `live_level`, which counts only the checks a real provider passed. With sandbox funds, every level can try
   every capability.
 - Each level's live limits are set by Nicolai and nobody else. Until he sets them, no level takes live money.
 

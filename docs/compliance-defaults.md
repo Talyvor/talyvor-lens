@@ -11,7 +11,7 @@ the last day's payments. A hit opens the workspace's monitoring case, or adds an
 never moves money and never stops it: a person reviews the case. The operator sees the cases at
 `GET /v1/admin/screening` (kind `monitoring`, status `open`) and each alert at `GET /v1/admin/compliance/alerts`.
 
-Test money and live money are judged apart. A rule's setting is a JSON object; a value it leaves out keeps the
+Sandbox funds and live money are judged apart. A rule's setting is a JSON object; a value it leaves out keeps the
 starting value.
 
 | Rule | Setting | Starting value | What it means | File |

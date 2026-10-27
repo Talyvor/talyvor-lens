@@ -78,7 +78,7 @@ type SelfBill struct {
 	Note             string        `json:"note"`
 	Partner          string        `json:"partner"`
 	VATEnabled       bool          `json:"vat_enabled"`
-	Preview          bool          `json:"preview"` // test money: "Preview — test money only"
+	Preview          bool          `json:"preview"` // a test-series bill
 
 	series string
 }

@@ -310,7 +310,7 @@ func (w Workspace) RefuseOwnKeys(gates map[string]Gates) *Refusal {
 // RefuseLiveMoney is the refusal of live money for a capability the workspace's plan keeps on test money.
 func (w Workspace) RefuseLiveMoney(gates map[string]Gates, capability string) *Refusal {
 	r := &Refusal{Plan: w.Plan, Gate: "live_money", Allows: w.Allowing(gates, func(g Gates) bool { return g.LiveMoney })}
-	r.Detail = fmt.Sprintf("%s: on the %s plan, %s takes test money only, even with a clearance, and this would use real money",
+	r.Detail = fmt.Sprintf("%s: on the %s plan, %s takes no real money, even with a clearance, and this would use real money",
 		Setting, w.Plan, capability)
 	if r.Allows != "" {
 		r.Detail += fmt.Sprintf(" — on the %s plan it is live once cleared", r.Allows)

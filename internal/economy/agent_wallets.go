@@ -31,9 +31,6 @@ import (
 // ErrAgentWalletsOff: the money layer is not set, so no agent has a wallet.
 var ErrAgentWalletsOff = errors.New("economy: agent wallets are not set up")
 
-// TestWalletNotice is what a wallet whose details the sandbox made up says, in plain words (B46.17).
-const TestWalletNotice = "This address is a preview. It isn't on any chain yet, so don't send money to it."
-
 // AgentWallet is an agent's wallet: what it holds, and how to pay into it.
 type AgentWallet struct {
 	AccountID    string        `json:"account_id"`
@@ -43,9 +40,8 @@ type AgentWallet struct {
 	BalanceMinor int64         `json:"balance_minor"`
 	TestMinor    int64         `json:"test_minor"`
 	LiveMinor    int64         `json:"live_minor"`
-	Receive      money.Details `json:"receive"`
-	Mode         string        `json:"mode"` // TEST or LIVE
-	Notice       string        `json:"notice,omitempty"`
+	Receive      money.Details `json:"receive"` // empty while the sandbox serves the wallet: its address is on no chain
+	Mode         string        `json:"mode"`    // TEST or LIVE
 }
 
 // SetMoneyLayer opens every new agent's wallet on r, and reads them through it (B46.4).
@@ -129,26 +125,19 @@ func (s *DualTokenStore) AgentWallet(ctx context.Context, workspaceID, agentID s
 	if err != nil {
 		return AgentWallet{}, err
 	}
-	rt := agentWalletRoute(workspaceID, agentID)
-	wallets, err := s.moneyLayer.Wallets(ctx, rt)
+	if w.Partner == money.SandboxName {
+		// The sandbox's address is on no chain: the wallet shows no details rather than made-up ones (B49.1).
+		w.Mode = DetailsTest
+		return w, nil
+	}
+	wallets, err := s.moneyLayer.Wallets(ctx, agentWalletRoute(workspaceID, agentID))
 	if err != nil {
 		return AgentWallet{}, err
 	}
-	w.Receive, err = wallets.Receive(ctx, ref)
-	if errors.Is(err, money.ErrNotFound) && w.Partner == money.SandboxName {
-		// The sandbox keeps its wallets in memory, so after Lens restarts it is asked to create the wallet again: creating
-		// is idempotent on the key, and gives back the same reference and address.
-		if again, cerr := wallets.Create(ctx, money.CreateWallet{Key: agentWalletKey(agentID), AgentID: agentID, Asset: money.USDC}); cerr == nil && again.Ref == ref {
-			w.Receive, err = wallets.Receive(ctx, ref)
-		}
-	}
-	if err != nil {
+	if w.Receive, err = wallets.Receive(ctx, ref); err != nil {
 		return AgentWallet{}, fmt.Errorf("economy: agent wallet's details: %w", err)
 	}
 	w.Mode = DetailsLive
-	if w.Partner == money.SandboxName {
-		w.Mode, w.Notice = DetailsTest, TestWalletNotice
-	}
 	return w, nil
 }
 

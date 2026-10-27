@@ -49,7 +49,7 @@ func (s *DualTokenStore) StartWorkspace(ctx context.Context, workspaceID, ownerU
 func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, ownerUserID, name string, adjust func(*AgentRules),
 	testMoneyULXC int64, issue KeyIssuer) (out WorkspaceStart, started bool, err error) {
 	if testMoneyULXC < 0 {
-		return out, false, errors.New("economy: starting test money cannot be negative")
+		return out, false, errors.New("economy: starting credits cannot be negative")
 	}
 	tmpl, ok := RuleTemplateByID(FirstAgentTemplate)
 	if !ok {
@@ -94,7 +94,7 @@ func (s *DualTokenStore) StartWorkspaceAgent(ctx context.Context, workspaceID, o
 	}
 	out.Template = tmpl.ID
 	if testMoneyULXC > 0 {
-		if _, err := s.creditLXCTxTyped(ctx, tx, workspaceID, testMoneyULXC, LXCTypeStarterTest, "starting test money",
+		if _, err := s.creditLXCTxTyped(ctx, tx, workspaceID, testMoneyULXC, LXCTypeStarterTest, "starting credits",
 			map[string]interface{}{"funding": FundingTest, "agent_id": out.Agent.ID}); err != nil {
 			return out, false, err
 		}

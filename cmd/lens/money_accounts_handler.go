@@ -102,7 +102,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 	r.Post("/v1/money/accounts/{id}/test-money", func(w http.ResponseWriter, req *http.Request) {
 		ws, _ := auth.WorkspaceIdentity(req.Context())
 		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); ws == "" || !owner {
-			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may add test money")
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may add money here")
 			return
 		}
 		var in struct {

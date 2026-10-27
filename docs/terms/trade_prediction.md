@@ -11,13 +11,13 @@ for the whole workspace, before its first use. They add to Talyvor's terms of se
 2. **Through a partner.** Trades are placed through a partner that Talyvor names, under that partner's own terms,
    and only on markets available where your company is.
 3. **The risk.** You may lose all you put into a trade. Nothing Talyvor shows is a promise of any outcome or return.
-4. **Preview — test money only.** While this is a preview, it moves test money only: nothing you do with it moves
-   real money, and test money cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
+4. **Before real money.** Until Talyvor tells you otherwise, nothing you do with it moves real money, and what it
+   holds cannot be paid out or exchanged for real money. Talyvor will tell you, and ask you to
    accept these terms again, before it moves real money.
 5. **Your agents.** Your agents use it only within the rules you set, and you are responsible for what they do with
    it, as if you had done it yourself.
-6. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money while it moves test money
-   only.
+6. **Fees.** Any fee is shown before you confirm a use. No fee is charged in real money before it moves
+   real money.
 7. **Checks and refusals.** Talyvor may refuse, hold or report a use where the law requires it, where a check fails,
    or where an operator has frozen your workspace while a case is reviewed.
 8. **New versions.** Talyvor may publish a new version of these terms. You will be asked to accept it, and your

@@ -109,7 +109,7 @@ sense is a margin call.
 - **The CEILING.** The item says the number is Nicolai's, and it is: an unbounded field on a payment
   form is a fraud surface and a fat-finger surface, and picking the bound is a risk decision.
 - **The MINIMUM.** A price call, and one that cannot even be computed until someone supplies the two
-  inputs in §4. Measure the account's real Stripe rate first; the table above is an illustration.
+  inputs in §4. Measure the account's real Stripe rate first; the table above is an example.
 - **The migration in §2** is not a decision but it is the real work, and it must be designed before
   the allowlist stops being a list.
 

@@ -117,9 +117,9 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	}
 	code, page := call("", http.MethodGet, "/v1/pay/"+token(byCard), "")
 	transfer, _ := page["transfer"].(map[string]any)
-	if code != http.StatusOK || page["card"] != true || page["notice"] == nil || transfer == nil ||
-		!strings.Contains(transfer["reference"].(string), byCard["reference"].(string)) || page["invoice"].(map[string]any)["workspace_id"] != nil {
-		t.Fatalf("the pay page = %d %v; want a card, a transfer quoting the invoice's reference, the notice, and no issuer ids", code, page)
+	if code != http.StatusOK || page["card"] != true || page["notice"] != nil || transfer != nil ||
+		page["invoice"].(map[string]any)["workspace_id"] != nil {
+		t.Fatalf("the pay page = %d %v; want a card, no notice, no transfer to the Test partner's made-up details, and no issuer ids", code, page)
 	}
 	if code, out := call("", http.MethodPost, "/v1/pay/"+token(byCard)+"/card", ""); code != http.StatusCreated || out["url"] == "" ||
 		cards.asked.AmountMinor != 12000 || cards.asked.Currency != "GBP" {
