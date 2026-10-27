@@ -124,13 +124,14 @@ func TestB4010_ATenSecondClipIsTranscribedAndBilledAsOneLineAtItsCatalogPrice(t 
 	}
 }
 
-func TestB4010_WithoutTheDeepgramKeySpeechIsNotConfigured(t *testing.T) {
+func TestB4010_WithNoSpeechKeySpeechIsNotConfigured(t *testing.T) {
 	p, _, _ := newLoggingProxy(t, workspace.LoggingFull)
+	p.openAIKey = ""
 	for path, h := range map[string]http.HandlerFunc{"/v1/audio/transcriptions": p.HandleTranscription, "/v1/audio/speech": p.HandleSpeech} {
 		w := httptest.NewRecorder()
 		h(w, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"input":"hello"}`)))
 		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "speech is not configured") {
-			t.Errorf("%s without LENS_DEEPGRAM_API_KEY: %d %s", path, w.Code, w.Body.String())
+			t.Errorf("%s with neither Deepgram nor OpenAI: %d %s", path, w.Code, w.Body.String())
 		}
 	}
 }
@@ -228,5 +229,45 @@ func TestB4010_WhisperTranscribesThroughOpenAI(t *testing.T) {
 	}
 	if form != "/v1/audio/transcriptions whisper-1 verbose_json true" {
 		t.Errorf("OpenAI received %q", form)
+	}
+}
+
+// B17.81 — production has no Deepgram key, and Chat's microphone asked once per page and got a 503, so every
+// screen check failed on /chat. Without Deepgram, Chat's call (no model named) is heard by OpenAI's whisper-1,
+// and Chat's empty probe is refused for its missing file instead of answering 503.
+func TestB1781_WithoutDeepgramChatsRecordingIsHeardByWhisper(t *testing.T) {
+	p, _, _ := newLoggingProxy(t, workspace.LoggingFull)
+	probe := httptest.NewRecorder()
+	p.HandleTranscription(probe, httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil))
+	if probe.Code != http.StatusBadRequest {
+		t.Errorf("Chat's empty probe without Deepgram: %d %s — want 400, the microphone stays", probe.Code, probe.Body.String())
+	}
+	var model string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		model = r.URL.Path + " " + r.FormValue("model")
+		_, _ = io.WriteString(w, `{"text":"What did my agents spend?","duration":10.0}`)
+	}))
+	t.Cleanup(up.Close)
+	p.openAIURL = up.URL + "/v1/chat/completions"
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "speech.webm")
+	_, _ = fw.Write(tenSecondWAV())
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	p.HandleTranscription(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "What did my agents spend?") {
+		t.Fatalf("%d %q", w.Code, w.Body.String())
+	}
+	if model != "/v1/audio/transcriptions whisper-1" {
+		t.Errorf("OpenAI received %q", model)
+	}
+	named := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"aura-2","input":"hi"}`))
+	w = httptest.NewRecorder()
+	p.HandleSpeech(w, named)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("aura-2 named without Deepgram: %d %s — want 503", w.Code, w.Body.String())
 	}
 }
