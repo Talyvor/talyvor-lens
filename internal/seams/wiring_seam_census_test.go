@@ -156,6 +156,11 @@ var unwiredSeams = map[string]string{
 		"Every scoped agent key therefore carries DefaultAgentCeilingLXC (50 LXC, $5) and no " +
 		"operator can change it through the product.",
 
+	"internal/economy:DualTokenStore.SetSmartAccounts": "OFF UNTIL CDP'S KEYS ARE ON THE SERVER, and " +
+		"says so (B48.2). It takes the wallet provider that holds agents' keys — Coinbase's adapter, " +
+		"which cmd/lens builds nowhere yet because real crypto stays off until Nick adds CDP's keys. " +
+		"Until then POST …/agents/{id}/smart-account answers 503 and no agent has a smart account.",
+
 	// ── the remaining six are unwired AND SAY SO IN THEIR OWN DOC COMMENTS. They are
 	// recorded rather than filtered out, because "unwired and honest about it" is a
 	// different fact from "unwired and reads as finished", and a census that silently
