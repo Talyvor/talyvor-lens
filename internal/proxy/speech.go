@@ -29,8 +29,9 @@ import (
 // hold is taken before the provider is called and settled to the delivered cost; a person's or a
 // workspace's call draws the plan allowance, then prepaid.
 //
-// Deepgram's EU endpoint first (nova-3, aura-2), OpenAI second (whisper-1, tts-1, tts-1-hd). Behind
-// LENS_DEEPGRAM_API_KEY: without it both routes answer that speech is not configured. Lens keeps no audio:
+// Deepgram's EU endpoint first (nova-3, aura-2), OpenAI second (whisper-1, tts-1, tts-1-hd). Without
+// LENS_DEEPGRAM_API_KEY a request naming no model is served by OpenAI (B17.81); with neither key both routes
+// answer that speech is not configured. Lens keeps no audio:
 // the upload is read into memory, sent upstream and dropped; the reply is streamed through.
 
 const (
@@ -45,7 +46,7 @@ const (
 	holdBytesPerSecond = 100
 )
 
-// SetDeepgram configures speech. An empty key leaves both /v1/audio routes answering "not configured".
+// SetDeepgram configures Deepgram. An empty key leaves speech to OpenAI's models, when its key is set.
 func (p *Proxy) SetDeepgram(key, baseURL string) {
 	p.deepgramKey = key
 	p.deepgramURL = strings.TrimRight(baseURL, "/")
@@ -71,7 +72,7 @@ func (p *Proxy) speechModel(w http.ResponseWriter, id string, transcribe bool) (
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a %s model Lens serves", id, kind))
 		return m, false
 	}
-	if m.Provider == "openai" && p.openAIKey == "" {
+	if (m.Provider == "openai" && p.openAIKey == "") || (m.Provider == "deepgram" && p.deepgramKey == "") {
 		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s is not configured on this Lens", id))
 		return m, false
 	}
@@ -167,7 +168,7 @@ func (p *Proxy) speechCharge(ctx context.Context, wsID, model, team, sprint stri
 }
 
 func (p *Proxy) speechRequest(w http.ResponseWriter, r *http.Request) (wsID, requestID string, ok bool) {
-	if p.deepgramKey == "" {
+	if p.deepgramKey == "" && p.openAIKey == "" {
 		writeError(w, http.StatusServiceUnavailable, "speech is not configured on this Lens")
 		return "", "", false
 	}
@@ -195,7 +196,7 @@ func (p *Proxy) upstreamRefused(ctx context.Context, w http.ResponseWriter, prov
 	writeError(w, http.StatusBadGateway, fmt.Sprintf("%s did not answer (HTTP %d); nothing was charged", provider, status))
 }
 
-// HandleTranscription serves POST /v1/audio/transcriptions: multipart `file` and `model` (default nova-3),
+// HandleTranscription serves POST /v1/audio/transcriptions: multipart `file` and `model` (default nova-3, whisper-1 without Deepgram),
 // optional `language` and `response_format` (json, the default, or text). Answers {"text": "..."}.
 func (p *Proxy) HandleTranscription(w http.ResponseWriter, r *http.Request) {
 	wsID, requestID, ok := p.speechRequest(w, r)
@@ -222,6 +223,9 @@ func (p *Proxy) HandleTranscription(w http.ResponseWriter, r *http.Request) {
 	modelID := r.FormValue("model")
 	if modelID == "" {
 		modelID = defaultTranscriptionModel
+		if p.deepgramKey == "" {
+			modelID = "whisper-1"
+		}
 	}
 	format := r.FormValue("response_format")
 	if format != "" && format != "json" && format != "text" {
@@ -340,7 +344,7 @@ var deepgramEncodings = map[string]url.Values{
 	"wav":  {"encoding": {"linear16"}, "container": {"wav"}},
 }
 
-// HandleSpeech serves POST /v1/audio/speech: JSON {"model" (default aura-2), "input", "voice",
+// HandleSpeech serves POST /v1/audio/speech: JSON {"model" (default aura-2, tts-1 without Deepgram), "input", "voice",
 // "response_format" (mp3, the default, opus, aac, flac or wav)}. Answers the audio.
 func (p *Proxy) HandleSpeech(w http.ResponseWriter, r *http.Request) {
 	wsID, requestID, ok := p.speechRequest(w, r)
@@ -364,6 +368,9 @@ func (p *Proxy) HandleSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Model == "" {
 		in.Model = defaultSpeechModel
+		if p.deepgramKey == "" {
+			in.Model = "tts-1"
+		}
 	}
 	if in.ResponseFormat == "" {
 		in.ResponseFormat = "mp3"
