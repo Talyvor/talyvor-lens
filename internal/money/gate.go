@@ -26,6 +26,7 @@ type call struct {
 	ref    string
 	out    *Amount // set when the call moves money out
 	payee  string
+	to     Payee
 	write  bool
 }
 
@@ -38,7 +39,7 @@ func through[T any](ctx context.Context, g gate, c call, fn func() (T, error)) (
 			return zero, err
 		}
 	}
-	op := Op{Route: g.rt, Partner: g.partner, Capability: g.c, Method: c.method, Key: c.key, Ref: c.ref, Payee: c.payee}
+	op := Op{Route: g.rt, Partner: g.partner, Capability: g.c, Method: c.method, Key: c.key, Ref: c.ref, Payee: c.payee, To: c.to}
 	if c.out != nil {
 		if err := c.out.check(); err != nil {
 			return zero, err
@@ -165,7 +166,7 @@ func (w gatedTransfers) Internal(ctx context.Context, req Internal) (Result, err
 }
 
 func (w gatedTransfers) Outbound(ctx context.Context, req Outbound) (Result, error) {
-	return through(ctx, w.g, call{method: "outbound", key: req.Key, ref: req.From, out: &req.Amount, payee: req.Payee.Name, write: true},
+	return through(ctx, w.g, call{method: "outbound", key: req.Key, ref: req.From, out: &req.Amount, payee: req.Payee.Name, to: req.Payee, write: true},
 		func() (Result, error) { return w.a.Outbound(ctx, req) })
 }
 

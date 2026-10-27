@@ -80,6 +80,7 @@ type Op struct {
 	Ref        string // the partner's reference the call is about, when it is about one
 	Amount     Amount // what leaves, for a call that moves money out
 	Payee      string // who it goes to, for money out
+	To         Payee  // the payee's account in full, for a payment out to one
 }
 
 // Limits is the owner's limits and one-tap approval, asked before any call that moves money out: nil lets it go,
