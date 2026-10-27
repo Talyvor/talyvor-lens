@@ -36,7 +36,7 @@ import (
 // moves nothing twice. A payment's later states are read from the partner when it is read (RefreshOutsidePayment).
 
 var (
-	// ErrOutsidePayment: a payment out without a payee, a positive amount in GBP, EUR or USD, or an idempotency key.
+	// ErrOutsidePayment: a payment out without a payee, a positive amount in GBP, EUR, USD or USDC, or an idempotency key.
 	ErrOutsidePayment = errors.New("economy: invalid payment")
 	// ErrOutsidePaymentNotFound: no such payment out in this workspace, or not the agent's.
 	ErrOutsidePaymentNotFound = errors.New("economy: no such payment")
@@ -104,10 +104,10 @@ func (in *OutsidePayment) normalise(withKey bool) error {
 	switch {
 	case in.PayeeID == "":
 		return bad("a payment names its payee (payee_id): save one at /v1/money/payees first")
-	case in.Currency != CurrencyGBP && in.Currency != CurrencyEUR && in.Currency != CurrencyUSD:
-		return bad(fmt.Sprintf("a payment is in GBP, EUR or USD, not %q", in.Currency))
+	case in.Currency != CurrencyGBP && in.Currency != CurrencyEUR && in.Currency != CurrencyUSD && in.Currency != CurrencyUSDC:
+		return bad(fmt.Sprintf("a payment is in GBP, EUR, USD or USDC, not %q", in.Currency))
 	case in.AmountMinor <= 0:
-		return bad("a payment's amount_minor is a positive number of pence or cents")
+		return bad("a payment's amount_minor is a positive number of pence, cents or millionths of a USDC")
 	case in.Funding != FundingTest && in.Funding != FundingLive:
 		return bad(fmt.Sprintf("funding is test or live, not %q", in.Funding))
 	case withKey && (in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200):
@@ -199,6 +199,10 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		"mpay_"+uuid.NewString(), workspaceID, from.id, from.agentID, payee.Name, PaymentPending
 	if p.Partner, err = s.outsidePartner(ctx, p, payee); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
+	}
+	if usdc := p.Currency == CurrencyUSDC; usdc != (payee.Address != "") || usdc && (p.AgentID == "" || p.QuoteID != "" || !s.viaMoneyLayer(p)) {
+		// B46.18: USDC goes only to a saved USDC address, and only from an agent's wallet on the money layer
+		return OutsidePayment{}, fmt.Errorf("%w: a USDC address is paid in USDC from an agent's wallet, and USDC only to a saved USDC address", ErrOutsidePayment)
 	}
 	var payer string
 	if p.QuoteID == "" && payeeCurrency(payee) != p.Currency { // B30.22: never sent without its fee and rate shown first
@@ -334,9 +338,15 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 	return a, nil
 }
 
-// paymentValue is what p is worth in µLXC, as the agent's rules count it: dollars at the peg, pounds and euros at the
-// conversion partner's rate for dollars.
+// paymentValue is what p is worth in µLXC, as the agent's rules count it: dollars at the peg, USDC as dollars, pounds
+// and euros at the conversion partner's rate for dollars.
 func (s *DualTokenStore) paymentValue(ctx context.Context, p OutsidePayment) (int64, error) {
+	if p.Currency == CurrencyUSDC { // millionths of a USDC are µUSD
+		if p.debit() > math.MaxInt64/ULXCPerUSDMicro {
+			return 0, fmt.Errorf("%w: %s is more than one payment can be", ErrOutsidePayment, minorString(p.AmountMinor, p.Currency))
+		}
+		return p.debit() * ULXCPerUSDMicro, nil
+	}
 	cents := p.debit()
 	if p.Currency != CurrencyUSD {
 		conv, err := s.accountPartners.FX(ctx, CapabilityPaymentsOut)

@@ -18,9 +18,10 @@ import (
 
 // B30.16 — saved payees outside Talyvor, with confirmation of payee (economy/money_payees.go).
 //
-//	POST /v1/money/payees     {name, country, sort_code, account_number | iban, bic | routing_number, account_number}
-//	                          — saves the payee with what its bank said of the name: check exact_match, close_match
-//	                          (with suggested_name) or no_match; a sanctioned name is refused (403) and nothing saved
+//	POST /v1/money/payees     {name, country, sort_code, account_number | iban, bic | routing_number, account_number
+//	                          | address, network "base"} — saves the payee with what its bank said of the name: check
+//	                          exact_match, close_match (with suggested_name) or no_match; a USDC address on Base (B46.18)
+//	                          is check address, paid once the owner confirms it; a sanctioned name is refused (403)
 //	GET  /v1/money/payees     — the workspace's payees, each with its check and whether it needs confirmation
 //	POST /v1/money/payees/{id}/challenge — the challenge a close match or no match is confirmed over
 //	POST /v1/money/payees/{id}/confirm   {"assertion": {credential_id, client_data_json, authenticator_data,
@@ -55,11 +56,11 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 		}
 		var in economy.OutsidePayee
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"name", "country", and "sort_code" + "account_number", "iban" (+ "bic") or "routing_number" + "account_number"}`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"name", "country", and "sort_code" + "account_number", "iban" (+ "bic"), "routing_number" + "account_number" or "address" (+ "network")}`)
 			return
 		}
 		p, err := bank.CreateOutsidePayee(req.Context(), ws, economy.OutsidePayee{Name: in.Name, Country: in.Country, SortCode: in.SortCode,
-			AccountNumber: in.AccountNumber, IBAN: in.IBAN, BIC: in.BIC, RoutingNumber: in.RoutingNumber})
+			AccountNumber: in.AccountNumber, IBAN: in.IBAN, BIC: in.BIC, RoutingNumber: in.RoutingNumber, Network: in.Network, Address: in.Address})
 		switch {
 		case errors.Is(err, economy.ErrPayee):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())

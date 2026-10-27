@@ -76,6 +76,8 @@ func scanQuote(row pgx.Row) (InternationalQuote, error) {
 // when a payee carries its currency.
 func payeeCurrency(p OutsidePayee) string {
 	switch {
+	case p.Address != "":
+		return CurrencyUSDC
 	case p.IBAN != "":
 		return CurrencyEUR
 	case p.RoutingNumber != "":

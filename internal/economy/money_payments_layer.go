@@ -35,6 +35,9 @@ func (s *DualTokenStore) viaMoneyLayer(p OutsidePayment) bool {
 }
 
 func outsideRoute(p OutsidePayment, payee OutsidePayee) money.Route {
+	if payee.Address != "" { // B46.18: USDC leaves the agent's wallet through the adapter that holds it
+		return agentWalletRoute(p.WorkspaceID, p.AgentID, money.USDC)
+	}
 	return money.Route{Workspace: p.WorkspaceID, Agent: p.AgentID, Country: payee.Country, Capability: CapabilityPaymentsOut}
 }
 
@@ -74,7 +77,7 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 	}
 	r, err := t.Outbound(partners.WithWorkspace(ctx, p.WorkspaceID), money.Outbound{Key: p.ID, From: from.partnerRef, Reference: p.Reference,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, Payee: money.Payee{Name: payee.Name, IBAN: payee.IBAN, BIC: payee.BIC,
-			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, RoutingNumber: payee.RoutingNumber}})
+			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, RoutingNumber: payee.RoutingNumber, Network: payee.Network, Address: payee.Address}})
 	for _, refused := range []error{money.ErrRefused, money.ErrInvalid, money.ErrNotFound, money.ErrKeyReused, money.ErrInsufficientFunds,
 		money.ErrLimit, money.ErrApprovalNeeded} {
 		if errors.Is(err, refused) {
