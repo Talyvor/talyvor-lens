@@ -48,6 +48,8 @@ func writeEarningsErr(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, rooms.ErrForbidden):
 		writeJSONErr(w, http.StatusForbidden, "only the room's owner pays out its earnings")
+	case errors.Is(err, rooms.ErrConflict):
+		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentWalletsOff):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
 	default:

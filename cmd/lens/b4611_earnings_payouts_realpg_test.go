@@ -111,6 +111,16 @@ func TestB4611_EarningsArePaidOutOnceOnTheMoneyLayerAndAPayeeWithoutVerifiedDeta
 	if _, err := rs.Split(ctx, room, member, "split-1", rooms.SplitPayout{AmountMinor: 1000, Currency: "GBP"}); !errors.Is(err, rooms.ErrForbidden) {
 		t.Fatalf("a member pays out the room = %v, want forbidden: only its owner does", err)
 	}
+	// A room Talyvor has locked pays nothing out, as it spends nothing, until it is unlocked.
+	if _, err := pool.Exec(ctx, `UPDATE rooms SET status = 'locked' WHERE id = $1`, room); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rs.Split(ctx, room, ws, "split-1", rooms.SplitPayout{AmountMinor: 1000, Currency: "GBP"}); !errors.Is(err, rooms.ErrConflict) {
+		t.Fatalf("a locked room pays out = %v, want a conflict: its budget is not spent until it is unlocked", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE rooms SET status = 'open' WHERE id = $1`, room); err != nil {
+		t.Fatal(err)
+	}
 	e, err := rs.Split(ctx, room, ws, "split-1", rooms.SplitPayout{AmountMinor: 1000, Currency: "GBP"})
 	if err != nil {
 		t.Fatal(err)

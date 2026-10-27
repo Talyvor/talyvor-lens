@@ -34,11 +34,11 @@ func (s *Store) Split(ctx context.Context, roomID, callerWS, key string, in Spli
 	if key == "" || len(key) > 128 {
 		return e, invalid("a payout carries an Idempotency-Key of up to 128 characters")
 	}
-	var owner, rule string
+	var owner, status, rule string
 	var version int
 	var wallet *string
-	err := s.pool.QueryRow(ctx, `SELECT r.owner_workspace_id, r.wallet_agent_id, t.version, t.split_rule FROM rooms r
-		JOIN room_terms t ON t.room_id = r.id AND t.version = r.terms_version WHERE r.id = $1`, roomID).Scan(&owner, &wallet, &version, &rule)
+	err := s.pool.QueryRow(ctx, `SELECT r.owner_workspace_id, r.status, r.wallet_agent_id, t.version, t.split_rule FROM rooms r
+		JOIN room_terms t ON t.room_id = r.id AND t.version = r.terms_version WHERE r.id = $1`, roomID).Scan(&owner, &status, &wallet, &version, &rule)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return e, ErrNotFound
@@ -46,6 +46,9 @@ func (s *Store) Split(ctx context.Context, roomID, callerWS, key string, in Spli
 		return e, fmt.Errorf("rooms: payout: %w", err)
 	case owner != callerWS:
 		return e, ErrForbidden
+	case status == Locked || status == Closed:
+		// shortcut: checked before PayEarnings, not under a row lock; a lock landing mid-payout lets that one through.
+		return e, fmt.Errorf("%w: a %s room pays nothing out of its budget", ErrConflict, status)
 	case wallet == nil:
 		return e, invalid("the room has no wallet to pay out from")
 	}
