@@ -300,16 +300,25 @@ func (t sandboxTransfers) Credit(_ context.Context, req Credit) (Result, error) 
 
 type sandboxCards struct{ s *sandbox }
 
-func (c sandboxCards) Issue(_ context.Context, req IssueCard) (Card, error) {
+func (c sandboxCards) Issue(ctx context.Context, req IssueCard) (Card, error) {
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 	return once(c.s, "card", req.Key, req, func() (Card, error) {
-		h, err := c.s.held(req.Wallet)
-		if err != nil {
-			return Card{}, err
-		}
-		if h.asset != req.Cap.Asset {
-			return Card{}, fmt.Errorf("%w: a card's cap is in its wallet's asset, %s", ErrInvalid, h.asset)
+		// A card on an account in pounds, euros or dollars the sandbox did not open — one the economy opened at the Test
+		// account partner, whose money the ledger keeps and holds for the card (B46.10) — is issued once the Test partner
+		// says it holds that account, as send pays out of one.
+		if _, ours := c.s.holdings[req.Wallet]; ours || req.Cap.Asset == USDC {
+			h, err := c.s.held(req.Wallet)
+			if err != nil {
+				return Card{}, err
+			}
+			if h.asset != req.Cap.Asset {
+				return Card{}, fmt.Errorf("%w: a card's cap is in its wallet's asset, %s", ErrInvalid, h.asset)
+			}
+		} else if d, err := c.s.account.AccountDetails(ctx, req.Wallet); err != nil {
+			return Card{}, fromPartner(err)
+		} else if d.Currency != req.Cap.Asset {
+			return Card{}, fmt.Errorf("%w: a card's cap is in its account's currency, %s", ErrInvalid, d.Currency)
 		}
 		ref := sandboxRef("card", req.Key)
 		card := &Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: CardActive}

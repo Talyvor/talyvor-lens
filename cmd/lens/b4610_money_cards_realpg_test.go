@@ -170,3 +170,32 @@ func issuerRef(t *testing.T, pool *pgxpool.Pool, id string) string {
 	}
 	return ref
 }
+
+// B46.10 — on the sandbox, which serves cards until an issuer is switched on: one approval issues the batch on the
+// agent's account at the Test partner, and its cap is held.
+func TestB4610_OnTheSandboxOneApprovalIssuesTheBatch(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b4610-sandbox"
+	b := newB468Payer(t, pool, ws, "GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"},
+		func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry {
+			return sandboxMoneyLayer(t, pool, store, reg)
+		})
+	batch, err := b.store.RequestCardBatch(ctx, ws, economy.CardBatch{AgentID: b.acct.AgentID, Purpose: "Build a website", Currency: "GBP",
+		IdempotencyKey: "site", Cards: []economy.MoneyCard{{Merchant: "Namecheap", CapMinor: 1500}, {Merchant: "Vercel", CapMinor: 2000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch, err = b.store.ApproveCardBatch(ctx, ws, batch.ID, "owner"); err != nil || batch.Status != economy.CardBatchIssued {
+		t.Fatalf("approve = %+v %v, want issued", batch, err)
+	}
+	for _, c := range batch.Cards {
+		if c.Status != economy.MoneyCardActive || c.Partner != money.SandboxName || c.Last4 == "" {
+			t.Fatalf("card %+v, want active on the sandbox", c)
+		}
+	}
+	if got, want := b4610Postings(t, pool, ws), "card_hold agent -3500; card_hold hold 3500"; got != want {
+		t.Fatalf("approval posted %q, want %q", got, want)
+	}
+	b.balance(t, 46500)
+}
