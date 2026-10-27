@@ -439,6 +439,7 @@ const undocumentedB17255Routes = 1
 // 332 (B48.1): GET …/agents/{agentID}/wallets, PUT …/agents/{agentID}/wallet-kind and GET …/agents/owner-wallets — an
 // agent's wallets of each kind it is, and its owner's — on a line of their own.
 const undocumentedB481Routes = 3
+
 // 4 (B46.11): PUT and GET /v1/money/payout-details, GET /v1/money/earnings-payouts and POST /v1/rooms/{roomID}/payouts —
 // earnings paid out on the money layer.
 const undocumentedB4611Routes = 4
