@@ -203,8 +203,8 @@ func (s *DualTokenStore) SavePayoutDetails(ctx context.Context, workspaceID stri
 	if err != nil {
 		return PayoutDetails{}, err
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{workspaceID, d.Asset, d.Holder, d.IBAN, d.BIC, d.Network, d.Address}, "\x00")))
-	v, err := kyc.Start(ctx, money.StartKYC{Key: "payout_details:" + hex.EncodeToString(sum[:16]), Subject: money.KYCPerson, Name: d.Holder,
+	// Each save is its own verification: the key names no detail, so none reaches the audit trail.
+	v, err := kyc.Start(ctx, money.StartKYC{Key: "payout_details:" + uuid.NewString(), Subject: money.KYCPerson, Name: d.Holder,
 		Country: d.Country})
 	if err != nil {
 		return PayoutDetails{}, err
