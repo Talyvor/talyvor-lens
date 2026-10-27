@@ -26,7 +26,8 @@ import (
 // MoneyLimits, which lets through only a card of an approved batch, for its own merchant, cap and account.
 //
 // Each card takes one charge. The issuer asks Lens as a charge is made (AuthorizeCardCharge): it is approved only at
-// the card's merchant, in its currency, up to its cap, within 24 hours of issue, and only once. The approved charge
+// the card's merchant, in its currency, up to its cap, within 24 hours of issue, only once, and not while the agent is
+// paused. The approved charge
 // moves what it spent out of the hold to the partner, gives the rest back to the agent's account, and closes the card
 // at the issuer. A card unused 24 hours after issue is closed and its whole cap given back (RunCardExpiries).
 
@@ -283,6 +284,21 @@ func (s *DualTokenStore) holdCardBatch(ctx context.Context, b CardBatch, by stri
 	if tag.RowsAffected() == 0 { // approved at the same moment: that approval holds the money
 		return nil
 	}
+	// The owner's one approval of the batch's total stands in for the agent's rules, but not for a pause; and live
+	// money goes on a card only once agent_card itself is cleared for it, not payments_out alone.
+	if err := refuseIfPaused(ctx, tx, b.AgentID); err != nil {
+		return err
+	}
+	if b.Funding == FundingLive {
+		c, _ := CapabilityByKey(CapabilityAgentCard)
+		refusal, err := capabilityLive(ctx, tx, b.WorkspaceID, c)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			return refusal
+		}
+	}
 	// As a payment out does: every payment out in this currency waits its turn, and a payment in waits for the balance.
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []string{from.companyID, from.id}); err != nil {
 		return fmt.Errorf("economy: card batch: %w", err)
@@ -375,12 +391,16 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var c MoneyCard
-	var ws, funding string
+	var ws, agentID, funding string
 	var expires time.Time
-	err = tx.QueryRow(ctx, `SELECT c.id, c.workspace_id, c.merchant, c.cap_minor, c.currency, c.status, c.account_id, c.hold_account_id,
+	err = tx.QueryRow(ctx, `SELECT c.id, c.workspace_id, c.agent_id, c.merchant, c.cap_minor, c.currency, c.status, c.account_id, c.hold_account_id,
 		COALESCE(c.expires_at, now()), b.funding FROM money_cards c JOIN money_card_batches b ON b.id = c.batch_id
 		WHERE c.partner = $1 AND c.partner_ref = $2 FOR UPDATE OF c`, partner, a.Card).
-		Scan(&c.ID, &ws, &c.Merchant, &c.CapMinor, &c.Currency, &c.Status, &c.accountID, &c.holdAccountID, &expires, &funding)
+		Scan(&c.ID, &ws, &agentID, &c.Merchant, &c.CapMinor, &c.Currency, &c.Status, &c.accountID, &c.holdAccountID, &expires, &funding)
+	var paused error
+	if err == nil {
+		paused = refuseIfPaused(ctx, tx, agentID)
+	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		reason = "Lens issued no such card"
@@ -392,6 +412,8 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		reason = "the card has expired"
 	case c.Status != MoneyCardActive:
 		reason = "the card is not active"
+	case paused != nil:
+		reason = paused.Error()
 	case !sameMerchant(c.Merchant, a.Merchant):
 		reason = "the card pays only " + c.Merchant
 	case a.Amount.Asset != c.Currency:

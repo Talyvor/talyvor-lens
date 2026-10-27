@@ -40,7 +40,7 @@ func b4610Postings(t *testing.T, pool *pgxpool.Pool, ws string) string {
 
 // B46.10 — against the fake issuer: one approval issues a batch of three cards for "book a trip", each locked to its
 // merchant and capped; a charge at the locked merchant up to the cap is approved once and closes the card; a second
-// charge, another merchant or more than the cap is declined; a card unused for 24 hours is closed and its cap given back.
+// charge, another merchant, more than the cap or a paused agent is declined; a card unused for 24 hours is closed and its cap given back.
 func TestB4610_OneApprovalIssuesThreeLockedCardsAndEachPaysItsMerchantOnceUpToItsCap(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -125,6 +125,13 @@ func TestB4610_OneApprovalIssuesThreeLockedCardsAndEachPaysItsMerchantOnceUpToIt
 	charge(air, "British Airways", 1000, false, "it pays once")
 	charge(hotel, "Hilton", 5000, false, "pays only Marriott Lisbon")
 	charge(hotel, "Marriott Lisbon", 15001, false, "more than the card's cap")
+	if err := b.store.PauseAgent(ctx, ws, b.acct.AgentID, "the owner paused it"); err != nil {
+		t.Fatal(err)
+	}
+	charge(hotel, "Marriott Lisbon", 15000, false, "paused")
+	if err := b.store.ResumeAgent(ctx, ws, b.acct.AgentID); err != nil {
+		t.Fatal(err)
+	}
 	charge(hotel, "marriott  lisbon", 15000, true, "")
 	// The issuer asking again about the first charge is answered as before, and moves nothing again.
 	if ok, _, err := b.store.AuthorizeCardCharge(ctx, issuerfake.Name, money.Authorization{ID: "iauth_1", Card: air, Merchant: "British Airways",
@@ -149,8 +156,8 @@ func TestB4610_OneApprovalIssuesThreeLockedCardsAndEachPaysItsMerchantOnceUpToIt
 	b.balance(t, 17000)
 	var approved, declined int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE approved), count(*) FILTER (WHERE NOT approved) FROM money_card_authorizations
-		WHERE workspace_id = $1`, ws).Scan(&approved, &declined); err != nil || approved != 2 || declined != 4 {
-		t.Fatalf("authorisations recorded: %d approved, %d declined (%v), want 2 and 4", approved, declined, err)
+		WHERE workspace_id = $1`, ws).Scan(&approved, &declined); err != nil || approved != 2 || declined != 5 {
+		t.Fatalf("authorisations recorded: %d approved, %d declined (%v), want 2 and 5", approved, declined, err)
 	}
 }
 
