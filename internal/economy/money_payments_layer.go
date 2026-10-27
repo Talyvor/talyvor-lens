@@ -89,14 +89,23 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 
 // heldOutsidePayment is whether op is the money layer making a payment out that PayOutside has already judged by the
 // agent's limits and the owner's approval, and whose money it holds: the payment pending under op's key, of that
-// amount, from that agent.
+// amount, from that agent, from the partner account it pays from and to its own payee's account (B46.19) — so the
+// pass covers that one payment, never the same key and amount sent elsewhere.
 func (s *DualTokenStore) heldOutsidePayment(ctx context.Context, op money.Op) (bool, error) {
-	if op.Capability != money.CapTransfers || op.Method != "outbound" || !strings.HasPrefix(op.Key, "mpay_") {
+	if op.Capability != money.CapTransfers || op.Method != "outbound" || !strings.HasPrefix(op.Key, "mpay_") ||
+		op.To.Network != "" || op.To.Address != "" {
 		return false, nil
 	}
 	var held bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_payments WHERE id = $1 AND workspace_id = $2 AND agent_id = $3
-		AND status = $4 AND amount_minor = $5 AND currency = $6)`, op.Key, op.Workspace, op.Agent, PaymentPending, op.Amount.Minor, op.Amount.Asset).Scan(&held)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_payments m
+		JOIN money_accounts a ON a.id = m.account_id
+		JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
+		JOIN money_payees y ON y.id = m.payee_id AND y.workspace_id = m.workspace_id
+		WHERE m.id = $1 AND m.workspace_id = $2 AND m.agent_id = $3 AND m.status = $4 AND m.amount_minor = $5 AND m.currency = $6
+		AND c.partner_account_ref = $7 AND c.partner_account_ref <> '' AND y.name = $8 AND y.iban = $9 AND y.bic = $10
+		AND y.sort_code = $11 AND y.account_number = $12 AND y.routing_number = $13)`,
+		op.Key, op.Workspace, op.Agent, PaymentPending, op.Amount.Minor, op.Amount.Asset, op.Ref,
+		op.To.Name, op.To.IBAN, op.To.BIC, op.To.SortCode, op.To.AccountNumber, op.To.RoutingNumber).Scan(&held)
 	return held, err
 }
 
