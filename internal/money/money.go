@@ -243,6 +243,15 @@ type Card struct {
 	State    string `json:"state"`
 }
 
+// Authorization is a card issuer asking, as a charge is made on a card, whether it may go. Lens answers; the issuer
+// approves or declines the charge as told. Asked again under the same ID, the answer is the same.
+type Authorization struct {
+	ID       string `json:"id"`          // the issuer's
+	Card     string `json:"partner_ref"` // the card's
+	Merchant string `json:"merchant"`
+	Amount   Amount `json:"amount"`
+}
+
 // Payouts pays a seller or a Room member out of a wallet.
 type Payouts interface {
 	Pay(ctx context.Context, req Payout) (Result, error)
