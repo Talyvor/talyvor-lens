@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/ratelimit"
 	"github.com/talyvor/lens/migrations"
 )
