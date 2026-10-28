@@ -133,10 +133,12 @@ func (f *flakyCrediter) CreditLXCTx(ctx context.Context, tx pgx.Tx, ws string, a
 // ─── signed-event fixtures (offline HMAC, the Stripe scheme) ───────────
 
 func signed(secret, eventID, eventType string, object map[string]any) ([]byte, string) {
+	// livemode: these are the real workspaces' payments, which a test-mode event never credits (B50.13).
 	body, _ := json.Marshal(map[string]any{
-		"id":   eventID,
-		"type": eventType,
-		"data": map[string]any{"object": object},
+		"id":       eventID,
+		"type":     eventType,
+		"livemode": true,
+		"data":     map[string]any{"object": object},
 	})
 	// Build the Stripe-Signature header with the SDK's OWN signer so the test can
 	// never drift from ConstructEvent's verification scheme.

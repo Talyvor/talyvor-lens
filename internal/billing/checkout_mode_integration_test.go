@@ -58,6 +58,10 @@ func TestWebhook_SubscriptionCheckout_WritesNoPurchaseRow(t *testing.T) {
 func TestWebhook_PaymentCheckout_StillCreditsExactAmount(t *testing.T) {
 	svc, pool, _ := newBillingService(t)
 	seedWS(t, pool, "ws-b71-topup")
+	// The fixture is a Stripe test-mode event, which credits a test (synthetic) workspace only (B50.13).
+	if _, err := pool.Exec(context.Background(), `UPDATE workspaces SET synthetic = true WHERE id = 'ws-b71-topup'`); err != nil {
+		t.Fatal(err)
+	}
 
 	if code := postFixture(t, svc, "checkout_session_completed_payment.json"); code != http.StatusOK {
 		t.Fatalf("webhook code = %d, want 200", code)

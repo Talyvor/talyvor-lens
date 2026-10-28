@@ -529,7 +529,9 @@ func (s *Service) handleSubscription(w http.ResponseWriter, ctx context.Context,
 		applied = false
 	}
 	// B25.2 — a test workspace's subscription is the test-mode Service's, a real one's the live Service's.
-	if mine, err := s.takes(ctx, wsID); err != nil {
+	// B50.13 — a test-mode event never starts or changes a real workspace's plan, but its end is let through, so a
+	// plan a real workspace got from test-mode money does not outlive its subscription.
+	if mine, err := s.takes(ctx, wsID, event.Livemode || event.Type == "customer.subscription.deleted"); err != nil {
 		s.fail(w, "workspace kind", event.ID, err)
 		return
 	} else if !mine {
@@ -701,7 +703,7 @@ func (s *Service) handleSubscriptionCheckout(w http.ResponseWriter, ctx context.
 		return
 	}
 	// The other kind of workspace's subscription is in the other Service's Stripe mode: not this key's to read.
-	if mine, err := s.takes(ctx, wsID); err != nil {
+	if mine, err := s.takes(ctx, wsID, event.Livemode); err != nil {
 		s.fail(w, "workspace kind", event.ID, err)
 		return
 	} else if !mine {

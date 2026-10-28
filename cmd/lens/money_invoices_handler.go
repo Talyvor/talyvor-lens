@@ -147,8 +147,9 @@ type invoiceCardCheckout interface {
 }
 
 // mountInvoicePayRoutes mounts the pay link's public routes on r; cards is nil when no Stripe test-mode key is set,
-// and the page then offers no card.
-func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCardCheckout) {
+// and the page then offers no card. B50.13: cards is always Stripe test mode, so only a test (synthetic, isTest)
+// workspace's invoice is paid by card; a real one's page offers no card and its card route is refused.
+func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCardCheckout, isTest func(wsID string) bool) {
 	payable := func(inv economy.Invoice) bool {
 		return inv.Status == economy.InvoiceSent || inv.Status == economy.InvoiceOverdue
 	}
@@ -158,7 +159,7 @@ func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCar
 			writeInvoiceErr(w, err)
 			return
 		}
-		page := map[string]any{"card": cards != nil && payable(inv)}
+		page := map[string]any{"card": cards != nil && payable(inv) && isTest(inv.WorkspaceID)}
 		if payable(inv) {
 			// A transfer quotes the agent's payment reference, which routes it to the agent, and the invoice's.
 			// The Test partner's details reach no bank, so a page on them offers no transfer (B49.1).
@@ -181,6 +182,10 @@ func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCar
 		inv, err := pages.InvoiceByToken(req.Context(), chi.URLParam(req, "token"))
 		if err != nil {
 			writeInvoiceErr(w, err)
+			return
+		}
+		if !isTest(inv.WorkspaceID) {
+			writeJSONErr(w, http.StatusForbidden, "card payments are not switched on")
 			return
 		}
 		if !payable(inv) || inv.DueMinor <= 0 {

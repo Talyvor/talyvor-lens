@@ -171,7 +171,9 @@ func (s *Service) creditLineInvoicePaid(w http.ResponseWriter, ctx context.Conte
 	if inv.StatusTransitions.PaidAt > 0 {
 		paidAt = time.Unix(inv.StatusTransitions.PaidAt, 0).UTC()
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE credit_line_invoices SET paid_at = COALESCE(paid_at, $2) WHERE stripe_invoice_id = $1`, inv.ID, paidAt)
+	// B50.13 — a test-mode payment repays only a synthetic company's line.
+	tag, err := s.pool.Exec(ctx, `UPDATE credit_line_invoices c SET paid_at = COALESCE(paid_at, $2) WHERE stripe_invoice_id = $1
+		AND ($3 OR COALESCE((SELECT synthetic FROM workspaces w WHERE w.id = c.workspace_id), false))`, inv.ID, paidAt, event.Livemode)
 	if err != nil {
 		s.fail(w, "credit line invoice paid", event.ID, err)
 		return true

@@ -114,7 +114,7 @@ func TestMarketPayouts_OnboardEarnPaidOutAfterHoldbackAndRefundsReverse(t *testi
 	}
 	event := func(typ, id string, obj map[string]any) {
 		t.Helper()
-		raw, _ := json.Marshal(map[string]any{"id": id, "object": "event", "type": typ, "created": time.Now().Unix(), "data": map[string]any{"object": obj}})
+		raw, _ := json.Marshal(map[string]any{"id": id, "object": "event", "type": typ, "created": time.Now().Unix(), "livemode": true, "data": map[string]any{"object": obj}})
 		signedAt := time.Now()
 		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", bytes.NewReader(raw))
 		req.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", signedAt.Unix(), hex.EncodeToString(webhook.ComputeSignature(signedAt, raw, secret))))

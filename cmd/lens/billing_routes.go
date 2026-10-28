@@ -131,11 +131,13 @@ func backfillPlans(ctx context.Context, svc *billing.Service, which string) {
 // workspace pays through Stripe TEST MODE, always — test, a Service with the test-mode key, webhook secret
 // and plans — and every other workspace through live, the Service there was before. With no test-mode
 // Service a test workspace pays through live when live's own key is a test-mode one (B17.21: it is Stripe
-// test mode already); otherwise it cannot pay, and the refusal names the variable that is unset.
+// test mode already); otherwise it cannot pay, and the refusal names the variable that is unset. B50.13: while
+// live's key is a test-mode one, a real workspace cannot pay at all — test-mode money credits only a test one.
 type billingRouter struct {
 	live, test *billing.Service
 	isTest     func(wsID string) bool
 	unset      string // the test-mode variables not set, when test is nil
+	cardsOff   bool   // live's key is not a live one: a real workspace's payment is refused
 }
 
 func newBillingRouter(live, test *billing.Service, isTest func(string) bool, liveKey, testKey, testSecret string) billingRouter {
@@ -149,12 +151,16 @@ func newBillingRouter(live, test *billing.Service, isTest func(string) bool, liv
 	if testSecret == "" {
 		unset = append(unset, "LENS_STRIPE_TEST_WEBHOOK_SECRET")
 	}
-	return billingRouter{live: live, test: test, isTest: isTest, unset: strings.Join(unset, " and ")}
+	return billingRouter{live: live, test: test, isTest: isTest, unset: strings.Join(unset, " and "), cardsOff: !billing.LiveKey(liveKey)}
 }
 
 // pay is the Service for a payment by wsID, or false with the refusal written.
 func (b billingRouter) pay(w http.ResponseWriter, wsID string) (*billing.Service, bool) {
 	if !b.isTest(wsID) {
+		if b.cardsOff {
+			writeJSONErr(w, http.StatusForbidden, "card payments are not switched on")
+			return nil, false
+		}
 		return b.live, true
 	}
 	if b.test == nil {
@@ -177,18 +183,18 @@ func (b billingRouter) onSubscriptions(checkout bool, h func(svc *billing.Servic
 	return func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
 		svc := b.live
-		if b.isTest(wsID) {
-			if checkout {
-				var ok bool
-				if svc, ok = b.pay(w, wsID); !ok {
-					return
-				}
-				if !svc.SellsSubscriptions() {
-					writeJSONErr(w, http.StatusForbidden,
-						"a test workspace subscribes only to Stripe test-mode plans, and LENS_STRIPE_TEST_SUBSCRIPTION_PLANS is not set")
-					return
-				}
-			} else if svc = b.test; svc == nil {
+		if checkout {
+			var ok bool
+			if svc, ok = b.pay(w, wsID); !ok {
+				return
+			}
+			if b.isTest(wsID) && !svc.SellsSubscriptions() {
+				writeJSONErr(w, http.StatusForbidden,
+					"a test workspace subscribes only to Stripe test-mode plans, and LENS_STRIPE_TEST_SUBSCRIPTION_PLANS is not set")
+				return
+			}
+		} else if b.isTest(wsID) {
+			if svc = b.test; svc == nil {
 				http.NotFound(w, req)
 				return
 			}

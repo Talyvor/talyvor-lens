@@ -115,7 +115,7 @@ func TestMarketLicences_CancelOverHTTPAndAGivenUpBillEndsTheSubscriptionUnpaid(t
 				"period": map[string]any{"start": owed.StartsAt.Add(-time.Hour).Unix(), "end": owed.StartsAt.Add(time.Hour).Unix()},
 				"price":  map[string]any{"id": "price_market", "object": "price"}}}}}
 		raw, _ := json.Marshal(map[string]any{"id": "evt_" + event, "object": "event", "type": "invoice.payment_failed",
-			"created": time.Now().Unix(), "data": map[string]any{"object": obj}})
+			"created": time.Now().Unix(), "livemode": true, "data": map[string]any{"object": obj}})
 		now := time.Now()
 		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", bytes.NewReader(raw))
 		req.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", now.Unix(), hex.EncodeToString(webhook.ComputeSignature(now, raw, secret))))

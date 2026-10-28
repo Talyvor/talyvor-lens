@@ -85,7 +85,7 @@ func TestEscrow_TheJournalReconcilesThroughRandomSalesRefundsReleasesAndPayouts(
 			seller, buyer := sellers[rng.Intn(len(sellers))], buyers[rng.Intn(len(buyers))]
 			id, invoice := fmt.Sprintf("use_b3217_%d", i), fmt.Sprintf("in_b3217_%d", i)
 			billedUse(t, pool, id, seller, buyer, int64(rng.Intn(1_000)+1)*1_000_000, now.Add(-time.Minute)) // 1 to 1,000 LXC
-			if n, err := s.ClearInvoice(ctx, buyer, invoice, now.Add(-2*time.Minute), now, now, false); err != nil || n != 1 {
+			if n, err := s.ClearInvoice(ctx, buyer, invoice, now.Add(-2*time.Minute), now, now, true); err != nil || n != 1 {
 				t.Fatalf("op %d: clear = %d, %v", i, n, err)
 			}
 			cleared = append(cleared, sale{id, invoice, seller})
@@ -149,7 +149,7 @@ func TestEscrow_AHeldEarningStaysInHoldbackUntilItsHoldIsReleased(t *testing.T) 
 	if _, err := s.OpenHold(ctx, "use_held", HoldDispute, buyer, paid.Add(-time.Minute)); err != nil {
 		t.Fatalf("a hold on a use not yet cleared: %v", err)
 	}
-	if n, err := s.ClearInvoice(ctx, buyer, "in_held", paid.Add(-3*time.Hour), paid, paid, false); err != nil || n != 2 {
+	if n, err := s.ClearInvoice(ctx, buyer, "in_held", paid.Add(-3*time.Hour), paid, paid, true); err != nil || n != 2 {
 		t.Fatalf("clear = %d, %v", n, err)
 	}
 	if n, err := s.ReleaseDue(ctx, now); err != nil || n != 1 {
