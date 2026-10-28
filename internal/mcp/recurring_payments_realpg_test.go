@@ -59,7 +59,7 @@ func (p *recordedPushes) titled(title string) []string {
 // order for each and one mandate draft. Nothing runs until the owner signs that draft; then each order's first run
 // waits for one approval, its second pays on its own and notifies, and a payment above the mandate's ask-above
 // amount still goes to approvals. Every payment is checked on the ledger, on test money.
-func TestRecurringPaymentsThroughSDKClient(t *testing.T) {
+func TestOfficialTypeScriptSDKClient_RecurringPayments(t *testing.T) {
 	dir, _ := filepath.Abs("testdata/sdk-client")
 	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err != nil {
 		if os.Getenv("LENS_MCP_SDK_E2E") != "" {

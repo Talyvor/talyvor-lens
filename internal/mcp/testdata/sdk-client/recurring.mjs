@@ -1,5 +1,5 @@
 // B45.13: the official TypeScript MCP SDK client prepares recurring payments from a list, run by
-// TestRecurringPaymentsThroughSDKClient. Usage: node recurring.mjs <lens base URL> <key> <arguments JSON>.
+// TestOfficialTypeScriptSDKClient_RecurringPayments. Usage: node recurring.mjs <lens base URL> <key> <arguments JSON>.
 // Prints the tool's answer as one JSON line; exits non-zero on a failure.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
