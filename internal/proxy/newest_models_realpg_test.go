@@ -108,8 +108,9 @@ func TestNewestModels_EachAnswersThroughTheChatStreamedAtItsOfficialPrice(t *tes
 		{"gpt-6-astra", false, 10.00, 50.00},
 		{"gpt-6-sol", false, 2.00, 10.00},
 		{"gpt-6-luna", false, 0.10, 0.50},
-		{"gpt-6.1-sol", false, 2.00, 10.00}, // B38.4
-		{"gpt-5.2", false, 1.75, 14.00},     // B38.5
+		{"gpt-6.1-sol", false, 2.00, 10.00},  // B38.4
+		{"gpt-6.1-terra", false, 1.00, 5.00}, // B38.10
+		{"gpt-5.2", false, 1.75, 14.00},      // B38.5
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {

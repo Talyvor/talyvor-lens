@@ -139,3 +139,18 @@ func TestCatalog_GPT52SeededFromTheOpenAICapture(t *testing.T) {
 		t.Errorf("%s is in the OpenAI /v1/models capture but not seeded", id)
 	}
 }
+
+// B38.10 — gpt-6.1-terra is FROM A /v1/models CAPTURE: model-watch.py's ~/talyvor-queue/model-captures/openai-2026-10-27.json
+// (shutdown_date null). Its cache rates are not withCacheRates' 0.5x / 1.0x, so they are pinned here.
+func TestCatalog_GPT61TerraSeededFromTheOpenAICapture(t *testing.T) {
+	for _, m := range seedModels() {
+		if m.ID == "gpt-6.1-terra" {
+			if m.Provider != "openai" || m.InputPer1M != 1.00 || m.OutputPer1M != 5.00 || m.CachedInputPer1M != 0.05 || m.CacheWritePer1M != 1.25 ||
+				m.LongPrompt == nil || m.LongPrompt.InputPer1M != 2.00 || m.LongPrompt.OutputPer1M != 7.50 || m.LongPrompt.CachedInputPer1M != 0.10 || m.LongPrompt.CacheWritePer1M != 2.50 {
+				t.Errorf("gpt-6.1-terra = %+v (long %+v); want openai $1.00 | $0.05 | $1.25 | $5.00, long $2.00 | $0.10 | $2.50 | $7.50", m, m.LongPrompt)
+			}
+			return
+		}
+	}
+	t.Error("gpt-6.1-terra is in the OpenAI /v1/models capture but not seeded")
+}
