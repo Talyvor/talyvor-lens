@@ -404,17 +404,20 @@ func (s *DualTokenStore) moveAgentFunds(ctx context.Context, workspaceID, agentI
 		return 0, err
 	}
 	// B17.26: the key is the entry's ref; under the agent's lock, a key already posted is a retry of a
-	// move that landed, answered with the balance and moved nothing.
+	// move that landed, answered with the balance and moved nothing — or, for another amount, refused (B50.15).
 	ref, _ := ctx.Value(moveKeyKey{}).(string)
 	if ref != "" {
-		var landed bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_postings
-		  WHERE workspace_id = $1 AND account = $2 AND kind = $3 AND ref = $4)`,
-			workspaceID, agentAccount(agentID), kind, ref).Scan(&landed); err != nil {
-			return 0, fmt.Errorf("economy: earlier %s: %w", kind, err)
-		}
-		if landed {
+		var landed int64
+		err := tx.QueryRow(ctx, `SELECT abs(amount_ulxc) FROM agent_postings
+		  WHERE workspace_id = $1 AND account = $2 AND kind = $3 AND ref = $4 LIMIT 1`,
+			workspaceID, agentAccount(agentID), kind, ref).Scan(&landed)
+		switch {
+		case err == nil && landed != amount:
+			return 0, ErrIdempotencyKeyReused
+		case err == nil:
 			return bal, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return 0, fmt.Errorf("economy: earlier %s: %w", kind, err)
 		}
 	}
 	if kind == "fund" {

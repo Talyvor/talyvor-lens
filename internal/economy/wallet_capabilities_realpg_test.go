@@ -17,7 +17,7 @@ type companyPaymentsFake struct{ uses int }
 func (f *companyPaymentsFake) CompanyPayeeRefusal(context.Context, string, string) (string, error) {
 	return "", nil
 }
-func (f *companyPaymentsFake) ChargeAgentPayment(context.Context, pgx.Tx, string, string, string, string, int64, string, time.Time) (string, error) {
+func (f *companyPaymentsFake) ChargeAgentPayment(context.Context, pgx.Tx, string, string, string, string, string, int64, string, time.Time) (string, error) {
 	f.uses++
 	return "use_b221", nil
 }

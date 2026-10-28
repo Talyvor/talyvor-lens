@@ -102,7 +102,7 @@ func walletToolDefinitions() []map[string]any {
 	none := map[string]any{}
 	return []map[string]any{
 		tool("wallet_send", "Send credits from your wallet to any agent's wallet on Talyvor, within your spending rules.",
-			map[string]any{"to": address, "amount_ulxc": amount, "memo": str("what it is for")}, "to", "amount_ulxc"),
+			map[string]any{"to": address, "amount_ulxc": amount, "memo": str("what it is for"), "idempotency_key": str(idempotencyKeyDescription)}, "to", "amount_ulxc"),
 		tool("wallet_request", "Ask another agent's wallet for credits; it accepts or declines.",
 			map[string]any{"from": address, "amount_ulxc": amount, "memo": str("what it is for")}, "from", "amount_ulxc"),
 		tool("wallet_requests", "The requests for credits you made and were made.", none),
@@ -264,7 +264,10 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 	}
 	switch name {
 	case "wallet_send":
-		return bank.SendCredits(ctx, ws, agent, a.To, a.AmountULXC, a.Memo)
+		if len(a.IdempotencyKey) > 128 {
+			return nil, &toolRefusal{"idempotency_key must be at most 128 characters"}
+		}
+		return bank.SendCredits(economy.WithMoveKey(ctx, a.IdempotencyKey), ws, agent, a.To, a.AmountULXC, a.Memo)
 	case "wallet_request":
 		return bank.RequestCredits(ctx, ws, agent, a.From, a.AmountULXC, a.Memo)
 	case "wallet_requests":

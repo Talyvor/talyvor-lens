@@ -384,7 +384,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			switch {
 			case errors.Is(err, economy.ErrAgentNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
-			case errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrAgentOwnerless), errors.Is(err, economy.ErrAgentArchived):
+			case errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrAgentOwnerless), errors.Is(err, economy.ErrAgentArchived),
+				errors.Is(err, economy.ErrIdempotencyKeyReused):
 				writeJSONErr(w, http.StatusConflict, err.Error())
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())

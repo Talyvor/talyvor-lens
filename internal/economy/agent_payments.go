@@ -48,9 +48,10 @@ type AgentPayment struct {
 type CompanyPayments interface {
 	// CompanyPayeeRefusal says why payerWorkspaceID may not pay payeeWorkspaceID's agents, or "".
 	CompanyPayeeRefusal(ctx context.Context, payerWorkspaceID, payeeWorkspaceID string) (string, error)
-	// ChargeAgentPayment records the payment, in tx, on the paying company's marketplace bill.
-	ChargeAgentPayment(ctx context.Context, tx pgx.Tx, payerWorkspaceID, fromAgentID, payeeWorkspaceID, toAgentID string,
-		amount int64, memo string, at time.Time) (useID string, err error)
+	// ChargeAgentPayment records the payment, in tx, on the paying company's marketplace bill, as the use useID
+	// when it is given (B50.15: a payment with an Idempotency-Key) and a new one when it is "".
+	ChargeAgentPayment(ctx context.Context, tx pgx.Tx, useID, payerWorkspaceID, fromAgentID, payeeWorkspaceID, toAgentID string,
+		amount int64, memo string, at time.Time) (string, error)
 }
 
 // SetCompanyPayments lets agents pay other companies' agents through the marketplace. Unset, an agent of
@@ -133,6 +134,26 @@ func (s *DualTokenStore) payCompanyAgent(ctx context.Context, workspaceID, payee
 	if err := lockAgent(ctx, tx, workspaceID, pay.FromAgentID); err != nil {
 		return pay, err
 	}
+	// B50.15: with an Idempotency-Key the use is the key's; under the payer's lock, one already recorded is a retry: the
+	// same payment answers as made and moves nothing, another under the same key is refused. Checked before the rules,
+	// so the first payment's own spend does not refuse its retry.
+	useID := ""
+	if key, _ := ctx.Value(moveKeyKey{}).(string); key != "" {
+		useID = "use_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent_pay_company\x00"+workspaceID+"\x00"+pay.FromAgentID+"\x00"+key)).String()
+		var paidTo, paidMemo string
+		var paid int64
+		err := tx.QueryRow(ctx, `SELECT payee_agent_id, price_ulxc, memo FROM market_uses WHERE id = $1`, useID).Scan(&paidTo, &paid, &paidMemo)
+		switch {
+		case err == nil && (paidTo != pay.ToAgentID || paid != pay.AmountULXC || paidMemo != pay.Memo):
+			return pay, ErrIdempotencyKeyReused
+		case err == nil:
+			pay.EntryID = useID
+			pay.FromBalanceULXC, err = accountBalance(ctx, tx, workspaceID, agentAccount(pay.FromAgentID))
+			return pay, err
+		case !errors.Is(err, pgx.ErrNoRows):
+			return pay, fmt.Errorf("economy: earlier payment: %w", err)
+		}
+	}
 	// B30.8: neither a frozen payer nor a frozen payee moves money with another owner.
 	c, _ := CapabilityByKey(CapabilityPayAnotherOwner)
 	for _, ws := range []string{workspaceID, payeeWorkspace} {
@@ -143,7 +164,7 @@ func (s *DualTokenStore) payCompanyAgent(ctx context.Context, workspaceID, payee
 	if err := enforceAgentRules(ctx, tx, workspaceID, pay.FromAgentID, pay.AmountULXC, "company:"+payeeWorkspace); err != nil {
 		return pay, s.refusedMovement(ctx, tx, err)
 	}
-	if pay.EntryID, err = s.companyPayments.ChargeAgentPayment(ctx, tx, workspaceID, pay.FromAgentID, payeeWorkspace, pay.ToAgentID,
+	if pay.EntryID, err = s.companyPayments.ChargeAgentPayment(ctx, tx, useID, workspaceID, pay.FromAgentID, payeeWorkspace, pay.ToAgentID,
 		pay.AmountULXC, pay.Memo, agentRequestFrom(ctx).At); err != nil {
 		return pay, err
 	}
