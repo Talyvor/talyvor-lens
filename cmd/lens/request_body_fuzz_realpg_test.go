@@ -33,7 +33,8 @@ import (
 const fuzzWS = "ws-b502-fuzz"
 
 // leak is what an answer to a caller may never carry.
-var leak = regexp.MustCompile(`SQLSTATE|pgx|pq:|goroutine \d|runtime error|\.go:\d|dial tcp|violates|duplicate key|syntax error at`)
+// Each is shaped like a real driver or runtime message, so a random token in an answer cannot match it.
+var leak = regexp.MustCompile(`SQLSTATE|pgx:|pgconn|pq: |goroutine \d|runtime error|\.go:\d|dial tcp|violates (?:foreign key|unique|not-null|check)|duplicate key value|syntax error at`)
 
 func fuzzBodiesRouter(tb testing.TB) (http.Handler, []string) {
 	url := os.Getenv("LENS_TEST_DATABASE_URL")
