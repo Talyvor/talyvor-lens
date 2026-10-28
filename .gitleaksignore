@@ -1,0 +1,29 @@
+# B50.5: gitleaks over the whole history (`gitleaks git .`), 28 Oct 2026. Each line below was read
+# and is a test fixture or doc placeholder (fake sk_live_/sk_test_ keys, whsec_ test secrets,
+# *-synthetic-key constants, a made-up JWT, the quickstart's example key, the .env example's
+# AIza.../gsk_... stubs), so any NEW finding stands out. Never add a real secret here: rotate it.
+01d2fad444ebfa4fe5816cb48c4772cb9ddbddda:cmd/lens/b17170_self_billed_week_realpg_test.go:generic-api-key:36
+073ed09d032c800cb335e93edd16ea65b68b2a49:cmd/lens/native_push_realpg_test.go:generic-api-key:36
+09c378b1df311e2648f525c1dd4b897512ac169f:cmd/lens/b17175_seller_week_statement_realpg_test.go:generic-api-key:36
+168d820fca77c49622aff847fe30f4d4ec0b4274:cmd/lens/b32102_synthetic_card_link_realpg_test.go:generic-api-key:28
+2fa5f98219f110e456fcc8038d66638c1625c3a7:docs/quickstart.md:generic-api-key:94
+377e8d2e9e820726e3b3ed77c85850e155504c13:cmd/lens/rooms_prizes_realpg_test.go:generic-api-key:54
+44a1cd6712b3eecec2976ceb6f5304b876aa4199:cmd/lens/b3299_synthetic_payout_run_realpg_test.go:generic-api-key:31
+6cdfd0d0cfc2b4ed7c53266ab007f8bd9850b106:internal/secretstatic/at_rest_realpg_test.go:stripe-access-token:141
+abd6e6ae6aef95eed2e8eb31487e856c43ef61c5:cmd/lens/bond_reads_handler_test.go:generic-api-key:106
+adbb3bb1107cbf1ee21815e3fd04ce452cb2f041:internal/billing/billing_integration_test.go:generic-api-key:35
+adbb3bb1107cbf1ee21815e3fd04ce452cb2f041:internal/config/config_test.go:stripe-access-token:65
+c1401f896388c3f0336a03c9b56819ec2bbfe7d1:internal/billing/period_on_items_realpg_test.go:generic-api-key:41
+c4397313929cc79ff5497346c17e8ff451291fc7:.env.production.example:generic-api-key:18
+c8ef511e4963c15e69df4b2ed44a4a2fc0fc972a:cmd/lens/routefuzz/route_fuzz_realpg_test.go:generic-api-key:40
+cf8f55539df58550baf789b41c7f3f4664f24812:cmd/lens/log_redact_test.go:jwt:30
+cf8f55539df58550baf789b41c7f3f4664f24812:cmd/lens/log_redact_test.go:stripe-access-token:27
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:cmd/lens/fees_handler_test.go:stripe-access-token:44
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:cmd/lens/fees_handler_test.go:stripe-access-token:45
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:cmd/lens/fees_handler_test.go:stripe-access-token:46
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:internal/status/card_payments_test.go:stripe-access-token:21
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:internal/status/card_payments_test.go:stripe-access-token:22
+d897f7fd881d08ac88636ebbeb95d13fc59fda3a:internal/status/card_payments_test.go:stripe-access-token:23
+def76f083a93fcfc1104466bf5ac772db48fb890:cmd/lens/b28439_plans_realpg_test.go:generic-api-key:45
+efcbef2f606625f597e9e2ed7c0bb5015e5bbb4e:cmd/lens/b257_bring_due_realpg_test.go:generic-api-key:37
+f071a2a91a001948dea234f53225fb6c521ac9f6:cmd/lens/b253_test_users_every_function_realpg_test.go:generic-api-key:312

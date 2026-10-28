@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.26-alpine AS builder
+# Every base is pinned by its multi-arch index digest, so a re-pushed tag cannot change what we
+# build or ship without a commit (B50.5). Bump the tag and the digest together.
+FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
 WORKDIR /src
 
 RUN apk add --no-cache git ca-certificates
@@ -39,7 +41,7 @@ RUN go build -trimpath -ldflags="-w -s" -o /bin/node ./cmd/node
 # Tare phase 2a (B27.35): the Apache-2.0 kompress-small weights. 279 MB, so not in git: fetched at a
 # pinned revision and checked byte for byte — any other bytes fail the build. See
 # internal/tare/kompress/WEIGHTS.md.
-FROM alpine:3.19 AS kompress
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS kompress
 ARG KOMPRESS_REV=eacbdc589d039a1a39f76a92844979ad4e266bcd
 RUN apk add --no-cache ca-certificates wget && mkdir -p /models/kompress-small && cd /models/kompress-small && \
     for f in model.safetensors tokenizer.json; do \
@@ -54,7 +56,7 @@ RUN apk add --no-cache ca-certificates wget && mkdir -p /models/kompress-small &
 # while keeping the image small (~10 MB, plus the 279 MB of Tare weights) and ca-certificates available
 # for outbound TLS to the LLM providers. We still drop to a non-root
 # user so distroless's hardening profile is largely preserved.
-FROM alpine:3.19
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache ca-certificates wget && \
     addgroup -S lens && adduser -S -G lens -u 65532 lens
 COPY --from=builder /bin/lens /lens
