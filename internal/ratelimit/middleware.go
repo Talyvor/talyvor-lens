@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -24,7 +25,7 @@ import (
 func RateLimitMiddleware(l *Limiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			wsID, keyID := "", "ip:"+middleware.GetClientIP(r.Context())
+			wsID, keyID := "", "ip:"+anonymousIP(r)
 			if k := auth.GetAPIKey(r.Context()); k != nil {
 				wsID, keyID = r.Header.Get("X-Talyvor-Workspace"), k.ID
 			}
@@ -46,4 +47,20 @@ func RateLimitMiddleware(l *Limiter) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// anonymousIP is the address a keyless caller is bucketed by. The forwarded client IP is believed only when
+// the TCP peer is our own proxy (a private or loopback address); a caller that reaches Lens directly is its
+// TCP peer, whatever X-Forwarded-For it sends, and an unresolved forwarded IP falls back to the peer too.
+func anonymousIP(r *http.Request) string {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peer = r.RemoteAddr
+	}
+	if ip := net.ParseIP(peer); ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
+		if fwd := middleware.GetClientIP(r.Context()); fwd != "" {
+			return fwd
+		}
+	}
+	return peer
 }
