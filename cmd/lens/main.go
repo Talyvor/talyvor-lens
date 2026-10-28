@@ -1848,7 +1848,7 @@ func run() error {
 	// B45.24: outside agents' signatures — Web Bot Auth, and Talyvor's own profile on money endpoints.
 	agentSigStore := agentsig.Store{Pool: pool}
 	lensPublicURL, _ := url.Parse(cfg.PublicURL) // config.Load already refused a malformed one
-	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: &agentsig.HTTPDirectory{Client: safehttp.Client(5 * time.Second)},
+	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: newAgentKeyDirectory(),
 		Nonces: agentSigStore, Businesses: agentSigStore, Now: time.Now}
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
@@ -2395,6 +2395,8 @@ func run() error {
 	r.Use(middleware.RequestID)
 	r.Use(clientIPMiddleware())
 	r.Use(middleware.Recoverer)
+	// B50.2 — no request may send more than the largest upload Lens takes; routes cap themselves lower.
+	r.Use(api.BodyLimitMiddleware(api.MaxRequestBody))
 	// B27.11: every request is in /healthz's "requests" section while it runs and for five minutes
 	// after, by route template and phase; one past ten seconds is logged as it crosses and as it ends.
 	requestTracker := reqtrack.New(10*time.Second, logger)
@@ -2824,25 +2826,28 @@ func run() error {
 	// middleware only for routes registered inside its closure.
 	heliconeCompat := compat.NewHeliconeCompat(keyStore)
 
+	// B50.2 — the webhooks, synthetic, provisioning and waitlist routes below have no auth, so they are
+	// rate-limited by client IP (ratelimit.RateLimitMiddleware) rather than left open.
+	limited := r.With(ratelimit.RateLimitMiddleware(rateLimiter))
+
 	// U18b billing webhook — PUBLIC (Stripe-signed, no auth), gated on
-	// BillingEnabled (unregistered ⇒ 404). Registered on the bare router with no
-	// auth/rate-limit middleware; the handler reads the RAW body itself (Stripe
-	// signs raw bytes) before any JSON.
-	bill.post(r, "/v1/billing/webhook", billingSvc.HandleWebhook)
+	// BillingEnabled (unregistered ⇒ 404). Registered with no auth middleware;
+	// the handler reads the RAW body itself (Stripe signs raw bytes) before any JSON.
+	bill.post(limited, "/v1/billing/webhook", billingSvc.HandleWebhook)
 	// B25.2 — the Stripe test-mode endpoint, signed with its own secret; it credits test workspaces only.
 	if testBillingSvc != nil {
-		r.Post("/v1/billing/webhook/test", testBillingSvc.HandleWebhook)
+		limited.Post("/v1/billing/webhook/test", testBillingSvc.HandleWebhook)
 	}
 
 	// B19.12 — Stripe's real-time authorisation of every agent card purchase — PUBLIC (Stripe-signed with
 	// its own secret, no auth), on the bare router like the billing webhook. Unset secret ⇒ unregistered.
 	if cfg.StripeIssuingWebhookSecret != "" {
-		r.Post("/v1/agent-cards/authorizations", agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates).ServeHTTP)
+		limited.Post("/v1/agent-cards/authorizations", agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates).ServeHTTP)
 	}
 
 	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing
 	// webhook; the partner's adapter verifies the signature and a replayed id is refused.
-	r.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
+	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
@@ -2874,7 +2879,7 @@ func run() error {
 	}
 	// B17.1 — synthetic test workspaces, only when LENS_SYNTHETIC_KEY is set.
 	syntheticAnswers := storedanswers.New(pool, redisClient)
-	mountSyntheticRoutes(r, cfg.SyntheticKey, syntheticDeps{
+	mountSyntheticRoutes(limited, cfg.SyntheticKey, syntheticDeps{
 		workspaces: wsManager,
 		credits:    dualToken,
 		answers:    syntheticAnswers,
@@ -2887,13 +2892,13 @@ func run() error {
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
 		due: syntheticDue,
 	})
-	mountProvisionRoute(r, cfg.ProvisionSecret, wsManager,
+	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
-	mountWaitlistRoute(r, cfg.ProvisionSecret, pool)
+	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B26.1 — synthetic workspaces older than seven days are deleted, by the leader alone.
 	if cfg.SyntheticKey != "" {
 		go haComps.leader.Run(ctx, "synthetic-purge", 30*time.Second, func(lctx context.Context) {
@@ -5909,7 +5914,9 @@ func ensureBatchFlag(body []byte) []byte {
 	return out
 }
 
-func newLogger(level string) *slog.Logger {
+func newLogger(level string) *slog.Logger { return newLoggerTo(os.Stdout, level) }
+
+func newLoggerTo(out io.Writer, level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -5921,7 +5928,7 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lvl = slog.LevelInfo
 	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
+	h := slog.NewJSONHandler(out, &slog.HandlerOptions{Level: lvl, ReplaceAttr: redactLogAttr})
 	return slog.New(h)
 }
 
