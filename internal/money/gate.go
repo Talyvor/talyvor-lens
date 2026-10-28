@@ -207,7 +207,7 @@ type gatedPayouts struct {
 }
 
 func (w gatedPayouts) Pay(ctx context.Context, req Payout) (Result, error) {
-	return through(ctx, w.g, call{method: "pay", key: req.Key, ref: req.From, out: &req.Amount, payee: req.To.Name, write: true},
+	return through(ctx, w.g, call{method: "pay", key: req.Key, ref: req.From, out: &req.Amount, payee: req.To.Name, to: req.To, write: true},
 		func() (Result, error) { return w.a.Pay(ctx, req) })
 }
 
