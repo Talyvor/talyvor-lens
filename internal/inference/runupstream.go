@@ -12,9 +12,11 @@ package inference
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -58,7 +60,7 @@ func RunUpstream(ctx context.Context, httpClient *http.Client, rc retry.Config, 
 		return httpClient.Do(req)
 	})
 	if result.LastError != nil {
-		return nil, nil, result.Attempts, result.LastError
+		return nil, nil, result.Attempts, HideURLQuery(result.LastError)
 	}
 	resp = result.Response
 	defer resp.Body.Close()
@@ -68,4 +70,16 @@ func RunUpstream(ctx context.Context, httpClient *http.Client, rc retry.Config, 
 		return nil, nil, result.Attempts, fmt.Errorf("read upstream response: %w", err)
 	}
 	return resp, respBody, result.Attempts, nil
+}
+
+// HideURLQuery drops the query from a *url.Error's URL, in place. Google's key rides in ?key=, and
+// http.Client writes the whole URL into the error text the proxy hands its caller (B50.3).
+func HideURLQuery(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if i := strings.IndexByte(ue.URL, '?'); i >= 0 {
+			ue.URL = ue.URL[:i] + "?…"
+		}
+	}
+	return err
 }

@@ -23,6 +23,7 @@ package config
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -99,6 +100,47 @@ func TestLoad_POVIChallengeKey_SetButInvalidRejected(t *testing.T) {
 		t.Setenv("LENS_POVI_CHALLENGE_KEY", b64Bytes(64))
 		if _, err := Load(); err != nil {
 			t.Fatalf("valid 64-byte private key rejected: %v", err)
+		}
+	})
+}
+
+// B50.3 — LENS_ENV=production refuses to start without each signing key Lens would otherwise make afresh at each
+// start; with all three it loads; a value that is not a known environment is refused rather than read as development.
+func TestLoad_ProductionRequiresEverySigningKey(t *testing.T) {
+	keys := map[string]string{
+		"LENS_JWT_PRIVATE_KEY":    testJWTPEMPresent,
+		"LENS_POVI_CHALLENGE_KEY": b64Bytes(32),
+		"LENS_KYA_SIGNING_KEY":    b64Bytes(32),
+	}
+	for missing := range keys {
+		t.Run("without "+missing, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("LENS_ENV", "production")
+			for k, v := range keys {
+				if k != missing {
+					t.Setenv(k, v)
+				}
+			}
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), missing) {
+				t.Fatalf("LENS_ENV=production without %s: want a refusal naming it, got %v", missing, err)
+			}
+		})
+	}
+	t.Run("with every key", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("LENS_ENV", "production")
+		for k, v := range keys {
+			t.Setenv(k, v)
+		}
+		if c, err := Load(); err != nil || !c.Production {
+			t.Fatalf("LENS_ENV=production with every key: got %v, Production=%v", err, c != nil && c.Production)
+		}
+	})
+	t.Run("an unknown LENS_ENV", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("LENS_ENV", "prod")
+		if _, err := Load(); err == nil {
+			t.Fatal(`LENS_ENV="prod" must be refused, not read as development`)
 		}
 	})
 }

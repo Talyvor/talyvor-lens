@@ -3,6 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -277,5 +280,26 @@ func TestClampTTL(t *testing.T) {
 	}
 	if got := ClampTTL(time.Hour); got != time.Hour {
 		t.Fatalf("under-cap → echo, got %v", got)
+	}
+}
+
+// B50.3 — the algorithm is pinned to ES256: a token naming "none", an HMAC (signed with the public key's bytes, the
+// classic key-confusion forgery) or another ECDSA curve is refused.
+func TestValidateToken_RefusesEveryAlgorithmButES256(t *testing.T) {
+	key := testKey(t)
+	claims := TokenClaims{WorkspaceID: "ws", RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: JWTIssuer, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}}
+	pub, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	none, _ := jwt.NewWithClaims(jwt.SigningMethodNone, claims).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(pub)
+	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	es384, _ := jwt.NewWithClaims(jwt.SigningMethodES384, claims).SignedString(p384)
+	for name, tok := range map[string]string{"none": none, "HS256": hs, "ES384": es384} {
+		if _, err := ValidateToken(tok, &key.PublicKey); !errors.Is(err, ErrInvalidAuth) {
+			t.Errorf("%s token: want ErrInvalidAuth, got %v", name, err)
+		}
 	}
 }

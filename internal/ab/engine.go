@@ -8,12 +8,12 @@ package ab
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- A/B bucket assignment only, never an id, token or secret
 	"sort"
 	"strings"
 	"sync"
@@ -849,5 +849,5 @@ func (e *Engine) RunAutoCompleteLoop(ctx context.Context, interval time.Duration
 // prefix is for human-readable ordering, the suffix avoids
 // collisions on concurrent creates.
 func generateExperimentID() string {
-	return fmt.Sprintf("exp_%d_%06d", time.Now().UnixMilli(), rand.Intn(1_000_000))
+	return fmt.Sprintf("exp_%d_%s", time.Now().UnixMilli(), rand.Text()[:12])
 }

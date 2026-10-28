@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/redact"
 )
 
 // audit_chain.go — B40.5: AN APPEND-ONLY, HASH-CHAINED RECORD OF EVERY STEP, PER SUBJECT.
@@ -37,7 +39,7 @@ func auditHash(prev string, seq int64, kind, body string) string {
 // appendAudit adds one entry of kind to subject's chain inside tx, with body and the time it was written.
 func appendAudit(ctx context.Context, tx pgx.Tx, workspaceID, subject, kind string, body map[string]any) error {
 	body["at"] = time.Now().UTC().Format(time.RFC3339Nano)
-	b, err := json.Marshal(body)
+	b, err := json.Marshal(redactAudit(body)) // a partner error can echo a credential; the chain keeps it forever
 	if err != nil {
 		return fmt.Errorf("economy: audit entry: %w", err)
 	}
@@ -58,6 +60,27 @@ func appendAudit(ctx context.Context, tx pgx.Tx, workspaceID, subject, kind stri
 		return fmt.Errorf("economy: audit entry: %w", err)
 	}
 	return nil
+}
+
+// redactAudit returns v with redact.Secrets applied to every string in it.
+func redactAudit(v any) any {
+	switch t := v.(type) {
+	case string:
+		return redact.Secrets(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = redactAudit(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = redactAudit(x)
+		}
+		return out
+	}
+	return v
 }
 
 // AppendAudit adds one entry of kind to subject's chain, in a transaction of its own: the money layer's record of every

@@ -79,7 +79,7 @@ func (v *Verifier) Verify(ctx context.Context, rawEAT string, wantNonce int64, n
 	}
 
 	var claims eatClaims
-	tok, err := jwt.NewParser(jwt.WithTimeFunc(v.now)).ParseWithClaims(rawEAT, &claims, keyfunc)
+	tok, err := jwt.NewParser(jwt.WithTimeFunc(v.now), jwt.WithExpirationRequired()).ParseWithClaims(rawEAT, &claims, keyfunc)
 	if err != nil {
 		return Result{}, fmt.Errorf("attestation: EAT verify: %w", err)
 	}

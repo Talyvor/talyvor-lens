@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/talyvor/lens/internal/redact"
 )
 
 const (
@@ -133,7 +135,7 @@ func insert(ctx context.Context, q queryRower, e Entry) (Entry, error) {
 		INSERT INTO operator_audit (actor, action, target, detail, occurred_at)
 		VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, now()))
 		RETURNING id, occurred_at, recorded_at`,
-		e.Actor, e.Action, e.Target, e.Detail, at,
+		e.Actor, e.Action, redact.Secrets(e.Target), redact.Secrets(e.Detail), at,
 	).Scan(&e.ID, &e.OccurredAt, &e.RecordedAt)
 	if err != nil {
 		return Entry{}, fmt.Errorf("operatoraudit: record: %w", err)

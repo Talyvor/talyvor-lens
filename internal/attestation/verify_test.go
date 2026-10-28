@@ -194,6 +194,9 @@ func TestVerify_RealCrypto_Negatives(t *testing.T) {
 		{"expired", pki.rootPool, func(t *testing.T) string {
 			return signEAT(t, pki, func(c jwt.MapClaims) { c["exp"] = time.Unix(1_600_000_000, 0).Unix() }) // 2020 < fixedNow
 		}},
+		{"no-exp", pki.rootPool, func(t *testing.T) string { // B50.3: an EAT that never expires is refused
+			return signEAT(t, pki, func(c jwt.MapClaims) { delete(c, "exp") })
+		}},
 		{"iss-not-NRAS", pki.rootPool, func(t *testing.T) string {
 			return signEAT(t, pki, func(c jwt.MapClaims) { c["iss"] = "evil" })
 		}},

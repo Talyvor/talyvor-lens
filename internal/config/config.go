@@ -1297,6 +1297,9 @@ type Config struct {
 	// requires Redis (LENS_REDIS_URL) — which Lens already requires — for
 	// the instance registry, shared rate limiter, and breaker gossip.
 	HAEnabled bool
+	// Production is LENS_ENV=production (B50.3): Lens refuses to start without the signing keys it would otherwise
+	// make afresh at each start, silently, so every credential it signed stops verifying after a restart.
+	Production bool
 	// HAHeartbeat is how often this instance refreshes its registry key.
 	// HAInstanceTTL is the TTL on that key, so a crashed instance
 	// disappears after a few missed heartbeats. HADrainTimeout bounds
@@ -2101,6 +2104,22 @@ func Load() (*Config, error) {
 		if c.POVIChallengeKey == "" {
 			return nil, fmt.Errorf("LENS_HA_ENABLED requires LENS_POVI_CHALLENGE_KEY: an ephemeral per-replica challenge key invalidates node-pinned pubkeys")
 		}
+	}
+	switch env := os.Getenv("LENS_ENV"); env {
+	case "", "development":
+	case "production":
+		c.Production = true
+		for _, k := range []struct{ name, val string }{
+			{"LENS_JWT_PRIVATE_KEY", c.JWTPrivateKey},
+			{"LENS_POVI_CHALLENGE_KEY", c.POVIChallengeKey},
+			{"LENS_KYA_SIGNING_KEY", c.KYASigningKey},
+		} {
+			if k.val == "" {
+				return nil, fmt.Errorf("LENS_ENV=production requires %s: without it Lens signs with a key made at this start, and what it signed stops verifying at the next", k.name)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("config: LENS_ENV must be empty, development or production, got %q", env)
 	}
 	// U6 Sybil floor: the legacy trust-mint defaults FALSE — an unprotected mint
 	// path (no receipt, caller-asserted tokens, no idempotency) must be opt-IN.

@@ -12,6 +12,7 @@ package auth
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -253,6 +254,7 @@ func ValidateToken(tokenString string, key *ecdsa.PublicKey) (*TokenClaims, erro
 		},
 		jwt.WithIssuer(JWTIssuer),
 		jwt.WithExpirationRequired(),
+		jwt.WithValidMethods([]string{jwt.SigningMethodES256.Alg()}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidAuth, err)
@@ -474,7 +476,7 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 
 	// Global admin key — exact match. Always carries every
 	// scope (HasScope shortcircuits via IsAdmin).
-	if m.globalKey != "" && raw == m.globalKey {
+	if m.globalKey != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(m.globalKey)) == 1 {
 		return &AuthContext{
 			WorkspaceID: "",
 			Scopes:      []string{ScopeProxy, ScopeAnalytics, ScopeAdmin, ScopeKeys},
@@ -489,7 +491,7 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 	// Ordered AFTER the global-key branch on purpose: if an operator sets LENS_MINT_KEY to the
 	// same string as LENS_API_KEY, the admin branch wins and behaviour is unchanged rather than
 	// silently DEMOTED — a downgrade would break admin, which is worse than the gap this closes.
-	if m.mintKey != "" && raw == m.mintKey {
+	if m.mintKey != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(m.mintKey)) == 1 {
 		return &AuthContext{
 			WorkspaceID: "",
 			Scopes:      []string{ScopeMint},
@@ -510,7 +512,7 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 	//     screen is visibly broken rather than silently over-privileged. Neither key is a superset
 	//     of the other, so one of them has to lose; losing loudly on the read side is the safer
 	//     half. Both are asserted in cmd/lens/operator_read_credential_test.go.
-	if m.operatorReadKey != "" && raw == m.operatorReadKey {
+	if m.operatorReadKey != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(m.operatorReadKey)) == 1 {
 		return &AuthContext{
 			WorkspaceID: "",
 			Scopes:      []string{ScopeOperatorRead},
