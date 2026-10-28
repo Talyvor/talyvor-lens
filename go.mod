@@ -1,6 +1,6 @@
 module github.com/talyvor/lens
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.10 // the version this repo SHIPS: setup-go pins below it are upgraded to it, so the released binary is built with exactly this. >= 1.26.10 clears GO-2026-6809 (crypto/x509 compromised intermediates, reachable via devicekey.Verifier.verifyChain); >= 1.26.9 clears GO-2026-{6617,6613,6612,6611,6610,6608,6607,6605,6603,6600,6599}, eleven reachable stdlib advisories (net/http, net/textproto, crypto/tls, html/template) that made the govulncheck gate red for every PR; >= 1.26.6 cleared GO-2026-{6218,6091,6090,6089,6088,5972,5026}, seven reachable stdlib advisories that made the govulncheck gate red on main; >= 1.26.5 was for GO-2026-5856 (crypto/tls ECH privacy leak). Enforced by the govulncheck CI gate, and kept in lockstep with ci.yaml's graders by internal/toolchainaudit
 
@@ -24,10 +24,10 @@ require (
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/crypto v0.52.0
-	golang.org/x/net v0.55.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.41.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/text v0.43.0
 )
 
 require (
@@ -58,7 +58,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )

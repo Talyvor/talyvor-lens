@@ -76,11 +76,14 @@ func GenerateECKey() (*ecdsa.PrivateKey, error) {
 // X and Y coordinates are zero-padded to the full 32-byte P-256 field width
 // before base64url encoding, as required by RFC 7518 §6.2.1.
 func PublicKeyToJWK(key *ecdsa.PublicKey, kid string) map[string]any {
-	byteLen := (key.Curve.Params().BitSize + 7) / 8
-	xBytes := make([]byte, byteLen)
-	yBytes := make([]byte, byteLen)
-	key.X.FillBytes(xBytes)
-	key.Y.FillBytes(yBytes)
+	// The uncompressed point 0x04 || X || Y, each already the full field width (key.X and key.Y are
+	// deprecated since Go 1.26). Only an invalid key errs, and the old big.Int reads panicked on one too.
+	pt, err := key.Bytes()
+	if err != nil {
+		panic("auth: PublicKeyToJWK: " + err.Error())
+	}
+	byteLen := (len(pt) - 1) / 2
+	xBytes, yBytes := pt[1:1+byteLen], pt[1+byteLen:]
 	return map[string]any{
 		"kty": "EC",
 		"crv": "P-256",

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -107,7 +108,9 @@ func TestRotatingTheKeyInvalidatesExistingTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.D.Cmp(b.D) == 0 {
+	da, errA := a.Bytes()
+	db, errB := b.Bytes()
+	if errA != nil || errB != nil || bytes.Equal(da, db) {
 		t.Fatal("two generated keys are identical — the premise of this test is broken")
 	}
 	// Same advertised kid, different signing material: a token from `a` cannot verify under `b`,

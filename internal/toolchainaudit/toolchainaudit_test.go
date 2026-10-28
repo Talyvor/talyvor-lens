@@ -309,8 +309,10 @@ func TestToolchain_C_TheUnverifiablePinsAreCountedNotSkipped(t *testing.T) {
 		unverifiable = append(unverifiable, p.String())
 	}
 	if inexact == 0 {
-		t.Fatalf("FLOOR: this rule classified 0 major.minor pins. It exists to bound the pins "+
-			"rule B cannot check; with none present it is asserting nothing. Pins seen: %v", s.pins)
+		// B17.268: since go.mod's go line is 1.26 every pin is exact (a 1.25 job refuses the module under
+		// setup-go's GOTOOLCHAIN=local), so rule B checks them all and there is nothing for this one to count.
+		t.Logf("0 major.minor pins: rule B checked every one of %d", len(s.pins))
+		return
 	}
 	if len(unverifiable) != wantUnverifiable {
 		t.Fatalf("UNVERIFIABLE PINS: %d, want %d.\n%s\n"+

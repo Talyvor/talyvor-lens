@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.10"
           cache: false
       # A `finally` DOES NOT RUN ON SIGTERM, and 16 of this repo's control scripts mutate a
       # tracked file and restore it in one. NONE installed a handler before this step, and
@@ -167,7 +167,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.10"
           cache: false
       - name: fetch kompress-small at the Dockerfile's pinned revision
         run: |
@@ -196,9 +196,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # Must EQUAL go.mod's `toolchain` (go1.26.10): golangci-lint refuses to run if it
-          # was built with a Go older than the module's targeted version. (The test/build
-          # jobs can stay on 1.25 — `go test`/`go build` auto-fetch the toolchain; a
-          # `go install`-built golangci-lint does not, so it needs the newer Go here.)
+          # was built with a Go older than the module's targeted version. (Every job pins it
+          # too since go.mod's go line reached 1.26: setup-go sets GOTOOLCHAIN=local, so a
+          # 1.25 job refuses the module rather than fetching the toolchain.)
           # ">=" was the old wording and it is too weak to be checkable: go.mod's toolchain
           # is a FLOOR, so a pin ABOVE it is not pulled back down. internal/toolchainaudit
           # asserts equality — change this and go.mod together or the guard reds.
@@ -248,7 +248,7 @@ jobs:
       # the real proxy handler. Needs the Python and Node installs above, so it runs here.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.10"
           cache: false
       - name: SDKs through the real proxy handler
         env:
@@ -280,7 +280,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.10"
           cache: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -334,7 +334,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.10"
           cache: false
       - name: Build binary
         run: |

@@ -640,7 +640,9 @@ func (s *DualTokenStore) GrantLXC(ctx context.Context, workspaceID string, lxcAm
 	return newBal, nil
 }
 
-// GrantLXCUpTo grants each of workspaceIDs whose balance is below target the difference, in ONE
+// GrantLXCUpTo grants each of workspaceIDs whose balance not held by its agents and pots is below target
+// the difference (B17.268: counting what the agents hold, a workspace whose agents had kept 1,000 LXC
+// across nights was "restored" to nothing it could fund an agent with), in ONE
 // transaction of set-based statements however many workspaces there are (B26.1: a synthetic reset of
 // thousands). Each grant is what GrantLXC writes — one admin_grant lxc_ledger row (funding "grant") and
 // the balance, lifetime minted and test-funded part moved with it — so the ledger cannot tell them apart.
@@ -671,17 +673,20 @@ func (s *DualTokenStore) GrantLXCUpTo(ctx context.Context, workspaceIDs []string
 	// test-funded clamp is writeLXCBalance's.
 	tag, err := tx.Exec(ctx, `
 		WITH short AS (
-		    SELECT workspace_id, $2::bigint - balance AS delta
-		    FROM lxc_balances WHERE workspace_id = ANY($1::text[]) AND balance < $2::bigint
-		    FOR UPDATE
+		    SELECT b.workspace_id, $2::bigint + h.held AS goal, $2::bigint + h.held - b.balance AS delta
+		    FROM lxc_balances b
+		    CROSS JOIN LATERAL (SELECT COALESCE(sum(a.balance_ulxc), 0)::bigint AS held FROM agent_account_balances a
+		        WHERE a.workspace_id = b.workspace_id AND (a.account LIKE 'agent:%' OR a.account LIKE 'pot:%')) h
+		    WHERE b.workspace_id = ANY($1::text[]) AND b.balance < $2::bigint + h.held
+		    FOR UPDATE OF b
 		), ledger AS (
 		    INSERT INTO lxc_ledger (workspace_id, amount, balance_after, type, description, metadata)
-		    SELECT workspace_id, delta, $2::bigint, $3, $4, $5::jsonb FROM short
+		    SELECT workspace_id, delta, goal, $3, $4, $5::jsonb FROM short
 		)
 		UPDATE lxc_balances b
-		SET balance = $2::bigint, lifetime_minted = b.lifetime_minted + s.delta, updated_at = NOW(),
-		    test_funded_ulxc = CASE WHEN b.test_funded_ulxc <= $2::bigint THEN b.test_funded_ulxc ELSE LEAST(b.test_funded_ulxc, GREATEST(
-		        $2::bigint + (SELECT COALESCE(sum(held_ulxc), 0) FROM lxc_reservations r WHERE r.workspace_id = b.workspace_id AND r.status = 'held'), 0)) END
+		SET balance = s.goal, lifetime_minted = b.lifetime_minted + s.delta, updated_at = NOW(),
+		    test_funded_ulxc = CASE WHEN b.test_funded_ulxc <= s.goal THEN b.test_funded_ulxc ELSE LEAST(b.test_funded_ulxc, GREATEST(
+		        s.goal + (SELECT COALESCE(sum(held_ulxc), 0) FROM lxc_reservations r WHERE r.workspace_id = b.workspace_id AND r.status = 'held'), 0)) END
 		FROM short s WHERE b.workspace_id = s.workspace_id`,
 		workspaceIDs, target, LXCTypeGrant, reason, metaJSON)
 	if err != nil {
