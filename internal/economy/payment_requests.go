@@ -107,6 +107,8 @@ type PaymentRequestIn struct {
 	Client  string                 `json:"client"`
 	AgentID string                 `json:"agent_id"`
 	Items   []PaymentRequestItemIn `json:"items"`
+	// B45.13: a recurring plan's first payment to a payee, which waits for approval even inside the mandate.
+	FirstPayment bool `json:"-"`
 }
 
 // PaymentRequestItem is one frozen item and how it was judged.
@@ -250,6 +252,10 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	if idempotencyKey = strings.TrimSpace(idempotencyKey); idempotencyKey == "" {
 		return r, false, fmt.Errorf("%w: an Idempotency-Key is required", ErrPaymentRequest)
 	}
+	// B45.13: "schedule:" keys are a recurring plan's ticks', so no caller can take a tick's key before it runs.
+	if strings.HasPrefix(idempotencyKey, ClientSchedulePrefix) != strings.HasPrefix(in.Client, ClientSchedulePrefix) {
+		return r, false, fmt.Errorf("%w: an Idempotency-Key starting %q is reserved for recurring payments", ErrPaymentRequest, ClientSchedulePrefix)
+	}
 	kind, err := in.normalise()
 	if err != nil {
 		return r, false, err
@@ -364,7 +370,7 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		} else if x.ListingID != "" {
 			blocked, err = s.resolveListing(ctx, workspaceID, &it, &p)
 		} else if blocked, err = s.resolvePayee(ctx, workspaceID, &it, &p); err == nil && blocked == "" {
-			err = s.riskFlags(ctx, workspaceID, &it, it.Reference, p.NewPayee)
+			err = s.riskFlags(ctx, workspaceID, &it, it.Reference, p.NewPayee, strings.HasPrefix(in.Client, ClientSchedulePrefix))
 		}
 		if err != nil {
 			return nil, err
@@ -469,6 +475,8 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		switch {
 		case closest == nil:
 			it.Decision, it.Reason = ItemNeedsApproval, "no permission mandate the person signed covers this payment"
+		case closest.Decision == MandateAllow && in.FirstPayment:
+			it.Decision, it.Reason, it.Rule, it.MandateID = ItemNeedsApproval, "the first payment of a recurring payment waits for approval", "first_payment", closest.MandateID
 		case closest.Decision == MandateAllow:
 			it.Decision, it.Reason, it.Rule, it.MandateID = ItemAuto, "inside the mandate", "", closest.MandateID
 		default:
