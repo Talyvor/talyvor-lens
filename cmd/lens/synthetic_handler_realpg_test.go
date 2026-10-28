@@ -150,6 +150,15 @@ func TestSynthetic_AHundredAreCreatedAndResetInOneCallEach(t *testing.T) {
 		VALUES ('anthropic', 'claude-haiku-4-5', 'h1', array_fill(0, ARRAY[1536])::vector, 'an answer', $1, 'text-embedding-3-small')`, first); err != nil {
 		t.Fatalf("store an answer: %v", err)
 	}
+	// B17.268 — the second has an agent that kept every credit from an earlier night.
+	second := out.Workspaces[1].WorkspaceID
+	kept, err := dual.CreateAgent(ctx, second, "Kept", "u-owner")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := dual.FundAgent(ctx, second, kept.ID, syntheticCreditULXC); err != nil {
+		t.Fatalf("fund the agent with every credit: %v", err)
+	}
 
 	// ONE call resets all hundred: the stored answer is gone and the credits are back.
 	w = call("/v1/synthetic/workspaces/reset", "the-key", ``)
@@ -165,6 +174,21 @@ func TestSynthetic_AHundredAreCreatedAndResetInOneCallEach(t *testing.T) {
 	if n := one(`SELECT count(*) FROM lxc_ledger WHERE workspace_id = $1 AND type = $2 AND amount = 5000000`,
 		first, economy.LXCTypeGrant); n != 1 {
 		t.Errorf("%s has %d restoring grants of 5,000,000 µLXC on the ledger, want 1", first, n)
+	}
+	// What the agent holds stays its own, and the workspace again has 1,000 LXC to fund another agent with.
+	if n := one(`SELECT count(*) FROM lxc_ledger WHERE workspace_id = $1 AND type = $2 AND amount = $3 AND balance_after = $4`,
+		second, economy.LXCTypeGrant, syntheticCreditULXC, 2*syntheticCreditULXC); n != 1 {
+		t.Errorf("%s has %d restoring grants of %d µLXC to %d on the ledger, want 1", second, n, syntheticCreditULXC, 2*syntheticCreditULXC)
+	}
+	next, err := dual.CreateAgent(ctx, second, "Next", "u-owner")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := dual.FundAgent(ctx, second, next.ID, syntheticCreditULXC); err != nil {
+		t.Errorf("after the reset funding a new agent with %d µLXC: %v", syntheticCreditULXC, err)
+	}
+	if n := one(`SELECT balance_ulxc FROM agent_account_balances WHERE workspace_id = $1 AND account = $2`, second, "agent:"+kept.ID); n != syntheticCreditULXC {
+		t.Errorf("the agent that kept its credits holds %d µLXC after the reset, want %d", n, syntheticCreditULXC)
 	}
 
 	// Every call is on the record, the refused one included.
