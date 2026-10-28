@@ -108,6 +108,30 @@ func (s *DualTokenStore) AgentReceipt(ctx context.Context, workspaceID, agentID,
 	return r, nil
 }
 
+// AgentToolCallsAllowed refuses, with ErrAgentRequestRate, an agent that has called its tools requests_per_minute
+// times in the last minute (B50.4): its rule caps tool calls as it caps model calls. Refused calls count, so a loop
+// that keeps calling stays stopped until it pauses.
+func (s *DualTokenStore) AgentToolCallsAllowed(ctx context.Context, workspaceID, agentID string) error {
+	rules, err := s.GetAgentRules(ctx, workspaceID, agentID)
+	if err != nil {
+		return err
+	}
+	rpm := limitOf(rules.RequestsPerMinute)
+	if rpm <= 0 {
+		return nil
+	}
+	var calls int64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM agent_tool_calls
+		WHERE workspace_id = $1 AND agent_id = $2 AND created_at > now() - interval '1 minute'`, workspaceID, agentID).Scan(&calls); err != nil {
+		return fmt.Errorf("economy: agent tool calls so far: %w", err)
+	}
+	if calls >= rpm {
+		return fmt.Errorf("%w: the agent may make %d requests a minute and has called its tools %d times in the last minute; try again shortly",
+			ErrAgentRequestRate, rpm, calls)
+	}
+	return nil
+}
+
 // RecordAgentToolCall logs one call to the wallet tools: outcome is ok, refused or error.
 func (s *DualTokenStore) RecordAgentToolCall(ctx context.Context, workspaceID, agentID, scopedKeyID, tool string, args json.RawMessage, outcome, detail string) error {
 	if len(args) == 0 || !json.Valid(args) {

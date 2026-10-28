@@ -22,6 +22,7 @@ import (
 
 	"github.com/talyvor/lens/internal/alerts"
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/learner"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/reqtrack"
@@ -463,6 +464,15 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 		return rpcErr(id, rpcErrInvalidParam, "Invalid params: "+err.Error())
 	}
 
+	// B50.4: a model fills the arguments; the agent tools check them in runAgentTool, so the refusal is logged.
+	if !strings.HasPrefix(params.Name, "agent_") && !isWalletTool(params.Name) && !isMarketTool(params.Name) && !isRoomTool(params.Name) {
+		if err := s.checkArguments(params.Name, params.Arguments); err != nil {
+			if perr := economy.RefuseAssistantPayeeDetails(params.Arguments); perr != nil {
+				err = perr // B40.3's own words for bank details an assistant wrote
+			}
+			return rpcOK(id, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true})
+		}
+	}
 	var (
 		result any
 		err    error

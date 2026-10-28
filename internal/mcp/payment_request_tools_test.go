@@ -59,9 +59,14 @@ func TestMCP_PaymentRequestToolsPrepareOnly(t *testing.T) {
 	if f.key != "k1" || f.in.Client != "voice" || len(f.in.Items) != 1 || f.in.Items[0].PayeeID != "payee_1" || f.in.Items[0].AmountMinor != 900 {
 		t.Errorf("prepare_payment prepared %q %+v", f.key, f.in)
 	}
-	call(`{"name":"request_marketplace_purchase","arguments":{"idempotency_key":"k2","client":"chat","listing_id":"lst_1","amount_minor":1}}`)
+	call(`{"name":"request_marketplace_purchase","arguments":{"idempotency_key":"k2","client":"chat","listing_id":"lst_1"}}`)
 	if len(f.in.Items) != 1 || f.in.Items[0] != (economy.PaymentRequestItemIn{ListingID: "lst_1"}) {
 		t.Errorf("request_marketplace_purchase prepared %+v", f.in)
+	}
+	// B50.4: a price the assistant names is refused, never prepared.
+	f.key = ""
+	if res := call(`{"name":"request_marketplace_purchase","arguments":{"idempotency_key":"k5","client":"chat","listing_id":"lst_1","amount_minor":1}}`); f.key != "" || res["isError"] != true {
+		t.Errorf("a marketplace purchase with the assistant's price = %v (prepared %q)", res, f.key)
 	}
 	// B41.102: prepare_bills_payment prepares the bills named, as the owner's named client.
 	call(`{"name":"prepare_bills_payment","arguments":{"idempotency_key":"k4","client":"chat","bill_ids":["bill_1","bill_2"]}}`)

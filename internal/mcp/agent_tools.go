@@ -29,6 +29,7 @@ type AgentBank interface {
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentReceipt(ctx context.Context, workspaceID, agentID, entryID string) (economy.AgentReceipt, error)
 	RecordAgentToolCall(ctx context.Context, workspaceID, agentID, scopedKeyID, tool string, args json.RawMessage, outcome, detail string) error
+	AgentToolCallsAllowed(ctx context.Context, workspaceID, agentID string) error
 }
 
 // SetAgentBank enables the agent tools.
@@ -123,6 +124,16 @@ func (s *Server) callAgentTool(ctx context.Context, name string, args json.RawMe
 }
 
 func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID string, raw json.RawMessage) (any, error) {
+	if err := s.checkArguments(name, raw); err != nil { // B50.4
+		return nil, err
+	}
+	// B50.4: the agent's requests_per_minute stops a runaway loop of tool calls as it stops one of model calls.
+	if err := s.agentBank.AgentToolCallsAllowed(ctx, workspaceID, agentID); err != nil {
+		if errors.Is(err, economy.ErrAgentRequestRate) {
+			return nil, &toolRefusal{err.Error()}
+		}
+		return nil, err
+	}
 	if isWalletTool(name) { // B22.11
 		return s.runWalletTool(ctx, name, workspaceID, agentID, raw)
 	}

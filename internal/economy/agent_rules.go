@@ -62,7 +62,8 @@ type AgentRules struct {
 	// Read, it is never nil; nil (absent from the JSON) saves the rules without changing it. Saved, it replaces
 	// the stored caps whole: a model left out, or capped at zero, has no cap.
 	ModelDailyLimitsULXC map[string]int64 `json:"model_daily_limits_ulxc"`
-	// RequestsPerMinute (B28.302) caps the questions the agent asks in any sixty seconds. Read, it is never nil;
+	// RequestsPerMinute (B28.302) caps the questions the agent asks in any sixty seconds, and (B50.4) its MCP tool
+	// calls in any sixty seconds, counted apart. Read, it is never nil;
 	// nil (absent from the JSON) saves the rules without changing it.
 	RequestsPerMinute *int64 `json:"requests_per_minute"`
 	// AllowedPayees and BlockedPayees (B28.303) name, by id, who the agent may pay and who it may not: an agent
