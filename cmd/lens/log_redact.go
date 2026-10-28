@@ -5,24 +5,20 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/talyvor/lens/internal/redact"
 )
 
 // B50.2 — what may never reach the logs. redactLogAttr is the logger's ReplaceAttr: an attribute named like a
 // credential loses its value, and every string value and message (log.Printf arrives as one) has keys, bearer
 // tokens, IBANs and card numbers cut out. Numbers logged as numbers are left alone.
 
-const redacted = "[REDACTED]"
+const redacted = redact.Mark
 
 var (
 	secretAttrName = regexp.MustCompile(`(?i)(pass(word|wd|phrase)?|secret|token|authorization|api_?key|cookie|private_?key)$`)
-	secretValue    = regexp.MustCompile(`tlv_[A-Za-z0-9_]{8,}` + // Talyvor workspace and agent keys
-		`|\b(?:sk|rk|pk|whsec)_(?:live|test)_[A-Za-z0-9]{8,}` + // Stripe keys and webhook secrets
-		`|\bsk-[A-Za-z0-9_-]{16,}` + // provider keys
-		`|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}` +
-		`|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*` + // JWTs
-		`|(?i:password|passwd|secret)["']?\s*[=:]\s*["']?[^\s"',&]+`)
-	ibanValue = regexp.MustCompile(`\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]){11,30}\b`)
-	cardValue = regexp.MustCompile(`\b[2-6](?:[ -]?[0-9]){12,18}\b`)
+	ibanValue      = regexp.MustCompile(`\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]){11,30}\b`)
+	cardValue      = regexp.MustCompile(`\b[2-6](?:[ -]?[0-9]){12,18}\b`)
 )
 
 func redactLogAttr(_ []string, a slog.Attr) slog.Attr {
@@ -45,7 +41,7 @@ func redactLogAttr(_ []string, a slog.Attr) slog.Attr {
 }
 
 func redactLogText(s string) string {
-	s = secretValue.ReplaceAllString(s, redacted)
+	s = redact.Secrets(s)
 	s = ibanValue.ReplaceAllString(s, redacted)
 	return cardValue.ReplaceAllStringFunc(s, func(m string) string {
 		if luhn(m) {

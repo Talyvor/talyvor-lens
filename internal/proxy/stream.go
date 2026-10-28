@@ -443,6 +443,7 @@ func (s *StreamHandler) serve(
 		}
 	}
 	if result.LastError != nil {
+		inference.HideURLQuery(result.LastError)
 		metrics.RecordUpstream(upstreamProviderLabel(provider), "error", time.Since(upstreamStart))
 		writeError(w, http.StatusBadGateway, "upstream LLM error: "+result.LastError.Error())
 		s.proxy.releaseReservation(r.Context(), "upstream error") // B17.128: nothing was served
