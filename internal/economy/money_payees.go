@@ -60,10 +60,14 @@ type OutsidePayee struct {
 	IBAN          string `json:"iban,omitempty"`
 	BIC           string `json:"bic,omitempty"`
 	RoutingNumber string `json:"routing_number,omitempty"`
-	// Check is exact_match, close_match or no_match; SuggestedName is the holder's name on a close match.
+	// B46.18: or a USDC address on Network ("base"), in lower case.
+	Network string `json:"network,omitempty"`
+	Address string `json:"address,omitempty"`
+	// Check is exact_match, close_match or no_match — or address, which the owner approves before it is paid;
+	// SuggestedName is the holder's name on a close match.
 	Check         string    `json:"check"`
 	SuggestedName string    `json:"suggested_name,omitempty"`
-	CheckedBy     string    `json:"checked_by"` // the partner that answered: "test" for the Test partner
+	CheckedBy     string    `json:"checked_by"` // the partner that answered: "test" for the Test partner; "" for an address
 	CheckedAt     time.Time `json:"checked_at"`
 	// NeedsConfirmation: a close match or no match not yet confirmed — it cannot be paid.
 	NeedsConfirmation bool       `json:"needs_confirmation"`
@@ -74,14 +78,22 @@ type OutsidePayee struct {
 	Screening string `json:"screening,omitempty"`
 }
 
+// PayeeAddress is the check of a payee at a USDC address: no bank can say whose it is, so the owner approves it with a
+// passkey before it is paid, which puts it on the owner's allowlist (B46.18).
+const PayeeAddress = "address"
+
+// PayeeNetwork is the one chain a payee's USDC address is on.
+const PayeeNetwork = "base"
+
 var (
-	ibanPattern = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$`)
-	bicPattern  = regexp.MustCompile(`^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$`)
-	allDigits   = regexp.MustCompile(`^[0-9]+$`)
+	addressPattern = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
+	ibanPattern    = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$`)
+	bicPattern     = regexp.MustCompile(`^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$`)
+	allDigits      = regexp.MustCompile(`^[0-9]+$`)
 )
 
 // payeeDetails checks p and puts it in its stored form: one set of account details — a sort code and account number,
-// an IBAN (and BIC), or a routing and account number — and an ISO 3166-1 alpha-2 country.
+// an IBAN (and BIC), a routing and account number, or a USDC address on Base — and an ISO 3166-1 alpha-2 country.
 func payeeDetails(p OutsidePayee) (OutsidePayee, error) {
 	squash := func(v string) string {
 		return strings.ToUpper(strings.NewReplacer(" ", "", "-", "").Replace(strings.TrimSpace(v)))
@@ -89,6 +101,7 @@ func payeeDetails(p OutsidePayee) (OutsidePayee, error) {
 	p.Name = strings.Join(strings.Fields(p.Name), " ")
 	p.Country = strings.ToUpper(strings.TrimSpace(p.Country))
 	p.SortCode, p.AccountNumber, p.IBAN, p.BIC, p.RoutingNumber = squash(p.SortCode), squash(p.AccountNumber), squash(p.IBAN), squash(p.BIC), squash(p.RoutingNumber)
+	p.Network, p.Address = strings.ToLower(strings.TrimSpace(p.Network)), strings.ToLower(strings.TrimSpace(p.Address))
 	bad := func(msg string) (OutsidePayee, error) { return OutsidePayee{}, fmt.Errorf("%w: %s", ErrPayee, msg) }
 	switch {
 	case p.Name == "" || len(p.Name) > 140:
@@ -98,6 +111,18 @@ func payeeDetails(p OutsidePayee) (OutsidePayee, error) {
 	}
 	if _, err := countryCodes([]string{p.Country}); err != nil {
 		return bad(err.Error())
+	}
+	if p.Address != "" || p.Network != "" {
+		switch {
+		case p.SortCode != "" || p.AccountNumber != "" || p.IBAN != "" || p.BIC != "" || p.RoutingNumber != "":
+			return bad("give one set of account details: bank details or a USDC address, not both")
+		case p.Network == "":
+			p.Network = PayeeNetwork
+		}
+		if p.Network != PayeeNetwork || !addressPattern.MatchString(p.Address) {
+			return bad(fmt.Sprintf("a USDC payee is an address on Base: 0x and 40 hex digits, not %q on %q", p.Address, p.Network))
+		}
+		return p, nil
 	}
 	switch {
 	case p.IBAN != "":
@@ -126,7 +151,7 @@ func payeeDetails(p OutsidePayee) (OutsidePayee, error) {
 			return bad("a routing number is 9 digits and its account number 4 to 17")
 		}
 	default:
-		return bad("a payee has account details: an IBAN, a sort code and account number, or a routing and account number")
+		return bad("a payee has account details: an IBAN, a sort code and account number, a routing and account number, or a USDC address on Base")
 	}
 	return p, nil
 }
@@ -146,7 +171,8 @@ func ibanChecks(iban string) bool {
 }
 
 // CreateOutsidePayee saves a payee for workspaceID: it checks the name against the account at the payee's bank, keeps
-// the answer, and screens the name. A name on a sanctions list is refused and nothing is saved.
+// the answer, and screens the name. A name on a sanctions list is refused and nothing is saved. A USDC address is
+// saved waiting for the owner's approval (PayeeAddress).
 func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID string, in OutsidePayee) (OutsidePayee, error) {
 	p, err := payeeDetails(in)
 	if err != nil {
@@ -158,27 +184,31 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	case s.payeeScreener == nil:
 		return OutsidePayee{}, fmt.Errorf("%w: no screener is set, so no payee is saved", partners.ErrScreeningUnavailable)
 	}
-	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
-	if err != nil {
-		return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+	p.ID, p.WorkspaceID, p.Check = "payee_"+uuid.NewString(), workspaceID, PayeeAddress
+	if p.Address == "" {
+		partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
+		if err != nil {
+			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+		}
+		check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
+			AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
+		if err != nil {
+			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+		}
+		if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
+			return OutsidePayee{}, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
+		}
+		p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
 	}
-	check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
-		AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
-	if err != nil {
-		return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
-	}
-	if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
-		return OutsidePayee{}, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
-	}
-	p.ID, p.WorkspaceID, p.Check, p.SuggestedName, p.CheckedBy = "payee_"+uuid.NewString(), workspaceID, check.Result, check.SuggestedName, partner.Name()
 	held := s.payeeScreener.ScreenPayee(ctx, workspaceID, p.ID, p.Name, CapabilityPaymentsOut)
 	if held != nil && !errors.Is(held, screening.ErrHeld) {
 		return OutsidePayee{}, held
 	}
 	saved, err := scanOutsidePayee(s.pool.QueryRow(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number,
-		iban, bic, routing_number, check_result, suggested_name, checked_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		iban, bic, routing_number, check_result, suggested_name, checked_by, network, address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING `+payeeCols, p.ID, workspaceID, p.Name, p.Country, p.SortCode, p.AccountNumber, p.IBAN, p.BIC, p.RoutingNumber,
-		p.Check, p.SuggestedName, p.CheckedBy))
+		p.Check, p.SuggestedName, p.CheckedBy, p.Network, p.Address))
 	if err != nil {
 		return OutsidePayee{}, fmt.Errorf("economy: save payee: %w", err)
 	}
@@ -189,12 +219,12 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 }
 
 const payeeCols = `id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
-	checked_by, checked_at, confirmed_at, confirmed_by, created_at`
+	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address`
 
 func scanOutsidePayee(row pgx.Row) (OutsidePayee, error) {
 	var p OutsidePayee
 	err := row.Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
-		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt)
+		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPayeeNotFound
 	}
@@ -310,4 +340,18 @@ func (s *DualTokenStore) PayableOutsidePayee(ctx context.Context, workspaceID, p
 		return p, fmt.Errorf("%w: no screener is set, so no payee is paid", partners.ErrScreeningUnavailable)
 	}
 	return p, s.payeeScreener.ScreenPayee(ctx, workspaceID, p.ID, p.Name, CapabilityPaymentsOut)
+}
+
+// AddressAllowlist is the owner's allowlist of addresses an agent's wallet may pay (circle.Allowlist,
+// coinbase.Allowlist): the USDC payees the owner approved in the wallet's workspace (B46.18).
+func (s *DualTokenStore) AddressAllowlist() addressAllowlist { return addressAllowlist{s} }
+
+type addressAllowlist struct{ s *DualTokenStore }
+
+func (a addressAllowlist) Approved(ctx context.Context, wallet, network, address string) (bool, error) {
+	var ok bool
+	err := a.s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts w JOIN money_payees p ON p.workspace_id = w.workspace_id
+		WHERE w.partner_account_ref = $1 AND w.purpose = 'agent' AND w.currency = 'USDC' AND w.status = 'open' AND w.partner_account_ref <> ''
+		  AND p.network = $2 AND p.address = lower($3) AND p.address <> '' AND p.confirmed_at IS NOT NULL)`, wallet, network, address).Scan(&ok)
+	return ok, err
 }
