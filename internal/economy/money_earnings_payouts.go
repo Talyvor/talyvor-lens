@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -58,8 +57,6 @@ var (
 	ErrPayoutDetails = errors.New("economy: invalid payout details")
 	// ErrEarningsPayout: earnings to pay out without a kind, a source, a currency or anyone to pay.
 	ErrEarningsPayout = errors.New("economy: invalid earnings payout")
-
-	addressPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 )
 
 // PayoutDetails is where a workspace is paid in one asset, and whether the partner verified its holder.
@@ -180,7 +177,7 @@ func (s *DualTokenStore) SavePayoutDetails(ctx context.Context, workspaceID stri
 	}
 	d.WorkspaceID, d.Asset, d.Holder = workspaceID, strings.ToUpper(strings.TrimSpace(d.Asset)), strings.Join(strings.Fields(d.Holder), " ")
 	d.IBAN, d.BIC = strings.ToUpper(strings.ReplaceAll(d.IBAN, " ", "")), strings.ToUpper(strings.TrimSpace(d.BIC))
-	d.Network, d.Address = strings.ToLower(strings.TrimSpace(d.Network)), strings.TrimSpace(d.Address)
+	d.Network, d.Address = strings.ToLower(strings.TrimSpace(d.Network)), strings.ToLower(strings.TrimSpace(d.Address))
 	switch {
 	case d.Holder == "" || len(d.Holder) > 140:
 		return PayoutDetails{}, fmt.Errorf("%w: payout details name their holder, up to 140 characters", ErrPayoutDetails)
