@@ -28,6 +28,7 @@ var documentedKeys = []string{
 	"rails[].last_failure", "rails[].capabilities", "rails[].capabilities[].key", "rails[].capabilities[].cleared",
 	"rails[].lists_age_hours",
 	"rails_summary", "rails_summary.up", "rails_summary.down", "rails_summary.idle", "rails_summary.down_names",
+	"card_payments",
 }
 
 // plantedError is what a failing dependency says: a database user, a host name, an address, a reference id and a key.
@@ -154,6 +155,7 @@ func TestStatusJSON_NoValueCarriesASecret(t *testing.T) {
 		"rails_summary.down_names[]": names,
 		"rails[].mode":               set("test", "live"),
 		"rails[].capabilities[].key": capabilities,
+		"card_payments":              set("live", "test", "off"),
 	}
 	times := set("updated_at", "components[].checked_at", "providers[].checked_at", "rails[].last_success",
 		"rails[].last_failure")

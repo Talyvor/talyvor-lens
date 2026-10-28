@@ -677,6 +677,7 @@ func run() error {
 	// below so they can be wrapped with leader election.
 	anomalyDetector := anomaly.New(dbrouting.ReadPool(pool, replicaPool))
 	statusPage := status.New(pool, redisClient, nc, lensVersion)
+	statusPage.SetCardPayments(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey))
 	go statusPage.StartCacher(ctx, 60*time.Second)
 	// Model-catalog runtime overrides (Upgrade 16): an operator can add or
 	// reprice models without a rebuild via LENS_MODEL_CATALOG_OVERRIDES (a
@@ -2808,6 +2809,9 @@ func run() error {
 
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
+
+		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
+		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
 
 	// Public status page. /status content-negotiates between HTML and

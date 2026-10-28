@@ -51,6 +51,20 @@ func LiveKey(key string) bool {
 	return strings.HasPrefix(key, "sk_live_") || strings.HasPrefix(key, "rk_live_")
 }
 
+// CardPayments says in public whether a real workspace's card can be charged (B51.2): "live" when billing is on
+// with a live main key, "test" when it is on with a test-mode one (B50.13 refuses a real workspace's payment),
+// "off" when billing is off. It says nothing else about the key.
+func CardPayments(billingEnabled bool, mainKey string) string {
+	switch {
+	case !billingEnabled:
+		return "off"
+	case LiveKey(mainKey):
+		return "live"
+	default:
+		return "test"
+	}
+}
+
 // Livemode reports whether this instance's key is live (B22.1: a live key pays out only live earnings). Its own
 // key, never the process-wide one: a test-mode instance beside a live one is test mode (B25.6).
 func (l *LiveStripe) Livemode() bool { return LiveKey(l.key) }

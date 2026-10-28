@@ -322,6 +322,8 @@ exactly these fields, and no secret, reference id, error text, host name or work
 - `rails[]`: `service`, `name`, `mode`, `status`, `last_success`, `last_failure`, `capabilities[]` (`key`, `cleared`), and on
   the screening rail `lists_age_hours`: how many whole hours ago the sanctions lists last downloaded
 - `rails_summary`: `up`, `down`, `idle`, `down_names`
+- `card_payments`: whether a card can be charged — `live` (billing on with a live Stripe key), `test` (billing on with a
+  test-mode key: a real workspace's card payment is refused) or `off` (billing off); `GET /v1/pricing` answers the same
 
 A new field is added here and to `documentedKeys` in `internal/status/contract_test.go` together.
 

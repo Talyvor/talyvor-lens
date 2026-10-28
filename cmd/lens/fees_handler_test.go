@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/talyvor/lens/internal/billing"
 )
 
 // B32.8 — GET /v1/public/fees answers every fee Nicolai decided, with his values.
@@ -29,5 +31,28 @@ func TestPublicFees_EveryFeeWithNicolaisValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("GET /v1/public/fees = %v\nwant %v", got, want)
+	}
+}
+
+// B51.2 — GET /v1/pricing says whether a card can be charged, in each of the three states, and never any of the key.
+func TestPublicPricing_CardPayments(t *testing.T) {
+	for _, c := range []struct {
+		enabled bool
+		key     string
+		want    string
+	}{
+		{true, "sk_live_b512secretpart", "live"},
+		{true, "rk_test_b512secretpart", "test"},
+		{false, "sk_test_b512secretpart", "off"},
+	} {
+		w := httptest.NewRecorder()
+		publicPricingHandler(billing.CardPayments(c.enabled, c.key))(w, httptest.NewRequest(http.MethodGet, "/v1/pricing", nil))
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); w.Code != http.StatusOK || err != nil {
+			t.Fatalf("GET /v1/pricing = %d %s (%v)", w.Code, w.Body, err)
+		}
+		if want := map[string]any{"card_payments": c.want}; !reflect.DeepEqual(got, want) {
+			t.Errorf("billing %v, key %.8s…: GET /v1/pricing = %v, want %v", c.enabled, c.key, got, want)
+		}
 	}
 }
