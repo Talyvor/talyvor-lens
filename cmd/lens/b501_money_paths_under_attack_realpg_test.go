@@ -535,14 +535,14 @@ func TestB501_AGatePassCoversOnlyItsOwnPayeeAccountAndAmount(t *testing.T) {
 		"another currency":        op(func(o *money.Op) { o.Amount.Asset = "EUR" }),
 		"another payee's account": op(func(o *money.Op) { o.To.AccountNumber = "11223344" }),
 		"another paying account":  op(func(o *money.Op) { o.Ref = from + "-other" }),
-		"another agent":           op(func(o *money.Op) { o.Route.Agent = other.ID }),
+		"another agent":           op(func(o *money.Op) { o.Agent = other.ID }),
 		"a payout":                op(func(o *money.Op) { o.Capability, o.Method = money.CapPayouts, "pay" }),
 	} {
 		if err := limits.Allow(ctx, o); err == nil {
 			t.Errorf("%s under the held payment's key went through the gate", name)
 		}
 	}
-	if err := limits.Allow(ctx, op(func(o *money.Op) { o.Route.Workspace = "ws-b501-gate-other" })); err == nil {
+	if err := limits.Allow(ctx, op(func(o *money.Op) { o.Workspace = "ws-b501-gate-other" })); err == nil {
 		t.Errorf("another workspace under the held payment's key went through the gate")
 	}
 	b501ZeroSum(t, pool)
