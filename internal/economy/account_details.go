@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
 )
 
@@ -97,6 +98,7 @@ type InboundPayment struct {
 	AmountMinor       int64  `json:"amount_minor"`
 	Currency          string `json:"currency"`
 	Funding           string `json:"funding"` // test ("" too) or live
+	Partner           string `json:"-"`       // the money-layer partner whose webhook reported it: it pays only into its own accounts
 }
 
 // ErrTestMoney: test money asked for in an amount, or with a key, it cannot have.
@@ -144,7 +146,8 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 	var ws, companyID, partnerID string
 	err := s.pool.QueryRow(ctx, `SELECT c.workspace_id, c.id, p.id FROM money_accounts c
 		JOIN money_accounts p ON p.workspace_id = c.workspace_id AND p.partner_account_ref = c.partner_account_ref AND p.purpose = 'partner'
-		WHERE c.partner_account_ref = $1 AND c.purpose IN ('company', 'agent') AND c.status = 'open'`, in.PartnerAccountRef).Scan(&ws, &companyID, &partnerID)
+		WHERE c.partner_account_ref = $1 AND c.purpose IN ('company', 'agent') AND c.status = 'open'
+		  AND ($2 = '' OR p.name = $2 OR ($2 = $3 AND p.name = 'test'))`, in.PartnerAccountRef, in.Partner, money.SandboxName).Scan(&ws, &companyID, &partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyEntry{}, fmt.Errorf("%w: no open company account is at the partner's %s", ErrMoneyAccountNotFound, in.PartnerAccountRef)
 	}

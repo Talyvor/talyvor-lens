@@ -230,6 +230,18 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
 
+	// B50.1: screened before the locks: screening takes a connection of its own, and one held under the locks while
+	// other payments wait on them with theirs could leave it none.
+	if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.screenKey(), Capability: CapabilityPaymentsOut,
+		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
+		return OutsidePayment{}, err
+	}
+	if payer != "" { // B30.22: an international payment screens its payer too
+		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.key("payer"), Capability: CapabilityPaymentsOut,
+			Direction: "out", Counterparty: payer, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
@@ -257,16 +269,6 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if p.AgentID != "" {
 		if err := enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
 			return OutsidePayment{}, s.refusedMovement(ctx, tx, err)
-		}
-	}
-	if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.screenKey(), Capability: CapabilityPaymentsOut,
-		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
-		return OutsidePayment{}, err
-	}
-	if payer != "" { // B30.22: an international payment screens its payer too
-		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.key("payer"), Capability: CapabilityPaymentsOut,
-			Direction: "out", Counterparty: payer, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
-			return OutsidePayment{}, err
 		}
 	}
 	if p.holdAccountID, err = holdAccount(ctx, tx, workspaceID, p.Currency); err != nil {

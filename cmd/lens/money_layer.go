@@ -20,7 +20,7 @@ func (l moneyLedger) PostCredit(ctx context.Context, partner string, e money.Eve
 		funding = economy.FundingTest
 	}
 	entry, err := l.store.ReceivePayment(ctx, economy.InboundPayment{PartnerAccountRef: e.To, PartnerRef: e.PartnerRef, Payer: e.Payer,
-		Reference: e.Reference, AmountMinor: e.Amount.Minor, Currency: e.Amount.Asset, Funding: funding})
+		Reference: e.Reference, AmountMinor: e.Amount.Minor, Currency: e.Amount.Asset, Funding: funding, Partner: partner})
 	return entry.WorkspaceID, err
 }
 

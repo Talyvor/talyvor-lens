@@ -95,7 +95,12 @@ func (s *DualTokenStore) PayAgent(ctx context.Context, workspaceID, fromAgentID,
 		return pay, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if pay, err = payAgentTx(ctx, tx, workspaceID, pay, uuid.New()); err != nil {
+	entry := uuid.New()
+	if key, _ := ctx.Value(moveKeyKey{}).(string); key != "" {
+		// B50.1: with an Idempotency-Key the entry is the key's, so a retry finds what it first posted.
+		entry = uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent_pay\x00"+workspaceID+"\x00"+fromAgentID+"\x00"+key))
+	}
+	if pay, err = payAgentTx(ctx, tx, workspaceID, pay, entry); err != nil {
 		return pay, s.refusedMovement(ctx, tx, err)
 	}
 	return pay, tx.Commit(ctx)
@@ -167,6 +172,25 @@ func payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPay
 		if err := lockAgent(ctx, tx, workspaceID, id); err != nil {
 			return pay, err
 		}
+	}
+	// B50.1: under both locks, an entry already posted is a retry: the same payment answers as made and moves nothing,
+	// another under the same key is refused.
+	var paidTo, paidMemo string
+	var paid int64
+	err := tx.QueryRow(ctx, `SELECT account, amount_ulxc, ref FROM agent_postings WHERE entry_id = $1 AND amount_ulxc > 0`, entry).
+		Scan(&paidTo, &paid, &paidMemo)
+	switch {
+	case err == nil && (paidTo != agentAccount(toAgentID) || paid != amount || paidMemo != memo):
+		return pay, ErrIdempotencyKeyReused
+	case err == nil:
+		pay.EntryID = entry.String()
+		if pay.FromBalanceULXC, err = accountBalance(ctx, tx, workspaceID, agentAccount(fromAgentID)); err != nil {
+			return pay, err
+		}
+		pay.ToBalanceULXC, err = accountBalance(ctx, tx, workspaceID, agentAccount(toAgentID))
+		return pay, err
+	case !errors.Is(err, pgx.ErrNoRows):
+		return pay, fmt.Errorf("economy: earlier payment: %w", err)
 	}
 	if err := requireOwner(ctx, tx, toAgentID); err != nil { // B19.11: a payment would give it a balance
 		return pay, err
