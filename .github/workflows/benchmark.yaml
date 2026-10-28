@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# B50.5: least privilege. Every job's GITHUB_TOKEN can only read the repository unless the job
+# itself asks for more.
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
