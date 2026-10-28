@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/talyvor/lens/internal/dbmigrate"
+	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/ratelimit"
 	"github.com/talyvor/lens/migrations"
 )
@@ -83,13 +84,14 @@ func TestRateLimits_ARaisedWorkspaceIsServedPastTheDefault(t *testing.T) {
 	}))
 	// Each workspace has had 1,000 requests served this minute; the next one is its 1,001st.
 	last := func(ws string) *httptest.ResponseRecorder {
-		key := "lens:rl:" + ws + "::minute"
+		key := "lens:rl:" + ws + ":key-" + ws + ":minute"
 		if err := mr.Set(key, "1000"); err != nil {
 			t.Fatal(err)
 		}
 		mr.SetTTL(key, 30*time.Second)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		req.Header.Set("X-Talyvor-Workspace", ws)
+		req.Header.Set("X-Talyvor-Workspace", ws) // as AuthMiddleware sets it, with the key it validated
+		req = req.WithContext(auth.WithAPIKey(req.Context(), &auth.APIKey{ID: "key-" + ws, WorkspaceID: ws}))
 		rec := httptest.NewRecorder()
 		served.ServeHTTP(rec, req)
 		return rec

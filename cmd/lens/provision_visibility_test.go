@@ -89,7 +89,7 @@ func TestBootWarnsWhenProvisioningIsUnconfigured(t *testing.T) {
 	}
 	s := string(src)
 
-	mount := strings.Index(s, "mountProvisionRoute(r, cfg.ProvisionSecret")
+	mount := strings.Index(s, "mountProvisionRoute(limited, cfg.ProvisionSecret")
 	if mount < 0 {
 		t.Fatal("mountProvisionRoute call not found — this guard has drifted from the code it protects")
 	}
