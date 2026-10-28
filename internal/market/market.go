@@ -184,6 +184,9 @@ type Store struct {
 	selfBilling *SelfBilling // nil: no payout is a self-billed invoice (B32.43, selfbill.go)
 
 	displayRates DisplayRates // nil: prices are shown in US dollars only (B32.51, display.go)
+
+	moneyPayer     EarningsPayer // nil: sellers are paid through Stripe Connect only (B46.22, payout_money.go)
+	moneyPayerFrom string        // the workspace whose money accounts pay them
 }
 
 func (s *Store) now() time.Time {

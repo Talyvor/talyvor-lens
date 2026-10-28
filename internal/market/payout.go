@@ -110,6 +110,7 @@ type Payout struct {
 	NetUSDMicros        int64      `json:"net_usd_micros"`
 	CreditsULXC         int64      `json:"credits_ulxc,omitempty"`
 	StripeTransferID    string     `json:"stripe_transfer_id,omitempty"`
+	Asset               string     `json:"asset,omitempty"` // method money: what it is paid in (B46.22)
 	PaidAt              *time.Time `json:"paid_at,omitempty"`
 	LastError           string     `json:"last_error,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
