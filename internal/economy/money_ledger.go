@@ -221,8 +221,16 @@ func (s *DualTokenStore) PostMoney(ctx context.Context, e MoneyEntry) (MoneyEntr
 }
 
 // screenBeforeLocks screens e as postMoneyTx would, reading which of its accounts are the workspace's partner accounts
-// without locking them.
+// without locking them. An entry already posted under e's key is not screened: postMoneyTx answers it as a replay.
 func (s *DualTokenStore) screenBeforeLocks(ctx context.Context, e MoneyEntry) error {
+	var posted bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_entries WHERE workspace_id = $1 AND idempotency_key = $2)`,
+		e.WorkspaceID, e.IdempotencyKey).Scan(&posted); err != nil {
+		return fmt.Errorf("economy: post money: %w", err)
+	}
+	if posted {
+		return nil
+	}
 	ids := make([]string, 0, len(e.Postings))
 	for _, p := range e.Postings {
 		ids = append(ids, p.AccountID)
