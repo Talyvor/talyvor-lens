@@ -226,8 +226,8 @@ type moneyLimits struct{ s *DualTokenStore }
 // Allow judges money leaving an agent's wallet by the agent's rules, at what it is worth in LXC: a limit refuses it
 // (money.ErrLimit), and above the agent's approval amount it files an approval for the owner and moves nothing
 // (money.ErrApprovalNeeded) until the owner approves it and the same call is made again. A payment out PayOutside
-// already judged and holds goes (B46.8), as does a card of an approved batch whose cap is held (B46.10). Other money
-// out that is not an agent's is refused.
+// already judged and holds goes (B46.8), as does a card of an approved batch whose cap is held (B46.10), and so do
+// earnings PayEarnings holds (B46.11). Other money out that is not an agent's is refused.
 func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	held, err := l.s.heldOutsidePayment(ctx, op)
 	if err != nil {
@@ -240,6 +240,12 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 		return fmt.Errorf("%w: %v", money.ErrLimit, err)
 	}
 	if held { // B46.10: a card of a batch the owner approved, its cap held
+		return nil
+	}
+	if held, err = l.s.heldEarningsPayout(ctx, op); err != nil {
+		return fmt.Errorf("%w: %v", money.ErrLimit, err)
+	}
+	if held { // B46.11: earnings owed under a sale, a Room's terms or a royalty, their money held when they were paid out
 		return nil
 	}
 	if op.Agent == "" {

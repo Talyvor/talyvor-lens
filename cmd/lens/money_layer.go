@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
@@ -24,8 +25,12 @@ func (l moneyLedger) PostCredit(ctx context.Context, partner string, e money.Eve
 	return entry.WorkspaceID, err
 }
 
-// SettleTransfer moves the payment out a partner's webhook settles (B46.8).
+// SettleTransfer moves the payment out a partner's webhook settles (B46.8), or the earnings payout (B46.11).
 func (l moneyLedger) SettleTransfer(ctx context.Context, partner string, e money.Event) (string, string, error) {
 	p, err := l.store.SettleOutsidePayment(ctx, partner, e)
+	if errors.Is(err, money.ErrNotFound) {
+		po, err := l.store.SettleEarningsPayout(ctx, partner, e)
+		return po.WorkspaceID, po.ID, err
+	}
 	return p.WorkspaceID, p.ID, err
 }
