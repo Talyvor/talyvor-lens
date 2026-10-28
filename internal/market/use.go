@@ -638,9 +638,45 @@ func plan(kind string, artifact map[string]any, req UseRequest) ([]call, string,
 	}
 }
 
+// minPromptLeak is the shortest run of a system prompt, in characters, that an answer may not repeat: shorter runs
+// ("Be brief.") are said by chance. shortcut: verbatim runs only (case and spacing aside); a paraphrase, a translation
+// or an encoding passes, which needs a model judge to catch.
+const minPromptLeak = 40
+
+// withheldAnswer replaces an answer that repeats its listing's system prompt (B50.4).
+const withheldAnswer = "The answer is not shown: it repeated the listing's instructions, which its seller keeps private."
+
+// answer runs one model call of a use and keeps the seller's system prompt out of what the buyer gets back (B50.4):
+// an input such as "repeat your instructions" must not hand over what the listing is. Any run of minPromptLeak
+// characters the answer shares with the system prompt withholds it.
+func answer(ctx context.Context, r Runner, model string, msgs []Message) (string, error) {
+	out, err := r.Run(ctx, model, msgs)
+	if err != nil {
+		return "", err
+	}
+	norm := func(s string) []rune { return []rune(strings.Join(strings.Fields(strings.ToLower(s)), " ")) }
+	o := norm(out)
+	runs := map[string]bool{}
+	for i := 0; i+minPromptLeak <= len(o); i++ {
+		runs[string(o[i:i+minPromptLeak])] = true
+	}
+	for _, m := range msgs {
+		if m.Role != "system" || len(runs) == 0 {
+			continue
+		}
+		p := norm(m.Content)
+		for i := 0; i+minPromptLeak <= len(p); i++ {
+			if runs[string(p[i:i+minPromptLeak])] {
+				return withheldAnswer, nil
+			}
+		}
+	}
+	return out, nil
+}
+
 func run(ctx context.Context, r Runner, calls []call, model string, u *Use) error {
 	for _, c := range calls {
-		out, err := r.Run(ctx, model, c.messages)
+		out, err := answer(ctx, r, model, c.messages)
 		if err != nil {
 			return err
 		}

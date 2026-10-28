@@ -118,7 +118,7 @@ func runPipeline(ctx context.Context, r Runner, steps []pipelineStep, req UseReq
 		if err != nil {
 			return fmt.Errorf("step %d: %w", st.Step, err)
 		}
-		out, err := r.Run(ctx, st.Model, calls[0].messages)
+		out, err := answer(ctx, r, st.Model, calls[0].messages)
 		if err != nil {
 			return err
 		}
