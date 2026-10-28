@@ -195,12 +195,17 @@ func (s *DualTokenStore) OpenMoneyAccount(ctx context.Context, a MoneyAccount) (
 // an operator has frozen (B30.8) moves nothing: a *CapabilityRefusal that is ErrWorkspaceFrozen; nor one that has not
 // accepted the capability's latest terms (B30.9): a *CapabilityRefusal that is ErrTermsNotAccepted.
 func (s *DualTokenStore) PostMoney(ctx context.Context, e MoneyEntry) (MoneyEntry, error) {
+	// B50.15: screened before the locks, as a payment out is (B50.1): screening takes a connection of its own, and one
+	// held under the locks while the same entry sent again waits on them with theirs could leave it none.
+	if err := s.screenBeforeLocks(ctx, e); err != nil {
+		return MoneyEntry{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	out, err := postMoneyTx(ctx, tx, e, s.screener)
+	out, err := postMoneyTx(ctx, tx, e, screenedBeforeLocks{})
 	if err != nil {
 		return MoneyEntry{}, err
 	}
@@ -214,6 +219,58 @@ func (s *DualTokenStore) PostMoney(ctx context.Context, e MoneyEntry) (MoneyEntr
 	s.monitorMoved(ctx, out)
 	return out, nil
 }
+
+// screenBeforeLocks screens e as postMoneyTx would, reading which of its accounts are the workspace's partner accounts
+// without locking them. An entry already posted under e's key is not screened: postMoneyTx answers it as a replay.
+func (s *DualTokenStore) screenBeforeLocks(ctx context.Context, e MoneyEntry) error {
+	var posted bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_entries WHERE workspace_id = $1 AND idempotency_key = $2)`,
+		e.WorkspaceID, e.IdempotencyKey).Scan(&posted); err != nil {
+		return fmt.Errorf("economy: post money: %w", err)
+	}
+	if posted {
+		return nil
+	}
+	ids := make([]string, 0, len(e.Postings))
+	for _, p := range e.Postings {
+		ids = append(ids, p.AccountID)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, currency FROM money_accounts WHERE id = ANY($1) AND workspace_id = $2 AND purpose = $3`,
+		ids, e.WorkspaceID, MoneyPartner)
+	if err != nil {
+		return fmt.Errorf("economy: post money: %w", err)
+	}
+	partner := map[string]string{}
+	for rows.Next() {
+		var id, currency string
+		if err := rows.Scan(&id, &currency); err != nil {
+			rows.Close()
+			return fmt.Errorf("economy: post money: %w", err)
+		}
+		partner[id] = currency
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("economy: post money: %w", err)
+	}
+	postings := make([]MoneyPosting, 0, len(e.Postings))
+	for _, p := range e.Postings {
+		if p.AmountMinor == 0 {
+			continue
+		}
+		if p.Currency = strings.ToUpper(strings.TrimSpace(p.Currency)); p.Currency == "" {
+			p.Currency = partner[p.AccountID]
+		}
+		postings = append(postings, p)
+	}
+	e.Counterparty = strings.TrimSpace(e.Counterparty)
+	return screenOutside(ctx, e, postings, func(id string) bool { _, ok := partner[id]; return ok }, s.screener)
+}
+
+// screenedBeforeLocks is the screener of an entry PostMoney has already screened: it refuses nothing more.
+type screenedBeforeLocks struct{}
+
+func (screenedBeforeLocks) ScreenPayment(context.Context, screening.Payment) error { return nil }
 
 // monitorMoved runs transaction monitoring on e once it has moved, when it is a payment through a partner (B30.7).
 // Monitoring never undoes it, so a monitor that fails is logged and the nightly run judges the payment again.

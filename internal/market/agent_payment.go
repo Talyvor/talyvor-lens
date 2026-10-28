@@ -38,10 +38,12 @@ func (s *Store) CompanyPayeeRefusal(ctx context.Context, payerWorkspaceID, payee
 }
 
 // ChargeAgentPayment records, in tx, fromAgentID's payment of amount µLXC to toAgentID of payeeWorkspaceID as
-// one billed use on payerWorkspaceID's marketplace bill, and returns its id.
-func (s *Store) ChargeAgentPayment(ctx context.Context, tx pgx.Tx, payerWorkspaceID, fromAgentID, payeeWorkspaceID, toAgentID string,
+// one billed use on payerWorkspaceID's marketplace bill — the use id, or a new one when id is "" — and returns its id.
+func (s *Store) ChargeAgentPayment(ctx context.Context, tx pgx.Tx, id, payerWorkspaceID, fromAgentID, payeeWorkspaceID, toAgentID string,
 	amount int64, memo string, at time.Time) (string, error) {
-	id := "use_" + uuid.NewString()
+	if id == "" {
+		id = "use_" + uuid.NewString()
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO market_uses (id, listing_id, version, seller_workspace_id, buyer_workspace_id, agent_id, payee_agent_id, memo,
 		price_ulxc, charge, used_at, ran_at)
 		VALUES ($1, '', 0, $2, $3, $4, $5, $6, $7, 'billed', $8, $8)`,

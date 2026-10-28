@@ -34,6 +34,9 @@ type AgentBank interface {
 // SetAgentBank enables the agent tools.
 func (s *Server) SetAgentBank(b AgentBank) { s.agentBank = b }
 
+// idempotencyKeyDescription is the idempotency_key argument of every agent tool that moves money (B50.15).
+const idempotencyKeyDescription = "send the same key when you retry this exact payment: it is paid once. Without one, every call is its own payment."
+
 // toolRefusal is a tool's answer that Lens refused what the agent asked: the agent reads why, as a
 // tool result marked isError, rather than as a protocol failure.
 type toolRefusal struct{ msg string }
@@ -50,6 +53,11 @@ func agentToolDefinitions() []map[string]any {
 	for k, v := range payment {
 		withReason[k] = v
 	}
+	// B50.15: a payment retried with its key lands once, as through the HTTP route's Idempotency-Key.
+	keyed := map[string]any{"idempotency_key": map[string]any{"type": "string", "description": idempotencyKeyDescription}}
+	for k, v := range payment {
+		keyed[k] = v
+	}
 	return []map[string]any{
 		{
 			"name":        "agent_balance",
@@ -64,7 +72,7 @@ func agentToolDefinitions() []map[string]any {
 		{
 			"name":        "agent_pay",
 			"description": "Pay another agent of your workspace from your own balance, within your spending rules.",
-			"inputSchema": map[string]any{"type": "object", "properties": payment, "required": []string{"to_agent_id", "amount_ulxc"}},
+			"inputSchema": map[string]any{"type": "object", "properties": keyed, "required": []string{"to_agent_id", "amount_ulxc"}},
 		},
 		{
 			"name":        "agent_receipt",
@@ -130,6 +138,7 @@ func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID st
 		Memo       string `json:"memo"`
 		Reason     string `json:"reason"`
 		EntryID    string `json:"entry_id"`
+		Key        string `json:"idempotency_key"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {
@@ -139,7 +148,7 @@ func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID st
 	refused := func(err error) error {
 		for _, e := range []error{economy.ErrAgentRule, economy.ErrApprovalRequired, economy.ErrAgentFunds, economy.ErrAgentNotFound,
 			economy.ErrSameAgent, economy.ErrApprovalNotNeeded, economy.ErrReceiptNotFound, economy.ErrAgentOwnerless,
-			economy.ErrCapabilityNotCleared, workspace.ErrMoneyWall} {
+			economy.ErrCapabilityNotCleared, economy.ErrIdempotencyKeyReused, workspace.ErrMoneyWall} {
 			if errors.Is(err, e) {
 				return &toolRefusal{err.Error()}
 			}
@@ -185,7 +194,10 @@ func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID st
 		if args.ToAgentID == "" || args.AmountULXC <= 0 {
 			return nil, &toolRefusal{"to_agent_id and a positive amount_ulxc are required"}
 		}
-		pay, err := s.agentBank.PayAgent(ctx, workspaceID, agentID, args.ToAgentID, args.AmountULXC, args.Memo)
+		if len(args.Key) > 128 {
+			return nil, &toolRefusal{"idempotency_key must be at most 128 characters"}
+		}
+		pay, err := s.agentBank.PayAgent(economy.WithMoveKey(ctx, args.Key), workspaceID, agentID, args.ToAgentID, args.AmountULXC, args.Memo)
 		if err != nil {
 			return nil, refused(err)
 		}
