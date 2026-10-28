@@ -244,6 +244,14 @@ func (s *DualTokenStore) ApproveCardBatch(ctx context.Context, workspaceID, id, 
 		case errors.Is(err, money.ErrPartnerDown):
 			continue // still held: approving again asks again, under the same id
 		case err != nil:
+			// B50.1: refused because another approval at the same moment already issued it: that card stands.
+			var status string
+			if qerr := s.pool.QueryRow(ctx, `SELECT status FROM money_cards WHERE id = $1`, c.ID).Scan(&status); qerr != nil {
+				return b, fmt.Errorf("economy: card batch: %w", qerr)
+			}
+			if status != MoneyCardIssuing {
+				continue
+			}
 			if err := s.releaseCard(ctx, b, c, MoneyCardFailed, err.Error()); err != nil {
 				return b, err
 			}
@@ -270,6 +278,13 @@ func (s *DualTokenStore) holdCardBatch(ctx context.Context, b CardBatch, by stri
 	from, err := s.payingAccount(ctx, b.WorkspaceID, OutsidePayment{AgentID: b.AgentID, Currency: b.Currency})
 	if err != nil {
 		return err
+	}
+	// B50.1: screened before the locks, as a payment out is.
+	for _, c := range b.Cards {
+		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: b.WorkspaceID, ID: "card_issue:" + c.ID, Capability: CapabilityPaymentsOut,
+			Direction: "out", Counterparty: c.Merchant, AmountMinor: c.CapMinor, Currency: c.Currency, Funding: b.Funding}); err != nil {
+			return err
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -311,12 +326,6 @@ func (s *DualTokenStore) holdCardBatch(ctx context.Context, b CardBatch, by stri
 	if held < b.TotalMinor {
 		return fmt.Errorf("%w: the account holds %s of %s money, and these cards are capped at %s together", ErrAgentFunds,
 			minorString(held, b.Currency), b.Funding, minorString(b.TotalMinor, b.Currency))
-	}
-	for _, c := range b.Cards {
-		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: b.WorkspaceID, ID: "card_issue:" + c.ID, Capability: CapabilityPaymentsOut,
-			Direction: "out", Counterparty: c.Merchant, AmountMinor: c.CapMinor, Currency: c.Currency, Funding: b.Funding}); err != nil {
-			return err
-		}
 	}
 	hold, err := holdAccount(ctx, tx, b.WorkspaceID, b.Currency)
 	if err != nil {

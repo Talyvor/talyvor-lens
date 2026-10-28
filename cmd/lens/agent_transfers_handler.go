@@ -96,7 +96,13 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"to": "<wallet id or @handle>", "amount_ulxc": <positive µLXC>, "memo": "<optional>"}`)
 			return
 		}
-		t, err := bank.SendCredits(req.Context(), chi.URLParam(req, "wsID"), agentID, in.To, in.AmountULXC, in.Memo)
+		// B50.1: a send retried with the same Idempotency-Key lands once.
+		key := req.Header.Get("Idempotency-Key")
+		if len(key) > 128 {
+			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+			return
+		}
+		t, err := bank.SendCredits(economy.WithMoveKey(req.Context(), key), chi.URLParam(req, "wsID"), agentID, in.To, in.AmountULXC, in.Memo)
 		if err != nil {
 			writeTransferErr(w, err)
 			return
@@ -163,6 +169,8 @@ func writeTransferErr(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, economy.ErrSameAgent), errors.Is(err, economy.ErrHandle):
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, economy.ErrIdempotencyKeyReused):
+		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrAgentOwnerless), errors.Is(err, economy.ErrOwnerUnverified),
 		errors.Is(err, economy.ErrAlreadyRefunded):
 		writeJSONErr(w, http.StatusConflict, err.Error())

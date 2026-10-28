@@ -151,6 +151,10 @@ func (s *DualTokenStore) SendCredits(ctx context.Context, workspaceID, fromAgent
 	}
 	t := AgentTransfer{FromWorkspaceID: workspaceID, FromAgentID: fromAgentID, ToWorkspaceID: to.WorkspaceID, ToAgentID: to.WalletID,
 		AmountULXC: amount, Memo: memo}
+	if key, _ := ctx.Value(moveKeyKey{}).(string); key != "" {
+		// B50.1: with an Idempotency-Key the transfer's id is the key's, so a retry finds what it first sent.
+		t.ID = "xfer_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent_transfer\x00"+workspaceID+"\x00"+fromAgentID+"\x00"+key)).String()
+	}
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: paymentFingerprint(fromAgentID, to.WalletID, amount, memo),
 		Payee: Payee{Kind: "agent", ID: to.WalletID, Name: to.Name}, Memo: memo})
 	return s.runTransfer(ctx, t, true)
@@ -198,6 +202,24 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 	for _, x := range sides {
 		if err := lockAgent(ctx, tx, x.ws, x.agent); err != nil {
 			return t, err
+		}
+	}
+	// B50.1: under both locks, a transfer already made under this id is a retry: the same one answers as made and
+	// moves nothing, another is refused.
+	if t.ID != "" {
+		var was AgentTransfer
+		err := tx.QueryRow(ctx, `SELECT from_workspace_id, from_agent_id, to_agent_id, amount_ulxc, memo, entry_id::text, class,
+			test_funded_ulxc, created_at FROM agent_transfers WHERE id = $1`, t.ID).Scan(&was.FromWorkspaceID, &was.FromAgentID,
+			&was.ToAgentID, &was.AmountULXC, &was.Memo, &was.EntryID, &was.Class, &was.TestFundedULXC, &was.CreatedAt)
+		switch {
+		case err == nil && (was.FromWorkspaceID != t.FromWorkspaceID || was.FromAgentID != t.FromAgentID || was.ToAgentID != t.ToAgentID ||
+			was.AmountULXC != t.AmountULXC || was.Memo != t.Memo):
+			return t, ErrIdempotencyKeyReused
+		case err == nil:
+			t.EntryID, t.Class, t.TestFundedULXC, t.CreatedAt = was.EntryID, was.Class, was.TestFundedULXC, was.CreatedAt
+			return t, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return t, fmt.Errorf("economy: earlier transfer: %w", err)
 		}
 	}
 	// B19.11: both owners, verified.

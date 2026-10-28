@@ -1065,7 +1065,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id": "<agent>", "amount_ulxc": <positive µLXC>, "memo": "<optional>"}`)
 			return
 		}
-		pay, err := bank.PayAgent(req.Context(), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
+		// B50.1: a payment retried with the same Idempotency-Key lands once.
+		key := req.Header.Get("Idempotency-Key")
+		if len(key) > 128 {
+			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+			return
+		}
+		pay, err := bank.PayAgent(economy.WithMoveKey(req.Context(), key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
@@ -1073,7 +1079,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrSameAgent):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrAgentOwnerless):
+		case errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrAgentOwnerless), errors.Is(err, economy.ErrIdempotencyKeyReused):
 			writeJSONErr(w, http.StatusConflict, err.Error())
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrWashTrade),
 			errors.Is(err, economy.ErrCapabilityNotCleared), errors.Is(err, workspace.ErrMoneyWall):

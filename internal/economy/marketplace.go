@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -308,7 +309,7 @@ func (s *MarketplaceStore) ExecuteTrade(ctx context.Context, listingID, buyerID 
 	if buyerID == "" {
 		return nil, errors.New("economy: buyer_id required")
 	}
-	if amountUSD <= 0 {
+	if !(amountUSD > 0) || math.IsInf(amountUSD, 0) { // B50.1: NaN and Inf are not positive amounts
 		return nil, errors.New("economy: amount_usd must be positive")
 	}
 	if s.pool == nil {
