@@ -63,6 +63,20 @@ const (
 	serverIdleTimeout       = 120 * time.Second
 )
 
+// newHTTPServer sets every server timeout (B50.2). Reading a request may take as long as answering it:
+// WriteTimeout already runs from the end of the headers, so ReadTimeout = write bounds a slow body without
+// cutting anything the write timeout allowed.
+func newHTTPServer(addr string, h http.Handler, write time.Duration) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       write,
+		WriteTimeout:      write,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
 // serverSet holds the live server(s) so the caller can shut them all down.
 type serverSet struct {
 	main     *http.Server
@@ -99,13 +113,7 @@ func startServers(cfg *config.Config, handler http.Handler, logger *slog.Logger)
 // ── plain HTTP ────────────────────────────────────────────────────────────────
 
 func startPlainHTTP(cfg *config.Config, handler http.Handler, logger *slog.Logger) (*serverSet, <-chan error) {
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: serverReadHeaderTimeout,
-		WriteTimeout:      shortWriteTimeout,
-		IdleTimeout:       serverIdleTimeout,
-	}
+	srv := newHTTPServer(cfg.ListenAddr, handler, shortWriteTimeout)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -172,19 +180,11 @@ func startTLS(cfg *config.Config, handler http.Handler, logger *slog.Logger) (*s
 		},
 	}
 
-	mainSrv := &http.Server{
-		Addr:    ":443",
-		Handler: hstsMiddleware(handler),
-		// WriteTimeout is set to proxyWriteTimeout (5 min) rather than the
-		// shorter shortWriteTimeout because this server proxies streaming LLM
-		// responses which can legitimately hold a connection for minutes.
-		// ReadHeaderTimeout still closes the connection fast if the client
-		// stalls before finishing its request headers.
-		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: serverReadHeaderTimeout,
-		WriteTimeout:      proxyWriteTimeout,
-		IdleTimeout:       serverIdleTimeout,
-	}
+	// WriteTimeout is proxyWriteTimeout (5 min) rather than shortWriteTimeout
+	// because this server proxies streaming LLM responses which can
+	// legitimately hold a connection for minutes.
+	mainSrv := newHTTPServer(":443", hstsMiddleware(handler), proxyWriteTimeout)
+	mainSrv.TLSConfig = tlsCfg
 
 	// Port 80 serves two purposes:
 	//   1. Let's Encrypt ACME HTTP-01 challenge (/.well-known/acme-challenge/…)
@@ -192,13 +192,7 @@ func startTLS(cfg *config.Config, handler http.Handler, logger *slog.Logger) (*s
 	//   2. Permanent redirect for all other requests to the HTTPS equivalent.
 	// The ACME challenge must remain reachable on port 80 even after initial
 	// provisioning because Let's Encrypt renews certificates every 90 days.
-	redirectSrv := &http.Server{
-		Addr:              ":80",
-		Handler:           certManager.HTTPHandler(httpsRedirectHandler(cfg.TLSDomain)),
-		ReadHeaderTimeout: serverReadHeaderTimeout,
-		WriteTimeout:      shortWriteTimeout,
-		IdleTimeout:       serverIdleTimeout,
-	}
+	redirectSrv := newHTTPServer(":80", certManager.HTTPHandler(httpsRedirectHandler(cfg.TLSDomain)), shortWriteTimeout)
 
 	// errCh is declared before the redirect goroutine so the goroutine can
 	// send a fatal error if port 80 is unavailable on a fresh deployment.

@@ -435,3 +435,26 @@ func Drain(r io.Reader) []byte {
 	b, _ := io.ReadAll(r)
 	return b
 }
+
+// MaxRequestBody is the most any request may send: the largest upload Lens takes, speech audio (25 MiB) and
+// its form (1 MiB). Routes that expect less cap their own body lower.
+const MaxRequestBody = 26 << 20
+
+// BodyLimitMiddleware refuses a body larger than limit: 413 at once when Content-Length says so, and a read
+// error past limit bytes when it does not (chunked), so no handler can be made to buffer more.
+func BodyLimitMiddleware(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > limit {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				_, _ = w.Write([]byte(`{"error":"request body too large"}`))
+				return
+			}
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

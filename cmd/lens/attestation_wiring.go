@@ -10,9 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/attestation"
 	"github.com/talyvor/lens/internal/config"
 	"github.com/talyvor/lens/internal/povi"
+	"github.com/talyvor/lens/internal/safehttp"
 )
 
 // attestationNodeSource lists active, receipt-keyed nodes for the attestation sweep. Read-only over
@@ -62,7 +64,7 @@ func startAttestationVerify(ctx context.Context, cfg *config.Config, pool *pgxpo
 	}
 	jwks := attestation.NewHTTPJWKS(os.Getenv("LENS_NVIDIA_JWKS_URL"), nil, time.Now)
 	verifier := attestation.NewVerifier(roots, jwks, time.Now)
-	sweep := attestation.NewSweep(attestationNodeSource{pool: pool}, attestation.NewClient(lensChallengePriv, 10*time.Second), verifier, attestation.NewStore(pool))
+	sweep := attestation.NewSweep(attestationNodeSource{pool: pool}, newAttestationClient(cfg, lensChallengePriv), verifier, attestation.NewStore(pool))
 	log.Printf("🔐 node-attestation-verify enabled (NVIDIA EAT verification; records hardware class, mints nothing — the mint is step c)")
 	go leader.Run(ctx, "node-attestation-verify", 30*time.Second, func(lctx context.Context) {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -78,4 +80,19 @@ func startAttestationVerify(ctx context.Context, cfg *config.Config, pool *pgxpo
 			}
 		}
 	})
+}
+
+// newAttestationClient dials registered node URLs through the same SSRF-guarded client every other node call
+// uses (B50.2): a node cannot point Lens at loopback, link-local or the cloud metadata address.
+func newAttestationClient(cfg *config.Config, lensChallengePriv ed25519.PrivateKey) *attestation.Client {
+	allow, _ := safehttp.ParseCIDRAllowlist(cfg.NodePrivateCIDRAllowlist) // validated, fatally, at startup
+	c := attestation.NewClient(lensChallengePriv, 10*time.Second)
+	c.SetHTTPClient(newNodeHTTPClient(cfg.NodeTLSSkipVerify, 10*time.Second, allow))
+	return c
+}
+
+// newAgentKeyDirectory reads a calling agent's key directory from the origin the agent names, so only through
+// safehttp (B50.2).
+func newAgentKeyDirectory() *agentsig.HTTPDirectory {
+	return &agentsig.HTTPDirectory{Client: safehttp.Client(5 * time.Second)}
 }
