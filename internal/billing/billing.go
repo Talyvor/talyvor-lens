@@ -176,10 +176,12 @@ func (s *Service) ForTestWorkspaces(test bool) *Service {
 	return s
 }
 
-// takes reports whether this Service takes wsID's money. A workspace with no row counts as real, as it does
-// in workspace.CheckMoneyWall, so the live Service still records it as unknown_workspace.
-func (s *Service) takes(ctx context.Context, wsID string) (bool, error) {
-	if s.testWorkspaces == nil || wsID == "" {
+// takes reports whether this Service takes wsID's money from an event Stripe signed with livemode. A workspace
+// with no row counts as real, as it does in workspace.CheckMoneyWall, so the live Service still records it as
+// unknown_workspace. B50.13: money Stripe confirmed in test mode is taken for a synthetic workspace only — a
+// real workspace is never credited, put on a plan or paid from it, whichever key the Service holds.
+func (s *Service) takes(ctx context.Context, wsID string, livemode bool) (bool, error) {
+	if wsID == "" || (s.testWorkspaces == nil && livemode) {
 		return true, nil
 	}
 	var synthetic bool
@@ -187,7 +189,11 @@ func (s *Service) takes(ctx context.Context, wsID string) (bool, error) {
 		wsID).Scan(&synthetic); err != nil {
 		return false, err
 	}
-	return synthetic == *s.testWorkspaces, nil
+	if !livemode && !synthetic {
+		s.log.Warn("billing webhook: a test-mode event for a real workspace — ignored, nothing credited (B50.13)", "workspace", wsID)
+		return false, nil
+	}
+	return s.testWorkspaces == nil || synthetic == *s.testWorkspaces, nil
 }
 
 // testMode reports whether this is the test workspaces' Service.
@@ -380,7 +386,7 @@ func (s *Service) handleSessionCredit(w http.ResponseWriter, ctx context.Context
 	}
 
 	wsID := sess.Metadata["workspace_id"]
-	if mine, err := s.takes(ctx, wsID); err != nil {
+	if mine, err := s.takes(ctx, wsID, event.Livemode); err != nil {
 		s.fail(w, "workspace kind", event.ID, err)
 		return
 	} else if !mine {

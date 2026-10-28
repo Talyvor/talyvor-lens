@@ -138,7 +138,7 @@ func TestAgentPayment_AnotherCompanysAgentIsPaidThroughTheMarketplace(t *testing
 		"lines": map[string]any{"object": "list", "data": []any{map[string]any{"id": "il_payer_1", "object": "line_item",
 			"period": map[string]any{"start": now.Add(-time.Hour).Unix(), "end": now.Add(time.Hour).Unix()},
 			"price":  map[string]any{"id": "price_market", "object": "price"}}}}}
-	raw, _ := json.Marshal(map[string]any{"id": "evt_payer_1", "object": "event", "type": "invoice.paid", "created": now.Unix(), "data": map[string]any{"object": obj}})
+	raw, _ := json.Marshal(map[string]any{"id": "evt_payer_1", "object": "event", "type": "invoice.paid", "created": now.Unix(), "livemode": true, "data": map[string]any{"object": obj}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", bytes.NewReader(raw))
 	req.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", now.Unix(), hex.EncodeToString(webhook.ComputeSignature(now, raw, secret))))
 	w := httptest.NewRecorder()

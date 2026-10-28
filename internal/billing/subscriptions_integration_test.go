@@ -42,7 +42,7 @@ func signedAt(secret, eventID, eventType string, created time.Time, object map[s
 		"id":       eventID,
 		"type":     eventType,
 		"created":  created.Unix(),
-		"livemode": false,
+		"livemode": true, // a real workspace's subscription: a test-mode event never changes its plan (B50.13)
 		"data":     map[string]any{"object": object},
 	})
 	now := time.Now()

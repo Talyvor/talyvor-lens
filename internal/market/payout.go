@@ -159,7 +159,7 @@ func sellerBalance(ctx context.Context, q queryRower, workspaceID string, now ti
 
 // sellerFunds splits what a seller has available by what paid for it (B22.1): earnings are test or live as
 // the invoice that paid them was, and each Stripe payout as the key that made it was. Earnings taken as credits
-// draw on test earnings first. Test earnings never reach a live payout: a live key pays at most liveLeft. A test
+// draw on live earnings first: a real seller takes only those (B50.13), and a test one has no others. Test earnings never reach a live payout: a live key pays at most liveLeft. A test
 // workspace's earnings (marked test, B25.1) are test earnings whatever paid them.
 func sellerFunds(ctx context.Context, q queryRower, workspaceID string, now time.Time) (testLeft, liveLeft int64, err error) {
 	var testReleased, liveReleased, testPaid, livePaid, credits int64
@@ -175,8 +175,8 @@ func sellerFunds(ctx context.Context, q queryRower, workspaceID string, now time
 	if err != nil {
 		return 0, 0, fmt.Errorf("market: seller funds: %w", err)
 	}
-	fromTest := min(credits, max(testReleased-testPaid, 0))
-	return max(testReleased-testPaid-fromTest, 0), max(liveReleased-livePaid-(credits-fromTest), 0), nil
+	fromLive := min(credits, max(liveReleased-livePaid, 0))
+	return max(testReleased-testPaid-(credits-fromLive), 0), max(liveReleased-livePaid-fromLive, 0), nil
 }
 
 // liveKey reports whether api pays out with a live Stripe key.
@@ -338,7 +338,8 @@ func (s *Store) SellerPayouts(ctx context.Context, api ConnectStripe, workspaceI
 }
 
 // TakeAsCredits pays the seller's whole available balance as Talyvor credits, 1:1: one market_payouts row,
-// one lxc_ledger row and its journal entry, in one transaction.
+// one lxc_ledger row and its journal entry, in one transaction. B50.13: a real seller's earnings from uses billed in
+// Stripe test mode never become credits it can spend — it takes its live earnings only.
 func (s *Store) TakeAsCredits(ctx context.Context, crediter Crediter, workspaceID string, now time.Time) (Payout, error) {
 	var p Payout
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -360,9 +361,18 @@ func (s *Store) TakeAsCredits(ctx context.Context, crediter Crediter, workspaceI
 			return ErrNothingAvailable
 		}
 		gross := released - paid
-		testLeft, _, err := sellerFunds(ctx, tx, workspaceID, now)
-		if err != nil {
+		var synthetic bool
+		if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT synthetic FROM workspaces WHERE id = $1), false)`, workspaceID).Scan(&synthetic); err != nil {
 			return err
+		}
+		if !synthetic {
+			_, liveLeft, err := sellerFunds(ctx, tx, workspaceID, now)
+			if err != nil {
+				return err
+			}
+			if gross = min(gross, liveLeft); gross <= 0 {
+				return ErrNothingAvailable
+			}
 		}
 		p = Payout{ID: "mpo_" + uuid.NewString(), Method: PayoutCredits, Month: monthOf(now), Period: weekOf(now), GrossUSDMicros: gross, NetUSDMicros: gross,
 			CreditsULXC: gross * ulxcPerUSDMicro}
@@ -372,9 +382,9 @@ func (s *Store) TakeAsCredits(ctx context.Context, crediter Crediter, workspaceI
 			p.ID, workspaceID, p.Month, p.Period, gross, p.CreditsULXC, now).Scan(&p.PaidAt, &p.CreatedAt, &test); err != nil {
 			return err
 		}
-		// B22.1: credits taken from test earnings are test-funded credits — all of them, for a test workspace (B25.1).
-		testPart := min(testLeft, gross)
-		if test {
+		// B22.1: credits taken by a test workspace are test-funded credits, all of them (B25.1); a real one's are live.
+		var testPart int64
+		if test || synthetic {
 			testPart = gross
 		}
 		if _, err := PostJournalTx(ctx, tx, JournalCredits, p.ID, "test", now,

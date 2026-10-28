@@ -97,7 +97,7 @@ func TestSubscriptionCancelResume_PlanOnlyDeployment_PlusSubscriber(t *testing.T
 		t.Helper()
 		payload, _ := json.Marshal(map[string]any{
 			"id": "evt_b234_" + strconv.Itoa(n), "object": "event", "type": eventType,
-			"created": t0.Add(time.Duration(n) * 10 * time.Second).Unix(), "livemode": false,
+			"created": t0.Add(time.Duration(n) * 10 * time.Second).Unix(), "livemode": true,
 			"data": map[string]any{"object": fake.snapshot()},
 		})
 		signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: secret})

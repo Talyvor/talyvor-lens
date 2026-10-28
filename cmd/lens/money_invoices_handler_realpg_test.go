@@ -72,10 +72,15 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 		t.Fatal(err)
 	}
 
+	// The card is Stripe test mode, so the issuer is a test (synthetic) workspace (B50.13).
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic) VALUES ($1, $1, $1, true)
+		ON CONFLICT (id) DO UPDATE SET synthetic = true`, ws); err != nil {
+		t.Fatal(err)
+	}
 	cards := &fakeInvoiceCards{}
 	r := chi.NewRouter()
 	mountInvoiceRoutes(r, store)
-	mountInvoicePayRoutes(r, store, cards)
+	mountInvoicePayRoutes(r, store, cards, func(id string) bool { return id == ws })
 	r.Post("/v1/billing/webhook", billing.New(pool, store, nil, secret).WithInvoices(store).HandleWebhook)
 	call := func(asWS, method, path, body string) (int, map[string]any) {
 		t.Helper()

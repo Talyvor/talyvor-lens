@@ -95,7 +95,7 @@ func TestB28439_ThePublicPlansReadIsWhatANewSubscriberIsGranted(t *testing.T) {
 			"items": map[string]any{"object": "list", "data": []any{map[string]any{"id": "si_" + ws, "object": "subscription_item", "quantity": 1,
 				"price": map[string]any{"id": "price_" + plan.ID, "object": "price", "currency": "usd", "unit_amount": plan.USDCents}}}}}
 		payload, _ := json.Marshal(map[string]any{"id": "evt_" + sub, "object": "event", "type": "customer.subscription.created",
-			"created": now.Unix(), "livemode": false, "data": map[string]any{"object": object}})
+			"created": now.Unix(), "livemode": true, "data": map[string]any{"object": object}})
 		signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: secret})
 		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", strings.NewReader(string(payload)))
 		req.Header.Set("Stripe-Signature", signed.Header)

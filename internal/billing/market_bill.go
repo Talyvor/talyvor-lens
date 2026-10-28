@@ -279,7 +279,7 @@ func (s *Service) marketInvoiceFailed(w http.ResponseWriter, ctx context.Context
 		w.WriteHeader(http.StatusOK)
 		return true
 	}
-	if mine, err := s.takes(ctx, workspaceID); err != nil {
+	if mine, err := s.takes(ctx, workspaceID, event.Livemode); err != nil {
 		s.fail(w, "workspace kind", event.ID, err)
 		return true
 	} else if !mine {
@@ -336,7 +336,7 @@ func (s *Service) handleInvoicePaid(w http.ResponseWriter, ctx context.Context, 
 		return
 	}
 	// B25.6: a test workspace's bill is the test-mode Service's, a real one's the live Service's.
-	if mine, err := s.takes(ctx, workspaceID); err != nil {
+	if mine, err := s.takes(ctx, workspaceID, event.Livemode); err != nil {
 		s.fail(w, "workspace kind", event.ID, err)
 		return
 	} else if !mine {

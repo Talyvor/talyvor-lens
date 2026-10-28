@@ -2533,7 +2533,7 @@ func run() error {
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
-		mountInvoicePayRoutes(pub, dualToken, invoiceCards)
+		mountInvoicePayRoutes(pub, dualToken, invoiceCards, wsManager.GetSynthetic)
 	})
 
 	// /metrics exposes Prometheus telemetry — gated to admin key so internal

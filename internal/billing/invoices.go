@@ -81,6 +81,20 @@ func (s *Service) handleInvoiceCard(w http.ResponseWriter, ctx context.Context, 
 		Funding: economy.FundingTest}
 	if event.Livemode || sess.Livemode {
 		c.Funding = economy.FundingLive
+	} else {
+		// B50.13 — a card paid in Stripe test mode pays only a synthetic workspace's invoice.
+		var synthetic bool
+		if err := s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT w.synthetic FROM money_invoices i JOIN workspaces w ON w.id = i.workspace_id
+			WHERE i.id = $1), false)`, invoiceID).Scan(&synthetic); err != nil {
+			s.fail(w, "invoice workspace kind", event.ID, err)
+			return
+		}
+		if !synthetic {
+			s.log.Warn("billing webhook: a test-mode card payment of a real workspace's invoice — ignored, nothing paid (B50.13)",
+				"event", event.ID, "invoice", invoiceID, "session", sess.ID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 	}
 	if d := sess.CustomerDetails; d != nil {
 		c.Payer = cmp.Or(d.Name, d.Email)

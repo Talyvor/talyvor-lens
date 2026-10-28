@@ -139,7 +139,7 @@ func TestMarketSafety_HeldAtReviewReportedTakenDownAndRefunded(t *testing.T) {
 				"period": map[string]any{"start": usedAt.Add(-time.Hour).Unix(), "end": usedAt.Add(time.Hour).Unix()},
 				"price":  map[string]any{"id": "price_market", "object": "price"}}}}}
 		raw, _ := json.Marshal(map[string]any{"id": "evt_" + invoiceID, "object": "event", "type": "invoice.paid",
-			"created": time.Now().Unix(), "data": map[string]any{"object": obj}})
+			"created": time.Now().Unix(), "livemode": true, "data": map[string]any{"object": obj}})
 		signedAt := time.Now()
 		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", bytes.NewReader(raw))
 		req.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", signedAt.Unix(), hex.EncodeToString(webhook.ComputeSignature(signedAt, raw, secret))))
