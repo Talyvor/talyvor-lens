@@ -136,9 +136,10 @@ func openAPIWalletSchemas() map[string]any {
 					},
 				},
 				"memo":       str,
-				"status":     map[string]any{"type": "string", "enum": []string{"pending", "approved", "denied", "used"}},
+				"status":     map[string]any{"type": "string", "enum": []string{"pending", "approved", "denied", "used", "expired"}},
 				"created_at": at,
 				"decided_at": map[string]any{"type": "string", "format": "date-time", "nullable": true},
+				"expires_at": map[string]any{"type": "string", "format": "date-time", "description": "When it stops being usable: 24 hours after it was filed while pending, 24 hours after the tap once approved."},
 			},
 		},
 		"AgentRulesVersion": map[string]any{

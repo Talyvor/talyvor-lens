@@ -139,7 +139,7 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 // workspace's passkeys that may sign it.
 func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error) {
 	var pending bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE id = $1 AND workspace_id = $2 AND status = 'pending')`,
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now())`,
 		approvalID, workspaceID).Scan(&pending); err != nil {
 		return "", nil, fmt.Errorf("economy: approval: %w", err)
 	}
