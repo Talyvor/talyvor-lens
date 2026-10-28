@@ -29,6 +29,8 @@ import (
 // B50.2 — every JSON body the agent, money, marketplace and room routes take, fuzzed against a real database:
 // bad input never panics, never answers 500, and no answer carries SQL, a stack trace or an internal address.
 // `go test` runs the seeds on every route; `go test -fuzz FuzzRequestBodies` searches further.
+// The write routes it cannot mount — run()'s inline closures, synthetic, provision, waitlist and the rest — are
+// fuzzed through the real binary by FuzzEveryWriteRoute (cmd/lens/routefuzz, B50.14).
 
 const fuzzWS = "ws-b502-fuzz"
 
