@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# B50.5: least privilege. Every job's GITHUB_TOKEN can only read the repository unless the job
+# itself asks for more.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -326,6 +331,20 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src \
             semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b \
             semgrep scan --config p/default --metrics=off --severity ERROR --error --quiet
+
+  # B50.5: gitleaks over the whole git history (gitleaks v8.30.1, pinned by digest). Every
+  # finding is a real secret to rotate, or a fixture read and listed by fingerprint in .gitleaksignore.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: gitleaks (whole history)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git . --redact --no-banner --exit-code 1
 
   build:
     runs-on: ubuntu-latest
