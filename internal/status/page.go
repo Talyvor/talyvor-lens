@@ -157,6 +157,7 @@ type StatusResponse struct {
 	Providers    []ProviderStatus `json:"providers"`
 	Rails        []MoneyRail      `json:"rails"`
 	RailsSummary RailsSummary     `json:"rails_summary"`
+	CardPayments string           `json:"card_payments"` // B51.2: "live", "test" or "off" — billing.CardPayments
 	UpdatedAt    time.Time        `json:"updated_at"`
 }
 
@@ -214,6 +215,14 @@ type StatusPage struct {
 	rails      railReader
 	clearances clearanceReader
 	lists      screeningLists
+	cards      string
+}
+
+// SetCardPayments states whether a card can be charged (billing.CardPayments); unset, the page says "off".
+func (s *StatusPage) SetCardPayments(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cards = v
 }
 
 // UseScreeningLists shows the sanctions lists' age on the screening rail, which reads down while they are stale.
@@ -378,8 +387,18 @@ func (s *StatusPage) Check(ctx context.Context) StatusResponse {
 		Providers:    providers,
 		Rails:        rails,
 		RailsSummary: summariseRails(rails),
+		CardPayments: s.cardPayments(),
 		UpdatedAt:    now,
 	}
+}
+
+func (s *StatusPage) cardPayments() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cards == "" {
+		return "off"
+	}
+	return s.cards
 }
 
 func summariseRails(rails []MoneyRail) RailsSummary {
