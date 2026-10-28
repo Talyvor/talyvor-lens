@@ -62,36 +62,41 @@ type lens struct {
 // writeRoutes reads every POST, PUT and PATCH registered with a literal path in cmd/lens's non-test source.
 func writeRoutes(t testing.TB, dir string) []string {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	names, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	for _, pkg := range pkgs {
-		for _, f := range pkg.Files {
-			ast.Inspect(f, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok || len(call.Args) < 2 {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || (sel.Sel.Name != "Post" && sel.Sel.Name != "Put" && sel.Sel.Name != "Patch") {
-					return true
-				}
-				lit, ok := call.Args[0].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					return true
-				}
-				path, _ := strconv.Unquote(lit.Value)
-				if h, ok := call.Args[1].(*ast.SelectorExpr); ok && strings.HasPrefix(h.Sel.Name, modelCall) {
-					return true
-				}
-				if strings.HasPrefix(path, "/") && !strings.HasSuffix(path, "/*") { // "/*": a provider pass-through
-					seen[strings.ToUpper(sel.Sel.Name)+" "+path] = true
-				}
-				return true
-			})
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) < 2 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || (sel.Sel.Name != "Post" && sel.Sel.Name != "Put" && sel.Sel.Name != "Patch") {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			path, _ := strconv.Unquote(lit.Value)
+			if h, ok := call.Args[1].(*ast.SelectorExpr); ok && strings.HasPrefix(h.Sel.Name, modelCall) {
+				return true
+			}
+			if strings.HasPrefix(path, "/") && !strings.HasSuffix(path, "/*") { // "/*": a provider pass-through
+				seen[strings.ToUpper(sel.Sel.Name)+" "+path] = true
+			}
+			return true
+		})
 	}
 	out := make([]string, 0, len(seen))
 	for r := range seen {
