@@ -158,7 +158,7 @@ func TestTheAuditTrailNeverKeepsASecret(t *testing.T) {
 		if strings.Contains(got, leaked) || strings.Contains(got, "B503notarealkey") {
 			t.Errorf("%s keeps the secret: %s", table, got)
 		}
-		if !strings.Contains(got, redact.Mark) || !(strings.Contains(got, "revoked") || strings.Contains(got, "rotated")) {
+		if !strings.Contains(got, redact.Mark) || (!strings.Contains(got, "revoked") && !strings.Contains(got, "rotated")) {
 			t.Errorf("%s should keep the rest of the entry with the secret marked: %s", table, got)
 		}
 	}
