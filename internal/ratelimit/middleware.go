@@ -12,10 +12,9 @@ import (
 	"github.com/talyvor/lens/internal/metrics"
 )
 
-// RateLimitMiddleware fronts a Limiter on the request path. The wsID is
-// read from X-Talyvor-Workspace (already authoritative — AuthMiddleware
-// overwrites client-supplied values with the key owner's workspace). The
-// keyID comes from the validated APIKey on the context if present. A request
+// RateLimitMiddleware fronts a Limiter on the request path. The wsID and
+// keyID come from the validated APIKey on the context, never from a header
+// the caller can change (B50.17). A request
 // with no key (public and webhook routes) is bucketed by its client IP and
 // never by the header, which only the caller set there.
 //
@@ -27,7 +26,7 @@ func RateLimitMiddleware(l *Limiter) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			wsID, keyID := "", "ip:"+anonymousIP(r)
 			if k := auth.GetAPIKey(r.Context()); k != nil {
-				wsID, keyID = r.Header.Get("X-Talyvor-Workspace"), k.ID
+				wsID, keyID = k.WorkspaceID, k.ID
 			}
 			result := l.Check(r.Context(), wsID, keyID)
 			if !result.Allowed {
