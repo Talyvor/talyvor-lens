@@ -337,7 +337,7 @@ type DualTokenStore struct {
 	// B19.16: the relying party approvals' passkeys are checked for, and the push sent for each approval filed.
 	approvalRP     *passkey.RelyingParty
 	approvalPusher ApprovalPusher
-	approvalTTL    time.Duration // B50.18: how long an approval lasts; 0 is DefaultApprovalTTL
+	approvalTTL    time.Duration // B50.18: how long an approval lasts; 0 is defaultApprovalTTL
 	// B40.4: how the phone app's device keys are checked when they are registered.
 	deviceVerifier devicekey.Verifier
 	// B40.15: the native push sent to each phone with a push token for each approval filed or request prepared.

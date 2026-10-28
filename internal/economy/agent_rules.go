@@ -1041,18 +1041,18 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	return a, nil
 }
 
-// DefaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and
+// defaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and
 // once approved may be used that long.
-const DefaultApprovalTTL = 24 * time.Hour
+const defaultApprovalTTL = 24 * time.Hour
 
-// SetApprovalTTL sets how long an approval lasts; 0 is DefaultApprovalTTL.
+// SetApprovalTTL sets how long an approval lasts; 0 is defaultApprovalTTL.
 func (s *DualTokenStore) SetApprovalTTL(d time.Duration) { s.approvalTTL = d }
 
 func (s *DualTokenStore) approvalLife() time.Duration {
 	if s.approvalTTL > 0 {
 		return s.approvalTTL
 	}
-	return DefaultApprovalTTL
+	return defaultApprovalTTL
 }
 
 // expireApprovals marks the agent's open approvals of fingerprint that are past their life 'expired', so a fresh one
