@@ -228,6 +228,9 @@ func (s *CacheServer) ListenAndServe(port int, certFile, keyFile string) (*http.
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	if certFile != "" && keyFile != "" {
 		go func() {

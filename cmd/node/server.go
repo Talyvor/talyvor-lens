@@ -411,10 +411,14 @@ func (s *InferenceServer) handleModels(w http.ResponseWriter, r *http.Request) {
 // is in transit unencrypted. Returns the http.Server so the caller
 // can call Shutdown on SIGTERM.
 func (s *InferenceServer) ListenAndServe(port int, certFile, keyFile string) (*http.Server, error) {
+	// Inference is capped at inferTimeout and never streams, so the write deadline outlasts the slowest answer.
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      inferTimeout + 30*time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	if certFile != "" && keyFile != "" {
 		go func() {

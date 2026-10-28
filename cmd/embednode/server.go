@@ -192,10 +192,14 @@ func RunBenchmark(ctx context.Context, backend Backend, model string) (int64, er
 // (ISO 27001 A.13); otherwise it falls back to plain HTTP with a
 // startup warning.
 func (s *EmbedServer) ListenAndServe(port int, certFile, keyFile string) (*http.Server, error) {
+	// A batch is capped at backendTimeout and never streams, so the write deadline outlasts the slowest answer.
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      backendTimeout + 30*time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	if certFile != "" && keyFile != "" {
 		go func() {
