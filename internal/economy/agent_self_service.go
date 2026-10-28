@@ -110,7 +110,9 @@ func (s *DualTokenStore) AgentReceipt(ctx context.Context, workspaceID, agentID,
 
 // AgentToolCallsAllowed refuses, with ErrAgentRequestRate, an agent that has called its tools requests_per_minute
 // times in the last minute (B50.4): its rule caps tool calls as it caps model calls. Refused calls count, so a loop
-// that keeps calling stays stopped until it pauses.
+// that keeps calling stays stopped until it pauses. shortcut: calls made in parallel can each pass before any is
+// logged, so a burst can overrun the cap by its width; what they pay is still judged by the spend rules in their
+// own locked transaction. Reserve the call's log row under an advisory lock if a burst must be held to the cap too.
 func (s *DualTokenStore) AgentToolCallsAllowed(ctx context.Context, workspaceID, agentID string) error {
 	rules, err := s.GetAgentRules(ctx, workspaceID, agentID)
 	if err != nil {
