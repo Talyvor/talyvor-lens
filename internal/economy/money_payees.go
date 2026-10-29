@@ -79,6 +79,11 @@ type OutsidePayee struct {
 	CalledAt        *time.Time `json:"called_at,omitempty"`
 	CalledBy        string     `json:"called_by,omitempty"`
 	CoolingOffUntil *time.Time `json:"cooling_off_until,omitempty"`
+	// B41.112: when its bank details last changed; until HeldUntil every payment to it is held, and Notice says
+	// what to do meanwhile.
+	DetailsChangedAt *time.Time `json:"details_changed_at,omitempty"`
+	HeldUntil        *time.Time `json:"held_until,omitempty"`
+	Notice           string     `json:"notice,omitempty"`
 	// Screening is set when the name waits for the operator (B30.6); it is answered on save only.
 	Screening string `json:"screening,omitempty"`
 }
@@ -189,21 +194,9 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	case s.payeeScreener == nil:
 		return OutsidePayee{}, fmt.Errorf("%w: no screener is set, so no payee is saved", partners.ErrScreeningUnavailable)
 	}
-	p.ID, p.WorkspaceID, p.Check = "payee_"+uuid.NewString(), workspaceID, PayeeAddress
-	if p.Address == "" {
-		partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
-		if err != nil {
-			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
-		}
-		check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
-			AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
-		if err != nil {
-			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
-		}
-		if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
-			return OutsidePayee{}, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
-		}
-		p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
+	p.ID, p.WorkspaceID = "payee_"+uuid.NewString(), workspaceID
+	if p, err = s.checkPayeeName(ctx, workspaceID, p); err != nil {
+		return OutsidePayee{}, err
 	}
 	held := s.payeeScreener.ScreenPayee(ctx, workspaceID, p.ID, p.Name, CapabilityPaymentsOut)
 	if held != nil && !errors.Is(held, screening.ErrHeld) {
@@ -223,19 +216,47 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	return saved, nil
 }
 
+// checkPayeeName asks p's bank, through the account partner, whether p's name is its account's, and puts the answer on
+// p; a USDC address has no bank to ask and is PayeeAddress.
+func (s *DualTokenStore) checkPayeeName(ctx context.Context, workspaceID string, p OutsidePayee) (OutsidePayee, error) {
+	p.Check, p.SuggestedName, p.CheckedBy = PayeeAddress, "", ""
+	if p.Address != "" {
+		return p, nil
+	}
+	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
+	if err != nil {
+		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+	}
+	check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
+		AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
+	if err != nil {
+		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+	}
+	if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
+		return p, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
+	}
+	p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
+	return p, nil
+}
+
 const payeeCols = `id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
-	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by`
+	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by, details_changed_at`
 
 func scanOutsidePayee(row pgx.Row) (OutsidePayee, error) {
 	var p OutsidePayee
 	err := row.Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
-		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy)
+		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy, &p.DetailsChangedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPayeeNotFound
 	}
 	p.NeedsConfirmation = p.Check != partners.PayeeExactMatch && p.ConfirmedAt == nil
 	if until := p.CreatedAt.Add(NewPayeeHoldFor); p.CalledAt == nil && time.Now().Before(until) {
 		p.CoolingOffUntil = &until
+	}
+	if p.DetailsChangedAt != nil {
+		if until := p.DetailsChangedAt.Add(PayeeDetailsHold); time.Now().Before(until) {
+			p.HeldUntil, p.Notice = &until, PayeeDetailsNotice
+		}
 	}
 	return p, err
 }
@@ -426,7 +447,7 @@ func (s *DualTokenStore) ConfirmPayeeCalled(ctx context.Context, workspaceID, pa
 }
 
 // PayableOutsidePayee is workspaceID's payee when it may be paid: its name matched its account or the owner confirmed
-// it, and screening lets it through. A payment out pays only a payee this returns.
+// it, its bank details did not change in the last PayeeDetailsHold, and screening lets it through. A payment out pays only a payee this returns.
 func (s *DualTokenStore) PayableOutsidePayee(ctx context.Context, workspaceID, payeeID string) (OutsidePayee, error) {
 	p, err := s.outsidePayee(ctx, s.pool, workspaceID, payeeID, "")
 	switch {
@@ -434,6 +455,8 @@ func (s *DualTokenStore) PayableOutsidePayee(ctx context.Context, workspaceID, p
 		return p, err
 	case p.NeedsConfirmation:
 		return p, ErrPayeeUnconfirmed
+	case p.HeldUntil != nil:
+		return p, payeeHeld{*p.HeldUntil}
 	case s.payeeScreener == nil:
 		return p, fmt.Errorf("%w: no screener is set, so no payee is paid", partners.ErrScreeningUnavailable)
 	}
@@ -450,6 +473,7 @@ func (a addressAllowlist) Approved(ctx context.Context, wallet, network, address
 	var ok bool
 	err := a.s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts w JOIN money_payees p ON p.workspace_id = w.workspace_id
 		WHERE w.partner_account_ref = $1 AND w.purpose = 'agent' AND w.currency = 'USDC' AND w.status = 'open' AND w.partner_account_ref <> ''
-		  AND p.network = $2 AND p.address = lower($3) AND p.address <> '' AND p.confirmed_at IS NOT NULL)`, wallet, network, address).Scan(&ok)
+		  AND p.network = $2 AND p.address = lower($3) AND p.address <> '' AND p.confirmed_at IS NOT NULL
+		  AND (p.details_changed_at IS NULL OR p.details_changed_at <= now() - interval '24 hours'))`, wallet, network, address).Scan(&ok)
 	return ok, err
 }

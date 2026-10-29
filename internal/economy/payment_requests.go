@@ -502,6 +502,9 @@ func (s *DualTokenStore) resolvePayee(ctx context.Context, workspaceID string, i
 	if py.NeedsConfirmation {
 		return strings.TrimPrefix(ErrPayeeUnconfirmed.Error(), "economy: "), nil
 	}
+	if py.HeldUntil != nil {
+		return strings.TrimPrefix(payeeHeld{*py.HeldUntil}.Error(), "economy: "), nil
+	}
 	if s.payeeScreener == nil {
 		return "screening is unavailable, so no payee is paid", nil
 	}
