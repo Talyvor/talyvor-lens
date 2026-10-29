@@ -73,10 +73,10 @@ func TestB4530_MandateRulesOnTheCounterpartysTrustAndOperator(t *testing.T) {
 		return m.ID, canonical
 	}
 
-	verified := &agentsig.Result{Level: agentsig.Verified, Domain: "agents.acme.example", Business: "Acme Inc."}
-	unchecked := &agentsig.Result{Level: agentsig.Signed, Domain: "agents.acme.example"}
-	stranger := &agentsig.Result{Level: agentsig.Signed, Domain: "bots.stranger.example"}
-	judge := func(mandate, name string, who *agentsig.Result, amount int64, decision, rule string) {
+	verified := &economy.Counterparty{Level: string(agentsig.Verified), Domain: "agents.acme.example", Business: "Acme Inc."}
+	unchecked := &economy.Counterparty{Level: string(agentsig.Signed), Domain: "agents.acme.example"}
+	stranger := &economy.Counterparty{Level: string(agentsig.Signed), Domain: "bots.stranger.example"}
+	judge := func(mandate, name string, who *economy.Counterparty, amount int64, decision, rule string) {
 		t.Helper()
 		d, err := store.EvaluateMandatePayment(ctx, ws, mandate, economy.PreparedPayment{Client: "chat", PayeeID: "payee_agent",
 			Currency: "GBP", AmountMinor: amount, Counterparty: who})
@@ -97,7 +97,7 @@ func TestB4530_MandateRulesOnTheCounterpartysTrustAndOperator(t *testing.T) {
 	trusted, _ := sign(&economy.MandateCounterparty{Operators: []string{" Agents.ACME.example "}})
 	judge(trusted, "an agent signed by a trusted operator", unchecked, 9000, economy.MandateAllow, "")
 	judge(trusted, "an agent signed by another operator", stranger, 9000, economy.MandateBlock, "counterparty.operators")
-	judge(trusted, "an unsigned agent", &agentsig.Result{Level: agentsig.Unverified}, 9000, economy.MandateBlock, "counterparty.operators")
+	judge(trusted, "an unsigned agent", &economy.Counterparty{Level: string(agentsig.Unverified)}, 9000, economy.MandateBlock, "counterparty.operators")
 
 	anyone, canonical := sign(nil)
 	if strings.Contains(canonical, "counterparty") {
