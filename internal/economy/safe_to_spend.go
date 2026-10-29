@@ -71,10 +71,14 @@ func (b safeBook) figures(holder string) []SafeToSpendFigure {
 	return out
 }
 
+// maxSafeToSpendTicks bounds one schedule's count, so an at far in the future costs no more than this: an hourly
+// schedule's thirteen months.
+const maxSafeToSpendTicks = 10_000
+
 // ticksBefore counts a schedule's ticks from its next run up to, not including, end, and none after its own end.
 func ticksBefore(sc AgentSchedule, end time.Time) int64 {
 	var n int64
-	for t := sc.NextRunAt; t.Before(end) && (sc.EndAt == nil || !t.After(*sc.EndAt)); t = nextTick(t, sc.Every) {
+	for t := sc.NextRunAt; n < maxSafeToSpendTicks && t.Before(end) && (sc.EndAt == nil || !t.After(*sc.EndAt)); t = nextTick(t, sc.Every) {
 		n++
 	}
 	return n
