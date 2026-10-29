@@ -359,6 +359,23 @@ func coolingOff(p OutsidePayee, currency string, amountMinor int64) error {
 		ErrPayeeCoolingOff, p.CoolingOffUntil.UTC().Format(time.RFC3339), p.Name)
 }
 
+// coolingOffTx is coolingOff for amountMinor on top of what is already paid, or on its way, to p in currency since p
+// was saved, so a payment split in two is held as one (B50.21). p's row is locked on tx: payments to it are judged
+// one at a time.
+func (s *DualTokenStore) coolingOffTx(ctx context.Context, tx pgx.Tx, p OutsidePayee, currency string, amountMinor int64) error {
+	p, err := s.outsidePayee(ctx, tx, p.WorkspaceID, p.ID, " FOR UPDATE")
+	if err != nil || p.CoolingOffUntil == nil {
+		return err
+	}
+	var paid int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor), 0)::bigint FROM money_payments
+		WHERE workspace_id = $1 AND payee_id = $2 AND currency = $3 AND status NOT IN ('failed', 'returned') AND created_at >= $4`,
+		p.WorkspaceID, p.ID, currency, p.CreatedAt).Scan(&paid); err != nil {
+		return fmt.Errorf("economy: payment: %w", err)
+	}
+	return coolingOff(p, currency, paid+amountMinor)
+}
+
 // PayeeCalledChallenge issues the challenge the owner signs to confirm they called payeeID on a number they already
 // had, and the workspace's passkeys that may sign it.
 func (s *DualTokenStore) PayeeCalledChallenge(ctx context.Context, workspaceID, payeeID string) (challenge string, credentialIDs []string, err error) {

@@ -260,6 +260,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []string{from.companyID, from.id}); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
+	if err := s.coolingOffTx(ctx, tx, payee, p.Currency, p.AmountMinor); err != nil { // B50.21
+		return OutsidePayment{}, err
+	}
 	var held int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(balance_minor), 0)::bigint FROM money_account_balances WHERE account_id = $1 AND funding = $2`,
 		from.id, p.Funding).Scan(&held); err != nil {
