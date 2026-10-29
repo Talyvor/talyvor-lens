@@ -198,7 +198,7 @@ type agentBank interface {
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
 	AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
-	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration) (economy.Passkey, error)
+	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error)
 	PushPublicKey() (string, bool)
@@ -1023,15 +1023,26 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none"})
+		// B50.20: once the workspace has a passkey, one of these signs c too, as the new key's "assertion".
+		keys, err := bank.ListPasskeys(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		creds := []string{}
+		for _, k := range keys {
+			creds = append(creds, k.CredentialID)
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none", "credential_ids": creds})
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/passkeys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
-			CredentialID      string `json:"credential_id"`
-			Name              string `json:"name"`
-			PublicKey         string `json:"public_key"`
-			ClientDataJSON    string `json:"client_data_json"`
-			AuthenticatorData string `json:"authenticator_data"`
+			CredentialID      string             `json:"credential_id"`
+			Name              string             `json:"name"`
+			PublicKey         string             `json:"public_key"`
+			ClientDataJSON    string             `json:"client_data_json"`
+			AuthenticatorData string             `json:"authenticator_data"`
+			Assertion         *passkey.Assertion `json:"assertion"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		pk, err1 := passkey.Decode64(in.PublicKey)
@@ -1042,8 +1053,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		p, err := bank.RegisterPasskey(req.Context(), chi.URLParam(req, "wsID"), in.Name,
-			passkey.Registration{CredentialID: in.CredentialID, PublicKey: pk, ClientDataJSON: cdj, AuthenticatorData: ad})
+			passkey.Registration{CredentialID: in.CredentialID, PublicKey: pk, ClientDataJSON: cdj, AuthenticatorData: ad}, in.Assertion)
 		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case err != nil:
