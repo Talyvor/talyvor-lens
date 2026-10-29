@@ -194,9 +194,21 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	case s.payeeScreener == nil:
 		return OutsidePayee{}, fmt.Errorf("%w: no screener is set, so no payee is saved", partners.ErrScreeningUnavailable)
 	}
-	p.ID, p.WorkspaceID = "payee_"+uuid.NewString(), workspaceID
-	if p, err = s.checkPayeeName(ctx, workspaceID, p); err != nil {
-		return OutsidePayee{}, err
+	p.ID, p.WorkspaceID, p.Check = "payee_"+uuid.NewString(), workspaceID, PayeeAddress
+	if p.Address == "" {
+		partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
+		if err != nil {
+			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+		}
+		check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
+			AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
+		if err != nil {
+			return OutsidePayee{}, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+		}
+		if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
+			return OutsidePayee{}, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
+		}
+		p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
 	}
 	held := s.payeeScreener.ScreenPayee(ctx, workspaceID, p.ID, p.Name, CapabilityPaymentsOut)
 	if held != nil && !errors.Is(held, screening.ErrHeld) {
@@ -216,36 +228,13 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	return saved, nil
 }
 
-// checkPayeeName asks p's bank, through the account partner, whether p's name is its account's, and puts the answer on
-// p; a USDC address has no bank to ask and is PayeeAddress.
-func (s *DualTokenStore) checkPayeeName(ctx context.Context, workspaceID string, p OutsidePayee) (OutsidePayee, error) {
-	p.Check, p.SuggestedName, p.CheckedBy = PayeeAddress, "", ""
-	if p.Address != "" {
-		return p, nil
-	}
-	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
-	if err != nil {
-		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
-	}
-	check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
-		AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
-	if err != nil {
-		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
-	}
-	if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
-		return p, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
-	}
-	p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
-	return p, nil
-}
-
-const payeeCols = `id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
-	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by, details_changed_at`
+const payeeCols = `details_changed_at, id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
+	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by`
 
 func scanOutsidePayee(row pgx.Row) (OutsidePayee, error) {
 	var p OutsidePayee
-	err := row.Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
-		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy, &p.DetailsChangedAt)
+	err := row.Scan(&p.DetailsChangedAt, &p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
+		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPayeeNotFound
 	}
