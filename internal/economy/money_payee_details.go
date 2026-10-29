@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -135,4 +136,27 @@ func (s *DualTokenStore) ChangeOutsidePayeeDetails(ctx context.Context, workspac
 		return p, err
 	}
 	return p, tx.Commit(ctx)
+}
+
+// checkPayeeName is the check CreateOutsidePayee makes on save: it asks p's bank, through the account partner, whether
+// p's name is its account's, and puts the answer on p; a USDC address has no bank to ask and is PayeeAddress.
+func (s *DualTokenStore) checkPayeeName(ctx context.Context, workspaceID string, p OutsidePayee) (OutsidePayee, error) {
+	p.Check, p.SuggestedName, p.CheckedBy = PayeeAddress, "", ""
+	if p.Address != "" {
+		return p, nil
+	}
+	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
+	if err != nil {
+		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+	}
+	check, err := partner.CheckPayee(partners.WithWorkspace(ctx, workspaceID), partners.Payee{Name: p.Name, SortCode: p.SortCode,
+		AccountNumber: p.AccountNumber, IBAN: p.IBAN, BIC: p.BIC, RoutingNumber: p.RoutingNumber})
+	if err != nil {
+		return p, fmt.Errorf("%w: %v", ErrPayeeCheckUnavailable, err)
+	}
+	if check.Result != partners.PayeeExactMatch && check.Result != partners.PayeeCloseMatch && check.Result != partners.PayeeNoMatch {
+		return p, fmt.Errorf("%w: the partner answered %q", ErrPayeeCheckUnavailable, check.Result)
+	}
+	p.Check, p.SuggestedName, p.CheckedBy = check.Result, check.SuggestedName, partner.Name()
+	return p, nil
 }
