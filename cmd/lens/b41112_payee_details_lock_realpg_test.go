@@ -72,7 +72,11 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 		t.Fatal(err)
 	}
 
-	// The owner's passkey: this test is the authenticator.
+	// The owner's passkey, the workspace's only key (the fixture's phone, there for pushes, is removed so the first
+	// passkey needs no other key's signature, B50.20): this test is the authenticator.
+	if _, err := pool.Exec(ctx, `DELETE FROM workspace_device_keys WHERE workspace_id = $1`, ws); err != nil {
+		t.Fatal(err)
+	}
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	spki, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	credID := make([]byte, 16)
@@ -89,7 +93,7 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 	attested := binary.BigEndian.AppendUint32(append(append([]byte{}, rpHash[:]...), 0x45), 0)
 	attested = append(append(binary.BigEndian.AppendUint16(append(attested, make([]byte, 16)...), uint16(len(credID))), credID...), 0xa0)
 	if _, err := b.store.RegisterPasskey(ctx, ws, "Owner's phone", passkey.Registration{CredentialID: b64(credID), PublicKey: spki,
-		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: attested}); err != nil {
+		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: attested}, nil); err != nil {
 		t.Fatal(err)
 	}
 	counter := uint32(0)
