@@ -76,6 +76,7 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/forecast?at=           each agent's and the workspace's month-end spend
 //	GET  /v1/workspaces/{wsID}/agents/safe-to-spend?at=      B41.105: each agent's and the company's safe to spend
 //	                                                          this month, per currency (internal/economy/safe_to_spend.go)
+//	                                                          B50.23: an agent's own key gets only its own entry
 //	GET  /v1/workspaces/{wsID}/agents/briefing?at=           B41.106: the owner's daily briefing — approvals waiting, what is
 //	                                                          blocked, bills due this week, yesterday's spend (internal/economy/briefing.go)
 //	POST /v1/workspaces/{wsID}/agents/{id}/pause  {"reason"}  refuse its every movement until resumed
@@ -782,6 +783,21 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// B50.23: an agent's own key reads only its own entry — never another agent's, the company's or its bills.
+		if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
+			if keyAgent, _, kerr := bank.AgentOfKey(req.Context(), actx.APIKeyID); kerr == nil {
+				own := []economy.AgentSafeToSpend{}
+				for _, a := range out.Agents {
+					if a.AgentID == keyAgent {
+						own = append(own, a)
+					}
+				}
+				out.Company, out.Agents = []economy.SafeToSpendFigure{}, own
+			} else if !errors.Is(kerr, economy.ErrAgentNotFound) {
+				writeJSONErr(w, http.StatusInternalServerError, kerr.Error())
+				return
+			}
 		}
 		writeJSONOK(w, http.StatusOK, out)
 	})
