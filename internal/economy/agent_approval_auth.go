@@ -163,6 +163,12 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 // an open challenge naming that approval, which it spends. A revoked device key still counts (B40.4):
 // revoking a lost phone must never leave approvals needing no signature at all.
 func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error {
+	return s.authorizeSigned(ctx, workspaceID, "approval:"+approvalID, a)
+}
+
+// authorizeSigned lets an act for purpose through: at once for a workspace with no passkey or device key, and
+// otherwise only with a's assertion over an open challenge for purpose, which it spends.
+func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpose string, a *passkey.Assertion) error {
 	var n int
 	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
@@ -179,7 +185,7 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, *a); err != nil {
+	if err := s.spendAssertion(ctx, tx, workspaceID, purpose, *a); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
