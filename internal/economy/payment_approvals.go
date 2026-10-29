@@ -263,6 +263,7 @@ const (
 	PayRefused     = "refused"      // its mandate no longer lets it be paid
 	PayNotPaidHere = "not_paid"     // a marketplace purchase: not paid from a request yet
 	PayFailed      = "failed"       // paying it failed before any money moved; trying again uses the same key
+	PayHeld        = "held"         // B41.111: it waits out its new payee's cooling-off; RunHeldPayments pays it then
 )
 
 // PayPaymentRequest pays what workspaceID's request id may pay now — agentID, when not "", only that agent's
@@ -346,9 +347,12 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 			p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
 				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key})
 			call = map[string]any{"position": it.Position, "authority": authority, "idempotency_key": key}
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrPayeeCoolingOff):
+				payStatus, detail, call["held"] = PayHeld, err.Error(), err.Error()
+			case err != nil:
 				payStatus, detail, call["error"] = PayFailed, err.Error(), err.Error()
-			} else {
+			default:
 				paymentID, payStatus, detail = p.ID, p.Status, p.Detail
 				// shortcut: a payment returned later leaves its bill paid; reopen the bill once returns are reconciled.
 				if it.BillID != "" && p.Status != PaymentFailed {
@@ -378,4 +382,39 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		return r, err
 	}
 	return s.PaymentRequest(ctx, workspaceID, agentID, id)
+}
+
+// RunHeldPayments pays the request items held by a new payee's cooling-off (B41.111) — workspaceID's, or every
+// workspace's when "" — whose payee's 24 hours have passed or whose owner confirmed they called it. It says how many
+// requests it paid; one it could not pay is in the error and tried again next time.
+func (s *DualTokenStore) RunHeldPayments(ctx context.Context, workspaceID string) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT r.workspace_id, r.id FROM payment_request_items i
+		JOIN payment_requests r ON r.id = i.request_id
+		JOIN money_payees p ON p.id = i.payee_id AND p.workspace_id = r.workspace_id
+		WHERE i.pay_status = 'held' AND r.status <> 'cancelled' AND ($1 = '' OR r.workspace_id = $1)
+		AND (p.called_at IS NOT NULL OR p.created_at <= now() - make_interval(hours => $2))`, workspaceID, int(NewPayeeHoldFor/time.Hour))
+	if err != nil {
+		return 0, fmt.Errorf("economy: held payments: %w", err)
+	}
+	type held struct{ ws, id string }
+	var due []held
+	for rows.Next() {
+		var h held
+		if err := rows.Scan(&h.ws, &h.id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("economy: held payments: %w", err)
+		}
+		due = append(due, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("economy: held payments: %w", err)
+	}
+	var errs []error
+	for _, h := range due { // one request that cannot be paid does not hold up the others
+		if _, err := s.PayPaymentRequest(ctx, h.ws, "", h.id); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", h.id, err))
+		}
+	}
+	return len(due) - len(errs), errors.Join(errs...)
 }

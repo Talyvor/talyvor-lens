@@ -2182,6 +2182,12 @@ func run() error {
 				} else if res != (economy.SimRunResult{}) {
 					slog.Info("agents: simulated orders", slog.Int("filled", res.Filled), slog.Int("rejected", res.Rejected))
 				}
+				// B41.111: payments held by a new payee's cooling-off, paid once its 24 hours have passed.
+				if n, err := dualToken.RunHeldPayments(ctx, ""); err != nil {
+					slog.Warn("money: held payments failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: held payments paid", slog.Int("requests", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))

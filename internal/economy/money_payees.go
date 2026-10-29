@@ -74,6 +74,11 @@ type OutsidePayee struct {
 	ConfirmedAt       *time.Time `json:"confirmed_at,omitempty"`
 	ConfirmedBy       string     `json:"confirmed_by,omitempty"` // the passkey that confirmed it
 	CreatedAt         time.Time  `json:"created_at"`
+	// B41.111: when the owner confirmed with a passkey that they called the payee on a number they already had, and
+	// the passkey; until then, or until CoolingOffUntil, a payment of more than NewPayeeHoldMajor waits.
+	CalledAt        *time.Time `json:"called_at,omitempty"`
+	CalledBy        string     `json:"called_by,omitempty"`
+	CoolingOffUntil *time.Time `json:"cooling_off_until,omitempty"`
 	// Screening is set when the name waits for the operator (B30.6); it is answered on save only.
 	Screening string `json:"screening,omitempty"`
 }
@@ -219,16 +224,19 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 }
 
 const payeeCols = `id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
-	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address`
+	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by`
 
 func scanOutsidePayee(row pgx.Row) (OutsidePayee, error) {
 	var p OutsidePayee
 	err := row.Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
-		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address)
+		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPayeeNotFound
 	}
 	p.NeedsConfirmation = p.Check != partners.PayeeExactMatch && p.ConfirmedAt == nil
+	if until := p.CreatedAt.Add(NewPayeeHoldFor); p.CalledAt == nil && time.Now().Before(until) {
+		p.CoolingOffUntil = &until
+	}
 	return p, err
 }
 
@@ -325,6 +333,79 @@ func (s *DualTokenStore) ConfirmOutsidePayee(ctx context.Context, workspaceID, p
 		return p, err
 	}
 	return p, tx.Commit(ctx)
+}
+
+// B41.111: a payment of more than NewPayeeHoldMajor (in its own currency) to a payee saved less than
+// NewPayeeHoldFor ago waits until then, unless the owner confirmed with a passkey that they called the payee.
+const (
+	NewPayeeHoldMajor = 1_000
+	NewPayeeHoldFor   = 24 * time.Hour
+)
+
+// ErrPayeeCoolingOff: the payment waits out the new payee's cooling-off.
+var ErrPayeeCoolingOff = errors.New("economy: a payment of more than 1,000 to a payee saved less than 24 hours ago waits")
+
+// coolingOff refuses a payment of amountMinor in currency to p while p's cooling-off holds it.
+// shortcut: the same 1,000 in every currency, with no exchange rate; convert to pounds once rates are kept.
+func coolingOff(p OutsidePayee, currency string, amountMinor int64) error {
+	limit := int64(NewPayeeHoldMajor)
+	for range MoneyCurrencies[currency] {
+		limit *= 10
+	}
+	if p.CoolingOffUntil == nil || amountMinor <= limit {
+		return nil
+	}
+	return fmt.Errorf("%w until %s, or until the owner confirms with a passkey that they called %s on a number they already had",
+		ErrPayeeCoolingOff, p.CoolingOffUntil.UTC().Format(time.RFC3339), p.Name)
+}
+
+// PayeeCalledChallenge issues the challenge the owner signs to confirm they called payeeID on a number they already
+// had, and the workspace's passkeys that may sign it.
+func (s *DualTokenStore) PayeeCalledChallenge(ctx context.Context, workspaceID, payeeID string) (challenge string, credentialIDs []string, err error) {
+	if _, err := s.outsidePayee(ctx, s.pool, workspaceID, payeeID, ""); err != nil {
+		return "", nil, err
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(keys) == 0 {
+		return "", nil, ErrPayeePasskey
+	}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, "payee_called:"+payeeID)
+	return c, credentialIDs, err
+}
+
+// ConfirmPayeeCalled keeps the owner's passkey confirmation, over PayeeCalledChallenge's challenge, that they called
+// payeeID on a number they already had: its cooling-off ends, and the payments it held are paid now.
+func (s *DualTokenStore) ConfirmPayeeCalled(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (OutsidePayee, error) {
+	if a == nil {
+		return OutsidePayee{}, ErrPayeePasskey
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return OutsidePayee{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := s.outsidePayee(ctx, tx, workspaceID, payeeID, " FOR UPDATE"); err != nil {
+		return OutsidePayee{}, err
+	}
+	if err := s.spendAssertion(ctx, tx, workspaceID, "payee_called:"+payeeID, *a); err != nil {
+		return OutsidePayee{}, err
+	}
+	p, err := scanOutsidePayee(tx.QueryRow(ctx, `UPDATE money_payees SET called_at = now(), called_by = $3
+		WHERE id = $1 AND workspace_id = $2 RETURNING `+payeeCols, payeeID, workspaceID, a.CredentialID))
+	if err != nil {
+		return p, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return p, err
+	}
+	_, err = s.RunHeldPayments(ctx, workspaceID)
+	return p, err
 }
 
 // PayableOutsidePayee is workspaceID's payee when it may be paid: its name matched its account or the owner confirmed
