@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
 )
@@ -95,6 +96,14 @@ type MandateNewPayee struct {
 	CoolingOffHours int    `json:"cooling_off_hours"`
 }
 
+// MandateCounterparty is who the mandate pays (B45.30): an agent at least this trusted, by the trust levels of
+// docs/agent-signatures.md, and/or one whose signing domain — its operator — is named. A payment whose counterparty
+// is not known is an unverified agent's, with no operator.
+type MandateCounterparty struct {
+	MinTrust  string   `json:"min_trust,omitempty"` // "signed" or "verified"; empty: any
+	Operators []string `json:"operators,omitempty"` // signing domains, lower case; empty: any
+}
+
 // PermissionMandateTerms is what the person signs, in this field order.
 type PermissionMandateTerms struct {
 	Version               string           `json:"version"`
@@ -109,6 +118,8 @@ type PermissionMandateTerms struct {
 	NewPayee              MandateNewPayee  `json:"new_payee"`
 	ValidFrom             time.Time        `json:"valid_from"`
 	ExpiresAt             time.Time        `json:"expires_at"`
+	// Counterparty is left out of the signed form when there is none, so mandates signed before B45.30 stay canonical.
+	Counterparty *MandateCounterparty `json:"counterparty,omitempty"`
 }
 
 // PermissionMandate is a signed mandate as kept.
@@ -142,6 +153,8 @@ type PreparedPayment struct {
 	SpentTodayMinor  int64      `json:"spent_today_minor"`
 	SpentMonthMinor  int64      `json:"spent_month_minor"`
 	PaymentsLastHour int        `json:"payments_last_hour"`
+	// Counterparty is who Talyvor takes the agent being paid to be, from its signature (B45.24); nil when unknown.
+	Counterparty *agentsig.Result `json:"counterparty,omitempty"`
 }
 
 // MandateDecision is the evaluator's answer: the decision, why, and the rule of the mandate that decided it.
