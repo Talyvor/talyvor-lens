@@ -125,7 +125,7 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 		t.Fatalf("the change with the passkey = %d %v, want 200, the new account checked afresh, and the notice", code, out)
 	}
 	held, err := time.Parse(time.RFC3339, out["held_until"].(string))
-	if err != nil || held.Sub(time.Now()) < 23*time.Hour || held.Sub(time.Now()) > 25*time.Hour {
+	if err != nil || time.Until(held) < 23*time.Hour || time.Until(held) > 25*time.Hour {
 		t.Fatalf("held_until = %v (%v), want 24 hours from now", out["held_until"], err)
 	}
 	if got := account(); got != "40-00-00 12345678" {
