@@ -81,6 +81,7 @@ type Server struct {
 	rooms          *rooms.Store // B32.36: the room tools; nil leaves them out
 	roomDeps       RoomDeps
 	mandates       MandateReader // B40.2: get_mandates; nil leaves it out
+	searcher       Searcher      // B41.107: search_workspace; nil leaves it out
 	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact; nil leaves them out
 	paymentRequests PaymentRequester
 
@@ -366,6 +367,9 @@ func (s *Server) tools() []map[string]any {
 	if s.paymentRequests != nil {
 		all = append(all, paymentRequestToolDefinitions()...)
 	}
+	if s.searcher != nil {
+		all = append(all, searchToolDefinitions()...)
+	}
 	if s.agentBank == nil {
 		return annotate(all)
 	}
@@ -500,6 +504,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.toolGetMandates(ctx, params.Arguments)
+	case "search_workspace":
+		if s.searcher == nil {
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
+		}
+		result, err = s.toolSearchWorkspace(ctx, params.Arguments)
 	case "prepare_payment", "prepare_batch", "prepare_bills_payment", "list_bills_due", "get_daily_briefing", "prepare_transfer_to_contact", "request_marketplace_purchase", "cancel_request", "get_request_status":
 		if s.paymentRequests == nil {
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
