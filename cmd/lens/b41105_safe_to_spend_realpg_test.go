@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,80 @@ func TestSafeToSpend_AnAgentsBalanceLessWhatIsPromisedThisMonth(t *testing.T) {
 	}
 	if f := figure(got.Company, "GBP"); f.BillsDue != 3000 || f.SafeToSpend != -3000 {
 		t.Errorf("the company's GBP = %+v, want April's £30 bill due and −£30 safe to spend", f)
+	}
+}
+
+// B50.23 — an agent's own key reads only its own safe to spend: never another agent's, nor the company's figures and
+// bills. The owner still reads everything.
+func TestSafeToSpend_AnAgentsKeySeesOnlyItsOwnEntry(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-safe-own"
+	if _, err := pool.Exec(ctx, `INSERT INTO lxc_balances (workspace_id, balance, cash_backed_ulxc) VALUES ($1, 200000000, 200000000)`, ws); err != nil {
+		t.Fatal(err)
+	}
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	call := func(who *auth.AuthContext, method, path, body string) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+	a, err := store.CreateAgent(ctx, ws, "agent-a", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.CreateAgent(ctx, ws, "agent-b", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ag := range []string{a.ID, b.ID} {
+		if _, err := store.FundAgent(ctx, ws, ag, 10_000_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out := call(owner, http.MethodPost, "/v1/workspaces/"+ws+"/agents/"+a.ID+"/keys", `{"name":"a key"}`); code != http.StatusCreated {
+		t.Fatalf("issue agent A's key = %d %s", code, out)
+	}
+	var keyA string
+	if err := pool.QueryRow(ctx, `SELECT scoped_key_id FROM agent_account_keys WHERE agent_id = $1`, a.ID).Scan(&keyA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO money_bills (id, workspace_id, source, document_sha256, supplier, amount_minor, currency,
+		due_date, payee_match) VALUES ('bill_own', $1, 'upload', 'bill_own', 'Acme', 3000, 'GBP', '2026-04-25', 'new_payee')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/workspaces/" + ws + "/agents/safe-to-spend?at=2026-04-11T00:00:00Z"
+
+	agentKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: keyA, Scopes: []string{auth.ScopeProxy}}
+	code, body := call(agentKey, http.MethodGet, path, ``)
+	if code != http.StatusOK {
+		t.Fatalf("agent A's safe-to-spend = %d %s", code, body)
+	}
+	var got economy.SafeToSpend
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, b.ID) || strings.Contains(body, "agent-b") {
+		t.Errorf("agent A's key sees agent B: %s", body)
+	}
+	if len(got.Company) != 0 || strings.Contains(body, `"bills_due":3000`) {
+		t.Errorf("agent A's key sees the company's figures or its bills: %s", body)
+	}
+	if len(got.Agents) != 1 || got.Agents[0].AgentID != a.ID || len(got.Agents[0].Figures) == 0 {
+		t.Errorf("agent A's key gets %+v, want only its own entry", got.Agents)
+	}
+
+	code, body = call(owner, http.MethodGet, path, ``)
+	if err := json.Unmarshal([]byte(body), &got); code != http.StatusOK || err != nil {
+		t.Fatalf("owner's safe-to-spend = %d %s", code, body)
+	}
+	if len(got.Agents) != 2 || !strings.Contains(body, `"bills_due":3000`) {
+		t.Errorf("the owner gets %s, want both agents and the company's £30 bill", body)
 	}
 }
