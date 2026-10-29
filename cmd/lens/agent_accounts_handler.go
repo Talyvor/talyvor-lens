@@ -73,6 +73,8 @@ import (
 //
 //	GET  /v1/workspaces/{wsID}/agents/alerts                 unusual-spend alerts, newest first
 //	GET  /v1/workspaces/{wsID}/agents/forecast?at=           each agent's and the workspace's month-end spend
+//	                                                          B50.24: an agent's own key gets only its own entry, here, on
+//	                                                          …/alerts and on the book (GET …/agents)
 //	GET  /v1/workspaces/{wsID}/agents/safe-to-spend?at=      B41.105: each agent's and the company's safe to spend
 //	                                                          this month, per currency (internal/economy/safe_to_spend.go)
 //	                                                          B50.23: an agent's own key gets only its own entry
@@ -225,8 +227,20 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if book.Agents == nil {
-			book.Agents = []economy.Agent{}
+		own, err := keyAgent(req, bank)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		agents := []economy.Agent{}
+		for _, a := range book.Agents {
+			if own == "" || a.ID == own {
+				agents = append(agents, a)
+			}
+		}
+		book.Agents = agents
+		if own != "" {
+			book.WorkspaceBalanceULXC, book.AllocatedULXC, book.UnallocatedULXC, book.SpentULXC = 0, 0, 0, 0
 		}
 		writeJSONOK(w, http.StatusOK, book)
 	})
@@ -708,6 +722,20 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		own, err := keyAgent(req, bank)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if own != "" {
+			mine := []economy.AgentSpendAlert{}
+			for _, a := range list {
+				if a.AgentID == own {
+					mine = append(mine, a)
+				}
+			}
+			list = mine
+		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"alerts": list, "rule": economy.UnusualSpendRule})
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/forecast", func(w http.ResponseWriter, req *http.Request) {
@@ -724,6 +752,20 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		own, err := keyAgent(req, bank)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if own != "" {
+			mine := []economy.AgentForecast{}
+			for _, a := range f.Agents {
+				if a.AgentID == own {
+					mine = append(mine, a)
+				}
+			}
+			f.Agents, f.SpentULXC, f.ForecastULXC = mine, 0, 0
 		}
 		writeJSONOK(w, http.StatusOK, f)
 	})
@@ -1224,6 +1266,20 @@ func unknownRuleTemplate(id string) string {
 		ids = append(ids, t.ID)
 	}
 	return fmt.Sprintf("there is no rule template %q; the templates are %s", id, strings.Join(ids, ", "))
+}
+
+// keyAgent names the agent whose own key made req, or "" for an owner, a member or any other key (B50.24): an agent's
+// key reads only its own entry on the workspace-wide agent routes.
+func keyAgent(req *http.Request, bank agentBank) (string, error) {
+	actx := auth.GetAuthContext(req.Context())
+	if actx == nil || actx.APIKeyID == "" {
+		return "", nil
+	}
+	id, _, err := bank.AgentOfKey(req.Context(), actx.APIKeyID)
+	if errors.Is(err, economy.ErrAgentNotFound) {
+		return "", nil
+	}
+	return id, err
 }
 
 // ownerOnly admits the workspace's owner or an admin — the rule stored-answer deletion uses.
