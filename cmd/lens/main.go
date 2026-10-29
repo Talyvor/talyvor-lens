@@ -2182,6 +2182,12 @@ func run() error {
 				} else if res != (economy.SimRunResult{}) {
 					slog.Info("agents: simulated orders", slog.Int("filled", res.Filled), slog.Int("rejected", res.Rejected))
 				}
+				// B41.111: payments held by a new payee's cooling-off, paid once its 24 hours have passed.
+				if n, err := dualToken.RunHeldPayments(ctx, ""); err != nil {
+					slog.Warn("money: held payments failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: held payments paid", slog.Int("requests", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))
@@ -2699,7 +2705,8 @@ func run() error {
 	mcpServer.SetAgentBank(dualToken)       // B19.9: agents use their wallets with their own keys
 	mcpServer.SetCredentials(kyaSvc)        // B30.5: and show their Know Your Agent credential
 	mcpServer.SetMandates(dualToken)        // B40.2: get_mandates
-	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B45.14: prepare_transfer_to_contact
+	mcpServer.SetSearcher(dualToken)        // B41.107: search_workspace
+	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -4740,6 +4747,7 @@ func run() error {
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
+		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
@@ -4768,6 +4776,7 @@ func run() error {
 		roomStore.SetContextMessages(cfg.RoomContextMessages)     // B32.33: what the room's AI reads
 		roomStore.SetReportsHide(cfg.RoomReportsHide)             // B32.52: reports that take a public room off the list
 		mountRoomRoutes(authed, roomStore)
+		mountMoneyEarningsRoutes(authed, dualToken, roomStore) // B46.11: payouts of earnings on the money layer
 		// B32.52: the operator's queue of reported rooms, and keeping, locking, unlocking or closing one (operator audit).
 		r.Get("/v1/admin/rooms/reports", requireAdminOrModerator(authManager, moderatorKeys, newRoomReportQueueHandler(roomStore)))
 		r.Post("/v1/admin/rooms/{roomID}/moderate", requireAdminOrModerator(authManager, moderatorKeys, newRoomModerateHandler(roomStore)))

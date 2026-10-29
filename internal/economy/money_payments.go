@@ -188,6 +188,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if err != nil {
 		return OutsidePayment{}, err
 	}
+	if err := coolingOff(payee, in.Currency, in.AmountMinor); err != nil { // B41.111
+		return OutsidePayment{}, err
+	}
 	switch {
 	case s.accountPartners == nil:
 		return OutsidePayment{}, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)

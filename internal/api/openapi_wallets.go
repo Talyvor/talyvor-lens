@@ -471,9 +471,30 @@ func openAPIWalletPaths() map[string]any {
 				optional(obj(nil, map[string]any{"reason": str}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/resume": map[string]any{
-			"post": op("Resume a paused agent", "Owner or admin.",
+			"post": withBody(op("Resume a paused agent",
+				"Owner or admin. Once the workspace has a passkey or device key, it takes an assertion over the resume challenge.",
 				[]map[string]any{ws, agent},
-				map[string]any{"200": map[string]any{"description": "resumed"}}),
+				map[string]any{"200": map[string]any{"description": "resumed"}, "403": map[string]any{"description": "no assertion, or one Lens could not verify: the agent stays paused"}}),
+				optional(obj(nil, map[string]any{"assertion": map[string]any{"type": "object"}}))),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/resume/challenge": map[string]any{
+			"post": op("Get the challenge resuming the agent is signed over",
+				"Owner or admin. Single use, for five minutes.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": map[string]any{"description": "the challenge and the passkeys that may sign it"}, "404": map[string]any{"description": "no such agent"}}),
+		},
+		"/v1/workspaces/{wsID}/agents/resume-all": map[string]any{
+			"post": withBody(op("Resume every agent in the workspace",
+				"Owner or admin. Lifts pause-all; an agent paused on its own stays paused. Once the workspace has a passkey or device key, it takes an assertion over the resume-all challenge.",
+				[]map[string]any{ws},
+				map[string]any{"200": map[string]any{"description": "resumed"}, "403": map[string]any{"description": "no assertion, or one Lens could not verify: every agent stays paused"}}),
+				optional(obj(nil, map[string]any{"assertion": map[string]any{"type": "object"}}))),
+		},
+		"/v1/workspaces/{wsID}/agents/resume-all/challenge": map[string]any{
+			"post": op("Get the challenge resuming every agent is signed over",
+				"Owner or admin. Single use, for five minutes.",
+				[]map[string]any{ws},
+				map[string]any{"200": map[string]any{"description": "the challenge and the passkeys that may sign it"}}),
 		},
 		"/v1/workspaces/{wsID}/agents/pause-all": map[string]any{
 			"post": withBody(op("Pause every agent in the workspace",

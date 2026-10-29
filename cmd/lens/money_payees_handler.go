@@ -26,6 +26,9 @@ import (
 //	POST /v1/money/payees/{id}/challenge — the challenge a close match or no match is confirmed over
 //	POST /v1/money/payees/{id}/confirm   {"assertion": {credential_id, client_data_json, authenticator_data,
 //	                          signature}} — the owner confirms it with a passkey; until then it cannot be paid
+//	POST /v1/money/payees/{id}/called/challenge — B41.111: the challenge the owner signs to say they called the payee
+//	POST /v1/money/payees/{id}/called    {"assertion": {...}} — they called it on a number they already had: its
+//	                          24-hour cooling-off (cooling_off_until) ends and the payments it held are paid
 //
 // The workspace is the key's; only its owner or an admin may use these. Mounted in the authed group.
 
@@ -34,6 +37,8 @@ type moneyPayeeBank interface {
 	OutsidePayees(ctx context.Context, workspaceID string) ([]economy.OutsidePayee, error)
 	PayeeChallenge(ctx context.Context, workspaceID, payeeID string) (challenge string, credentialIDs []string, err error)
 	ConfirmOutsidePayee(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (economy.OutsidePayee, error)
+	PayeeCalledChallenge(ctx context.Context, workspaceID, payeeID string) (challenge string, credentialIDs []string, err error)
+	ConfirmPayeeCalled(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (economy.OutsidePayee, error)
 }
 
 func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
@@ -125,6 +130,44 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
+			writeJSONOK(w, http.StatusOK, p)
+		}
+	})
+	r.Post("/v1/money/payees/{id}/called/challenge", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.PayeeCalledChallenge(req.Context(), ws, chi.URLParam(req, "id"))
+		switch {
+		case errors.Is(err, economy.ErrPayeeNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPayeePasskey):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	})
+	r.Post("/v1/money/payees/{id}/called", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		p, err := bank.ConfirmPayeeCalled(req.Context(), ws, chi.URLParam(req, "id"), in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPayeeNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPayeePasskey), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil && p.CalledAt == nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default: // kept; a held payment that could not be paid now is tried again by the minute's run
 			writeJSONOK(w, http.StatusOK, p)
 		}
 	})

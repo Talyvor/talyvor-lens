@@ -285,4 +285,28 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 	if got := postings(); posted != 2 || len(got) != 12 {
 		t.Fatalf("%d of six concurrent pulls posted, %d postings in all; want 2 pulls and 12 postings", posted, len(got))
 	}
+
+	// B41.111: an outside business pulling £1,500 for a payee saved minutes ago waits out its cooling-off, as a payment
+	// out does: refused, and nothing posted.
+	if _, err := store.ReceivePayment(ctx, economy.InboundPayment{PartnerAccountRef: company.PartnerAccountRef, PartnerRef: "test_in_b41111",
+		Payer: "Owner Ltd", Reference: details.PaymentReference, AmountMinor: 300000, Currency: "GBP"}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.CreateOutsidePayee(ctx, ws, economy.OutsidePayee{Name: "New Hosting Ltd", Country: "GB", SortCode: "200000", AccountNumber: "55779911"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, biz = call(ws, "", http.MethodPost, "/v1/money/mandates", `{"account_id":"`+agentGBP.ID+`","payee_business_id":"GB-COMPANY-07654321",`+
+		`"payee_id":"`+fresh.ID+`","max_per_pull_minor":200000,"max_per_month_minor":200000,"expires_at":"`+expires+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("grant to the new payee's business = %d %v", code, biz)
+	}
+	before := len(postings())
+	if code, out := call("", biz["pull_key"].(string), http.MethodPost, "/v1/money/mandates/"+biz["id"].(string)+"/pull",
+		`{"amount_minor":150000,"idempotency_key":"fresh-1"}`); code != http.StatusConflict || !strings.Contains(jsonOf(out), "24 hours") {
+		t.Fatalf("a £1,500 pull for a payee saved minutes ago = %d %v, want 409: it waits out the cooling-off", code, out)
+	}
+	if got := postings(); len(got) != before {
+		t.Fatalf("the refused pull posted %v; want nothing", got[before:])
+	}
 }

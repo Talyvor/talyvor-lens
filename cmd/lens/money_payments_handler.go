@@ -140,7 +140,7 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, economy.ErrOutsidePaymentNotFound), errors.Is(err, economy.ErrPayeeNotFound),
 		errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, economy.ErrPayeeUnconfirmed), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
+	case errors.Is(err, economy.ErrPayeeUnconfirmed), errors.Is(err, economy.ErrPayeeCoolingOff), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),

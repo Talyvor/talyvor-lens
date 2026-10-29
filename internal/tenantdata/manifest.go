@@ -152,6 +152,8 @@ var Manifest = map[string]Entry{
 	"money_card_batches":        {Retain, "B46.10: each batch of single-use cards an agent asked for — purpose, merchants' caps, who approved it and when; it explains money_entries; financial-record retention"},
 	"money_cards":               {Retain, "B46.10: each single-use card — the merchant it was locked to, its cap, the issuer's reference and what it spent; it explains money_entries; financial-record retention"},
 	"money_card_authorizations": {Retain, "B46.10: each charge an issuer asked about on a card and Lens's answer, append-only; financial-record retention"},
+	"money_payout_details":      {Delete, "B46.11: where the workspace is paid — an IBAN or a USDC address and its holder — and the partner's verification reference; nothing to keep once the workspace is gone"},
+	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
