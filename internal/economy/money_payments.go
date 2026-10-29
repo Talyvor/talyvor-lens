@@ -492,6 +492,10 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 		if err != nil {
 			return p, err
 		}
+		if payee.DetailsChangedAt != nil && payee.DetailsChangedAt.After(p.CreatedAt) { // B41.112: never resent to details changed since
+			return s.applyPartnerResult(ctx, p, from.partnerID, partners.Result{Status: partners.StatusFailed,
+				Detail: "the payee's bank details changed after this payment was made, so it was not sent"})
+		}
 		ok := false
 		if res, ok = s.sendOutside(ctx, p, from, payee); !ok {
 			return p, nil
