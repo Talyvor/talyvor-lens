@@ -7,6 +7,7 @@ package cdpfake
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -29,9 +30,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	secpecdsa "github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/sha3"
 
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/coinbase"
 )
 
 // The fake's chain and tokens: USDC on Base Sepolia, and a token that calls itself USDC at another contract address.
@@ -64,6 +69,7 @@ type Fake struct {
 	receipts map[string]receipt // by transaction hash, and by user operation hash
 	idem     map[string]reply
 	sent     int
+	signed   int
 	n        int
 }
 
@@ -72,6 +78,8 @@ type account struct {
 	Name    string   `json:"name"`
 	Owners  []string `json:"owners,omitempty"`
 	smart   bool
+	key     *secp256k1.PrivateKey // an EVM account's, which CDP keeps inside its enclave
+	solana  ed25519.PrivateKey    // a Solana account's
 }
 
 type log struct {
@@ -245,6 +253,17 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request, body []byte) {
 			return
 		}
 		f.create(w, req.Name, req.Owners)
+	case r.Method == http.MethodPost && r.URL.Path == "/v2/solana/accounts":
+		var req struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(body, &req) != nil || !nameRE.MatchString(req.Name) {
+			cdpError(w, http.StatusBadRequest, "invalid_request", "invalid account name")
+			return
+		}
+		f.createSolana(w, req.Name)
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "accounts" && parts[2] == "sign":
+		f.sign(w, strings.ToLower(parts[1]), body)
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "smart-accounts":
 		a := f.accounts[strings.ToLower(parts[1])]
 		if a == nil || !a.smart {
@@ -268,8 +287,96 @@ func (f *Fake) create(w http.ResponseWriter, name string, owners []string) {
 	}
 	f.n++
 	a := &account{Address: fmt.Sprintf("0x5A%038x", f.n), Name: name, Owners: owners, smart: owners != nil}
+	if !a.smart { // an EVM account is a real key, so what it signs a chain accepts
+		k, err := secp256k1.GeneratePrivateKey()
+		if err != nil {
+			cdpError(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		h := sha3.NewLegacyKeccak256()
+		h.Write(k.PubKey().SerializeUncompressed()[1:])
+		a.Address, a.key = "0x"+hex.EncodeToString(h.Sum(nil)[12:]), k
+	}
 	f.accounts[strings.ToLower(a.Address)], f.names[name] = a, strings.ToLower(a.Address)
 	writeJSON(w, http.StatusCreated, a)
+}
+
+// createSolana makes a Solana account: an Ed25519 key, its address the public key in base58.
+func (f *Fake) createSolana(w http.ResponseWriter, name string) {
+	if f.names[name] != "" {
+		cdpError(w, http.StatusConflict, "already_exists", "an account with this name already exists")
+		return
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		cdpError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	a := &account{Address: base58(pub), Name: name, solana: priv}
+	f.accounts[strings.ToLower(a.Address)], f.names[name] = a, strings.ToLower(a.Address)
+	writeJSON(w, http.StatusCreated, a)
+}
+
+// base58 is b in Bitcoin's base58 alphabet, as Solana writes an address.
+func base58(b []byte) string {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	n := new(big.Int).SetBytes(b)
+	var out []byte
+	for mod := new(big.Int); n.Sign() > 0; {
+		n.DivMod(n, big.NewInt(58), mod)
+		out = append(out, alphabet[mod.Int64()])
+	}
+	for _, c := range b {
+		if c != 0 {
+			break
+		}
+		out = append(out, '1')
+	}
+	slices.Reverse(out)
+	return string(out)
+}
+
+// sign is CDP's signature of a hash with EVM account addr's key: r‖s‖v, v 27 or 28.
+func (f *Fake) sign(w http.ResponseWriter, addr string, body []byte) {
+	var req struct {
+		Hash string `json:"hash"`
+	}
+	a := f.accounts[addr]
+	if a == nil || a.key == nil {
+		cdpError(w, http.StatusNotFound, "not_found", "EVM account not found.")
+		return
+	}
+	if json.Unmarshal(body, &req) != nil || !strings.HasPrefix(req.Hash, "0x") {
+		cdpError(w, http.StatusBadRequest, "invalid_request", "hash must be 0x hex")
+		return
+	}
+	h, err := hex.DecodeString(req.Hash[2:])
+	if err != nil || len(h) != 32 {
+		cdpError(w, http.StatusBadRequest, "invalid_request", "hash must be 32 bytes")
+		return
+	}
+	c := secpecdsa.SignCompact(a.key, h, false) // v‖r‖s
+	f.signed++
+	writeJSON(w, http.StatusOK, map[string]string{"signature": "0x" + hex.EncodeToString(append(c[1:], c[0]))})
+}
+
+// Signed is how many hashes the fake signed.
+func (f *Fake) Signed() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.signed
+}
+
+// PrivateKey is EVM account addr's private key as hex, which only a test asks for: to prove it is nowhere else.
+func (f *Fake) PrivateKey(addr string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a := f.accounts[strings.ToLower(addr)]; a != nil && a.key != nil {
+		return hex.EncodeToString(a.key.Serialize())
+	} else if a != nil && a.solana != nil {
+		return hex.EncodeToString(a.solana.Seed())
+	}
+	return ""
 }
 
 // balances is CDP's token balances, two to a page: ETH and the spoof token first, USDC on the second page.
@@ -429,4 +536,23 @@ func (f *Fake) SignAt(body []byte, at time.Time) http.Header {
 	h := "content-type"
 	return http.Header{"Content-Type": {"application/json"},
 		"X-Webhook-Signature": {"t=" + t + ",v0=" + mac(t+"."+string(body)) + ",h=" + h + ",v1=" + mac(t+"."+h+".application/json."+string(body))}}
+}
+
+// refuseAll allows and clears no address: agents' keys move no money themselves.
+type refuseAll struct{}
+
+func (refuseAll) Approved(context.Context, string, string, string) (bool, error) { return false, nil }
+func (refuseAll) Screen(context.Context, string, string) error {
+	return fmt.Errorf("%w: the fake clears no address", money.ErrRefused)
+}
+
+// Signers is Coinbase's adapter's agents' keys (B48.2), against f.
+func (f *Fake) Signers(t *testing.T) money.Signers {
+	t.Helper()
+	a, err := coinbase.New(coinbase.Config{BaseURL: f.URL, APIKeyID: f.APIKeyID, APIKeySecret: f.APIKeySecret, WalletSecret: f.WalletSecret,
+		Network: Network, RPCURL: f.RPCURL, WebhookSecret: f.WebhookSecret, Allowlist: refuseAll{}, Screener: refuseAll{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.Signers
 }

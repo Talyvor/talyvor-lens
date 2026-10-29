@@ -16,6 +16,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/tenant"
@@ -140,6 +141,14 @@ import (
 //	                                                     409 while a wallet it would close holds money
 //	GET  /v1/workspaces/{wsID}/agents/owner-wallets      the owner's wallet in each asset their agents use
 //
+// B48.2 — a crypto agent's wallet is its own smart account, owned by the person (agent_smart_accounts.go):
+//
+//	POST /v1/workspaces/{wsID}/agents/{id}/smart-account  {"credential_id"|"device_id", "recovery_address"?}
+//	                                                     make it, owned by that passkey or device key, the agent's key
+//	                                                     made in the provider's enclave; 503 until a provider holds keys
+//	GET  /v1/workspaces/{wsID}/agents/{id}/smart-account  its address (the same on every chain), its owners, and its
+//	                                                     Solana wallet, held for the agent by the same provider
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -155,6 +164,8 @@ type agentBank interface {
 	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
 	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
+	CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (economy.AgentSmartAccount, error)
+	AgentSmartAccount(ctx context.Context, workspaceID, agentID string) (economy.AgentSmartAccount, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -478,6 +489,37 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Get("/v1/workspaces/{wsID}/agents/owner-wallets", func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.OwnerWallets(req.Context(), chi.URLParam(req, "wsID"))
 		writeWallets(w, out, err)
+	})
+	writeSmartAccount := func(w http.ResponseWriter, out economy.AgentSmartAccount, err error) {
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrSmartAccountNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrWalletKind), errors.Is(err, economy.ErrOwnerSigner), errors.Is(err, smartaccount.ErrInvalid):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrSmartAccountExists), errors.Is(err, economy.ErrAgentArchived):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrSmartAccountsOff):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, money.ErrPartnerDown):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, out)
+		}
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/smart-account", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in economy.SmartAccountOwnerRequest
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"credential_id"|"device_id": "<the owner's passkey>", "recovery_address"?: "0x…"}`)
+			return
+		}
+		out, err := bank.CreateAgentSmartAccount(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in)
+		writeSmartAccount(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/smart-account", func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.AgentSmartAccount(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeSmartAccount(w, out, err)
 	})
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules

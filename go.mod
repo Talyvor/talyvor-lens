@@ -6,6 +6,7 @@ toolchain go1.26.10 // the version this repo SHIPS: setup-go pins below it are u
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/dop251/goja v0.0.0-20261009133625-a4bedf5f6000
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-chi/chi/v5 v5.3.1

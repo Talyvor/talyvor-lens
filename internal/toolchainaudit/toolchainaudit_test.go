@@ -178,8 +178,8 @@ func (p pin) String() string {
 // green while four of five disappear, and the four that vanished are exactly
 // the jobs whose Go version stopped being checked.
 const (
-	wantSetupGoSteps = 8 // +1: ci.yaml's tare-model job (B27.35), +1 its mcp-sdk job (B40.1), Go 1.25 like the test job
-	wantPins         = 8
+	wantSetupGoSteps = 9 // +1: ci.yaml's tare-model job (B27.35), +1 its mcp-sdk job (B40.1), +1 its devnet job (B48.2)
+	wantPins         = 9
 	wantVersionFiles = 0
 )
 
