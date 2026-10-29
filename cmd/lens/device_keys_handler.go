@@ -32,7 +32,7 @@ import (
 
 type deviceKeyBank interface {
 	DeviceRegistrationChallenge(ctx context.Context, workspaceID string) (string, error)
-	RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration) (economy.DeviceKey, error)
+	RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration, a *passkey.Assertion) (economy.DeviceKey, error)
 	ListDeviceKeys(ctx context.Context, workspaceID string) ([]economy.DeviceKey, error)
 	RevokeDeviceKey(ctx context.Context, workspaceID, id, by string) (economy.DeviceKey, error)
 	SetDevicePushToken(ctx context.Context, workspaceID, id, token string) (economy.DeviceKey, error)
@@ -66,12 +66,13 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 			return
 		}
 		var in struct {
-			Platform    string `json:"platform"`
-			Name        string `json:"name"`
-			PublicKey   string `json:"public_key"`
-			Challenge   string `json:"challenge"`
-			Signature   string `json:"signature"`
-			Attestation string `json:"attestation"`
+			Platform    string             `json:"platform"`
+			Name        string             `json:"name"`
+			PublicKey   string             `json:"public_key"`
+			Challenge   string             `json:"challenge"`
+			Signature   string             `json:"signature"`
+			Attestation string             `json:"attestation"`
+			Assertion   *passkey.Assertion `json:"assertion"` // B50.20: an existing key's signature over challenge
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		pk, err1 := passkey.Decode64(in.PublicKey)
@@ -81,9 +82,11 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 			return
 		}
 		d, err := bank.RegisterDeviceKey(req.Context(), ws, who, in.Name, devicekey.Registration{Platform: in.Platform,
-			PublicKey: pk, Challenge: in.Challenge, Signature: in.Signature, Attestation: att})
+			PublicKey: pk, Challenge: in.Challenge, Signature: in.Signature, Attestation: att}, in.Assertion)
 		switch {
-		case errors.Is(err, devicekey.ErrInvalid):
+		case errors.Is(err, economy.ErrPasskeyRequired):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, devicekey.ErrInvalid), errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())

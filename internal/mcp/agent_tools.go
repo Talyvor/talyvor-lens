@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
@@ -25,6 +26,7 @@ type AgentBank interface {
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
 	GetAgentRules(ctx context.Context, workspaceID, agentID string) (economy.AgentRules, error)
 	AgentWallet(ctx context.Context, workspaceID, agentID string) (economy.AgentWallet, error)
+	SafeToSpend(ctx context.Context, workspaceID string, at time.Time) (economy.SafeToSpend, error)
 	RequestPaymentApproval(ctx context.Context, workspaceID, agentID, toAgentID string, amount int64, memo, reason string) (economy.AgentApproval, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentReceipt(ctx context.Context, workspaceID, agentID, entryID string) (economy.AgentReceipt, error)
@@ -62,7 +64,7 @@ func agentToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "agent_balance",
-			"description": "Your own wallet: balance, what you have spent, whether you are paused, your spending rules, and your USDC wallet with its balance and, once a partner serves it, the address that pays into it.",
+			"description": "Your own wallet: balance, what you have spent, whether you are paused, your spending rules, what is safe to spend this month (your balance less your scheduled payments and payments waiting for approval), and your USDC wallet with its balance and, once a partner serves it, the address that pays into it.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
@@ -181,6 +183,16 @@ func (s *Server) runAgentTool(ctx context.Context, name, workspaceID, agentID st
 				continue
 			}
 			out := map[string]any{"agent": a, "rules": rules, "workspace_paused": book.AllPausedAt != nil}
+			// B41.105: the same figures the owner's Home reads for this agent.
+			safe, err := s.agentBank.SafeToSpend(ctx, workspaceID, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			for _, sa := range safe.Agents {
+				if sa.AgentID == agentID {
+					out["safe_to_spend"] = sa.Figures
+				}
+			}
 			// B46.4: the agent's wallet on the money layer — the same one, and the same balance, its owner sees.
 			wallet, err := s.agentBank.AgentWallet(ctx, workspaceID, agentID)
 			switch {
