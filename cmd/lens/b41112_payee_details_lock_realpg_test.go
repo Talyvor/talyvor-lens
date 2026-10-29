@@ -66,6 +66,12 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 		t.Fatalf("the payment before any change posted %q, want %q", got, want)
 	}
 
+	// A payment made to the old details that the partner never answered: it waits, its money held, to be sent again.
+	unsent := b.pay(t, "unsent", 2015)
+	if _, err := pool.Exec(ctx, `UPDATE money_payments SET status = 'pending', partner_ref = '' WHERE id = $1`, unsent.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	// The owner's passkey: this test is the authenticator.
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	spki, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
@@ -133,6 +139,15 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 	}
 	if got := paid("during"); got != "" {
 		t.Fatalf("the held payment posted %q, want nothing on the ledger", got)
+	}
+
+	// The payment made to the old details is never sent to the new ones: it fails and its money comes back. (Here the
+	// sandbox, which saw its key with the old details, would refuse it too; RefreshOutsidePayment fails it before asking.)
+	if read, err := b.store.RefreshOutsidePayment(ctx, ws, "", unsent.ID); err != nil || read.Status != economy.PaymentFailed {
+		t.Fatalf("sending again a payment made before the change = %+v, %v; want it failed, not sent to the new details", read, err)
+	}
+	if got, want := paid("unsent"), "payment_out_hold agent -2015; payment_out_hold hold 2015; payment_out_failed hold -2015; payment_out_failed agent 2015"; got != want {
+		t.Fatalf("the payment made before the change posted %q, want %q", got, want)
 	}
 
 	if _, err := pool.Exec(ctx, `UPDATE money_payees SET details_changed_at = now() - interval '25 hours' WHERE id = $1`, b.payee.ID); err != nil {
