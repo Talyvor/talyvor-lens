@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
 )
@@ -97,8 +96,16 @@ type MandateNewPayee struct {
 	CoolingOffHours int    `json:"cooling_off_hours"`
 }
 
+// Counterparty is who Talyvor takes an agent being paid to be: agentsig.Result's level, domain and business, in its
+// JSON shape (a request's agent_trust), kept here because agentsig's tests import this package (through kya).
+type Counterparty struct {
+	Level    string `json:"level"` // verified, signed or unverified
+	Domain   string `json:"domain,omitempty"`
+	Business string `json:"business,omitempty"`
+}
+
 // counterpartyTrust ranks the trust levels a mandate may ask for; an unverified agent, or an unknown level, is 0.
-var counterpartyTrust = map[agentsig.Level]int{agentsig.Signed: 1, agentsig.Verified: 2}
+var counterpartyTrust = map[string]int{"signed": 1, "verified": 2}
 
 // MandateCounterparty is who the mandate pays (B45.30): an agent at least this trusted, by the trust levels of
 // docs/agent-signatures.md, and/or one whose signing domain — its operator — is named. A payment whose counterparty
@@ -158,7 +165,7 @@ type PreparedPayment struct {
 	SpentMonthMinor  int64      `json:"spent_month_minor"`
 	PaymentsLastHour int        `json:"payments_last_hour"`
 	// Counterparty is who Talyvor takes the agent being paid to be, from its signature (B45.24); nil when unknown.
-	Counterparty *agentsig.Result `json:"counterparty,omitempty"`
+	Counterparty *Counterparty `json:"counterparty,omitempty"`
 }
 
 // MandateDecision is the evaluator's answer: the decision, why, and the rule of the mandate that decided it.
@@ -282,7 +289,7 @@ func (t PermissionMandateTerms) validate() error {
 		return bad("expires_at must be after valid_from")
 	}
 	if c := t.Counterparty; c != nil {
-		if _, ok := counterpartyTrust[agentsig.Level(c.MinTrust)]; c.MinTrust != "" && !ok {
+		if _, ok := counterpartyTrust[c.MinTrust]; c.MinTrust != "" && !ok {
 			return bad(`counterparty.min_trust must be "signed" or "verified"`)
 		}
 		for _, o := range c.Operators {
@@ -569,12 +576,12 @@ func EvaluatePermissionMandate(t PermissionMandateTerms, revokedAt *time.Time, p
 		return d(MandateBlock, "scope", "the payee, its category, the seller or the room is not one the mandate pays")
 	}
 	if c := t.Counterparty; c != nil {
-		who := agentsig.Result{Level: agentsig.Unverified}
+		who := Counterparty{Level: "unverified"}
 		if p.Counterparty != nil {
 			who = *p.Counterparty
 		}
-		if c.MinTrust != "" && counterpartyTrust[who.Level] < counterpartyTrust[agentsig.Level(c.MinTrust)] {
-			return d(MandateBlock, "counterparty.min_trust", "the mandate pays only %s agents, and this one is %s", c.MinTrust, cmp.Or(string(who.Level), string(agentsig.Unverified)))
+		if c.MinTrust != "" && counterpartyTrust[who.Level] < counterpartyTrust[c.MinTrust] {
+			return d(MandateBlock, "counterparty.min_trust", "the mandate pays only %s agents, and this one is %s", c.MinTrust, cmp.Or(who.Level, "unverified"))
 		}
 		if len(c.Operators) > 0 && !slices.Contains(c.Operators, strings.ToLower(who.Domain)) {
 			return d(MandateBlock, "counterparty.operators", "the mandate pays only agents signed by %s, and this one is %s", strings.Join(c.Operators, ", "),
