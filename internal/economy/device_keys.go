@@ -49,8 +49,9 @@ func (s *DualTokenStore) DeviceRegistrationChallenge(ctx context.Context, worksp
 	return s.newChallenge(ctx, workspaceID, "device-register")
 }
 
-// RegisterDeviceKey verifies r against the challenge it answers and keeps the key as person's.
-func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration) (DeviceKey, error) {
+// RegisterDeviceKey verifies r against the challenge it answers and keeps the key as person's; once the workspace has a
+// passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration, a *passkey.Assertion) (DeviceKey, error) {
 	if err := s.deviceVerifier.VerifyRegistration(r); err != nil {
 		return DeviceKey{}, err
 	}
@@ -59,7 +60,10 @@ func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, per
 		return DeviceKey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := useChallenge(ctx, tx, workspaceID, "device-register", r.Challenge); err != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "device-register", r.Challenge, a); err != nil {
+		if errors.Is(err, ErrPasskeyRequired) || a != nil {
+			return DeviceKey{}, err
+		}
 		return DeviceKey{}, fmt.Errorf("%w: %v", devicekey.ErrInvalid, err)
 	}
 	d := DeviceKey{ID: "dev_" + uuid.NewString(), Platform: r.Platform, Name: name, Person: person}

@@ -90,8 +90,9 @@ func (s *DualTokenStore) PasskeyRegistrationChallenge(ctx context.Context, works
 	return c, s.approvalRP.ID, err
 }
 
-// RegisterPasskey verifies a registration against the challenge it answers and keeps the passkey.
-func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration) (Passkey, error) {
+// RegisterPasskey verifies a registration against the challenge it answers and keeps the passkey; once the workspace
+// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (Passkey, error) {
 	if s.approvalRP == nil {
 		return Passkey{}, errors.New("economy: passkeys are not configured on this server")
 	}
@@ -105,7 +106,7 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := useChallenge(ctx, tx, workspaceID, "register", challenge); err != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); err != nil {
 		return Passkey{}, err
 	}
 	p := Passkey{CredentialID: r.CredentialID, Name: name}
@@ -139,7 +140,7 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 // workspace's passkeys that may sign it.
 func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error) {
 	var pending bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE id = $1 AND workspace_id = $2 AND status = 'pending')`,
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now())`,
 		approvalID, workspaceID).Scan(&pending); err != nil {
 		return "", nil, fmt.Errorf("economy: approval: %w", err)
 	}
@@ -163,6 +164,12 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 // an open challenge naming that approval, which it spends. A revoked device key still counts (B40.4):
 // revoking a lost phone must never leave approvals needing no signature at all.
 func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error {
+	return s.authorizeSigned(ctx, workspaceID, "approval:"+approvalID, a)
+}
+
+// authorizeSigned lets an act for purpose through: at once for a workspace with no passkey or device key, and
+// otherwise only with a's assertion over an open challenge for purpose, which it spends.
+func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpose string, a *passkey.Assertion) error {
 	var n int
 	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
@@ -179,10 +186,40 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, *a); err != nil {
+	if err := s.spendAssertion(ctx, tx, workspaceID, purpose, *a); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no
+// passkey or device key, and otherwise only with a's assertion, by one of them, over that same challenge — so a session
+// alone cannot add a key and then pass every passkey gate. It holds the workspace's enrolment lock until tx ends, so two
+// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned.
+func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, a *passkey.Assertion) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: passkeys: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
+		return fmt.Errorf("economy: passkeys: %w", err)
+	}
+	if n == 0 {
+		return useChallenge(ctx, tx, workspaceID, purpose, challenge)
+	}
+	if a == nil {
+		return ErrPasskeyRequired
+	}
+	signed := a.Challenge
+	if a.DeviceID == "" {
+		cdj, _ := passkey.Decode64(a.ClientDataJSON)
+		signed = passkey.ChallengeOf(cdj)
+	}
+	if signed != challenge {
+		return fmt.Errorf("%w: sign the new key's own registration challenge with a key this workspace already has", passkey.ErrInvalid)
+	}
+	return s.spendAssertion(ctx, tx, workspaceID, purpose, *a)
 }
 
 // spendAssertion checks a, by one of workspaceID's passkeys or device keys, over an open challenge for purpose, and

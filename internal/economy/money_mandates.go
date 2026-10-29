@@ -430,6 +430,9 @@ func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate
 	if out.payee, err = s.PayableOutsidePayee(ctx, m.WorkspaceID, m.PayeeID); err != nil {
 		return out, err
 	}
+	if err := coolingOff(out.payee, m.Currency, amountMinor); err != nil { // B41.111, as PayOutside
+		return out, err
+	}
 	p := OutsidePayment{ID: "mpay_" + uuid.NewString(), WorkspaceID: m.WorkspaceID, IdempotencyKey: e.IdempotencyKey, AccountID: m.AccountID,
 		holdAccountID: m.HoldAccountID, AgentID: m.AgentID, PayeeID: out.payee.ID, PayeeName: out.payee.Name, AmountMinor: amountMinor,
 		Currency: m.Currency, Funding: e.Funding, Reference: ref, Status: PaymentPending, Partner: out.partner.Name()}

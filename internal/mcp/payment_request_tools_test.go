@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
@@ -30,6 +31,9 @@ func (f *fakeRequests) PrepareBillsPayment(_ context.Context, _, _, key, client 
 	return economy.PaymentRequest{ID: "preq_1", Status: "pending_approval"}, false, nil
 }
 func (f *fakeRequests) Bills(context.Context, string) ([]economy.Bill, error) { return nil, nil }
+func (f *fakeRequests) DailyBriefing(context.Context, string, time.Time) (economy.Briefing, error) {
+	return economy.Briefing{}, nil
+}
 func (f *fakeRequests) PayeesNamed(context.Context, string, string) ([]economy.OutsidePayee, error) {
 	return nil, nil
 }

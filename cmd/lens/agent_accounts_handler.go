@@ -73,6 +73,10 @@ import (
 //
 //	GET  /v1/workspaces/{wsID}/agents/alerts                 unusual-spend alerts, newest first
 //	GET  /v1/workspaces/{wsID}/agents/forecast?at=           each agent's and the workspace's month-end spend
+//	GET  /v1/workspaces/{wsID}/agents/safe-to-spend?at=      B41.105: each agent's and the company's safe to spend
+//	                                                          this month, per currency (internal/economy/safe_to_spend.go)
+//	GET  /v1/workspaces/{wsID}/agents/briefing?at=           B41.106: the owner's daily briefing — approvals waiting, what is
+//	                                                          blocked, bills due this week, yesterday's spend (internal/economy/briefing.go)
 //	POST /v1/workspaces/{wsID}/agents/{id}/pause  {"reason"}  refuse its every movement until resumed
 //	POST /v1/workspaces/{wsID}/agents/{id}/resume
 //
@@ -80,6 +84,9 @@ import (
 //
 //	POST /v1/workspaces/{wsID}/agents/pause-all  {"reason"}   every agent, those created later included
 //	POST /v1/workspaces/{wsID}/agents/resume-all              lifts it; an agent paused on its own stays paused
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/resume/challenge, …/agents/resume-all/challenge
+//	                                                           B41.108: once the workspace has a passkey or device key,
+//	                                                           resume and resume-all take {"assertion"} over this challenge
 //
 // B19.8 — scheduled payments and automatic top-ups (internal/economy/agent_schedules.go), run every minute:
 //
@@ -191,15 +198,19 @@ type agentBank interface {
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
 	AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
-	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration) (economy.Passkey, error)
+	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error)
 	PushPublicKey() (string, bool)
 	SavePushSubscription(ctx context.Context, workspaceID, endpoint, p256dh, auth string) error
 	DeletePushSubscription(ctx context.Context, workspaceID, endpoint string) error
 	ResumeAgent(ctx context.Context, workspaceID, agentID string) error
+	ResumeChallenge(ctx context.Context, workspaceID, agentID string) (challenge string, credentialIDs []string, err error)
+	AuthorizeResume(ctx context.Context, workspaceID, agentID string, a *passkey.Assertion) error
 	ListAgentSpendAlerts(ctx context.Context, workspaceID string) ([]economy.AgentSpendAlert, error)
 	AgentSpendForecast(ctx context.Context, workspaceID string, at time.Time) (economy.SpendForecast, error)
+	SafeToSpend(ctx context.Context, workspaceID string, at time.Time) (economy.SafeToSpend, error)
+	DailyBriefing(ctx context.Context, workspaceID string, at time.Time) (economy.Briefing, error)
 }
 
 type agentKeyIssuer interface {
@@ -715,6 +726,41 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, f)
 	})
+	r.Get("/v1/workspaces/{wsID}/agents/safe-to-spend", func(w http.ResponseWriter, req *http.Request) {
+		at := time.Now()
+		if v := req.URL.Query().Get("at"); v != "" {
+			t, err := time.Parse(time.RFC3339Nano, v)
+			if err != nil {
+				writeJSONErr(w, http.StatusBadRequest, "at must be an RFC 3339 instant")
+				return
+			}
+			at = t
+		}
+		out, err := bank.SafeToSpend(req.Context(), chi.URLParam(req, "wsID"), at)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, out)
+	})
+	// It names bills and who is paid, so it is the owner's or an admin's, as the bills are (money_bills_handler.go).
+	r.Get("/v1/workspaces/{wsID}/agents/briefing", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		at := time.Now()
+		if v := req.URL.Query().Get("at"); v != "" {
+			t, err := time.Parse(time.RFC3339Nano, v)
+			if err != nil {
+				writeJSONErr(w, http.StatusBadRequest, "at must be an RFC 3339 instant")
+				return
+			}
+			at = t
+		}
+		b, err := bank.DailyBriefing(req.Context(), chi.URLParam(req, "wsID"), at)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, b)
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pause", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			Reason string `json:"reason"`
@@ -723,8 +769,43 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		agentID := chi.URLParam(req, "agentID")
 		writePaused(w, agentID, true, bank.PauseAgent(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Reason))
 	}))
+	// B41.108: once the workspace has a passkey or device key, resuming carries {"assertion"} over its challenge.
+	resumeChallenge := func(w http.ResponseWriter, req *http.Request, agentID string) {
+		c, creds, err := bank.ResumeChallenge(req.Context(), chi.URLParam(req, "wsID"), agentID)
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}
+	authorizeResume := func(w http.ResponseWriter, req *http.Request, agentID string) bool {
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		err := bank.AuthorizeResume(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return err == nil
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/resume/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		resumeChallenge(w, req, chi.URLParam(req, "agentID"))
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/resume-all/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		resumeChallenge(w, req, "")
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/resume", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
+		if !authorizeResume(w, req, agentID) {
+			return
+		}
 		writePaused(w, agentID, false, bank.ResumeAgent(req.Context(), chi.URLParam(req, "wsID"), agentID))
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/pause-all", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
@@ -739,6 +820,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		writeJSONOK(w, http.StatusOK, map[string]any{"all_paused": true})
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/resume-all", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		if !authorizeResume(w, req, "") {
+			return
+		}
 		if err := bank.ResumeAllAgents(req.Context(), chi.URLParam(req, "wsID")); err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -939,15 +1023,26 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none"})
+		// B50.20: once the workspace has a passkey, one of these signs c too, as the new key's "assertion".
+		keys, err := bank.ListPasskeys(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		creds := []string{}
+		for _, k := range keys {
+			creds = append(creds, k.CredentialID)
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none", "credential_ids": creds})
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/passkeys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
-			CredentialID      string `json:"credential_id"`
-			Name              string `json:"name"`
-			PublicKey         string `json:"public_key"`
-			ClientDataJSON    string `json:"client_data_json"`
-			AuthenticatorData string `json:"authenticator_data"`
+			CredentialID      string             `json:"credential_id"`
+			Name              string             `json:"name"`
+			PublicKey         string             `json:"public_key"`
+			ClientDataJSON    string             `json:"client_data_json"`
+			AuthenticatorData string             `json:"authenticator_data"`
+			Assertion         *passkey.Assertion `json:"assertion"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		pk, err1 := passkey.Decode64(in.PublicKey)
@@ -958,8 +1053,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		p, err := bank.RegisterPasskey(req.Context(), chi.URLParam(req, "wsID"), in.Name,
-			passkey.Registration{CredentialID: in.CredentialID, PublicKey: pk, ClientDataJSON: cdj, AuthenticatorData: ad})
+			passkey.Registration{CredentialID: in.CredentialID, PublicKey: pk, ClientDataJSON: cdj, AuthenticatorData: ad}, in.Assertion)
 		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case err != nil:
