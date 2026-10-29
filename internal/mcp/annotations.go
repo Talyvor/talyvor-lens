@@ -22,6 +22,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"get_session_summary":       {"Session summary", reads},
 	"route_model":               {"Choose a model", reads},
 	"get_mandates":              {"Permission mandates", reads},
+	"search_workspace":          {"Search the workspace", reads},
 
 	"prepare_payment":              {"Prepare a payment for approval", moves},
 	"prepare_batch":                {"Prepare payments for approval", moves},

@@ -16,6 +16,7 @@ func everyToolServer() *Server {
 	var bank *economy.DualTokenStore
 	s.SetAgentBank(bank)
 	s.SetMandates(bank)
+	s.SetSearcher(bank)
 	s.SetPaymentRequests(bank)
 	s.SetMarket(&market.Store{}, nil)
 	s.SetRooms(&rooms.Store{}, nil)
