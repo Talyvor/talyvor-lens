@@ -113,6 +113,8 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 		return r, ErrPaymentRequestApproved
 	case r.Status != "pending_approval":
 		return r, fmt.Errorf("%w: the request is %s: there is nothing to approve", ErrPaymentRequest, r.Status)
+	case time.Since(r.CreatedAt) >= s.approvalLife():
+		return r, fmt.Errorf("%w: the request waited %s unanswered and expired: ask again", ErrPaymentRequest, s.approvalLife())
 	case !frozenIntact(workspaceID, r):
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: it cannot be approved", ErrPaymentRequest)
 	}
@@ -297,9 +299,11 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: nothing is paid", ErrPaymentRequest)
 	}
 	approved := map[int]ApprovalStatementItem{}
+	var lapsed bool // the approval is past its life (B50.18): an approved item not paid yet is not paid on it
 	if status == "approved" {
 		var statement string
-		if err := tx.QueryRow(ctx, `SELECT statement FROM payment_request_approvals WHERE request_id = $1`, id).Scan(&statement); err != nil {
+		var approvedAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT statement, approved_at FROM payment_request_approvals WHERE request_id = $1`, id).Scan(&statement, &approvedAt); err != nil {
 			return r, fmt.Errorf("economy: approval: %w", err)
 		}
 		var st ApprovalStatement
@@ -309,6 +313,7 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		for _, it := range st.Items {
 			approved[it.Position] = it
 		}
+		lapsed = time.Since(approvedAt) >= s.approvalLife()
 	}
 
 	for _, it := range r.Items {
@@ -329,6 +334,8 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 			if err != nil || d.Decision == MandateBlock {
 				payStatus, detail = PayRefused, "the mandate no longer allows it: "+d.Reason
 			}
+		case it.Decision == ItemNeedsApproval && isApproved && lapsed:
+			authority, payStatus, detail = "approval", PayRefused, "the approval expired, ask again"
 		case it.Decision == ItemNeedsApproval && isApproved:
 			authority = "approval"
 			if signed.AmountMinor != it.AmountMinor || signed.PayeeID != it.PayeeID || signed.Currency != it.Currency || signed.Reference != it.Reference {

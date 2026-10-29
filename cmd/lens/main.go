@@ -2719,6 +2719,7 @@ func run() error {
 		approvalPusher = sender
 	}
 	dualToken.SetApprovalAuth(passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins}, approvalPusher)
+	dualToken.SetApprovalTTL(cfg.ApprovalTTL)
 	dualToken.SetDeviceKeys(devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}) // B40.4
 	// B40.15: and a native push to each phone with a push token, for whichever of APNs and FCM is configured.
 	var native nativepush.Senders

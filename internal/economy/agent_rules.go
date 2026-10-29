@@ -169,12 +169,17 @@ func agentRequestFrom(ctx context.Context) AgentRequest {
 type ApprovalNeededError struct {
 	ApprovalID  string
 	AmountULXC  int64
+	Expired     bool // the request's approval was past its life (B50.18): this is a fresh one
 	workspaceID string
 	agentID     string
 	req         AgentRequest
 }
 
 func (e *ApprovalNeededError) Error() string {
+	if e.Expired {
+		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s LXC, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
+			lxcString(e.AmountULXC), e.ApprovalID)
+	}
 	return fmt.Sprintf("this request would cost up to %s LXC, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
 		lxcString(e.AmountULXC), e.ApprovalID)
 }
@@ -787,7 +792,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		var used int64
 		if req.Fingerprint != "" {
 			tag, err := tx.Exec(ctx, `UPDATE agent_approvals SET status = 'used', used_ref = $3
-				WHERE agent_id = $1 AND fingerprint = $2 AND status = 'approved'`, agentID, req.Fingerprint, ref)
+				WHERE agent_id = $1 AND fingerprint = $2 AND status = 'approved' AND expires_at > now()`, agentID, req.Fingerprint, ref)
 			if err != nil {
 				return fmt.Errorf("economy: use approval: %w", err)
 			}
@@ -798,6 +803,16 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			switch {
 			case err != nil:
 				return err
+			case allowed && req.Fingerprint != "":
+				// "Always allow" is for requests made after it (B50.18): one already waiting in the inbox waits for its own tap.
+				var waiting bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2
+					AND status = 'pending' AND expires_at > now())`, agentID, req.Fingerprint).Scan(&waiting); err != nil {
+					return fmt.Errorf("economy: waiting approval: %w", err)
+				}
+				if waiting {
+					return &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req}
+				}
 			case allowed:
 			case req.Fingerprint == "":
 				return ruleRefusal("this %s needs approval and carries nothing to approve it by", what)
@@ -922,13 +937,16 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if err != nil {
 		return err
 	}
+	if need.Expired, err = s.expireApprovals(ctx, need.agentID, need.req.Fingerprint); err != nil {
+		return err
+	}
 	var filed string
 	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond')
 		ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 		"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
-		payee.Kind, payee.ID, payee.Name, need.req.Memo).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds()).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("economy: file approval: %w", err)
 	}
 	if filed != "" {
@@ -961,21 +979,25 @@ type AgentApproval struct {
 	Reason     string     `json:"reason,omitempty"` // why the agent asked (B19.9)
 	Payee      *Payee     `json:"payee,omitempty"`  // who a payment goes to (B23.5); none for a request to a model
 	Memo       string     `json:"memo,omitempty"`   // the payment's memo
-	Status     string     `json:"status"`           // pending | approved | denied | used
+	Status     string     `json:"status"`           // pending | approved | denied | used | expired
 	CreatedAt  time.Time  `json:"created_at"`
 	DecidedAt  *time.Time `json:"decided_at,omitempty"`
+	// ExpiresAt is when it stops being usable (B50.18): a pending one ApprovalTTL after it was filed, an approved one
+	// ApprovalTTL after the tap.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
 }
 
-const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo, status, created_at, decided_at,
-	approved_by_agent_id`
+const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
+	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
+	approved_by_agent_id, expires_at`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID)
+		&a.ApprovedByAgentID, &a.ExpiresAt)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1001,14 +1023,15 @@ func (s *DualTokenStore) ListAgentApprovals(ctx context.Context, workspaceID str
 	return out, rows.Err()
 }
 
-// DecideAgentApproval approves or denies a pending approval.
+// DecideAgentApproval approves or denies a pending approval still within its life.
 func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (AgentApproval, error) {
 	status := "denied"
 	if approve {
 		status = "approved"
 	}
-	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now()
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' RETURNING `+agentApprovalColumns, approvalID, workspaceID, status))
+	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns,
+		approvalID, workspaceID, status, s.approvalLife().Microseconds()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
 	}
@@ -1016,4 +1039,31 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 		return a, fmt.Errorf("economy: decide approval: %w", err)
 	}
 	return a, nil
+}
+
+// defaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and
+// once approved may be used that long.
+const defaultApprovalTTL = 24 * time.Hour
+
+// SetApprovalTTL sets how long an approval lasts; 0 is defaultApprovalTTL.
+func (s *DualTokenStore) SetApprovalTTL(d time.Duration) { s.approvalTTL = d }
+
+func (s *DualTokenStore) approvalLife() time.Duration {
+	if s.approvalTTL > 0 {
+		return s.approvalTTL
+	}
+	return defaultApprovalTTL
+}
+
+// expireApprovals marks the agent's open approvals of fingerprint that are past their life 'expired', so a fresh one
+// can be filed; approved is whether one of them had been approved.
+func (s *DualTokenStore) expireApprovals(ctx context.Context, agentID, fingerprint string) (approved bool, err error) {
+	err = s.pool.QueryRow(ctx, `WITH past AS (SELECT id, status FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2
+			AND status IN ('pending', 'approved') AND expires_at <= now() FOR UPDATE),
+		expired AS (UPDATE agent_approvals a SET status = 'expired' FROM past WHERE a.id = past.id RETURNING past.status)
+		SELECT COALESCE(bool_or(status = 'approved'), false) FROM expired`, agentID, fingerprint).Scan(&approved)
+	if err != nil {
+		return false, fmt.Errorf("economy: expire approvals: %w", err)
+	}
+	return approved, nil
 }
