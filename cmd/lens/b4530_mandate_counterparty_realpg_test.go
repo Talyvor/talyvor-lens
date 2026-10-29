@@ -54,8 +54,8 @@ func TestB4530_MandateRulesOnTheCounterpartysTrustAndOperator(t *testing.T) {
 		t.Helper()
 		canonical, challenge, _, err := store.PreparePermissionMandate(ctx, ws, economy.PermissionMandateTerms{
 			Principal: economy.MandatePrincipal{Type: "person", ID: "ada", Name: "Ada Lovelace"}, Clients: []string{"chat"},
-			Scope:     economy.MandateScope{Payees: []string{"payee_agent"}, Currencies: []string{"GBP"}},
-			Limits:    economy.MandateLimits{PerPayment: map[string]int64{"GBP": 10000}}, NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeConfirmationOfPayee},
+			Scope:  economy.MandateScope{Payees: []string{"payee_agent"}, Currencies: []string{"GBP"}},
+			Limits: economy.MandateLimits{PerPayment: map[string]int64{"GBP": 10000}}, NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeConfirmationOfPayee},
 			ExpiresAt: time.Now().Add(24 * time.Hour), Counterparty: who})
 		if err != nil {
 			t.Fatal(err)
@@ -107,8 +107,8 @@ func TestB4530_MandateRulesOnTheCounterpartysTrustAndOperator(t *testing.T) {
 
 	if _, _, _, err := store.PreparePermissionMandate(ctx, ws, economy.PermissionMandateTerms{
 		Principal: economy.MandatePrincipal{Type: "person", ID: "ada", Name: "Ada Lovelace"}, Clients: []string{"chat"},
-		Scope:     economy.MandateScope{Payees: []string{"payee_agent"}, Currencies: []string{"GBP"}},
-		NewPayee:  economy.MandateNewPayee{Policy: economy.NewPayeeAlwaysAsk}, ExpiresAt: time.Now().Add(time.Hour),
+		Scope:    economy.MandateScope{Payees: []string{"payee_agent"}, Currencies: []string{"GBP"}},
+		NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeAlwaysAsk}, ExpiresAt: time.Now().Add(time.Hour),
 		Counterparty: &economy.MandateCounterparty{MinTrust: "trusted"}}); err == nil {
 		t.Error(`a mandate asking for agents "trusted" was prepared, want refused: the levels are signed and verified`)
 	}
