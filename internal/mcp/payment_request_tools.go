@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
@@ -25,6 +26,7 @@ type PaymentRequester interface {
 	PrepareBillsPayment(ctx context.Context, workspaceID, by, idempotencyKey, client string, billIDs []string) (economy.PaymentRequest, bool, error)
 	Bills(ctx context.Context, workspaceID string) ([]economy.Bill, error)
 	PayeesNamed(ctx context.Context, workspaceID, name string) ([]economy.OutsidePayee, error)
+	DailyBriefing(ctx context.Context, workspaceID string, at time.Time) (economy.Briefing, error)
 }
 
 // dueBill is a bill as list_bills_due shows it (B45.17): what to pay and to whom, never the bank details printed on
@@ -84,6 +86,9 @@ func paymentRequestToolDefinitions() []map[string]any {
 				"items": str, "description": "Leave out to pay every bill due."}}), "required": []string{"idempotency_key"}}},
 		{"name": "list_bills_due",
 			"description": "The workspace's bills that are due, soonest first: supplier, invoice number, amount, due date and whether the supplier is a saved payee, with the total per currency. Pay them with prepare_bills_payment.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
+		{"name": "get_daily_briefing",
+			"description": "This morning's briefing, decisions first: the approvals waiting, anything blocked and why, the bills due this week, then each payment and each agent's spend yesterday, with amounts; and the whole of it in one line, which says so on a quiet day.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 		{"name": "prepare_transfer_to_contact",
 			"description": "Prepares one payment to the person's saved, confirmed contact named contact (\"Mike\") for them to approve. It pays nothing, and takes no payment details: when no contact or several match, it returns a question to ask the person instead.",
@@ -145,6 +150,12 @@ func (s *Server) callPaymentRequestTool(ctx context.Context, name string, raw js
 		return r, nil
 	}
 
+	if name == "get_daily_briefing" { // B41.106
+		if agentID != "" {
+			return nil, &toolRefusal{"the workspace's briefing is its owner's or an admin's, not an agent's key"}
+		}
+		return s.paymentRequests.DailyBriefing(ctx, ws, time.Now())
+	}
 	if name == "list_bills_due" { // B45.17
 		if agentID != "" {
 			return nil, &toolRefusal{"the workspace's bills are its owner's or an admin's, not an agent's key"}
