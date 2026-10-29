@@ -84,6 +84,9 @@ import (
 //
 //	POST /v1/workspaces/{wsID}/agents/pause-all  {"reason"}   every agent, those created later included
 //	POST /v1/workspaces/{wsID}/agents/resume-all              lifts it; an agent paused on its own stays paused
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/resume/challenge, …/agents/resume-all/challenge
+//	                                                           B41.108: once the workspace has a passkey or device key,
+//	                                                           resume and resume-all take {"assertion"} over this challenge
 //
 // B19.8 — scheduled payments and automatic top-ups (internal/economy/agent_schedules.go), run every minute:
 //
@@ -202,6 +205,8 @@ type agentBank interface {
 	SavePushSubscription(ctx context.Context, workspaceID, endpoint, p256dh, auth string) error
 	DeletePushSubscription(ctx context.Context, workspaceID, endpoint string) error
 	ResumeAgent(ctx context.Context, workspaceID, agentID string) error
+	ResumeChallenge(ctx context.Context, workspaceID, agentID string) (challenge string, credentialIDs []string, err error)
+	AuthorizeResume(ctx context.Context, workspaceID, agentID string, a *passkey.Assertion) error
 	ListAgentSpendAlerts(ctx context.Context, workspaceID string) ([]economy.AgentSpendAlert, error)
 	AgentSpendForecast(ctx context.Context, workspaceID string, at time.Time) (economy.SpendForecast, error)
 	SafeToSpend(ctx context.Context, workspaceID string, at time.Time) (economy.SafeToSpend, error)
@@ -764,8 +769,43 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		agentID := chi.URLParam(req, "agentID")
 		writePaused(w, agentID, true, bank.PauseAgent(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Reason))
 	}))
+	// B41.108: once the workspace has a passkey or device key, resuming carries {"assertion"} over its challenge.
+	resumeChallenge := func(w http.ResponseWriter, req *http.Request, agentID string) {
+		c, creds, err := bank.ResumeChallenge(req.Context(), chi.URLParam(req, "wsID"), agentID)
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}
+	authorizeResume := func(w http.ResponseWriter, req *http.Request, agentID string) bool {
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		err := bank.AuthorizeResume(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return err == nil
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/resume/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		resumeChallenge(w, req, chi.URLParam(req, "agentID"))
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/resume-all/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		resumeChallenge(w, req, "")
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/resume", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
+		if !authorizeResume(w, req, agentID) {
+			return
+		}
 		writePaused(w, agentID, false, bank.ResumeAgent(req.Context(), chi.URLParam(req, "wsID"), agentID))
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/pause-all", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
@@ -780,6 +820,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		writeJSONOK(w, http.StatusOK, map[string]any{"all_paused": true})
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/resume-all", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		if !authorizeResume(w, req, "") {
+			return
+		}
 		if err := bank.ResumeAllAgents(req.Context(), chi.URLParam(req, "wsID")); err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
