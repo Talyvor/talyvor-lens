@@ -2001,6 +2001,8 @@ func run() error {
 		return err
 	}
 	dualToken.SetMoneyLayer(moneyLayer)
+	// B46.22 — a seller who saved payout details on the money layer is paid by the weekly run there, from Talyvor's accounts.
+	marketStore.SetMoneyPayouts(dualToken, economy.TalyvorWorkspace)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
 	// a restart and every Lens process show them.
 	go partnerRegistry.WatchRails(ctx, partners.NewRailStore(pool), 5*time.Minute)

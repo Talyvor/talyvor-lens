@@ -36,6 +36,7 @@ const (
 	AccountRoundingStripe = "rounding:stripe"
 	AccountConnectFees    = "stripe:connect_fees"
 	AccountCreditsIssued  = "credits:issued"
+	AccountMoneyClearing  = "money:clearing" // payouts made through the money layer (B46.22)
 )
 
 // The kinds of journal entry.
