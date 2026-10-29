@@ -313,6 +313,11 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		return nil, fmt.Errorf("economy: earnings payout: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if e.Funding == FundingLive { // live money is paid out only once payments_out itself is cleared for it (B46.23)
+		if err := refuseLiveEarnings(ctx, tx, workspaceID); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []string{from.companyID, from.id}); err != nil {
 		return nil, fmt.Errorf("economy: earnings payout: %w", err)
 	}
@@ -398,6 +403,19 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 	return out, nil
 }
 
+// refuseLiveEarnings is why live money may not be paid out of workspaceID — payments_out not cleared for it — or nil.
+func refuseLiveEarnings(ctx context.Context, q pgxDB, workspaceID string) error {
+	c, _ := CapabilityByKey(CapabilityPaymentsOut)
+	refusal, err := capabilityLive(ctx, q, workspaceID, c)
+	if err != nil {
+		return err
+	}
+	if refusal != nil {
+		return refusal
+	}
+	return nil
+}
+
 func (p EarningsPayout) memo() string {
 	m := p.Kind + " " + p.Source + " to " + p.RecipientWorkspaceID
 	if p.Agreement != "" {
@@ -438,6 +456,11 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	}
 	if err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	if p.Funding == FundingLive { // held while payments_out is not cleared for live money: a clearance withdrawn since stops it
+		if err := refuseLiveEarnings(ctx, s.pool, p.WorkspaceID); err != nil {
+			return p, err
+		}
 	}
 	if s.screener == nil {
 		return p, fmt.Errorf("%w: no screener is set, so no money moves out", partners.ErrScreeningUnavailable)
@@ -572,14 +595,23 @@ func (s *DualTokenStore) applyEarningsResult(ctx context.Context, p EarningsPayo
 }
 
 // heldEarningsPayout is whether op is the money layer paying out earnings PayEarnings holds the money for: the payout
-// pending under op's key, of that amount, from that workspace and agent.
+// pending under op's key, of that amount, from that workspace and agent, from the partner account it pays from and to
+// its own recipient's verified payout details (B46.23) — so the pass covers that one payout, never the same key and
+// amount sent elsewhere.
 func (s *DualTokenStore) heldEarningsPayout(ctx context.Context, op money.Op) (bool, error) {
 	if op.Capability != money.CapPayouts || op.Method != "pay" || !strings.HasPrefix(op.Key, "mpo_") {
 		return false, nil
 	}
 	var held bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_earnings_payouts WHERE id = $1 AND workspace_id = $2 AND agent_id = $3
-		AND status = $4 AND amount_minor = $5 AND currency = $6)`, op.Key, op.Workspace, op.Agent, PaymentPending, op.Amount.Minor, op.Amount.Asset).Scan(&held)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_earnings_payouts p
+		JOIN money_accounts a ON a.id = p.account_id
+		JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
+		JOIN money_payout_details d ON d.workspace_id = p.recipient_workspace_id AND d.asset = p.currency AND d.status = $7
+		WHERE p.id = $1 AND p.workspace_id = $2 AND p.agent_id = $3 AND p.status = $4 AND p.amount_minor = $5 AND p.currency = $6
+		AND c.partner_account_ref = $8 AND c.partner_account_ref <> '' AND d.holder = $9 AND d.iban = $10 AND d.bic = $11
+		AND d.network = $12 AND d.address = $13)`,
+		op.Key, op.Workspace, op.Agent, PaymentPending, op.Amount.Minor, op.Amount.Asset, PayoutDetailsVerified, op.Ref,
+		op.To.Name, op.To.IBAN, op.To.BIC, op.To.Network, op.To.Address).Scan(&held)
 	return held, err
 }
 

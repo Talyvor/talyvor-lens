@@ -109,7 +109,7 @@ func (s *Store) PayOutTestSeller(ctx context.Context, workspaceID string, now ti
 		return released - paid, err
 	}
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		id, err := s.payOutTx(ctx, tx, workspaceID, account, false, payable, now)
+		id, err := s.payOutTx(ctx, tx, workspaceID, account, "", false, payable, now)
 		if err != nil || id == "" {
 			return err
 		}

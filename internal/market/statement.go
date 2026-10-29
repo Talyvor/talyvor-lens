@@ -150,7 +150,7 @@ func (s *Store) SellerStatement(ctx context.Context, workspaceID, period string)
 	var p Payout
 	err = s.pool.QueryRow(ctx, `SELECT id, method, month, period, gross_usd_micros, vat_usd_micros, account_fee_usd_micros, payout_fee_usd_micros,
 		       net_usd_micros, credits_ulxc, COALESCE(stripe_transfer_id, ''), paid_at, last_error, created_at
-		FROM market_payouts WHERE workspace_id = $1 AND method = 'stripe' AND period = $2`, workspaceID, period).
+		FROM market_payouts WHERE workspace_id = $1 AND method IN ('stripe', 'money') AND period = $2`, workspaceID, period).
 		Scan(&p.ID, &p.Method, &p.Month, &p.Period, &p.GrossUSDMicros, &p.VATUSDMicros, &p.AccountFeeUSDMicros, &p.PayoutFeeUSDMicros,
 			&p.NetUSDMicros, &p.CreditsULXC, &p.StripeTransferID, &p.PaidAt, &p.LastError, &p.CreatedAt)
 	switch {
@@ -191,7 +191,7 @@ func (s *Store) SellerStatement(ctx context.Context, workspaceID, period string)
 // SellerStatements lists the weeks workspaceID was paid in money, newest first.
 func (s *Store) SellerStatements(ctx context.Context, workspaceID string) ([]StatementSummary, error) {
 	rows, err := s.pool.Query(ctx, `SELECT period, id, net_usd_micros, paid_at FROM market_payouts
-		WHERE workspace_id = $1 AND method = 'stripe' AND period <> '' ORDER BY period DESC LIMIT 104`, workspaceID)
+		WHERE workspace_id = $1 AND method IN ('stripe', 'money') AND period <> '' ORDER BY period DESC LIMIT 104`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("market: statements: %w", err)
 	}
