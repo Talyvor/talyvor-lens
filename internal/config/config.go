@@ -217,6 +217,9 @@ type Config struct {
 	// VAPIDSubject (LENS_VAPID_SUBJECT) is the contact the push services are given.
 	WebAuthnRPID    string
 	WebAuthnOrigins []string
+	// ApprovalTTL (LENS_APPROVAL_TTL, Go duration, default 24h) is how long an approval lasts (B50.18): an agent's
+	// request or a payment request waits that long for its tap, and once approved may be used that long.
+	ApprovalTTL time.Duration
 	// B40.4 — the phone app's device keys. DeviceAppleAppID (LENS_DEVICE_APPLE_APP_ID, "<team id>.<bundle id>",
 	// default empty) is the iPhone app App Attest attestations must be for; empty, no iPhone key registers.
 	// DeviceTestAttestation (LENS_DEVICE_TEST_ATTESTATION, default false) accepts device keys with a fake
@@ -1707,6 +1710,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid LENS_POOL_MINT_CAP_PER_ENTRY (must be >= 0; 0 disables): %s", v)
 		}
 		c.PoolMintCapPerEntry = n
+	}
+	c.ApprovalTTL = 24 * time.Hour
+	if v := os.Getenv("LENS_APPROVAL_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid LENS_APPROVAL_TTL (Go duration > 0, e.g. 24h): %s", v)
+		}
+		c.ApprovalTTL = d
 	}
 	c.PoolMintCapWindow = 24 * time.Hour
 	if v := os.Getenv("LENS_POOL_MINT_CAP_WINDOW"); v != "" {

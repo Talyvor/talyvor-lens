@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // agent_alerts.go — B19.6: UNUSUAL SPEND IS FLAGGED, AND THE MONTH-END IS FORECAST.
@@ -177,6 +179,49 @@ func (s *DualTokenStore) ResumeAgent(ctx context.Context, workspaceID, agentID s
 		return ErrAgentNotFound
 	}
 	return nil
+}
+
+// B41.108 — stopping is instant, restarting is signed. Pausing takes nothing but the owner's session; once the
+// workspace has a passkey or device key, resuming an agent or the whole fleet also takes an assertion by one of
+// them over a single-use challenge naming what is resumed (resumePurpose), as approvals do (AuthorizeApprovalDecision).
+
+// resumePurpose names the challenge resuming agentID is signed over; "" is every agent (ResumeAllAgents).
+func resumePurpose(agentID string) string {
+	if agentID == "" {
+		return "resume-all"
+	}
+	return "resume:" + agentID
+}
+
+// ResumeChallenge issues the challenge resuming agentID ("" : every agent) is signed over, and the workspace's
+// passkeys that may sign it.
+func (s *DualTokenStore) ResumeChallenge(ctx context.Context, workspaceID, agentID string) (challenge string, credentialIDs []string, err error) {
+	if agentID != "" {
+		var ok bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE id = $1 AND workspace_id = $2)`,
+			agentID, workspaceID).Scan(&ok); err != nil {
+			return "", nil, fmt.Errorf("economy: resume agent: %w", err)
+		}
+		if !ok {
+			return "", nil, ErrAgentNotFound
+		}
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, resumePurpose(agentID))
+	return c, credentialIDs, err
+}
+
+// AuthorizeResume lets resuming agentID ("" : every agent) through: at once for a workspace with no passkey or device
+// key, and otherwise only with a's assertion over ResumeChallenge's challenge, which it spends.
+func (s *DualTokenStore) AuthorizeResume(ctx context.Context, workspaceID, agentID string, a *passkey.Assertion) error {
+	return s.authorizeSigned(ctx, workspaceID, resumePurpose(agentID), a)
 }
 
 // ListAgentSpendAlerts reads a workspace's alerts, newest first.
