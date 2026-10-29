@@ -371,7 +371,8 @@ func TestTheHeaderNamesOnlySurfacesTheDocumentCovers(t *testing.T) {
 // 277 → 278 (B46.4): GET /v1/workspaces/{wsID}/agents/{agentID}/wallet, an agent's wallet on the money layer.
 // 278 → 279 (B41.106): GET /v1/workspaces/{wsID}/agents/briefing, the owner's daily briefing.
 // 279 → 278 (B41.108): POST /v1/workspaces/{wsID}/agents/resume-all is now in the contract, beside its new challenge.
-const undocumentedNonAdminV1Routes = 278
+// 278 → 280 (B41.112): POST /v1/money/payees/{id}/details and …/details/challenge, a payee's bank details changed by passkey.
+const undocumentedNonAdminV1Routes = 280
 
 // 272 → 276 (B30.19): POST and GET /v1/money/mandates, POST /v1/money/mandates/{id}/revoke and /pull — counted on a
 // line of their own, so a branch adding routes beside another's adds a line rather than rewriting the other's.
