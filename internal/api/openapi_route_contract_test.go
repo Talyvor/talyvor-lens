@@ -461,9 +461,10 @@ const undocumentedB41107Routes = 1
 // B41.111: POST /v1/money/payees/{id}/called/challenge and POST /v1/money/payees/{id}/called — on a line of their own.
 const undocumentedB41111Routes = 2
 
-// B48.2: POST and GET …/agents/{agentID}/smart-account — a crypto agent's own smart account, owned by the person — on a
+// B48.2: POST and GET …/agents/{agentID}/smart-account — a crypto agent's own smart account, owned by the person — and
+// B50.25: POST …/smart-account/challenge, the challenge its owner key signs — on a
 // line of their own.
-const undocumentedB482Routes = 2
+const undocumentedB482Routes = 3
 
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)

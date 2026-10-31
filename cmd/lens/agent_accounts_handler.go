@@ -145,9 +145,12 @@ import (
 //
 // B48.2 — a crypto agent's wallet is its own smart account, owned by the person (agent_smart_accounts.go):
 //
-//	POST /v1/workspaces/{wsID}/agents/{id}/smart-account  {"credential_id"|"device_id", "recovery_address"?}
+//	POST /v1/workspaces/{wsID}/agents/{id}/smart-account/challenge  {"credential_id"|"device_id", "recovery_address"?}
+//	                                                     B50.25: the challenge that passkey or device key signs
+//	POST /v1/workspaces/{wsID}/agents/{id}/smart-account  {"credential_id"|"device_id", "recovery_address"?, "assertion"}
 //	                                                     make it, owned by that passkey or device key, the agent's key
-//	                                                     made in the provider's enclave; 503 until a provider holds keys
+//	                                                     made in the provider's enclave; 503 until a provider holds keys;
+//	                                                     403 without that key's signature over the challenge
 //	GET  /v1/workspaces/{wsID}/agents/{id}/smart-account  its address (the same on every chain), its owners, and its
 //	                                                     Solana wallet, held for the agent by the same provider
 //
@@ -166,6 +169,7 @@ type agentBank interface {
 	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
 	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
+	SmartAccountChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (challenge string, credentialIDs []string, err error)
 	CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (economy.AgentSmartAccount, error)
 	AgentSmartAccount(ctx context.Context, workspaceID, agentID string) (economy.AgentSmartAccount, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
@@ -508,6 +512,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrSmartAccountNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrWalletKind), errors.Is(err, economy.ErrOwnerSigner), errors.Is(err, smartaccount.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, economy.ErrSmartAccountExists), errors.Is(err, economy.ErrAgentArchived):
@@ -522,6 +528,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, out)
 		}
 	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/smart-account/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in economy.SmartAccountOwnerRequest
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"credential_id"|"device_id": "<the owner's passkey>", "recovery_address"?: "0x…"}`)
+			return
+		}
+		c, creds, err := bank.SmartAccountChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in)
+		if err != nil {
+			writeSmartAccount(w, economy.AgentSmartAccount{}, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/smart-account", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.SmartAccountOwnerRequest
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
