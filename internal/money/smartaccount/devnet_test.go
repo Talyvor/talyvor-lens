@@ -439,3 +439,120 @@ func TestAgentSmartAccountOnDevnet(t *testing.T) {
 		t.Fatalf("the payee holds %s wei on the second chain, not 1200", got)
 	}
 }
+
+// B48.3 — on a local devnet, Talyvor's gate has the agent's key sign a payment inside the owner's permission and
+// refuses, before the provider is asked, one over the cap on one payment, to a blocked counterparty or in a token not
+// allowed; then the person freezes the agent with one passkey signature, which takes the agent's key out of the
+// account's owners on chain: the key's signature, even with the gate bypassed, is refused, and the person's still pays.
+func TestAgentSmartAccountOnDevnetFreeze(t *testing.T) {
+	dir := contracts(t)
+	ctx := context.Background()
+	a := bundle(t, anvil(t, 31339))
+	factory := deploy(t, a, dir)
+	cdp := cdpfake.New(t)
+	signers := cdp.Signers(t)
+	agentKey, err := signers.NewSigner(ctx, "agent_signer:agt_freeze", "agt_freeze")
+	if err != nil {
+		t.Fatal(err)
+	}
+	passkey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	acct, err := New(factory, &passkey.PublicKey, agentKey, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rpc(ctx, a.RPCURL, "anvil_setBalance", []any{acct.Address, "0xde0b6b3a7640000"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const payee, banned = "0x000000000000000000000000000000000000b0b0", "0x000000000000000000000000000000000000BAD0"
+	perm := Permission{Tokens: []TokenLimit{{Token: Native, Allowance: 10_000, Period: PeriodDay, PerPayment: 3_000}},
+		Blocked: []string{banned}, Expires: time.Now().Add(time.Hour)}
+	perm.Normalise()
+	var spent int64
+	gate := func(p Payment) error {
+		if err := perm.Check(p, spent, time.Now()); err != nil {
+			return err
+		}
+		spent += p.Amount.Int64()
+		return nil
+	}
+	prepare := func(to string, wei int64) UserOp {
+		t.Helper()
+		data, err := Execute(to, big.NewInt(wei), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		op, err := a.Prepare(ctx, acct, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return op
+	}
+	land := func(op UserOp) {
+		t.Helper()
+		hash, err := a.Send(ctx, op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Receipt(ctx, hash); err != nil || r == nil || !r.Success {
+			t.Fatalf("operation %s: %+v %v", hash, r, err)
+		}
+	}
+
+	op := prepare(payee, 1000)
+	if err := a.SignPaymentAsAgent(ctx, signers, acct, agentKey, &op, gate); err != nil {
+		t.Fatalf("a payment inside the permission: %v", err)
+	}
+	land(op)
+	tw, _ := addressW(payee)
+	token, _ := Execute("0x036CbD53842c5426634e7929541eC2318f3dCF7e", nil, call("transfer(address,uint256)", tw, uintW(1)))
+	tokenOp, err := a.Prepare(ctx, acct, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := cdp.Signed()
+	for name, op := range map[string]UserOp{"over the cap": prepare(payee, 3001), "to a blocked counterparty": prepare(banned, 1), "in a token not allowed": tokenOp} {
+		if err := a.SignPaymentAsAgent(ctx, signers, acct, agentKey, &op, gate); !errors.Is(err, ErrPermission) {
+			t.Fatalf("a payment %s: %v, want refused at the gate", name, err)
+		}
+	}
+	if cdp.Signed() != before {
+		t.Fatal("the provider was asked to sign a payment the gate refused")
+	}
+
+	// Freeze: the person's passkey signs the call that takes the agent's key out of the account.
+	freeze, err := FreezeCall(acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = a.Prepare(ctx, acct, freeze)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := op.Hash(a.ID)
+	if err := a.SignAsOwner(&op, webAuthn(t, passkey, h)); err != nil {
+		t.Fatal(err)
+	}
+	land(op)
+
+	// The gate bypassed: the provider signs with the agent's key, and the account refuses it.
+	op = prepare(payee, 1000)
+	h, _ = op.Hash(a.ID)
+	sig, err := signers.SignHash(ctx, agentKey, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.Signature, _ = KeySignature(OwnerAgent, sig)
+	if _, err := a.Send(ctx, op); !errors.Is(err, ErrRefused) {
+		t.Fatalf("the frozen agent's key: %v, want refused on chain", err)
+	}
+	op = prepare(payee, 500)
+	h, _ = op.Hash(a.ID)
+	if err := a.SignAsOwner(&op, webAuthn(t, passkey, h)); err != nil {
+		t.Fatal(err)
+	}
+	land(op)
+	if got := balance(t, a, payee); got.Int64() != 1500 {
+		t.Fatalf("the payee holds %s wei, not 1500", got)
+	}
+}

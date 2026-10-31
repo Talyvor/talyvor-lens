@@ -151,6 +151,16 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/smart-account  its address (the same on every chain), its owners, and its
 //	                                                     Solana wallet, held for the agent by the same provider
 //
+// B48.3 — the owner's limits on what a crypto agent's key may pay, and an instant freeze (agent_spend_permissions.go):
+//
+//	POST /v1/workspaces/{wsID}/agents/{id}/spend-permission/prepare  {permission}  its canonical JSON and the challenge
+//	                                                     the passkey that owns the agent's account signs
+//	PUT  /v1/workspaces/{wsID}/agents/{id}/spend-permission  {"canonical", "assertion"}  keep it, signed; changing it is
+//	                                                     signing the next one, revoking it signing one with no tokens
+//	GET  /v1/workspaces/{wsID}/agents/{id}/spend-permission  the permission in force, and whether the agent is frozen
+//	POST /v1/workspaces/{wsID}/agents/{id}/freeze        the gate refuses everything for the agent at once; answers the
+//	                                                     call the person's passkey signs to take its key off chain
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -168,6 +178,10 @@ type agentBank interface {
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
 	CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (economy.AgentSmartAccount, error)
 	AgentSmartAccount(ctx context.Context, workspaceID, agentID string) (economy.AgentSmartAccount, error)
+	PrepareSpendPermission(ctx context.Context, workspaceID, agentID string, p smartaccount.Permission) (string, string, error)
+	SetSpendPermission(ctx context.Context, workspaceID, agentID, by, canonical string, a *passkey.Assertion) (economy.SpendPermission, error)
+	AgentSpendPermission(ctx context.Context, workspaceID, agentID string) (economy.SpendPermission, error)
+	FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (economy.AgentFreeze, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -535,6 +549,55 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		out, err := bank.AgentSmartAccount(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeSmartAccount(w, out, err)
 	})
+	writeSpend := func(w http.ResponseWriter, out any, err error) {
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrSmartAccountNotFound), errors.Is(err, economy.ErrNoSpendPermission):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrSpendPermission), errors.Is(err, smartaccount.ErrInvalid):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, out)
+		}
+	}
+	actor := func(req *http.Request) string {
+		if actx := auth.GetAuthContext(req.Context()); actx != nil {
+			return actx.UserID
+		}
+		return ""
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/spend-permission/prepare", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in smartaccount.Permission
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"tokens": [{"token", "allowance", "period", "per_payment"}], "allowed"?, "blocked"?, "expires"}`)
+			return
+		}
+		canonical, challenge, err := bank.PrepareSpendPermission(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in)
+		writeSpend(w, map[string]string{"canonical": canonical, "challenge": challenge}, err)
+	}))
+	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/spend-permission", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Canonical string             `json:"canonical"`
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.Canonical == "" {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"canonical": "<as prepare answered it>", "assertion": {…}}`)
+			return
+		}
+		out, err := bank.SetSpendPermission(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req), in.Canonical, in.Assertion)
+		writeSpend(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/spend-permission", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.AgentSpendPermission(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeSpend(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/freeze", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.FreezeAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req))
+		writeSpend(w, out, err)
+	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
 		dec := json.NewDecoder(req.Body)
