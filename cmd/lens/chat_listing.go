@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -285,7 +286,14 @@ func (w *listingWriter) finish() error {
 		return w.relay(held) // shortcut: a stream framed other than by blank lines is held whole and read here
 	}
 	out, leaks := held, false
-	eachString("", decodeAnswer(held), func(_, s string) { leaks = w.guard.Add(&market.Said{}, s) || leaks })
+	said := map[string]*market.Said{}
+	eachString("", decodeAnswer(held), func(path, s string) {
+		path = arrayIndex.ReplaceAllString(path, "") // an answer's blocks, and its choices, are read as one text
+		if said[path] == nil {
+			said[path] = &market.Said{}
+		}
+		leaks = w.guard.Add(said[path], s) || leaks
+	})
 	if leaks {
 		out = withheldBody(held, w.shape)
 	}
@@ -301,6 +309,8 @@ func decodeAnswer(data []byte) any {
 	}
 	return v
 }
+
+var arrayIndex = regexp.MustCompile(`\.[0-9]+`)
 
 // eachString calls f with the path and the value of every string in v.
 func eachString(path string, v any, f func(path, s string)) {

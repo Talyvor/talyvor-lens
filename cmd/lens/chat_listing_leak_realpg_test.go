@@ -63,6 +63,15 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 	})
 	anthropic := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		text := say(r)
+		if r.URL.Query().Get("stream") != "1" { // whole, its text in blocks too short to repeat the instructions alone
+			var blocks []any
+			for i := 0; i < len(text); i += 30 {
+				blocks = append(blocks, map[string]string{"type": "text", "text": text[i:min(i+30, len(text))]})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "message", "content": blocks})
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n"))
 		for i := 0; i < len(text); i += 9 {
@@ -106,11 +115,18 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 				}
 				Message struct{ Content string }
 			}
-			Delta struct{ Text string }
+			Delta   struct{ Text string }
+			Content []struct{ Text string }
 		}
 		if !strings.Contains(w.Header().Get("Content-Type"), "event-stream") {
 			_ = json.Unmarshal(w.Body.Bytes(), &ev)
-			return ev.Choices[0].Message.Content
+			for _, c := range ev.Content {
+				out.WriteString(c.Text)
+			}
+			if len(ev.Choices) > 0 {
+				out.WriteString(ev.Choices[0].Message.Content)
+			}
+			return out.String()
 		}
 		for _, line := range strings.Split(w.Body.String(), "\n") {
 			ev.Choices, ev.Delta.Text = nil, ""
@@ -131,7 +147,8 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 		{"OpenAI, streamed", "/v1/proxy/openai/v1/chat/completions?stream=1", `{"model":"gpt-5-mini","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
 		{"OpenAI, streamed as a tool call", "/v1/proxy/openai/v1/chat/completions?stream=1&tool=1", `{"model":"gpt-5-mini","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
 		{"OpenAI, whole", "/v1/proxy/openai/v1/chat/completions", `{"model":"gpt-5-mini","messages":[{"role":"user","content":"%s"}]}`},
-		{"Anthropic, streamed", "/v1/proxy/anthropic/v1/messages", `{"model":"claude-x","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
+		{"Anthropic, whole in blocks", "/v1/proxy/anthropic/v1/messages", `{"model":"claude-x","messages":[{"role":"user","content":"%s"}]}`},
+		{"Anthropic, streamed", "/v1/proxy/anthropic/v1/messages?stream=1", `{"model":"claude-x","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
 	} {
 		w := call(buyer, tc.path, listing.ID, strings.Replace(tc.body, "%s", "leak", 1))
 		got := read(w)
