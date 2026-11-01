@@ -112,6 +112,8 @@ import (
 //	POST   /v1/workspaces/{wsID}/agents/passkeys   {credential_id, name, public_key (SPKI), client_data_json, authenticator_data}
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
+//	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
+//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion}   decides them all, or none
 //	GET    /v1/workspaces/{wsID}/agents/push/public-key              the VAPID key a browser subscribes with
 //	POST   /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint, keys: {p256dh, auth}}   a device to tell
 //	DELETE /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint}
@@ -219,6 +221,8 @@ type agentBank interface {
 	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error)
+	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
+	DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]economy.AgentApproval, error)
 	PushPublicKey() (string, bool)
 	SavePushSubscription(ctx context.Context, workspaceID, endpoint, p256dh, auth string) error
 	DeletePushSubscription(ctx context.Context, workspaceID, endpoint string) error
@@ -1201,6 +1205,52 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}))
+	// B41.204: one passkey assertion decides several approvals — "approve" or "deny", over the set of ids.
+	type batchDecision struct {
+		IDs       []string           `json:"approval_ids"`
+		Decision  string             `json:"decision"`
+		Assertion *passkey.Assertion `json:"assertion"`
+	}
+	readBatch := func(w http.ResponseWriter, req *http.Request) (batchDecision, bool) {
+		var in batchDecision
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || len(in.IDs) == 0 || (in.Decision != "approve" && in.Decision != "deny") {
+			writeJSONErr(w, http.StatusBadRequest, `send {"approval_ids": [..], "decision": "approve" | "deny"}`)
+			return in, false
+		}
+		return in, true
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := readBatch(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.BatchApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve")
+		switch {
+		case errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/decide", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := readBatch(w, req)
+		if !ok {
+			return
+		}
+		list, err := bank.DecideAgentApprovals(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrApprovalsChanged), errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 		}
 	}))
 	r.Get("/v1/workspaces/{wsID}/agents/push/public-key", func(w http.ResponseWriter, req *http.Request) {
