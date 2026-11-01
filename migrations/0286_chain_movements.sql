@@ -57,3 +57,10 @@ CREATE TABLE IF NOT EXISTS chain_reconciliations (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_chain_reconciliations_workspace ON chain_reconciliations (workspace_id, created_at DESC);
+
+-- An agent's crypto wallet is the person's, on the chain: the ledger keeps what it holds there in an account of its own
+-- (purpose chain), which no payment, transfer or pot can spend — only a movement on the chain moves it — and which is
+-- not money Talyvor holds for the customer.
+ALTER TABLE money_accounts DROP CONSTRAINT IF EXISTS money_accounts_purpose_check;
+ALTER TABLE money_accounts ADD CONSTRAINT money_accounts_purpose_check
+    CHECK (purpose IN ('company', 'agent', 'pot', 'hold', 'suspense', 'partner', 'revenue', 'chain'));
