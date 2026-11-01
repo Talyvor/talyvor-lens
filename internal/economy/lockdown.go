@@ -16,7 +16,7 @@ import (
 // Stopping takes nothing but the session, as pausing does (B41.108). Nothing restarts while the lockdown stands: no
 // agent resumes and no card unfreezes. Lifting it takes an identity check (L2, B30.4) passed after the lockdown began —
 // by a real provider, or by the Test provider for a synthetic workspace, of the person checked before it — so a stolen
-// session cannot lift it.
+// session cannot lift it. Lifting restarts nothing, and a resume still takes a live key's signature (B41.108).
 
 // ErrLockedDown: the workspace is locked down, so nothing restarts until the lockdown is lifted.
 var ErrLockedDown = errors.New("economy: this workspace is locked down after a lost phone: pass a new identity check and lift the lockdown before anything restarts")
@@ -147,6 +147,15 @@ func refuseIfLockedDown(ctx context.Context, q pgxDB, workspaceID string) error 
 	return nil
 }
 
+// lockdownGate takes the lock LockDown takes, inside tx, and is ErrLockedDown while workspaceID is locked down: a
+// restart in tx then either finishes before a lockdown starts or sees it.
+func lockdownGate(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return refuseIfLockedDown(ctx, tx, workspaceID)
+}
+
 // LiftLockdown lifts workspaceID's lockdown once an identity check has passed since it began. It restarts nothing:
 // each agent and card is then resumed or unfrozen on its own, as before.
 func (s *DualTokenStore) LiftLockdown(ctx context.Context, workspaceID string) error {
@@ -172,15 +181,17 @@ func (s *DualTokenStore) LiftLockdown(ctx context.Context, workspaceID string) e
 		return err
 	}
 	// The re-check is of the person checked before the lockdown, when there was one: a thief passes only as themself.
-	var before []string
+	var before []VerificationCheck
 	for _, c := range checks {
 		if c.Level == LevelIdentity && c.Status == "completed" && !c.StartedAt.After(started) {
-			before = append(before, c.VerifiedName)
+			before = append(before, c)
 		}
 	}
 	if !slices.ContainsFunc(checks, func(c VerificationCheck) bool {
 		return c.Level == LevelIdentity && c.Status == "completed" && c.StartedAt.After(started) && (!c.Test || synthetic) &&
-			(len(before) == 0 || slices.ContainsFunc(before, func(n string) bool { return strings.EqualFold(n, c.VerifiedName) }))
+			(len(before) == 0 || slices.ContainsFunc(before, func(b VerificationCheck) bool {
+				return strings.EqualFold(b.VerifiedName, c.VerifiedName) && b.Country == c.Country
+			}))
 	}) {
 		return ErrIdentityRecheck
 	}

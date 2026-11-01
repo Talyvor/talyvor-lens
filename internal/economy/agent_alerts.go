@@ -162,15 +162,31 @@ func (s *DualTokenStore) PauseAllAgents(ctx context.Context, workspaceID, reason
 
 // ResumeAllAgents lifts PauseAllAgents. An agent paused on its own stays paused.
 func (s *DualTokenStore) ResumeAllAgents(ctx context.Context, workspaceID string) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM agent_workspace_pauses WHERE workspace_id = $1`, workspaceID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
 		return fmt.Errorf("economy: resume every agent: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockdownGate(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_workspace_pauses WHERE workspace_id = $1`, workspaceID); err != nil {
+		return fmt.Errorf("economy: resume every agent: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // ResumeAgent lets a paused agent move money again.
 func (s *DualTokenStore) ResumeAgent(ctx context.Context, workspaceID, agentID string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET paused_at = NULL, paused_reason = '' WHERE id = $1 AND workspace_id = $2`,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("economy: resume agent: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockdownGate(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agent_accounts SET paused_at = NULL, paused_reason = '' WHERE id = $1 AND workspace_id = $2`,
 		agentID, workspaceID)
 	if err != nil {
 		return fmt.Errorf("economy: resume agent: %w", err)
@@ -178,7 +194,7 @@ func (s *DualTokenStore) ResumeAgent(ctx context.Context, workspaceID, agentID s
 	if tag.RowsAffected() == 0 {
 		return ErrAgentNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // B41.108 — stopping is instant, restarting is signed. Pausing takes nothing but the owner's session; once the
