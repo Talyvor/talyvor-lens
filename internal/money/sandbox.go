@@ -321,7 +321,7 @@ func (c sandboxCards) Issue(ctx context.Context, req IssueCard) (Card, error) {
 			return Card{}, fmt.Errorf("%w: a card's cap is in its account's currency, %s", ErrInvalid, d.Currency)
 		}
 		ref := sandboxRef("card", req.Key)
-		card := &Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: CardActive}
+		card := &Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: CardActive, FormFactor: CardVirtual}
 		c.s.cards[ref] = card
 		return *card, nil
 	})
