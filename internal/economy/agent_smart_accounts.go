@@ -13,6 +13,7 @@ import (
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // agent_smart_accounts.go — B48.2: EACH CRYPTO AGENT'S WALLET IS ITS OWN SMART ACCOUNT, OWNED BY THE PERSON, SIGNED FOR
@@ -71,11 +72,49 @@ type AgentSmartAccount struct {
 }
 
 // SmartAccountOwnerRequest names the account's owner signers: exactly one of CredentialID and DeviceID, and a recovery
-// address or "".
+// address or "". Assertion is that same passkey's or device key's signature over SmartAccountChallenge's challenge.
 type SmartAccountOwnerRequest struct {
-	CredentialID string `json:"credential_id"`
-	DeviceID     string `json:"device_id"`
-	Recovery     string `json:"recovery_address"`
+	CredentialID string             `json:"credential_id"`
+	DeviceID     string             `json:"device_id"`
+	Recovery     string             `json:"recovery_address"`
+	Assertion    *passkey.Assertion `json:"assertion,omitempty"`
+}
+
+// B50.25 — a session alone never names who controls an agent's wallet: the owner key it names signs a single-use
+// challenge naming the agent, that key and the recovery address, so a stolen session cannot pick its own recovery owner.
+
+// smartAccountPurpose names the challenge making agentID's smart account with r's owners is signed over.
+func smartAccountPurpose(agentID string, r SmartAccountOwnerRequest) string {
+	return "smart-account:" + agentID + ":" + r.CredentialID + ":" + r.DeviceID + ":" + r.Recovery
+}
+
+// checkRecovery refuses a recovery address that is not one and checksums one that is.
+func checkRecovery(r *SmartAccountOwnerRequest) error {
+	if r.Recovery = strings.TrimSpace(r.Recovery); r.Recovery == "" {
+		return nil
+	}
+	if _, err := smartaccount.AddressOwner(r.Recovery); err != nil {
+		return err
+	}
+	r.Recovery = smartaccount.Checksum(r.Recovery)
+	return nil
+}
+
+// SmartAccountChallenge issues the challenge the owner key r names signs to make agentID's smart account with r's
+// owners, and the passkey that may sign it.
+func (s *DualTokenStore) SmartAccountChallenge(ctx context.Context, workspaceID, agentID string, r SmartAccountOwnerRequest) (challenge string, credentialIDs []string, err error) {
+	if _, err := s.ownerKey(ctx, workspaceID, r); err != nil {
+		return "", nil, err
+	}
+	if err := checkRecovery(&r); err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	if r.CredentialID != "" {
+		credentialIDs = append(credentialIDs, r.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, smartAccountPurpose(agentID, r))
+	return c, credentialIDs, err
 }
 
 // ownerKey is the P-256 public key of the workspace's passkey or live device key r names.
@@ -107,7 +146,8 @@ func (s *DualTokenStore) ownerKey(ctx context.Context, workspaceID string, r Sma
 }
 
 // CreateAgentSmartAccount makes agentID's smart account, owned by the passkey r names and signed for the agent by a key
-// the provider makes in its enclave. Asked again with the same owners it answers the account it made.
+// the provider makes in its enclave, only with that passkey's r.Assertion (B50.25). Asked again with the same owners it
+// answers the account it made.
 func (s *DualTokenStore) CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r SmartAccountOwnerRequest) (AgentSmartAccount, error) {
 	if s.smartAccounts == nil {
 		return AgentSmartAccount{}, ErrSmartAccountsOff
@@ -140,11 +180,16 @@ func (s *DualTokenStore) CreateAgentSmartAccount(ctx context.Context, workspaceI
 		return AgentSmartAccount{}, err
 	}
 	sa := s.smartAccounts
-	if r.Recovery != "" { // refused before the provider makes a key
-		if _, err := smartaccount.AddressOwner(r.Recovery); err != nil {
-			return AgentSmartAccount{}, err
-		}
-		r.Recovery = smartaccount.Checksum(r.Recovery)
+	if err := checkRecovery(&r); err != nil { // refused before the provider makes a key
+		return AgentSmartAccount{}, err
+	}
+	if a := r.Assertion; a == nil {
+		return AgentSmartAccount{}, ErrPasskeyRequired
+	} else if a.CredentialID != r.CredentialID || a.DeviceID != r.DeviceID {
+		return AgentSmartAccount{}, fmt.Errorf("%w: sign with the passkey or device key you name as the owner", passkey.ErrInvalid)
+	}
+	if err := s.authorizeSigned(ctx, workspaceID, smartAccountPurpose(agentID, r), r.Assertion); err != nil {
+		return AgentSmartAccount{}, err
 	}
 	signer, err := sa.signers.NewSigner(ctx, "agent_signer:"+agentID, agentID)
 	if err != nil {
