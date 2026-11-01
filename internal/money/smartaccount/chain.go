@@ -107,10 +107,11 @@ var ErrRefused = errors.New("smartaccount: refused")
 
 // Chain is one EVM chain: its id, a node, and an ERC-4337 bundler (the provider's, or a local one in tests).
 type Chain struct {
-	ID         int64
-	RPCURL     string
-	BundlerURL string
-	HTTP       *http.Client
+	ID           int64
+	RPCURL       string
+	BundlerURL   string
+	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base
+	HTTP         *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {
@@ -185,8 +186,9 @@ func (c Chain) Nonce(ctx context.Context, addr string) (*big.Int, error) {
 // Gas an operation is given.
 //
 // shortcut: fixed limits, ample for a call with a deployment and a passkey checked without the P-256 precompile; the
-// EntryPoint charges only the gas used, but the account must hold the limits' worth. Upgrade with
-// eth_estimateUserOperationGas when B48.5 brings the paymaster.
+// EntryPoint charges only the gas used, but the account, or its paymaster, must hold the limits' worth, and the fee an
+// owner is quoted (MaxFee) is those limits' worth. Upgrade with eth_estimateUserOperationGas once the provider's bundler
+// serves the chain.
 var (
 	callGas         = big.NewInt(500_000)
 	verificationGas = big.NewInt(2_000_000)
@@ -277,8 +279,9 @@ func (c Chain) Send(ctx context.Context, op UserOp) (string, error) {
 
 // Receipt is how operation hash ended: nil while it is not yet on the chain.
 type Receipt struct {
-	Success bool `json:"success"`
-	Receipt struct {
+	Success       bool   `json:"success"`
+	ActualGasCost string `json:"actualGasCost"` // wei the EntryPoint took for the operation's network fee
+	Receipt       struct {
 		TransactionHash string `json:"transactionHash"`
 	} `json:"receipt"`
 }

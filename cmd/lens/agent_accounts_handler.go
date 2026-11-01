@@ -154,6 +154,15 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/smart-account  its address (the same on every chain), its owners, and its
 //	                                                     Solana wallet, held for the agent by the same provider
 //
+// B48.5 — agents never need the network's coin: a paymaster pays their network fees within the workspace's budget
+// for them on each chain (internal/economy/gas_budgets.go):
+//
+//	GET  /v1/workspaces/{wsID}/agents/gas-budget?chain_id=8453   the budget, what is held and charged, what is left,
+//	                                                     and whether the owner was asked to top it up
+//	POST /v1/workspaces/{wsID}/agents/gas-budget/top-up  {"chain_id", "wei"}   Talyvor's admin adds to it: Talyvor
+//	                                                     pays what it sponsors, so an owner cannot until a top-up
+//	                                                     is paid for (403)
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -172,6 +181,8 @@ type agentBank interface {
 	SmartAccountChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (challenge string, credentialIDs []string, err error)
 	CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (economy.AgentSmartAccount, error)
 	AgentSmartAccount(ctx context.Context, workspaceID, agentID string) (economy.AgentSmartAccount, error)
+	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
+	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -554,6 +565,42 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		out, err := bank.AgentSmartAccount(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeSmartAccount(w, out, err)
 	})
+	writeGasBudget := func(w http.ResponseWriter, b economy.GasBudget, err error) {
+		switch {
+		case errors.Is(err, economy.ErrGasTopUp):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, b)
+		}
+	}
+	r.Get("/v1/workspaces/{wsID}/agents/gas-budget", func(w http.ResponseWriter, req *http.Request) {
+		chainID, err := strconv.ParseInt(req.URL.Query().Get("chain_id"), 10, 64)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "chain_id must be the chain's id, such as 8453 for Base")
+			return
+		}
+		b, err := bank.WorkspaceGasBudget(req.Context(), chi.URLParam(req, "wsID"), chainID)
+		writeGasBudget(w, b, err)
+	})
+	r.Post("/v1/workspaces/{wsID}/agents/gas-budget/top-up", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			ChainID int64 `json:"chain_id"`
+			Wei     int64 `json:"wei"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"chain_id": 8453, "wei": <amount>}`)
+			return
+		}
+		actx := auth.GetAuthContext(req.Context())
+		if actx == nil || !actx.IsAdmin {
+			writeJSONErr(w, http.StatusForbidden, "Talyvor tops up the budget for network fees: ask us to")
+			return
+		}
+		b, err := bank.TopUpGasBudget(req.Context(), chi.URLParam(req, "wsID"), in.ChainID, in.Wei, actx.UserID)
+		writeGasBudget(w, b, err)
+	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
 		dec := json.NewDecoder(req.Body)

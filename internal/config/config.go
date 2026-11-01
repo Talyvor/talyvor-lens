@@ -1120,6 +1120,11 @@ type Config struct {
 	// key and rules, with no money.
 	StarterTestMoneyULXC int64
 
+	// GasBudgetWei is each workspace's budget, on each chain, for the network fees a paymaster pays for its agents,
+	// in wei of the chain's coin, before the owner tops it up (B48.5). Env: LENS_GAS_BUDGET_WEI, default 0 —
+	// Nicolai's to set: until he does, an agent's first sponsored send asks its owner to top the budget up.
+	GasBudgetWei int64
+
 	// SessionKeysEnabled gates W4.6.1 step 4 — SESSION-SCOPED KEYS, the credential a browser chat
 	// holds instead of a workspace key. Env: LENS_SESSION_KEYS_ENABLED. DEFAULT FALSE.
 	//
@@ -2443,6 +2448,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_STARTER_TEST_MONEY_ULXC must be a non-negative integer (µLXC), got %q", v)
 		}
 		c.StarterTestMoneyULXC = n
+	}
+	if v := os.Getenv("LENS_GAS_BUDGET_WEI"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_GAS_BUDGET_WEI must be a non-negative integer (wei), got %q", v)
+		}
+		c.GasBudgetWei = n
 	}
 
 	// W4.6.1 step 4 — session-scoped keys. OFF unless explicitly enabled.

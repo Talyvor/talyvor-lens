@@ -360,6 +360,8 @@ type DualTokenStore struct {
 	moneyLayer *money.Registry
 	// smartAccounts makes each crypto agent's wallet its own smart account (B48.2); nil, none is made.
 	smartAccounts *smartAccounts
+	// gasBudgetWei is each workspace's budget for sponsored network fees on each chain before any top-up (B48.5).
+	gasBudgetWei int64
 	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
