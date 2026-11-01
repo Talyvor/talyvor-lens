@@ -71,7 +71,7 @@ func marketToolDefinitions() []map[string]any {
 		tool("market_ask", "Describe a job in words, such as \"translate 500 product descriptions into German\", and get up to three listings "+
 			"that fit it, each with what that many uses would cost and why it fits.",
 			map[string]any{"text": str("the job, in words"), "volume": num("how many uses to price; absent: the first number in text, or one")}, "text"),
-		tool("market_listing", "One listing: what each version needs (input, variables, model), every offer with its licence terms, and its trust "+
+		tool("market_listing", "One listing: what each version needs (input, variables, model), its privacy label (the models it calls, the tools it uses, the data it keeps), every offer with its licence terms, and its trust "+
 			"summary: whether the publisher is verified, reviews from paying buyers, eval score, IP claims, the originals it credits, its remixes, "+
 			"and its success rate, median latency and cost per use over the last 30 days.",
 			map[string]any{"listing_id": listing}, "listing_id"),
