@@ -73,7 +73,7 @@ func (p *Proxy) speechModel(w http.ResponseWriter, id string, transcribe bool) (
 		return m, false
 	}
 	if (m.Provider == "openai" && p.openAIKey == "") || (m.Provider == "deepgram" && p.deepgramKey == "") {
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s is not configured on this Lens", id))
+		writeError(w, http.StatusServiceUnavailable, "speech is not configured on this Lens for "+id)
 		return m, false
 	}
 	return m, true
