@@ -270,6 +270,7 @@ var Manifest = map[string]Entry{
 	"room_reports":                 {Delete, "B32.52: keys `reporter_workspace_id`: the reports a workspace made of rooms and their messages; a room's own reports cascade with it"},
 	"market_ip_claims":             {Delete, "B32.47: keys `claimant_workspace_id`: the IP claims a workspace filed, with their evidence and decision; claims against its own listings cascade with them"},
 	"market_collections":           {Delete, "B32.50: the collections of listings a workspace curated, public or not; their items cascade"},
+	"market_use_outcomes":          {Delete, "B41.173: keys `buyer_workspace_id`: how each use a workspace made of a listing went; rows cascade with the listing"},
 	"market_reviews":               {Delete, "B32.49: keys `buyer_workspace_id`: the reviews a workspace wrote of listings it paid for; reviews of its own listings cascade with them"},
 	"buyer_tax_profiles":           {Delete, "B32.38: the workspace's declared legal name, address, country and tax id as a buyer; the tax lines of its sales keep their own evidence"},
 	"seller_tax_profiles":          {Delete, "B32.41: the workspace's tax details as a seller — names, address, TINs, date of birth and payout account, the sealed ones under the envelope key — and its reminders and payout hold"},

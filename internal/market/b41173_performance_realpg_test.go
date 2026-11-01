@@ -23,12 +23,12 @@ func (f *failEvery) Run(context.Context, string, []Message) (string, error) {
 }
 
 // B41.173 — a listing with 100 uses, 5 of them failed, shows 95% success on its trust panel, computed from the use
-// records, with its median latency and cost per use; the seller's own failing uses do not count.
+// records, with its median latency and cost per use; the seller's own uses, and a buyer's found linked to it, do not count.
 func TestPerformance_SuccessRateFromUseRecords(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedDB(t)
-	const seller, buyer = "ws-b41173-seller", "ws-b41173-buyer"
-	for _, ws := range []string{seller, buyer} {
+	const seller, buyer, twin = "ws-b41173-seller", "ws-b41173-buyer", "ws-b41173-twin"
+	for _, ws := range []string{seller, buyer, twin} {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic, company) VALUES ($1, $1, $1, true, true)`, ws); err != nil {
 			t.Fatal(err)
 		}
@@ -63,8 +63,18 @@ func TestPerformance_SuccessRateFromUseRecords(t *testing.T) {
 			t.Fatal("a run that fails answered")
 		}
 	}
+	// A sister workspace pads the record, and is found to share the seller's card afterwards: asked at every read.
+	for range 10 {
+		if _, err := s.Use(ctx, UseDeps{Runner: answers("3"), Meter: &meterCalls{}}, twin, "", l.ID, add); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_card_fingerprints (workspace_id, fingerprint_hash) VALUES ($1, 'card-b41173'), ($2, 'card-b41173')`,
+		seller, twin); err != nil {
+		t.Fatal(err)
+	}
 	var kept int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1`, l.ID).Scan(&kept); err != nil || failed != 5 || kept != 95 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1 AND buyer_workspace_id = $2`, l.ID, buyer).Scan(&kept); err != nil || failed != 5 || kept != 95 {
 		t.Fatalf("uses = %d failed, %d kept (%v); want 5 failed and their use rows removed", failed, kept, err)
 	}
 

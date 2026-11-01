@@ -300,8 +300,8 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 	outcome := func(q interface {
 		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	}, ok bool) error {
-		_, err := q.Exec(context.WithoutCancel(ctx), `INSERT INTO market_use_outcomes (use_id, listing_id, ok, latency_ms, charge, price_ulxc)
-			VALUES ($1, $2, $3, $4, $5, $6)`, u.ID, l.ID, ok, time.Since(started).Milliseconds(), u.Charge, u.PriceULXC)
+		_, err := q.Exec(context.WithoutCancel(ctx), `INSERT INTO market_use_outcomes (use_id, listing_id, buyer_workspace_id, ok, latency_ms, charge, price_ulxc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, u.ID, l.ID, buyerWorkspaceID, ok, time.Since(started).Milliseconds(), u.Charge, u.PriceULXC)
 		return err
 	}
 	if err != nil {

@@ -334,6 +334,7 @@ var w626PopulationDelta = []string{
 	"market_receipts",        // B32.40: keyed buyer_workspace_id, classified in the manifest
 	"market_refunds",         // B20.4: keyed seller_/buyer_workspace_id, classified in the manifest
 	"market_reviews",         // B32.49: keyed buyer_workspace_id, classified in the manifest
+	"market_use_outcomes",    // B41.173: keyed buyer_workspace_id, classified in the manifest
 	"market_uses",            // B20.2: keyed seller_/buyer_workspace_id, classified in the manifest
 	"node_latency_mints",
 	"pool_royalty_mints",
