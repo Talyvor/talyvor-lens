@@ -1,4 +1,4 @@
--- 0284_money_reusable_cards.sql — B53.2: the owner's own card, and an agent's, reusable, with limits and categories.
+-- 0286_money_reusable_cards.sql — B53.2: the owner's own card, and an agent's, reusable, with limits and categories.
 --
 -- Beside an agent's single-use cards (B46.10), the owner issues a reusable card on their own wallet (the company's
 -- account in a currency) or on one of their agents' wallets. It pays any merchant, as often as its controls let it:
