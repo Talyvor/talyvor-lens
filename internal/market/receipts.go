@@ -24,8 +24,7 @@ import (
 // supplier (LENS_SUPPLIER_*) and the buyer (its tax profile, B32.38) as they are at that moment, one line per use the
 // invoice cleared with its net, rate and tax (market_tax_lines, B32.39), the totals in US dollars, the tax also in the
 // buyer's currency at its jurisdiction's rate source, and the reverse-charge note where it applies. A receipt is never
-// changed. Until Talyvor's VAT number is set it reads "VAT registration pending" and is a Preview, as is every receipt
-// for test money.
+// changed. Until Talyvor's VAT number is set it reads "VAT registration pending" and is a Preview, whatever its series.
 
 // ErrNoReceipt: no receipt of this workspace has that id.
 var ErrNoReceipt = errors.New("market: no receipt of this workspace has that id")
@@ -404,9 +403,7 @@ func (s *Store) Receipt(ctx context.Context, buyerWorkspaceID, id string) (Recei
 		match := *r.StripeTotal == r.GrossCents
 		r.MatchesStripe = &match
 	}
-	switch {
-	case r.Series == "test": // its TEST- number marks it; it carries no preview line (B49.1)
-	case r.Supplier.VATNumber == "":
+	if r.Supplier.VATNumber == "" { // a TEST- receipt too: B49.1 dropped its test-money line, not this one
 		r.Preview, r.PreviewReason = true, VATRegistrationPending
 	}
 	return r, nil
