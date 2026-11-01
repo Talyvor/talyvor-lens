@@ -584,9 +584,9 @@ func (s *DualTokenStore) creditLXCTxTyped(ctx context.Context, tx pgx.Tx, worksp
 	}
 	// ⚠ ONLY A REAL PURCHASE ADDS BACKING. creditLXCTxTyped serves BOTH purchase and admin_grant —
 	// they differ only in the ledger type — so the type is the ONE thing that decides here. A grant
-	// credits spendable LXC and adds no cash to the system.
+	// credits spendable LXC and adds no cash to the system — nor does the test-funded part of a purchase (B30.25).
 	if ledgerType == LXCTypePurchase {
-		if err := addCashBacked(ctx, tx, workspaceID, lxcAmount); err != nil {
+		if err := addCashBacked(ctx, tx, workspaceID, lxcAmount-testFunded); err != nil {
 			return 0, err
 		}
 	}

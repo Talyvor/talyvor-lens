@@ -90,6 +90,10 @@ func TestMoneyCreditRoutes_ATestPurchasePostsOneEntryAndOneMatchingCreditRow(t *
 	if n := count(`SELECT count(*) FROM lxc_ledger WHERE workspace_id = $1`, ws); n != 1 || amount != want || funding != "test" {
 		t.Fatalf("lxc_ledger: %d rows, %d µLXC naming the entry, funding %q — want 1 row of %d, test", n, amount, funding, want)
 	}
+	// Test money backs nothing: no royalty is ever minted against it as if cash had paid.
+	if n := count(`SELECT cash_backed_ulxc FROM lxc_balances WHERE workspace_id = $1`, ws); n != 0 {
+		t.Fatalf("a test purchase left %d µLXC cash-backed, want 0", n)
+	}
 	if b, err := store.Balance(ctx, ws, gbp.ID); err != nil || b.AmountMinor != 3000 {
 		t.Fatalf("the GBP account holds %+v (%v), want £30.00", b, err)
 	}
