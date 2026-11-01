@@ -186,6 +186,29 @@ jobs:
           TARE_MODEL_REQUIRED: "1"
         run: go test -count=1 -v -run 'TestGoldenMatchesONNX|TestPhase2a_' ./internal/tare/kompress
 
+  # B48.2: each agent's crypto wallet is its own smart account. Builds the audited contracts it runs on from their
+  # pinned sources (scripts/devnet-contracts.sh) and runs internal/money/smartaccount's devnet test against two local
+  # anvil chains and a local bundler: created counterfactually, deployed by its first operation, the owner's passkey
+  # and the agent's key accepted, any other signer refused, the same address on both chains. Nothing here reaches a
+  # live network; LENS_TEST_DEVNET_CONTRACTS makes the test fail rather than skip if anvil is missing.
+  devnet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26.10"
+          cache: false
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v1.5.1
+      - name: build the smart account's contracts at their pinned audited sources
+        run: scripts/devnet-contracts.sh /tmp/devnet-contracts
+      - name: agents' smart accounts on a local devnet
+        env:
+          LENS_TEST_DEVNET_CONTRACTS: /tmp/devnet-contracts
+        run: go test -count=1 -v -run TestAgentSmartAccountOnDevnet ./internal/money/smartaccount/
+
   # Formal static-analysis gate: golangci-lint (errcheck, govet, ineffassign,
   # staticcheck, unused). Config in .golangci.yml. Blocking — a finding fails the
   # build. (go vet also runs in the test job; pinned here under the lint suite too.)

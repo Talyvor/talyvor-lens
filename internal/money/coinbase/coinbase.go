@@ -115,7 +115,7 @@ func New(cfg Config) (*money.Adapter, error) {
 		cfg.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
 	c := &client{cfg: cfg, apiKey: ed25519.PrivateKey(apiKey), walletKey: walletKey, base: base, usdc: usdcOn[cfg.Network]}
-	return &money.Adapter{Name: Name, Wallets: wallets{c}, Transfers: transfers{c}, Webhooks: webhooks{c}}, nil
+	return &money.Adapter{Name: Name, Wallets: wallets{c}, Transfers: transfers{c}, Webhooks: webhooks{c}, Signers: signers{c}}, nil
 }
 
 type client struct {
@@ -451,6 +451,65 @@ func (w wallets) Receive(ctx context.Context, ref string) (money.Details, error)
 		return money.Details{}, err
 	}
 	return money.Details{Asset: money.USDC, Network: Network, Address: a.Address}, nil
+}
+
+type signers struct{ c *client }
+
+// NewSigner makes an agent's key (B48.2): an EVM account whose private key CDP makes and keeps inside its enclave, named
+// from the caller's key and the agent, so a retry is the same account and the same key for another agent is refused.
+func (s signers) NewSigner(ctx context.Context, key, agentID string) (string, error) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(agentID) == "" {
+		return "", fmt.Errorf("%w: an agent's key is made for an agent, under the caller's idempotency key", money.ErrInvalid)
+	}
+	var a account
+	if _, err := s.c.do(ctx, http.MethodPost, "/v2/evm/accounts", idempotencyKey("signer", key),
+		map[string]any{"name": "tla-" + digest("signer", key+"\x00"+agentID)[:32]}, &a); err != nil {
+		return "", err
+	}
+	if !addressRE.MatchString(a.Address) {
+		return "", fmt.Errorf("%w: CDP made no account", money.ErrPartnerDown)
+	}
+	return a.Address, nil
+}
+
+// NewSolanaWallet makes an agent's Solana wallet: a Solana account whose key CDP makes and keeps inside its enclave,
+// named as NewSigner names an agent's EVM key.
+func (s signers) NewSolanaWallet(ctx context.Context, key, agentID string) (string, error) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(agentID) == "" {
+		return "", fmt.Errorf("%w: an agent's wallet is made for an agent, under the caller's idempotency key", money.ErrInvalid)
+	}
+	var a account
+	if _, err := s.c.do(ctx, http.MethodPost, "/v2/solana/accounts", idempotencyKey("solana", key),
+		map[string]any{"name": "tls-" + digest("solana", key+"\x00"+agentID)[:32]}, &a); err != nil {
+		return "", err
+	}
+	if !solanaRE.MatchString(a.Address) {
+		return "", fmt.Errorf("%w: CDP made no Solana account", money.ErrPartnerDown)
+	}
+	return a.Address, nil
+}
+
+// solanaRE is a Solana address: an Ed25519 public key in base58.
+var solanaRE = regexp.MustCompile(`^[1-9A-HJ-NP-Za-km-z]{32,44}$`)
+
+// SignHash has CDP sign hash with the agent's key signer, inside its enclave.
+func (s signers) SignHash(ctx context.Context, signer string, hash [32]byte) ([]byte, error) {
+	if !addressRE.MatchString(signer) {
+		return nil, fmt.Errorf("%w: no key %q", money.ErrNotFound, signer)
+	}
+	h := "0x" + hex.EncodeToString(hash[:])
+	var out struct {
+		Signature string `json:"signature"`
+	}
+	if _, err := s.c.do(ctx, http.MethodPost, "/v2/evm/accounts/"+signer+"/sign", idempotencyKey("sign", signer+h),
+		map[string]any{"hash": h}, &out); err != nil {
+		return nil, err
+	}
+	sig, err := hex.DecodeString(strings.TrimPrefix(out.Signature, "0x"))
+	if err != nil || len(sig) != 65 {
+		return nil, fmt.Errorf("%w: CDP's signature is not 65 bytes", money.ErrPartnerDown)
+	}
+	return sig, nil
 }
 
 type transfers struct{ c *client }

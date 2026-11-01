@@ -40,12 +40,17 @@ func TestOperatorWorkspaceReads_SpendHeldAndLastActivityPerWorkspace_AdminOnly(t
 			t.Fatal(err)
 		}
 	}
-	lastA := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	// Both of ws-op-a's events inside the month the database's own clock counts as current, on any day of it.
+	var monthStart, lastA time.Time
+	if err := pool.QueryRow(ctx, `SELECT date_trunc('month', now()), date_trunc('second', now())`).Scan(&monthStart, &lastA); err != nil {
+		t.Fatal(err)
+	}
+	lastA = lastA.UTC()
 	for _, e := range []struct {
 		ws   string
 		cost float64
 		at   time.Time
-	}{{"ws-op-a", 1.25, lastA.Add(-time.Hour)}, {"ws-op-a", 0.50, lastA}, {"ws-op-synth", 9, lastA}} {
+	}{{"ws-op-a", 1.25, monthStart}, {"ws-op-a", 0.50, lastA}, {"ws-op-synth", 9, lastA}} {
 		if _, err := pool.Exec(ctx, `INSERT INTO token_events (provider, model, input_tokens, output_tokens, workspace_id, created_at,
 			team, feature, cost_usd, pii_detected, session_id, request_id)
 			VALUES ('openai', 'gpt-4o', 10, 5, $1, $2, '', '', $3, false, '', gen_random_uuid()::text)`, e.ws, e.at, e.cost); err != nil {

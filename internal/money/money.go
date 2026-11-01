@@ -169,6 +169,14 @@ type Wallet struct {
 	Asset string `json:"asset"`
 }
 
+// Signers keeps an agent's signing key inside the partner's enclave (B48.2): the partner makes the key and signs with it,
+// and Lens holds only its address. An agent's smart account (internal/money/smartaccount) names it an owner.
+type Signers interface {
+	NewSigner(ctx context.Context, key, agentID string) (string, error)         // the new key's address
+	SignHash(ctx context.Context, signer string, hash [32]byte) ([]byte, error) // r‖s‖v, 65 bytes
+	NewSolanaWallet(ctx context.Context, key, agentID string) (string, error)   // the agent's Solana wallet's address
+}
+
 // Transfers moves money between wallets, out to a payee, and credits money that came in.
 type Transfers interface {
 	Internal(ctx context.Context, req Internal) (Result, error)

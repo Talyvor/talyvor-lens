@@ -182,6 +182,10 @@ func TestB5018_ABatchApprovalReleasesOnlyItsOwnItems(t *testing.T) {
 	b := b501Payer(t, pool, "ws-b5018-batch")
 	ws := b.acct.WorkspaceID
 	b.store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
+	// B50.20: a passkey enrols freely only as the workspace's first key, so the payer's stand-in device key goes first.
+	if _, err := pool.Exec(ctx, `DELETE FROM workspace_device_keys WHERE workspace_id = $1`, ws); err != nil {
+		t.Fatal(err)
+	}
 	sign := b5018Passkey(t, b.store, ws, rpID, origin)
 	prepare := func(key string, minor int64) (economy.PaymentRequest, string, string) {
 		t.Helper()
@@ -258,7 +262,7 @@ func b5018Passkey(t *testing.T, store *economy.DualTokenStore, ws, rpID, origin 
 	attested := binary.BigEndian.AppendUint32(append(append([]byte{}, rpHash[:]...), 0x45), 0)
 	attested = append(append(binary.BigEndian.AppendUint16(append(attested, make([]byte, 16)...), uint16(len(credID))), credID...), 0xa0)
 	if _, err := store.RegisterPasskey(context.Background(), ws, "Ada's phone", passkey.Registration{CredentialID: b64(credID), PublicKey: spki,
-		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: attested}); err != nil {
+		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: attested}, nil); err != nil {
 		t.Fatal(err)
 	}
 	counter := uint32(0)

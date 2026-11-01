@@ -95,6 +95,11 @@ func TestAgentRoutes_AWeeklyStandingOrderPaysUntilTheMonthlyLimitThenSkipsAndEnd
 		if err != nil || res.Paid != wantPaid || res.Refused != wantRefused {
 			t.Fatalf("run at %s = %+v (%v), want %d paid and %d refused", at.Format(time.DateOnly), res, err, wantPaid, wantRefused)
 		}
+		// The limits count payments by created_at, which is the real clock: date the tick's payment at the tick, so its month is the run's.
+		if _, err := pool.Exec(ctx, `UPDATE money_payments SET created_at = $3 WHERE workspace_id = $1 AND idempotency_key = $2`,
+			ws, "schedule:"+sc.ID+":"+at.UTC().Format(time.RFC3339), at); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for week := 0; week < 4; week++ {
 		run(t0.AddDate(0, 0, 7*week), 1, 0)

@@ -209,15 +209,15 @@ func (k stripeByKind) IssueCard(ctx context.Context, workspaceID, agentID, agent
 	return c.IssueCard(ctx, workspaceID, agentID, agentName, holder)
 }
 
-// payOut is one payout run: test sellers with the test-mode key, real sellers with the main key. Off payday it only
-// retries the transfers Stripe has not yet accepted (B32.42).
+// payOut is one payout run: test sellers with the test-mode key, real sellers with the main key — or, without one, those
+// paid on the money layer only (B46.22). Off payday it only retries the transfers not yet taken (B32.42).
 func (k stripeByKind) payOut(ctx context.Context, store *market.Store, now time.Time, payday bool) (int, error) {
 	paid, errs := 0, []error{}
 	for _, run := range []struct {
 		test    bool
 		connect market.ConnectStripe
 	}{{true, k.test.connect}, {false, k.live.connect}} {
-		if run.connect == nil {
+		if run.connect == nil && !store.PaysOnMoneyLayer() {
 			continue
 		}
 		var n int

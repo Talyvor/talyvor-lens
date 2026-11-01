@@ -57,6 +57,10 @@ func TestMoneyBillsRisk_FlagsOnTheCardAndADuplicateNeedsAReason(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Past the new-payee cooling-off (B41.111, B50.21), which would hold Ada's £1,040 in all.
+	if _, err := pool.Exec(ctx, `UPDATE money_payees SET created_at = now() - interval '25 hours' WHERE workspace_id = $1`, ws); err != nil {
+		t.Fatal(err)
+	}
 	addBill := func(supplier, number, amount, account string) string {
 		t.Helper()
 		text := "Invoice\nFrom: " + supplier + "\nInvoice number: " + number + "\nAmount due: " + amount +
