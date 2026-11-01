@@ -68,7 +68,7 @@ func marketToolDefinitions() []map[string]any {
 			map[string]any{"text": str("words in its title or description"), "kind": str("prompt, skill, agent, evaluation or pipeline"),
 				"capability": str("what it should do: one of GET /v1/marketplace/capabilities, e.g. summarize or extract"), "licence": str("sold under this licence: personal, commercial or enterprise"),
 				"max_price_usd_micros": num("one use costs at most this, in µUSD (1 USD = 1,000,000)")}),
-		tool("market_listing", "One listing: what each version needs (input, variables, model), every offer with its licence terms, and its trust "+
+		tool("market_listing", "One listing: what each version needs (input, variables, model), its privacy label (the models it calls, the tools it uses, the data it keeps), every offer with its licence terms, and its trust "+
 			"summary: whether the publisher is verified, reviews from paying buyers, eval score, IP claims, the originals it credits and its remixes.",
 			map[string]any{"listing_id": listing}, "listing_id"),
 		tool("market_license", "Buy, rent or subscribe to a listing through one of its offers, within your rules. Its uses are then covered. "+
