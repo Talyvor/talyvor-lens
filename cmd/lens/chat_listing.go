@@ -184,6 +184,7 @@ type listingWriter struct {
 	said   map[string]*market.Said // each string field of the stream's frames, by its path, so far
 	block  int                     // the content block an Anthropic stream is in
 	cut    bool                    // withheld: nothing more is relayed
+	sent   bool                    // the status has gone to the chat
 }
 
 func (w *listingWriter) WriteHeader(code int) {
@@ -196,16 +197,26 @@ func (w *listingWriter) WriteHeader(code int) {
 			w.Header().Del("Content-Length") // a withheld answer is not as long as the one the proxy wrote
 			w.stream = strings.Contains(w.Header().Get("Content-Type"), "event-stream")
 		}
-		// B43.23 (CodeQL go/reflected-xss #53, #54): the answer is JSON, an event stream or a plain refusal, never a page:
-		// one with no type (which the server would sniff, and could echo the request as HTML) or an HTML one goes out as
-		// plain text, and is never sniffed.
-		h := w.ResponseWriter.Header()
+	}
+}
+
+// send relays p to the chat, its status first if that has not gone yet. B43.23 (CodeQL go/reflected-xss #53, #54): the
+// answer is JSON, an event stream or a plain refusal, never a page: one with no type (which the server would sniff, and
+// could echo the request as HTML) or an HTML one goes out as plain text, and is never sniffed.
+func (w *listingWriter) send(p []byte) (int, error) {
+	if !w.sent && w.status != 0 {
+		w.sent = true
+		h := w.Header()
 		if ct := strings.ToLower(h.Get("Content-Type")); ct == "" || strings.Contains(ct, "html") {
 			h.Set("Content-Type", "text/plain; charset=utf-8")
 		}
 		h.Set("X-Content-Type-Options", "nosniff")
+		w.ResponseWriter.WriteHeader(w.status)
 	}
-	w.ResponseWriter.WriteHeader(code)
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return w.ResponseWriter.Write(p)
 }
 
 func (w *listingWriter) guarding() bool { return w.guard != nil && w.status/100 == 2 }
@@ -215,7 +226,7 @@ func (w *listingWriter) Write(p []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	if !w.guarding() {
-		return w.ResponseWriter.Write(p)
+		return w.send(p)
 	}
 	if w.cut {
 		return len(p), nil
@@ -263,7 +274,7 @@ func (w *listingWriter) relay(frame []byte) error {
 		})
 	}
 	if !leaks {
-		_, err := w.ResponseWriter.Write(frame)
+		_, err := w.send(frame)
 		return err
 	}
 	w.cut, w.held = true, nil
@@ -278,7 +289,7 @@ func (w *listingWriter) relay(frame []byte) error {
 		end = fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n",
 			rawJSON(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": withheld}, "finish_reason": "stop"}}}))
 	}
-	_, err := io.WriteString(w.ResponseWriter, end)
+	_, err := w.send([]byte(end))
 	return err
 }
 
@@ -286,7 +297,8 @@ func (w *listingWriter) relay(frame []byte) error {
 // for the withheld text if it repeats the listing's instructions.
 func (w *listingWriter) finish() error {
 	if !w.guarding() || w.cut || len(w.held) == 0 {
-		return nil
+		_, err := w.send(nil) // a status the proxy named without a body
+		return err
 	}
 	held := w.held
 	w.held = nil
@@ -305,7 +317,7 @@ func (w *listingWriter) finish() error {
 	if leaks {
 		out = withheldBody(held, w.shape)
 	}
-	_, err := w.ResponseWriter.Write(out)
+	_, err := w.send(out)
 	return err
 }
 
@@ -360,6 +372,7 @@ func withheldBody(body []byte, shape string) []byte {
 
 // Flush keeps a streamed answer streaming.
 func (w *listingWriter) Flush() {
+	_, _ = w.send(nil)
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
