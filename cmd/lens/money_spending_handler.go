@@ -33,20 +33,23 @@ type moneySpendingBank interface {
 	SetEntryTags(ctx context.Context, workspaceID, entryID string, tags []string) ([]string, error)
 }
 
-func mountMoneySpendingRoutes(r chi.Router, bank moneySpendingBank) {
-	owner := func(w http.ResponseWriter, req *http.Request) (string, string, bool) {
-		ws, _ := auth.WorkspaceIdentity(req.Context())
-		if ws == "" {
-			writeJSONErr(w, http.StatusBadRequest, "spending is a workspace's: use a workspace's key")
-			return "", "", false
-		}
-		who, ok := storedanswers.OwnerOrAdmin(req.Context())
-		if !ok {
-			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may see or sort its spending")
-			return "", "", false
-		}
-		return ws, who, true
+// spendingOwner is the key's workspace and who is asking, when they are its owner or an admin; otherwise it answers.
+func spendingOwner(w http.ResponseWriter, req *http.Request) (string, string, bool) {
+	ws, _ := auth.WorkspaceIdentity(req.Context())
+	if ws == "" {
+		writeJSONErr(w, http.StatusBadRequest, "spending is a workspace's: use a workspace's key")
+		return "", "", false
 	}
+	who, ok := storedanswers.OwnerOrAdmin(req.Context())
+	if !ok {
+		writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may see or sort its spending")
+		return "", "", false
+	}
+	return ws, who, true
+}
+
+func mountMoneySpendingRoutes(r chi.Router, bank moneySpendingBank) {
+	owner := spendingOwner
 	answer := func(w http.ResponseWriter, err error, ok func()) {
 		switch {
 		case errors.Is(err, economy.ErrSpending):

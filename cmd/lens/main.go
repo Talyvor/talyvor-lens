@@ -4753,6 +4753,7 @@ func run() error {
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
+		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
@@ -4808,6 +4809,11 @@ func run() error {
 				}
 			}
 		}()
+
+		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
+		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
+			sweepSpendAlerts(lctx, dualToken)
+		})
 
 		// B21.3 — a workspace deletes its stored answers, or asks Talyvor to delete everything.
 		// See internal/storedanswers.
