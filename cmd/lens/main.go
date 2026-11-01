@@ -3761,7 +3761,7 @@ func run() error {
 		// capabilities, context. Read-only introspection so pricing/caps are
 		// transparent, not hidden.
 		authed.Get("/v1/catalog/models", func(w http.ResponseWriter, req *http.Request) {
-			writeJSONOK(w, http.StatusOK, catalog.All())
+			writeJSONOK(w, http.StatusOK, catalog.Listing())
 		})
 		// B10.5 — models a provider lists that wait for a price, and the admin act that prices one.
 		authed.Get("/v1/catalog/discovered", newCatalogDiscoveredHandler(watcher))

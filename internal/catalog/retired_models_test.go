@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // B23.7 — a model its provider retired leaves the chat picker (the suite offers
 // `!deprecated && output_per_1m > 0`) and keeps its price, so a request already recorded under it
@@ -49,5 +52,36 @@ func TestCatalog_RetiredGPT41NanoLeavesThePickerAndKeepsItsPrice(t *testing.T) {
 	}
 	if m.InputPer1M != 0.10 || m.OutputPer1M != 0.40 || m.CachedInputPer1M != 0.025 {
 		t.Errorf("gpt-4.1-nano prices changed: %+v", m)
+	}
+}
+
+// B38.11 — Anthropic retires Claude Sonnet 4.5 at 2026-11-30T17:00Z: until then the listing offers it with
+// "retiring on 30 Nov 2026" beside its name; from then it is deprecated (out of the picker) and retired in
+// favour of claude-sonnet-5-5, an offered model. Its stored row never changes, so model watch reads it raw.
+func TestCatalog_Sonnet45IsListedAsRetiringUntil30NovThenRetiredForSonnet55(t *testing.T) {
+	listed := func(at time.Time) Model {
+		t.Helper()
+		defer SetClock(func() time.Time { return at })()
+		for _, m := range Listing() {
+			if m.ID == "claude-sonnet-4-5" {
+				return m
+			}
+		}
+		t.Fatalf("claude-sonnet-4-5 is not in the listing at %s", at)
+		return Model{}
+	}
+	before := listed(time.Date(2026, 11, 30, 16, 59, 59, 0, time.UTC))
+	if before.Deprecated || before.DisplayName != "Claude Sonnet 4.5 · retiring on 30 Nov 2026" {
+		t.Errorf("before retirement: deprecated=%v name=%q, want offered as \"Claude Sonnet 4.5 · retiring on 30 Nov 2026\"", before.Deprecated, before.DisplayName)
+	}
+	after := listed(time.Date(2026, 11, 30, 17, 0, 0, 0, time.UTC))
+	if !after.Deprecated || after.DisplayName != "Claude Sonnet 4.5" || after.RetiredSuccessor != "claude-sonnet-5-5" {
+		t.Errorf("from retirement: deprecated=%v name=%q successor=%q, want out of the picker naming claude-sonnet-5-5", after.Deprecated, after.DisplayName, after.RetiredSuccessor)
+	}
+	if raw, _ := Get("claude-sonnet-4-5-20250929"); raw.Deprecated || raw.DisplayName != "Claude Sonnet 4.5" {
+		t.Errorf("the stored row changed: %+v", raw)
+	}
+	if s, ok := Get("claude-sonnet-5-5"); !ok || s.Deprecated || s.RetiredSuccessor != "" {
+		t.Errorf("successor claude-sonnet-5-5 is not an offered model (ok=%v, %+v)", ok, s)
 	}
 }
