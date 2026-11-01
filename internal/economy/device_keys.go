@@ -2,6 +2,7 @@ package economy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -236,7 +237,20 @@ func (s *DualTokenStore) notifyPaymentRequest(workspaceID string, r PaymentReque
 		totals = append(totals, formatMinor(c, r.Totals[c]))
 	}
 	m := nativepush.Message{Title: "Approval needed", Body: "Pay " + strings.Join(payees, ", ") + " · " + strings.Join(totals, " + "),
-		Data: map[string]string{"type": "payment_request", "request_id": r.ID, "workspace_id": workspaceID, "url": r.DeepLink}}
+		Data:     map[string]string{"type": "payment_request", "request_id": r.ID, "workspace_id": workspaceID, "url": r.DeepLink},
+		Category: "payment_request"}
+	// B41.134: the items the phone's Approve button signs for — each one that needs approval, as the statement names it.
+	items := []ApprovalStatementItem{}
+	for _, it := range r.Items {
+		if it.Decision == ItemNeedsApproval {
+			items = append(items, ApprovalStatementItem{Position: it.Position, PayeeID: it.PayeeID, PayeeName: it.PayeeName,
+				Currency: it.Currency, AmountMinor: it.AmountMinor, Reference: it.Reference})
+		}
+	}
+	// APNs and FCM refuse a payload over 4 KB; without items the button opens the approval card instead.
+	if b, _ := json.Marshal(items); len(items) > 0 && len(b) <= 2048 {
+		m.Data["items"] = string(b)
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()

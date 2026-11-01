@@ -32,11 +32,13 @@ import (
 // ErrGone: the push service says the token no longer reaches an app; forget it.
 var ErrGone = errors.New("nativepush: the device token is gone")
 
-// Message is what a phone shows; Data travels with it for the app to open the right screen.
+// Message is what a phone shows; Data travels with it for the app to open the right screen. Category names the app's
+// notification category, whose buttons the phone shows with it (B41.134: "payment_request" carries Approve).
 type Message struct {
-	Title string
-	Body  string
-	Data  map[string]string
+	Title    string
+	Body     string
+	Data     map[string]string
+	Category string
 }
 
 var b64 = base64.RawURLEncoding
@@ -175,7 +177,11 @@ func (a *APNs) Send(ctx context.Context, token string, m Message) error {
 	if err != nil {
 		return err
 	}
-	payload := map[string]any{"aps": map[string]any{"alert": map[string]string{"title": m.Title, "body": m.Body}, "sound": "default"}}
+	aps := map[string]any{"alert": map[string]string{"title": m.Title, "body": m.Body}, "sound": "default"}
+	if m.Category != "" {
+		aps["category"] = m.Category
+	}
+	payload := map[string]any{"aps": aps}
 	for k, v := range m.Data {
 		payload[k] = v
 	}
@@ -297,6 +303,9 @@ func (f *FCM) Send(ctx context.Context, token string, m Message) error {
 	data := map[string]string{}
 	for k, v := range m.Data {
 		data[k] = v
+	}
+	if m.Category != "" {
+		data["categoryId"] = m.Category // the app reads it to show the category's buttons (expo-notifications)
 	}
 	body, _ := json.Marshal(map[string]any{"message": map[string]any{"token": token,
 		"notification": map[string]string{"title": m.Title, "body": m.Body}, "data": data, "android": map[string]string{"priority": "HIGH"}}})
