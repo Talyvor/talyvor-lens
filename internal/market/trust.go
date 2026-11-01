@@ -11,7 +11,8 @@ package market
 //     drops out of the count and the average;
 //   - the eval score of the version a buyer would run, its latest (null until B28.174 and B28.175 record runs);
 //   - the claims against the listing, open and decided;
-//   - the originals it credits and how many remixes build on it, exactly as the lineage read gives them.
+//   - the originals it credits and how many remixes build on it, exactly as the lineage read gives them;
+//   - B41.173: its performance over the last 30 days of uses — success rate, median latency and cost per use.
 //
 // A buyer that qualifies writes one review of a listing, a rating of 1 to 5 and its text, and may rewrite it; the
 // seller may reply to each (market_reviews, migration 0218).
@@ -127,14 +128,29 @@ func (s *Store) ReplyToReview(ctx context.Context, seller, listingID, reviewID, 
 
 // Trust is a listing's trust panel.
 type Trust struct {
-	ListingID string       `json:"listing_id"`
-	Version   int          `json:"version"` // the version a buyer would run: the latest
-	Publisher Publisher    `json:"publisher"`
-	Reviews   ReviewCounts `json:"reviews"`
-	Eval      *EvalScore   `json:"eval"` // null: no stored eval run of that version
-	Claims    ClaimCounts  `json:"claims"`
-	Originals []Ancestor   `json:"originals"` // the listings it builds on, as the lineage read gives them
-	Remixes   int          `json:"remixes"`   // how many listings build on it, at any depth
+	ListingID   string       `json:"listing_id"`
+	Version     int          `json:"version"` // the version a buyer would run: the latest
+	Publisher   Publisher    `json:"publisher"`
+	Reviews     ReviewCounts `json:"reviews"`
+	Eval        *EvalScore   `json:"eval"` // null: no stored eval run of that version
+	Claims      ClaimCounts  `json:"claims"`
+	Originals   []Ancestor   `json:"originals"`   // the listings it builds on, as the lineage read gives them
+	Remixes     int          `json:"remixes"`     // how many listings build on it, at any depth
+	Performance Performance  `json:"performance"` // B41.173: the last 30 days of its uses
+}
+
+// performanceDays is the window a listing's performance is measured over.
+const performanceDays = 30
+
+// Performance is how a listing's runs went over the last 30 days (market_use_outcomes): every use that ran, answered or
+// failed, but its seller's own and those of buyers linked to it, so a seller cannot pad its own record.
+type Performance struct {
+	Days                int      `json:"days"`
+	Uses                int      `json:"uses"`
+	Failed              int      `json:"failed"`
+	SuccessRate         *float64 `json:"success_rate"`            // answered ÷ uses, 0 to 1 to four places; null with no uses
+	MedianLatencyMS     *int64   `json:"median_latency_ms"`       // of the uses that answered; null with none
+	CostPerUseUSDMicros *int64   `json:"cost_per_use_usd_micros"` // the mean price of its billed uses; null with none
 }
 
 // Publisher is whether the listing's seller is verified, and why not.
@@ -257,6 +273,31 @@ func (s *Store) Trust(ctx context.Context, viewer, listingID string) (Trust, err
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return Trust{}, fmt.Errorf("market: trust: %w", err)
+	}
+
+	pf := &out.Performance
+	pf.Days = performanceDays
+	var median *float64
+	var cost *float64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE NOT ok),
+			percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok),
+			avg(price_ulxc) FILTER (WHERE ok AND charge = 'billed')
+		FROM market_use_outcomes WHERE listing_id = $1 AND ran_at > $2::timestamptz - make_interval(days => $3)
+		  AND charge NOT IN ('own', 'linked')`,
+		l.ID, s.now(), performanceDays).Scan(&pf.Uses, &pf.Failed, &median, &cost); err != nil {
+		return Trust{}, fmt.Errorf("market: trust: %w", err)
+	}
+	if pf.Uses > 0 {
+		rate := math.Round(float64(pf.Uses-pf.Failed)/float64(pf.Uses)*10000) / 10000
+		pf.SuccessRate = &rate
+	}
+	if median != nil {
+		ms := int64(math.Round(*median))
+		pf.MedianLatencyMS = &ms
+	}
+	if cost != nil {
+		usd := int64(math.Round(*cost)) / ulxcPerUSDMicro
+		pf.CostPerUseUSDMicros = &usd
 	}
 
 	lineage, err := s.Lineage(ctx, viewer, l.ID, l.LatestVersion)
