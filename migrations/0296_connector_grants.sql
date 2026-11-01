@@ -3,7 +3,9 @@
 -- An assistant registers itself (OAuth dynamic client registration) as a connector_clients row, then sends its user to
 -- /oauth/authorize, which opens a connector_grants row. The owner approves it on Talyvor's connect page for one of
 -- their agents; the grant then holds the hash of a single-use code, which the assistant exchanges, with its PKCE
--- verifier, for that agent's own key. workspace_id and agent_id stay NULL until the owner decides.
+-- verifier, for an access token that only that listing's MCP URL accepts. Behind it is a key minted for the agent
+-- (key_id) whose plaintext nobody holds; revoking that key ends the connection. workspace_id and agent_id stay NULL
+-- until the owner decides.
 
 CREATE TABLE IF NOT EXISTS connector_clients (
     client_id     TEXT PRIMARY KEY,
@@ -25,6 +27,7 @@ CREATE TABLE IF NOT EXISTS connector_grants (
     agent_id       TEXT,
     code_hash      TEXT UNIQUE,
     key_id         TEXT,
+    access_hash    TEXT UNIQUE,
     expires_at     TIMESTAMPTZ NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );

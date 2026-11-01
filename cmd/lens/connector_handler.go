@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/connector"
 )
 
@@ -19,7 +20,8 @@ import (
 // metadata; from there the assistant finds this OAuth 2.1 server, registers itself, and sends its user to
 // /oauth/authorize, which opens a grant and redirects to the connect page on app.talyvor.com. The owner picks an agent
 // and approves (…/connector-requests/{id}/approve); the assistant swaps the code, with its PKCE verifier, at
-// /oauth/token for that agent's own key, and calls the listing's one tool with it.
+// /oauth/token for a token only that listing's URL accepts, behind a key minted for the agent, and calls the listing's
+// one tool with it: as the agent, under its rules, and nothing else the agent may do.
 
 // connectURLBase is the connect page where the owner decides a grant (talyvor-suite, B41.78).
 var connectURLBase = "https://app.talyvor.com/connect"
@@ -31,7 +33,8 @@ type connectorGrants interface {
 	Pending(ctx context.Context, id string) (connector.Request, error)
 	Decide(ctx context.Context, id, workspaceID, agentID string, approve bool) (string, error)
 	Redeem(ctx context.Context, code, clientID, redirectURI, verifier string) (connector.Grant, error)
-	KeyIssued(ctx context.Context, grantID, keyID string) error
+	Issue(ctx context.Context, grantID, keyID string) (string, error)
+	Holder(ctx context.Context, accessToken, listingID string) (connector.Holder, error)
 }
 
 // listingResourcePrefix is where a listing's own MCP endpoint lives under Lens's public URL.
@@ -120,8 +123,8 @@ func mountConnectorPublicRoutes(r chi.Router, grants connectorGrants, bank agent
 			back("invalid_request", "PKCE with code_challenge_method=S256 is required")
 		case len(q.Get("state")) > 512:
 			back("invalid_request", "state is too long")
-		case res != "" && res != publicURL+"/mcp" && (!isListing || listingID == "" || strings.Contains(listingID, "/")):
-			back("invalid_target", "resource must be "+publicURL+"/mcp or a listing under "+publicURL+listingResourcePrefix)
+		case !isListing || listingID == "" || strings.Contains(listingID, "/"):
+			back("invalid_target", "resource must be a listing's URL under "+publicURL+listingResourcePrefix)
 		default:
 			id, err := grants.Begin(req.Context(), clientID, redirectURI, q.Get("code_challenge"), q.Get("state"), res, listingID)
 			if err != nil {
@@ -152,7 +155,8 @@ func mountConnectorPublicRoutes(r chi.Router, grants connectorGrants, bank agent
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		raw, key, status, err := mintAgentKey(req.Context(), bank, keys, g.WorkspaceID, g.AgentID, g.ClientName+" connector")
+		// The key's plaintext is dropped here: the assistant gets a token only its listing's URL accepts.
+		_, key, status, err := mintAgentKey(req.Context(), bank, keys, g.WorkspaceID, g.AgentID, g.ClientName+" connector")
 		if err != nil {
 			if status < http.StatusInternalServerError {
 				oauthErr(w, http.StatusBadRequest, "invalid_grant", err.Error()) // the agent was archived since the owner approved
@@ -161,12 +165,13 @@ func mountConnectorPublicRoutes(r chi.Router, grants connectorGrants, bank agent
 			writeJSONErr(w, status, err.Error())
 			return
 		}
-		if err := grants.KeyIssued(req.Context(), g.ID, key.ID); err != nil {
+		tok, err := grants.Issue(req.Context(), g.ID, key.ID)
+		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSONOK(w, http.StatusOK, map[string]any{"access_token": raw, "token_type": "Bearer"})
+		writeJSONOK(w, http.StatusOK, map[string]any{"access_token": tok, "token_type": "Bearer"})
 	})
 }
 
@@ -236,4 +241,33 @@ func (c challengeWriter) WriteHeader(status int) {
 		c.Header().Set("WWW-Authenticate", c.challenge)
 	}
 	c.ResponseWriter.WriteHeader(status)
+}
+
+// connectorCallerKey marks a call that came in on a connector token: its model calls run in process as the agent's key
+// (mcpMarketDeps), because the token itself opens nothing but its listing's URL.
+type connectorCallerKey struct{}
+
+// connectorAuth admits only a connector token issued for the listing in the URL, as the agent's key behind it.
+func connectorAuth(grants connectorGrants) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			tok, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+			if !ok || !strings.HasPrefix(tok, "tlc_") {
+				writeJSONErr(w, http.StatusUnauthorized, "add this listing through the Talyvor connector to use it here")
+				return
+			}
+			h, err := grants.Holder(req.Context(), tok, chi.URLParam(req, "listingID"))
+			if errors.Is(err, connector.ErrInvalidGrant) {
+				writeJSONErr(w, http.StatusUnauthorized, "this connection was revoked, or is for another listing")
+				return
+			}
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			actx := &auth.AuthContext{WorkspaceID: h.WorkspaceID, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: h.KeyID, Scopes: h.Scopes}
+			ctx := context.WithValue(auth.WithAuthContext(req.Context(), actx), connectorCallerKey{}, actx)
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	}
 }
