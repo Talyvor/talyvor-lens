@@ -4791,6 +4791,7 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
+		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()
