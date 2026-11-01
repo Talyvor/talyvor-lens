@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -42,8 +43,10 @@ func checkPrivacy(obj map[string]any) error {
 }
 
 // privacyOf reads the label of l's version whose artifact is a. A pipeline's steps are read as its seller sees them,
-// as a use runs them; a step that no longer resolves cannot run, and adds nothing.
-func (s *Store) privacyOf(ctx context.Context, l Listing, a map[string]any) Privacy {
+// as a use runs them; a step that no longer resolves cannot run, and adds nothing, nor does a pipeline too long to
+// run. A step names its model and the data it keeps even when its listing is private: that is where a buyer's data
+// goes. steps memoises the step artifacts one read has resolved, by "<id>@<version>".
+func (s *Store) privacyOf(ctx context.Context, l Listing, a map[string]any, steps map[string]map[string]any) Privacy {
 	p := Privacy{Models: []string{}, Tools: []string{}, Keeps: []string{}}
 	add := func(to *[]string, names ...string) {
 		for _, n := range names {
@@ -61,8 +64,11 @@ func (s *Store) privacyOf(ctx context.Context, l Listing, a map[string]any) Priv
 	if l.Kind != "pipeline" {
 		add(&p.Models, model)
 	} else {
-		steps, _ := a["steps"].([]any)
-		for _, r := range steps {
+		refs, _ := a["steps"].([]any)
+		if len(refs) > maxPipelineSteps {
+			refs = nil
+		}
+		for _, r := range refs {
 			ref, _ := r.(map[string]any)
 			use, _ := ref["use"].(string)
 			id := use
@@ -70,8 +76,13 @@ func (s *Store) privacyOf(ctx context.Context, l Listing, a map[string]any) Priv
 				id = after
 			}
 			version, _ := ref["version"].(float64)
-			_, sa, _, err := s.resolve(ctx, l.WorkspaceID, id, int(version))
-			if err != nil {
+			key := fmt.Sprintf("%s@%d", id, int(version))
+			sa, seen := steps[key]
+			if !seen {
+				_, sa, _, _ = s.resolve(ctx, l.WorkspaceID, id, int(version))
+				steps[key] = sa
+			}
+			if sa == nil {
 				continue
 			}
 			stepModel, _ := sa["model"].(string)

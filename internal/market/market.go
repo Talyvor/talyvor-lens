@@ -639,10 +639,11 @@ func (s *Store) Get(ctx context.Context, viewerWorkspace, listingID string) (Lis
 		return Listing{}, err
 	}
 	rows.Close() // a pipeline's label reads its steps' listings
+	steps := map[string]map[string]any{}
 	for i, v := range l.Versions {
 		var a map[string]any
 		_ = json.Unmarshal(v.Artifact, &a)
-		l.Versions[i].Privacy = s.privacyOf(ctx, l, a)
+		l.Versions[i].Privacy = s.privacyOf(ctx, l, a, steps)
 		if !owner {
 			l.Versions[i].Artifact = nil
 		}
