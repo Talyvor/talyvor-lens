@@ -221,6 +221,9 @@ func (s *DualTokenStore) ResumeChallenge(ctx context.Context, workspaceID, agent
 // AuthorizeResume lets resuming agentID ("" : every agent) through: at once for a workspace with no passkey or device
 // key, and otherwise only with a's assertion over ResumeChallenge's challenge, which it spends.
 func (s *DualTokenStore) AuthorizeResume(ctx context.Context, workspaceID, agentID string, a *passkey.Assertion) error {
+	if err := refuseIfLockedDown(ctx, s.pool, workspaceID); err != nil { // B41.116
+		return err
+	}
 	return s.authorizeSigned(ctx, workspaceID, resumePurpose(agentID), a)
 }
 

@@ -108,6 +108,11 @@ func (s *DualTokenStore) SetAgentCardFrozen(ctx context.Context, workspaceID, ag
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return AgentCard{}, err
 	}
+	if !frozen {
+		if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil { // B41.116
+			return AgentCard{}, err
+		}
+	}
 	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = $3 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, frozen)
 	if err != nil {
 		return AgentCard{}, fmt.Errorf("economy: freeze agent card: %w", err)
