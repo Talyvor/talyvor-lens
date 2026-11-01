@@ -1,13 +1,22 @@
 name: CI
 
+# 1 Nov 2026 (Nick): the repos are private, so every check costs money. A newer push to a PR cancels its older run
+# (main's runs are never cancelled), and a draft PR gets only the quick checks: opening it ready, or marking it
+# ready, runs everything.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     # B39.1: production sits behind PgBouncer (LENS_DB_PGBOUNCER=true), where pgx speaks the SIMPLE protocol and a
     # []byte bound to a jsonb column goes out as bytea (22P02, #133). That bug reached production four times because
@@ -162,6 +171,7 @@ jobs:
   # above those tests skip, because the weights are not there. No -race: the race detector makes a
   # forward pass minutes long, and the reducer's concurrency is covered there by the weight-free tests.
   tare-model:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -192,6 +202,7 @@ jobs:
   # and the agent's key accepted, any other signer refused, the same address on both chains. Nothing here reaches a
   # live network; LENS_TEST_DEVNET_CONTRACTS makes the test fail rather than skip if anvil is missing.
   devnet:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -247,6 +258,7 @@ jobs:
   # Both are pinned to the versions their own manifests declare and neither needs a network
   # service. `pip install -e .[dev]` brings pytest; the TypeScript devDependencies bring jest.
   sdk:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -282,6 +294,7 @@ jobs:
   # transport, every tool's annotations, agent_balance and agent_pay on an agent's own key, the payment checked on
   # the ledger. LENS_MCP_SDK_E2E=1 makes a missing SDK install a failure instead of the skip it is elsewhere.
   mcp-sdk:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     env:
       LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable
@@ -322,6 +335,7 @@ jobs:
   # calls), so it stays low-noise: a require-only/unreachable vuln does not fail.
   # Tool pinned; the vuln DB is fetched fresh at scan time.
   vuln:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -339,6 +353,7 @@ jobs:
   # without a commit). Fails on ERROR severity; every WARNING finding is fixed or carries a
   # nosemgrep reason in place.
   semgrep:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -351,6 +366,7 @@ jobs:
             semgrep scan --config p/default --metrics=off --severity ERROR --error --quiet
 
   build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     needs: test
     steps:
