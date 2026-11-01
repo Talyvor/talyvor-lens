@@ -38,3 +38,13 @@ Each answers `{"level", "label", "domain", "business", "key_id", "profile"}`, or
 also carries `Talyvor-Agent-Trust: <level>`.
 
 To become `verified`, ask Talyvor to check the business behind your signing domain.
+
+## Ask to be paid
+
+    POST https://lens.talyvor.com/v1/a2a/agents/<agent id>/payment-requests    under the money profile, or unsigned
+    Idempotency-Key: <your key>
+    {"items": [{"payee_id": "<the payee id the owner gave you>", "currency": "GBP", "amount_minor": 12500, "reference": "INV-1"}]}
+
+The request lands in the owner's approvals with your trust level, and nothing is paid until the owner approves it. An
+unsigned request is shown as "Unverified agent". Bank details are refused: you are paid to the payee the owner saved.
+The answer is `{"id", "status", "agent_trust"}`.
