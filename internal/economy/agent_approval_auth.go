@@ -53,6 +53,7 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"` // B41.116: revoked by a lockdown, it signs nothing
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -119,7 +120,7 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 
 // ListPasskeys reads a workspace's passkeys.
 func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) ([]Passkey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at FROM workspace_passkeys
+	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at, revoked_at FROM workspace_passkeys
 		WHERE workspace_id = $1 ORDER BY created_at`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
@@ -128,7 +129,7 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 	out := []Passkey{}
 	for rows.Next() {
 		var p Passkey
-		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt); err != nil {
+		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt, &p.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -233,7 +234,7 @@ func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspac
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)

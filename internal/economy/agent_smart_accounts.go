@@ -125,7 +125,7 @@ func (s *DualTokenStore) ownerKey(ctx context.Context, workspaceID string, r Sma
 	case (r.CredentialID == "") == (r.DeviceID == ""):
 		return nil, ErrOwnerSigner
 	case r.CredentialID != "":
-		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2`,
+		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL`,
 			r.CredentialID, workspaceID).Scan(&spki)
 	default:
 		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_device_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL`,

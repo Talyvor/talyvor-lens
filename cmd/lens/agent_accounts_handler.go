@@ -907,7 +907,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		err := bank.AuthorizeResume(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Assertion)
 		switch {
-		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrLockedDown):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())

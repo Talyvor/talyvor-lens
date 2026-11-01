@@ -118,6 +118,8 @@ func mountAgentCardRoutes(r chi.Router, bank agentCardBank, issuer agentcard.Iss
 			switch {
 			case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrNoAgentCard):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, economy.ErrLockedDown):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
