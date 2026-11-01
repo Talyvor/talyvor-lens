@@ -290,6 +290,9 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	if err != nil {
 		return r, false, err
 	}
+	if err := refuseOverAssistantLimit(ctx, tx, workspaceID, in.Client, items); err != nil { // B41.114
+		return r, false, err
+	}
 	c := canonicalRequest{Version: PaymentRequestVersion, ID: id, WorkspaceID: workspaceID, Kind: kind, Items: []canonicalItem{}}
 	status := ItemBlocked
 	for i := range items {
