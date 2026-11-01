@@ -70,6 +70,8 @@ type Listing struct {
 	Offers          []Offer   `json:"offers"`                  // how it is sold (offers.go); none: it is free
 	PriceNote       string    `json:"price_note,omitempty"`    // how its offers' display prices are charged (B32.51)
 	Capabilities    []string  `json:"capabilities"`            // what it can do, from market_capabilities (B32.50)
+	AgeRating       string    `json:"age_rating"`              // all | 13+ | 16+ | 18+ (B41.185, content.go)
+	ContentLabels   []string  `json:"content_labels"`          // what it gives: adult, violence, medical_advice, financial_advice, legal_advice
 	Versions        []Version `json:"versions,omitempty"`
 }
 
@@ -137,6 +139,8 @@ type Draft struct {
 	RemixShareBPS   int             `json:"remix_share_bps"` // royalty: 1 to LENS_LINEAGE_MAX_SHARE_BPS
 	Parents         []ParentRef     `json:"parents"`         // the listings it builds on (lineage.go)
 	Capabilities    []string        `json:"capabilities"`    // what it can do, from market_capabilities (B32.50)
+	AgeRating       string          `json:"age_rating"`      // "" is 18+ (B41.185, content.go)
+	ContentLabels   []string        `json:"content_labels"`
 	// RoomID publishes the listing as a room's contribution, seen by its owner and the room's members only (B32.31).
 	// internal/rooms sets it once it has checked the publisher is a member; a request body never does.
 	RoomID string `json:"-"`
@@ -311,6 +315,10 @@ func (s *Store) publish(ctx context.Context, workspaceID, key string, d Draft) (
 	if err != nil {
 		return Listing{}, err
 	}
+	rating, labels, err := checkContent(d.AgeRating, d.ContentLabels)
+	if err != nil {
+		return Listing{}, err
+	}
 	artifact, sum, scan, err := checkArtifact(d.Kind, d.Artifact, d.Title, d.Description, d.Changelog)
 	if err != nil {
 		return Listing{}, err
@@ -327,16 +335,16 @@ func (s *Store) publish(ctx context.Context, workspaceID, key string, d Draft) (
 	defer func() { _ = tx.Rollback(ctx) }()
 	l := Listing{ID: "lst_" + uuid.NewString(), WorkspaceID: workspaceID, Kind: d.Kind, Title: d.Title, Description: d.Description,
 		PricePerUseULXC: d.PricePerUseULXC, Visibility: d.Visibility, RoomID: d.RoomID, LatestVersion: 1, ReviewStatus: ReviewApproved,
-		RemixPolicy: terms.Policy, RemixShareBPS: terms.ShareBPS}
+		RemixPolicy: terms.Policy, RemixShareBPS: terms.ShareBPS, AgeRating: rating, ContentLabels: labels}
 	if scan.Held != "" {
 		l.ReviewStatus, l.ReviewReason = ReviewHeld, scan.Held
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO market_listings (id, workspace_id, kind, title, description, price_per_use_ulxc, visibility, review_status, review_reason, publish_key,
-			remix_policy, remix_share_bps, room_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, NULLIF($13, ''))
+			remix_policy, remix_share_bps, room_id, age_rating, content_labels)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, NULLIF($13, ''), $14, $15)
 		ON CONFLICT (workspace_id, publish_key) WHERE publish_key IS NOT NULL DO NOTHING RETURNING created_at, updated_at`,
 		l.ID, workspaceID, d.Kind, d.Title, d.Description, d.PricePerUseULXC, d.Visibility, l.ReviewStatus, l.ReviewReason, key,
-		l.RemixPolicy, l.RemixShareBPS, d.RoomID).Scan(&l.CreatedAt, &l.UpdatedAt)
+		l.RemixPolicy, l.RemixShareBPS, d.RoomID, rating, labels).Scan(&l.CreatedAt, &l.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Listing{}, errKeyTaken
 	}
@@ -444,7 +452,7 @@ func (s *Store) PublishVersion(ctx context.Context, workspaceID, listingID strin
 	return v, tx.Commit(ctx)
 }
 
-const listingColumns = `id, workspace_id, kind, title, description, price_per_use_ulxc, visibility, latest_version, created_at, updated_at, review_status, review_reason, remix_policy, remix_share_bps, room_id, held_version`
+const listingColumns = `id, workspace_id, kind, title, description, price_per_use_ulxc, visibility, latest_version, created_at, updated_at, review_status, review_reason, remix_policy, remix_share_bps, room_id, held_version, age_rating, content_labels`
 
 // scanListing reads listingColumns, then into extra any columns the query selects after them.
 func scanListing(row pgx.Row, extra ...any) (Listing, error) {
@@ -452,7 +460,7 @@ func scanListing(row pgx.Row, extra ...any) (Listing, error) {
 	var room *string
 	var held *int
 	err := row.Scan(append([]any{&l.ID, &l.WorkspaceID, &l.Kind, &l.Title, &l.Description, &l.PricePerUseULXC, &l.Visibility, &l.LatestVersion, &l.CreatedAt, &l.UpdatedAt,
-		&l.ReviewStatus, &l.ReviewReason, &l.RemixPolicy, &l.RemixShareBPS, &room, &held}, extra...)...)
+		&l.ReviewStatus, &l.ReviewReason, &l.RemixPolicy, &l.RemixShareBPS, &room, &held, &l.AgeRating, &l.ContentLabels}, extra...)...)
 	if room != nil {
 		l.RoomID = *room
 	}
@@ -470,7 +478,7 @@ func (l *Listing) asSeenBy(viewer string) {
 }
 
 func (s *Store) list(ctx context.Context, where string, args ...any) ([]Listing, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+listingColumns+` FROM market_listings WHERE `+where+` ORDER BY created_at DESC, id LIMIT 500`, args...)
+	rows, err := s.pool.Query(ctx, `SELECT `+listingColumns+` FROM market_listings l WHERE `+where+` ORDER BY created_at DESC, id LIMIT 500`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("market: listings: %w", err)
 	}
@@ -508,11 +516,12 @@ func (s *Store) OwnListings(ctx context.Context, workspaceID string) ([]Listing,
 	return s.list(ctx, `workspace_id = $1`, workspaceID)
 }
 
-// Catalog reads the public listings the review approved, of one kind when kind is set.
-func (s *Store) Catalog(ctx context.Context, kind string) ([]Listing, error) {
-	where, args := `visibility = 'public' AND review_status = 'approved'`, []any{}
+// Catalog reads the public listings the review approved, of one kind when kind is set, that viewer's content filter
+// shows and it did not block (B41.185).
+func (s *Store) Catalog(ctx context.Context, viewer, kind string) ([]Listing, error) {
+	where, args := `visibility = 'public' AND review_status = 'approved' AND `+contentShown("$1", true), []any{viewer}
 	if kind != "" {
-		where, args = where+` AND kind = $1`, append(args, kind)
+		where, args = where+` AND kind = $2`, append(args, kind)
 	}
 	out, err := s.list(ctx, where, args...)
 	for i := range out {
@@ -528,6 +537,7 @@ type SearchQuery struct {
 	Capability        string // what it should do: one of market_capabilities (B32.50)
 	Licence           string // sold under this licence
 	MaxPriceUSDMicros *int64 // one use costs at most this: free, or a per_use commercial offer at or under it
+	Viewer            string // the workspace searching: its content filter and blocks apply (B41.185)
 }
 
 // MaxSearchResults is the most listings Search answers, and a page of Discover.
@@ -535,7 +545,7 @@ const MaxSearchResults = 50
 
 // Search reads the first page of what Discover finds for q: by relevance with words, by trending without (B32.50).
 func (s *Store) Search(ctx context.Context, q SearchQuery) ([]Listing, error) {
-	page, err := s.Discover(ctx, DiscoverQuery{Q: q.Text, Kind: q.Kind, Capability: q.Capability, Licence: q.Licence, MaxPricePerUse: q.MaxPriceUSDMicros})
+	page, err := s.Discover(ctx, DiscoverQuery{Q: q.Text, Kind: q.Kind, Capability: q.Capability, Licence: q.Licence, MaxPricePerUse: q.MaxPriceUSDMicros, Viewer: q.Viewer})
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +607,14 @@ func (s *Store) Get(ctx context.Context, viewerWorkspace, listingID string) (Lis
 	}
 	if err != nil {
 		return Listing{}, fmt.Errorf("market: listing: %w", err)
+	}
+	if l.Visibility != VisibilityRoom {
+		var shown bool
+		if err := s.pool.QueryRow(ctx, `SELECT `+contentShown("$2", false)+` FROM market_listings l WHERE l.id = $1`, listingID, viewerWorkspace).Scan(&shown); err != nil {
+			return Listing{}, fmt.Errorf("market: listing: %w", err)
+		} else if !shown {
+			return Listing{}, ErrNotFound // B41.185: rated above, or labelled as, what the viewer's content filter shows
+		}
 	}
 	owner := l.WorkspaceID == viewerWorkspace || l.Visibility == VisibilityRoom
 	offers, err := activeOffers(ctx, s.pool, listingID)
