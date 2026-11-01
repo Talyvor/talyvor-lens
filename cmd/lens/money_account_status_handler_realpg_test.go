@@ -157,7 +157,7 @@ func TestMoneyAccountRoutes_FreezeRefusesMoneyOutAndCloseMovesTheBalance(t *test
 		t.Fatal(err)
 	}
 	if _, err := store.RegisterPasskey(ctx, ws, "Owner's phone", passkey.Registration{CredentialID: b64(credID), PublicKey: spki,
-		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: authData(0x45, 0, true)}); err != nil {
+		ClientDataJSON: clientData("webauthn.create", regChallenge), AuthenticatorData: authData(0x45, 0, true)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	sign := func(challenge string, count uint32) string {
