@@ -129,6 +129,12 @@ func TestMarketTools_AnAgentSearchesRentsAndUsesWithinItsRules(t *testing.T) {
 	if hits, _ := found["listings"].([]any); len(hits) != 1 || hits[0].(map[string]any)["id"] != adder.ID {
 		t.Fatalf("searching for the adder = %v; want exactly it", found)
 	}
+	// B41.171: market_ask answers with the adder and what 20 uses of it cost.
+	asked, _ := call("market_ask", `{"text":"adds numbers 20 times"}`, false)
+	if picks, _ := asked["picks"].([]any); len(picks) != 1 || picks[0].(map[string]any)["id"] != adder.ID || asked["volume"] != float64(20) ||
+		picks[0].(map[string]any)["estimate"].(map[string]any)["volume"] != float64(20) {
+		t.Fatalf("asking for the adder = %v; want it, priced for 20 uses", asked)
+	}
 	listing, _ := call("market_listing", `{"listing_id":"`+adder.ID+`"}`, false)
 	// B32.49: market_listing carries the trust panel's summary, as the trust read gives it.
 	trust, err := store.Trust(ctx, buyer, adder.ID)
