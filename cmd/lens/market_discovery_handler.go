@@ -83,9 +83,10 @@ func mountMarketDiscoveryRoutes(r chi.Router, store *market.Store) {
 			}
 			q.VerifiedOnly = b
 		}
+		viewer, _ := auth.WorkspaceIdentity(req.Context())
+		q.Viewer = viewer // B41.185: its content filter and blocks apply
 		page, err := store.Discover(req.Context(), q)
 		if err == nil { // B32.51: each offer's price in the reader's currency too
-			viewer, _ := auth.WorkspaceIdentity(req.Context())
 			hits := make([]*market.Listing, len(page.Listings))
 			for i := range page.Listings {
 				hits[i] = &page.Listings[i].Listing

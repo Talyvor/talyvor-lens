@@ -140,7 +140,7 @@ func (s *Server) marketTool(ctx context.Context, name, ws, agent string, a marke
 	switch name {
 	case "market_search":
 		found, err := s.market.Search(ctx, market.SearchQuery{Text: a.Text, Kind: a.Kind, Capability: a.Capability, Licence: a.Licence,
-			MaxPriceUSDMicros: a.MaxPriceUSDMicros})
+			MaxPriceUSDMicros: a.MaxPriceUSDMicros, Viewer: ws})
 		if err == nil { // B32.51: each offer's price in the workspace's currency too
 			refs := make([]*market.Listing, len(found))
 			for i := range found {

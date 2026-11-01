@@ -24,6 +24,11 @@ import (
 //	PUT  /v1/workspaces/{wsID}/marketplace/listings/{id}/offers    {offers: [...]}   B32.18: replace how it is sold
 //	PUT  /v1/workspaces/{wsID}/marketplace/listings/{id}/remix-terms {remix_policy, remix_share_bps}   B32.24: may others build on it
 //	POST /v1/workspaces/{wsID}/marketplace/listings/{id}/remix      {version}   B32.25: accept its remix licence and open its artifact
+//	PUT  /v1/workspaces/{wsID}/marketplace/listings/{id}/content-labels {age_rating, content_labels}   B41.185: relabel it
+//	GET  /v1/workspaces/{wsID}/marketplace/content-filter          B41.185: what it is shown, the listings it blocked, and the vocabulary
+//	PUT  /v1/workspaces/{wsID}/marketplace/content-filter          {max_age_rating, blocked_labels}   B41.185: a family filter is "all"
+//	PUT  /v1/workspaces/{wsID}/marketplace/blocked-listings/{id}   B41.185: never show it in its catalog, search or collections again
+//	DELETE /v1/workspaces/{wsID}/marketplace/blocked-listings/{id} B41.185: show it again
 //	GET  /v1/workspaces/{wsID}/marketplace/listings?currency=      the workspace's own listings
 //	GET  /v1/marketplace/listings?kind=&currency=                  the public catalog
 //	GET  /v1/marketplace/listings/{id}?currency=                   a listing and its versions (artifacts for its owner only)
@@ -72,6 +77,12 @@ import (
 // decided. The seller finds it under "against" in their claims and may counter it until its counter_by
 // (LENS_IP_COUNTER_DAYS after filing); the operator then decides it (POST /v1/admin/marketplace/ip-claims/{id}/decide).
 // Filing and countering take the workspace's owner or an admin.
+//
+// B41.185: a publish may carry age_rating (all, 13+, 16+ or 18+; without one it is 18+) and content_labels (adult, violence,
+// medical_advice, financial_advice, legal_advice; adult is 18+ only). A workspace whose content filter does not show a
+// listing — rated above its max_age_rating, or carrying a label it blocks — never finds it in the catalog, search
+// (here and MCP's market_search) or a collection, and reads it as 404; a listing it blocked stays out of the first three.
+// It always sees its own. Changing the filter, labels or blocks takes the workspace's owner or an admin.
 //
 // B32.51: every listing read — these, search, a collection's listings and MCP's market_listing and market_search —
 // shows each offer's price beside its US-dollar one in the reader's currency (display, internal/market/display.go):
@@ -189,6 +200,60 @@ func mountMarketRoutes(r chi.Router, store *market.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, terms)
 	}))
+	r.Put("/v1/workspaces/{wsID}/marketplace/listings/{listingID}/content-labels", marketOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			AgeRating     string   `json:"age_rating"`
+			ContentLabels []string `json:"content_labels"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "body must be {age_rating, content_labels}: "+err.Error())
+			return
+		}
+		l, err := store.SetContentLabels(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "listingID"), in.AgeRating, in.ContentLabels)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, l)
+	}))
+	r.Get("/v1/workspaces/{wsID}/marketplace/content-filter", func(w http.ResponseWriter, req *http.Request) {
+		f, err := store.ContentFilter(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, f)
+	})
+	r.Put("/v1/workspaces/{wsID}/marketplace/content-filter", marketOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			MaxAgeRating  string   `json:"max_age_rating"`
+			BlockedLabels []string `json:"blocked_labels"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "body must be {max_age_rating, blocked_labels}: "+err.Error())
+			return
+		}
+		f, err := store.SetContentFilter(req.Context(), chi.URLParam(req, "wsID"), in.MaxAgeRating, in.BlockedLabels)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, f)
+	}))
+	r.Put("/v1/workspaces/{wsID}/marketplace/blocked-listings/{listingID}", marketOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
+		if err := store.BlockListing(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "listingID")); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r.Delete("/v1/workspaces/{wsID}/marketplace/blocked-listings/{listingID}", marketOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
+		if err := store.UnblockListing(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "listingID")); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	r.Post("/v1/workspaces/{wsID}/marketplace/listings/{listingID}/remix", marketOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			Version int `json:"version"`
@@ -220,9 +285,9 @@ func mountMarketRoutes(r chi.Router, store *market.Store) {
 		writeJSONOK(w, http.StatusOK, map[string]any{"listings": list})
 	})
 	r.Get("/v1/marketplace/listings", func(w http.ResponseWriter, req *http.Request) {
-		list, err := store.Catalog(req.Context(), req.URL.Query().Get("kind"))
+		viewer, _ := auth.WorkspaceIdentity(req.Context())
+		list, err := store.Catalog(req.Context(), viewer, req.URL.Query().Get("kind"))
 		if err == nil {
-			viewer, _ := auth.WorkspaceIdentity(req.Context())
 			err = showPrices(store, req, viewer, listingRefs(list)...)
 		}
 		if err != nil {
