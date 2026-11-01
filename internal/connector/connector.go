@@ -195,8 +195,34 @@ func (s *Store) Redeem(ctx context.Context, code, clientID, redirectURI, verifie
 	return g, nil
 }
 
-// KeyIssued records the key a redeemed grant was given, so the owner can see which key each connection holds.
-func (s *Store) KeyIssued(ctx context.Context, grantID, keyID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE connector_grants SET key_id = $2 WHERE id = $1`, grantID, keyID)
-	return err
+// Issue gives a redeemed grant its access token, behind keyID: the agent's key minted for it, whose plaintext nobody
+// holds. Only the grant's listing URL accepts the token (Holder), so the assistant can use that listing and nothing
+// else the agent may do.
+func (s *Store) Issue(ctx context.Context, grantID, keyID string) (string, error) {
+	tok := "tlc_" + token(32)
+	tag, err := s.pool.Exec(ctx, `UPDATE connector_grants SET key_id = $2, access_hash = $3 WHERE id = $1 AND status = 'used' AND key_id IS NULL`,
+		grantID, keyID, hash(tok))
+	if err == nil && tag.RowsAffected() != 1 {
+		err = ErrInvalidGrant
+	}
+	return tok, err
+}
+
+// Holder is who an access token acts as: the workspace and the agent's key behind it.
+type Holder struct {
+	WorkspaceID, KeyID string
+	Scopes             []string
+}
+
+// Holder reads the token's grant for listingID; ErrInvalidGrant for a token of another listing, or whose key the owner
+// revoked or that has expired.
+func (s *Store) Holder(ctx context.Context, accessToken, listingID string) (Holder, error) {
+	var h Holder
+	err := s.pool.QueryRow(ctx, `SELECT g.workspace_id, g.key_id, k.scopes FROM connector_grants g JOIN workspace_api_keys k ON k.id::text = g.key_id
+		WHERE g.access_hash = $1 AND g.listing_id = $2 AND g.status = 'used' AND (k.expires_at IS NULL OR k.expires_at > now())`,
+		hash(accessToken), listingID).Scan(&h.WorkspaceID, &h.KeyID, &h.Scopes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return h, ErrInvalidGrant
+	}
+	return h, err
 }

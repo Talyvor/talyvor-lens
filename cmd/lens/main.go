@@ -2716,7 +2716,7 @@ func run() error {
 	mcpServer.SetSearcher(dualToken)        // B41.107: search_workspace
 	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
-	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
+	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
 	var approvalPusher economy.ApprovalPusher
 	if cfg.VAPIDPrivateKey != "" {
@@ -2765,7 +2765,7 @@ func run() error {
 	r.With(mcpAuth).Post("/mcp", mcpServer.HandleRPC)
 	r.With(mcpAuth).Get("/mcp/sse", mcpServer.HandleSSE)
 	// B41.178: one listing as its own tool, for an assistant the connector added it to.
-	r.With(listingChallenge(cfg.PublicURL), mcpAuth).Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
+	r.With(listingChallenge(cfg.PublicURL), connectorAuth(connectorGrantStore)).Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
 		mcpServer.HandleListingRPC(w, req, chi.URLParam(req, "listingID"))
 	})
 

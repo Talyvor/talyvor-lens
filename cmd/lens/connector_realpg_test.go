@@ -22,29 +22,18 @@ import (
 	"github.com/talyvor/lens/internal/tenant"
 )
 
-type connectorTestDeps struct{ agents *economy.DualTokenStore }
-
-type connectorAnswersFour struct{}
-
-func (connectorAnswersFour) Run(context.Context, string, []market.Message) (string, error) { return "4", nil }
-
 type connectorMeter struct{}
 
-func (connectorMeter) MeterMarketUse(context.Context, string, string, int64, time.Time) error { return nil }
-
-func (d connectorTestDeps) UseDeps(context.Context, string) market.UseDeps {
-	return market.UseDeps{Runner: connectorAnswersFour{}, Meter: connectorMeter{}, Agents: d.agents}
-}
-
-func (d connectorTestDeps) LicenceDeps(context.Context, string) market.LicenceDeps {
-	return market.LicenceDeps{Meter: connectorMeter{}, Agents: d.agents, Capabilities: d.agents}
+func (connectorMeter) MeterMarketUse(context.Context, string, string, int64, time.Time) error {
+	return nil
 }
 
 // B41.178 — what B41.78's connect page and an assistant do, through the routes main.go mounts: the listing's own MCP
 // URL answers 401 naming its resource metadata, which names this authorisation server; the assistant registers,
-// authorizes with PKCE, the owner reads the request and approves it for an agent, and the code buys that agent's key
-// once — a wrong verifier spends it, and a spent code buys nothing. On that key the listing is the URL's one tool,
-// and one call of it is one billed use on the buyer's marketplace bill, logged as the agent's market_use.
+// authorizes with PKCE, the owner reads the request and approves it for an agent, and the code buys a connector
+// token once — a wrong verifier spends it, and a spent code buys nothing. The token opens only that listing's URL,
+// where the listing is the one tool, and one call of it is one billed use on the buyer's marketplace bill, logged as
+// the agent's market_use; revoking the key behind the token ends it.
 func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -68,16 +57,26 @@ func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 	}
 	mcpServer := mcp.New(pool, nil, nil, nil, nil, "test")
 	mcpServer.SetAgentBank(bank)
-	mcpServer.SetMarket(store, connectorTestDeps{agents: bank})
+	// The model calls go through the in-process proxy, as the key behind the token; this one records who called and
+	// answers 4. Through the router (lens) they would carry the token, which opens nothing there.
+	var ranAs []string
+	wallet := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if a := auth.GetAuthContext(req.Context()); a != nil {
+			ranAs = append(ranAs, a.APIKeyID)
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"content": []map[string]string{{"type": "text", "text": "4"}}})
+	})
+	lens := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSONErr(w, http.StatusUnauthorized, "not this way") })
+	mcpServer.SetMarket(store, mcpMarketDeps{lens: lens, wallet: wallet, meter: connectorMeter{}, agents: bank})
 	grants := connector.NewStore(pool)
 	keyStore := auth.New(pool)
 	r := chi.NewRouter()
 	mountConnectorPublicRoutes(r, grants, bank, tenant.NewStore(pool), pub)
 	mountConnectorOwnerRoutes(r, grants, bank)
-	r.With(listingChallenge(pub), auth.AuthMiddleware(keyStore, auth.NewManager("", nil, keyStore, tenant.NewStore(pool)))).
-		Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
-			mcpServer.HandleListingRPC(w, req, chi.URLParam(req, "listingID"))
-		})
+	r.With(listingChallenge(pub), connectorAuth(grants)).Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
+		mcpServer.HandleListingRPC(w, req, chi.URLParam(req, "listingID"))
+	})
+	r.With(auth.AuthMiddleware(keyStore, auth.NewManager("", nil, keyStore, tenant.NewStore(pool)))).Post("/mcp", mcpServer.HandleRPC)
 
 	owner := &auth.AuthContext{WorkspaceID: buyer, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
 	do := func(who *auth.AuthContext, bearer, method, path, contentType, body string) *httptest.ResponseRecorder {
@@ -184,8 +183,15 @@ func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 	code := connect()
 	key := exchange(code, verifier, http.StatusOK)
 	exchange(code, verifier, http.StatusBadRequest) // a code buys one key
-	if n := 0; pool.QueryRow(ctx, `SELECT count(*) FROM agent_account_keys WHERE agent_id = $1`, agent.ID).Scan(&n) != nil || n != 1 {
-		t.Fatalf("the agent holds %d keys; want the one the connector issued", n)
+	if n := 0; pool.QueryRow(ctx, `SELECT count(*) FROM agent_account_keys WHERE agent_id = $1`, agent.ID).Scan(&n) != nil || n != 1 || !strings.HasPrefix(key, "tlc_") {
+		t.Fatalf("the agent holds %d keys and the assistant %q; want one key behind a connector token", n, key)
+	}
+	// The token opens its listing's URL and nothing else: not /mcp, where the agent's other tools are.
+	if w := do(nil, key, http.MethodPost, "/mcp", "application/json", rpc); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the connector token on /mcp = %d %s; want 401", w.Code, w.Body.String())
+	}
+	if w := do(nil, key, http.MethodPost, "/mcp/listings/"+adder.ID+"x", "application/json", rpc); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the connector token on another listing = %d; want 401", w.Code)
 	}
 
 	type rpcAnswer struct {
@@ -227,7 +233,21 @@ func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 		(SELECT count(*) FROM agent_tool_calls WHERE agent_id = $2 AND tool = 'market_use' AND outcome = 'ok')`, adder.ID, agent.ID).Scan(&all, &logged); err != nil {
 		t.Fatal(err)
 	}
+	var behind string
+	if err := pool.QueryRow(ctx, `SELECT key_id FROM connector_grants WHERE access_hash IS NOT NULL`).Scan(&behind); err != nil {
+		t.Fatal(err)
+	}
+	if len(ranAs) != 1 || ranAs[0] != behind {
+		t.Fatalf("the listing's model calls ran as %v; want once, as the key behind the token (%s)", ranAs, behind)
+	}
 	if billed != 1 || price <= 0 || all != 1 || logged != 1 {
 		t.Fatalf("one use from the assistant wrote %d billed rows (%d µLXC) of %d, and %d logged calls; want one billed use", billed, price, all, logged)
+	}
+	// The owner revokes the key the connection holds, and the assistant can use the listing no more.
+	if _, err := pool.Exec(ctx, `DELETE FROM workspace_api_keys WHERE id::text = (SELECT key_id FROM connector_grants WHERE access_hash IS NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if w := do(nil, key, http.MethodPost, mcpPath, "application/json", rpc); w.Code != http.StatusUnauthorized {
+		t.Fatalf("after the key was revoked = %d; want 401", w.Code)
 	}
 }
