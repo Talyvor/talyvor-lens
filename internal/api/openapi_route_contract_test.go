@@ -473,6 +473,9 @@ const undocumentedB482Routes = 3
 // crypto agent's key and an instant freeze — on a line of their own.
 const undocumentedB483Routes = 4
 
+// +3 (B53.2): POST and GET /v1/money/reusable-cards and PATCH /v1/money/reusable-cards/{id} — on a line of their own.
+const undocumentedB532Routes = 3
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -487,6 +490,7 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		n++
 	}
 	n -= undocumentedB533Routes // B53.3's routes, subtracted here so the shared sum below is left as other items wrote it
+	n -= undocumentedB532Routes // B53.2's routes, subtracted here so the shared sum below is left as other items wrote it
 	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes+undocumentedB512Routes+undocumentedB4611Routes+undocumentedB41105Routes+undocumentedB41107Routes+undocumentedB41111Routes+undocumentedB482Routes+undocumentedB483Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+

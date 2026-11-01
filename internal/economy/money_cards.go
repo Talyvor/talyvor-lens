@@ -400,6 +400,9 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		return false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if done, approved, reason, err := s.authorizeReusableCharge(ctx, tx, partner, a); done { // B53.2
+		return approved, reason, err
+	}
 	var c MoneyCard
 	var ws, agentID, funding string
 	var expires time.Time
