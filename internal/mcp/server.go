@@ -298,9 +298,13 @@ func (s *Server) dispatch(ctx context.Context, req rpcRequest) rpcResponse {
 		return rpcOK(req.ID, map[string]any{"supportedVersions": supportedVersions, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "ping":
 		return rpcOK(req.ID, map[string]any{})
-	case "tools/list":
-		return rpcOK(req.ID, map[string]any{"tools": s.tools()})
-	case "tools/call":
+	case "tools/list", "tools/call":
+		if id, ok := listingOf(ctx); ok { // B41.178: /mcp/listings/{id}
+			return s.dispatchListing(ctx, req, id)
+		}
+		if req.Method == "tools/list" {
+			return rpcOK(req.ID, map[string]any{"tools": s.tools()})
+		}
 		return s.handleToolsCall(ctx, req.ID, req.Params)
 	default:
 		return rpcErr(req.ID, rpcErrMethodNotFnd, "method not found: "+req.Method)

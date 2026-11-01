@@ -63,6 +63,7 @@ import (
 	"github.com/talyvor/lens/internal/compressmeasure"
 	"github.com/talyvor/lens/internal/compressor"
 	"github.com/talyvor/lens/internal/config"
+	"github.com/talyvor/lens/internal/connector"
 	"github.com/talyvor/lens/internal/controlplane"
 	"github.com/talyvor/lens/internal/costanomaly"
 	"github.com/talyvor/lens/internal/dashboard"
@@ -1888,6 +1889,7 @@ func run() error {
 	}
 	// B20.2 — a buyer's paid marketplace uses go on their monthly Stripe bill, and a paid invoice clears them.
 	marketStore := market.NewStore(pool)
+	connectorGrantStore := connector.NewStore(pool)                           // B41.178: the Talyvor connector's OAuth grants
 	marketStore.SetTrialMax(cfg.MarketTrialMax)                               // B32.21
 	marketStore.SetLineageLimits(cfg.LineageMaxShareBPS, cfg.LineageMaxDepth) // B32.24
 	marketStore.SetLineageTotalCap(cfg.LineageTotalCapBPS)                    // B32.26
@@ -2534,6 +2536,8 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		// B41.178: the Talyvor connector — discovery, registration, authorize and token for Claude, ChatGPT and Cursor.
+		mountConnectorPublicRoutes(pub, connectorGrantStore, dualToken, tenantStore, cfg.PublicURL)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
 		// B45.24: every A2A request is checked against Web Bot Auth; a bad signature is 401.
 		pub.Group(func(a2a chi.Router) {
@@ -2712,7 +2716,7 @@ func run() error {
 	mcpServer.SetSearcher(dualToken)        // B41.107: search_workspace
 	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
-	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
+	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
 	var approvalPusher economy.ApprovalPusher
 	if cfg.VAPIDPrivateKey != "" {
@@ -2760,6 +2764,10 @@ func run() error {
 	mcpAuth := auth.AuthMiddleware(keyStore, authManager)
 	r.With(mcpAuth).Post("/mcp", mcpServer.HandleRPC)
 	r.With(mcpAuth).Get("/mcp/sse", mcpServer.HandleSSE)
+	// B41.178: one listing as its own tool, for an assistant the connector added it to.
+	r.With(listingChallenge(cfg.PublicURL), connectorAuth(connectorGrantStore)).Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
+		mcpServer.HandleListingRPC(w, req, chi.URLParam(req, "listingID"))
+	})
 
 	// THE BROWSER SURFACE. This used to be a 41-panel dashboard; it is now one
 	// static status page, and the reason is in internal/dashboard/handler.go: ten
@@ -4738,6 +4746,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountConnectorOwnerRoutes(authed, connectorGrantStore, dualToken)               // B41.178
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1

@@ -367,37 +367,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if in.Name == "" {
 			in.Name = agentID
 		}
-		// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
-		book, err := bank.AgentBook(req.Context(), wsID)
+		raw, key, status, err := mintAgentKey(req.Context(), bank, keys, wsID, agentID, in.Name)
 		if err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		found, archived, room := false, false, false
-		for _, a := range book.Agents {
-			if a.ID == agentID {
-				found, archived, room = true, a.ArchivedAt != nil, a.Kind == economy.AgentKindRoom
-			}
-		}
-		if !found {
-			writeJSONErr(w, http.StatusNotFound, economy.ErrAgentNotFound.Error())
-			return
-		}
-		if archived {
-			writeJSONErr(w, http.StatusConflict, economy.ErrAgentArchived.Error())
-			return
-		}
-		if room { // B32.32: before a key is minted that it would refuse
-			writeJSONErr(w, http.StatusConflict, economy.ErrRoomWalletKey.Error())
-			return
-		}
-		raw, key, err := keys.CreateAPIKey(req.Context(), wsID, in.Name, []string{"proxy"}, nil)
-		if err != nil {
-			writeJSONErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := bank.AttachAgentKey(req.Context(), wsID, agentID, key.ID); err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			writeJSONErr(w, status, err.Error())
 			return
 		}
 		writeJSONOK(w, http.StatusCreated, map[string]any{
@@ -1349,6 +1321,42 @@ func keyAgent(req *http.Request, bank agentBank) (string, error) {
 func rulesChange(req *http.Request, what string) context.Context {
 	who, _ := storedanswers.OwnerOrAdmin(req.Context())
 	return economy.WithRulesChange(req.Context(), who, what)
+}
+
+// agentKeyRefusal says why no key may be minted for agentID, with its status; nil when one may.
+func agentKeyRefusal(ctx context.Context, bank agentBank, wsID, agentID string) (int, error) {
+	// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
+	book, err := bank.AgentBook(ctx, wsID)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	for _, a := range book.Agents {
+		switch {
+		case a.ID != agentID:
+		case a.ArchivedAt != nil:
+			return http.StatusConflict, economy.ErrAgentArchived
+		case a.Kind == economy.AgentKindRoom: // B32.32: before a key is minted that it would refuse
+			return http.StatusConflict, economy.ErrRoomWalletKey
+		default:
+			return 0, nil
+		}
+	}
+	return http.StatusNotFound, economy.ErrAgentNotFound
+}
+
+// mintAgentKey issues agentID its own proxy key: POST …/agents/{agentID}/keys, and the connector's token (B41.178).
+func mintAgentKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, wsID, agentID, name string) (string, *tenant.WorkspaceAPIKey, int, error) {
+	if status, err := agentKeyRefusal(ctx, bank, wsID, agentID); err != nil {
+		return "", nil, status, err
+	}
+	raw, key, err := keys.CreateAPIKey(ctx, wsID, name, []string{"proxy"}, nil)
+	if err != nil {
+		return "", nil, http.StatusBadRequest, err
+	}
+	if err := bank.AttachAgentKey(ctx, wsID, agentID, key.ID); err != nil {
+		return "", nil, http.StatusInternalServerError, err
+	}
+	return raw, key, 0, nil
 }
 
 func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
