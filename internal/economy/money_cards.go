@@ -66,6 +66,7 @@ type MoneyCard struct {
 	Partner    string     `json:"partner,omitempty"`
 	Last4      string     `json:"last4,omitempty"`
 	SpentMinor int64      `json:"spent_minor"`
+	FormFactor string     `json:"form_factor"` // virtual, physical or unknown (B53.1)
 	Detail     string     `json:"detail,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 
@@ -258,8 +259,8 @@ func (s *DualTokenStore) ApproveCardBatch(ctx context.Context, workspaceID, id, 
 			continue
 		}
 		if _, err := s.pool.Exec(ctx, `UPDATE money_cards SET status = $2, partner = $3, partner_ref = $4, last4 = $5,
-			expires_at = now() + $6 * interval '1 second', updated_at = now() WHERE id = $1 AND status = $7`, c.ID, MoneyCardActive, partner,
-			card.Ref, card.Last4, MoneyCardLife.Seconds(), MoneyCardIssuing); err != nil {
+			expires_at = now() + $6 * interval '1 second', form_factor = $8, updated_at = now() WHERE id = $1 AND status = $7`, c.ID, MoneyCardActive, partner,
+			card.Ref, card.Last4, MoneyCardLife.Seconds(), MoneyCardIssuing, money.KnownFormFactor(card.FormFactor)); err != nil {
 			return b, fmt.Errorf("economy: card batch: %w", err)
 		}
 	}
@@ -432,8 +433,10 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 	default:
 		approved = true
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO money_card_authorizations (partner, id, card_id, workspace_id, merchant, amount_minor, currency, approved, reason)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, partner, a.ID, c.ID, ws, a.Merchant, a.Amount.Minor, a.Amount.Asset, approved, reason); err != nil {
+	d := a.Normal() // the charge's CardDetails
+	if _, err := tx.Exec(ctx, `INSERT INTO money_card_authorizations (partner, id, card_id, workspace_id, merchant, amount_minor, currency, approved, reason,
+		mcc, merchant_country, channel, wallet) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, partner, a.ID, c.ID, ws, a.Merchant,
+		a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet); err != nil {
 		return false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	if approved {
@@ -446,7 +449,7 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 			return false, "", fmt.Errorf("economy: card charge: %w", err)
 		}
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsOut, Kind: "card_charge",
-			IdempotencyKey: "card_charge:" + c.ID, Funding: funding, Memo: c.Merchant, Counterparty: c.Merchant, PartnerRef: a.ID,
+			IdempotencyKey: "card_charge:" + c.ID, Funding: funding, Memo: c.Merchant, Counterparty: c.Merchant, PartnerRef: a.ID, Card: &d,
 			Postings: []MoneyPosting{{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: from.partnerID, AmountMinor: a.Amount.Minor},
 				{AccountID: c.accountID, AmountMinor: c.CapMinor - a.Amount.Minor}}}, s.screener); err != nil {
 			return false, "", err
@@ -536,7 +539,7 @@ func (s *DualTokenStore) cardBatch(ctx context.Context, workspaceID, agentID, id
 }
 
 func (s *DualTokenStore) moneyCards(ctx context.Context, batchID string) ([]MoneyCard, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, line, merchant, cap_minor, currency, status, partner, last4, spent_minor, detail, expires_at,
+	rows, err := s.pool.Query(ctx, `SELECT id, line, merchant, cap_minor, currency, status, partner, last4, spent_minor, form_factor, detail, expires_at,
 		account_id, wallet_ref, hold_account_id, partner_ref FROM money_cards WHERE batch_id = $1 ORDER BY line`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: cards: %w", err)
@@ -545,7 +548,7 @@ func (s *DualTokenStore) moneyCards(ctx context.Context, batchID string) ([]Mone
 	out := []MoneyCard{}
 	for rows.Next() {
 		var c MoneyCard
-		if err := rows.Scan(&c.ID, &c.Line, &c.Merchant, &c.CapMinor, &c.Currency, &c.Status, &c.Partner, &c.Last4, &c.SpentMinor, &c.Detail,
+		if err := rows.Scan(&c.ID, &c.Line, &c.Merchant, &c.CapMinor, &c.Currency, &c.Status, &c.Partner, &c.Last4, &c.SpentMinor, &c.FormFactor, &c.Detail,
 			&c.ExpiresAt, &c.accountID, &c.walletRef, &c.holdAccountID, &c.partnerRef); err != nil {
 			return nil, err
 		}

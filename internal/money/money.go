@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -243,12 +244,70 @@ const (
 
 // Card is a card at a partner.
 type Card struct {
-	Ref      string `json:"partner_ref"`
-	Wallet   string `json:"wallet"`
-	Last4    string `json:"last4"`
-	Merchant string `json:"merchant,omitempty"`
-	Cap      Amount `json:"cap"`
-	State    string `json:"state"`
+	Ref        string `json:"partner_ref"`
+	Wallet     string `json:"wallet"`
+	Last4      string `json:"last4"`
+	Merchant   string `json:"merchant,omitempty"`
+	Cap        Amount `json:"cap"`
+	State      string `json:"state"`
+	FormFactor string `json:"form_factor"` // CardVirtual or CardPhysical
+}
+
+// What a card payment says about itself (B53.1). Unknown is whatever an issuer did not say, or said malformed, and
+// what every payment and card from before B53.1 reads as.
+const (
+	Unknown = "unknown"
+
+	CardVirtual  = "virtual"
+	CardPhysical = "physical"
+
+	ChannelInPerson    = "in_person"
+	ChannelOnline      = "online"
+	ChannelContactless = "contactless"
+
+	WalletApplePay   = "apple_pay"
+	WalletGooglePay  = "google_pay"
+	WalletSamsungPay = "samsung_pay"
+	WalletNone       = "none" // the card itself, not a phone wallet
+)
+
+// CardDetails is where and how a card payment was made, as its issuer reports it: the merchant category code (ISO
+// 18245, four digits), the merchant's country (ISO 3166 alpha-2), the channel and the phone wallet it was paid from.
+type CardDetails struct {
+	MCC     string `json:"mcc"`
+	Country string `json:"merchant_country"`
+	Channel string `json:"channel"`
+	Wallet  string `json:"wallet_type"`
+}
+
+// Normal is d with every field trimmed, and Unknown for any the issuer left out or sent malformed.
+func (d CardDetails) Normal() CardDetails {
+	known := func(v string, ok func(string) bool) string {
+		if v = strings.TrimSpace(v); ok(v) {
+			return v
+		}
+		return Unknown
+	}
+	digits := func(n int) func(string) bool {
+		return func(v string) bool { return len(v) == n && strings.Trim(v, "0123456789") == "" }
+	}
+	oneOf := func(vs ...string) func(string) bool { return func(v string) bool { return slices.Contains(vs, v) } }
+	return CardDetails{
+		MCC: known(d.MCC, digits(4)),
+		Country: known(strings.ToUpper(d.Country), func(v string) bool {
+			return len(v) == 2 && strings.Trim(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") == ""
+		}),
+		Channel: known(strings.ToLower(d.Channel), oneOf(ChannelInPerson, ChannelOnline, ChannelContactless)),
+		Wallet:  known(strings.ToLower(d.Wallet), oneOf(WalletApplePay, WalletGooglePay, WalletSamsungPay, WalletNone)),
+	}
+}
+
+// KnownFormFactor is f if it is CardVirtual or CardPhysical, and Unknown otherwise.
+func KnownFormFactor(f string) string {
+	if f == CardVirtual || f == CardPhysical {
+		return f
+	}
+	return Unknown
 }
 
 // Authorization is a card issuer asking, as a charge is made on a card, whether it may go. Lens answers; the issuer
@@ -258,6 +317,7 @@ type Authorization struct {
 	Card     string `json:"partner_ref"` // the card's
 	Merchant string `json:"merchant"`
 	Amount   Amount `json:"amount"`
+	CardDetails
 }
 
 // Payouts pays a seller or a Room member out of a wallet.
