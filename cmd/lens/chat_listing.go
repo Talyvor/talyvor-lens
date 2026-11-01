@@ -24,6 +24,10 @@ import (
 // charged. Only a skill or an agent can be asked in Chat.
 //
 // Each request is one use: a question whose model calls a tool takes a request for each round, and each is charged.
+//
+// B41.79 — CALL ANY LISTING AS A MODEL. A request whose model is "listing/<listing id>" is the same use, from any app or
+// SDK: the listing's own model answers, and a prompt listing's filled template goes in as its instructions, its
+// {{variables}} taken from the body's "variables" object (an SDK's extra_body), which is not sent on.
 
 const (
 	listingHeader       = "X-Talyvor-Listing"
@@ -38,7 +42,7 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			listingID := strings.TrimSpace(r.Header.Get(listingHeader))
-			if listingID == "" {
+			if listingID == "" && shape == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -46,24 +50,56 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 				writeJSONErr(w, http.StatusBadRequest, "a marketplace listing can be asked in Chat only through an OpenAI-compatible or an Anthropic model")
 				return
 			}
+			const maxBody = 4 << 20 // the proxy's own cap
+			raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+			if err != nil {
+				writeJSONErr(w, http.StatusBadRequest, "read body: "+err.Error())
+				return
+			}
+			// The body read so far is put back in front of the rest: a request that names no listing reaches the proxy as it came.
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(raw), r.Body), r.Body}
+			var body map[string]json.RawMessage
+			var model string
+			if json.Unmarshal(raw, &body) == nil {
+				_ = json.Unmarshal(body["model"], &model)
+			}
+			viaModel := listingID == "" && strings.HasPrefix(model, listingModelPrefix)
+			if listingID == "" && !viaModel {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if len(raw) > maxBody {
+				writeJSONErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
+			if body == nil {
+				writeJSONErr(w, http.StatusBadRequest, "request body must be a JSON object")
+				return
+			}
+			if viaModel {
+				listingID, model = strings.TrimSpace(strings.TrimPrefix(model, listingModelPrefix)), "" // "": the listing's own model
+				if listingID == "" {
+					writeJSONErr(w, http.StatusBadRequest, `model "listing/" names no listing: use "listing/<listing id>"`)
+					return
+				}
+			}
+			var variables map[string]string
+			if v, ok := body["variables"]; ok {
+				if err := json.Unmarshal(v, &variables); err != nil {
+					writeJSONErr(w, http.StatusBadRequest, "variables must be an object of strings: "+err.Error())
+					return
+				}
+				delete(body, "variables")
+			}
 			actx := auth.GetAuthContext(r.Context())
 			if actx == nil || actx.WorkspaceID == "" {
 				writeJSONErr(w, http.StatusUnauthorized, "a listing is used by a workspace")
 				return
 			}
 			wsID := actx.WorkspaceID
-			raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20)) // the proxy's own cap
-			if err != nil {
-				writeJSONErr(w, http.StatusRequestEntityTooLarge, "request body too large")
-				return
-			}
-			var body map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &body); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "request body must be a JSON object")
-				return
-			}
-			var model string
-			_ = json.Unmarshal(body["model"], &model)
 			agentID, person, err := marketCaller(r, agents, wsID)
 			if err != nil {
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -74,14 +110,14 @@ func chatListing(store *market.Store, meter market.Meter, agents marketAgents, s
 				m, byKind = k.meterFor(wsID), k
 			}
 			lw := &listingWriter{ResponseWriter: w}
-			run := &chatListingRunner{next: next, w: lw, r: r, body: body, shape: shape}
+			run := &chatListingRunner{next: next, w: lw, r: r, body: body, shape: shape, setModel: viaModel}
 			deps := market.UseDeps{Runner: run, Meter: m, Agents: agents, Charged: func(u market.Use) {
 				w.Header().Set(listingChargeHeader, u.Charge)
 				run.kind = u.Kind
 			}}
 			// The runner sends the chat's own messages; Input only satisfies the use's plan, which needs one. A chat that
 			// hangs up once its answer is in cannot cancel the use's record and its bill: only the model call is the chat's.
-			u, err := store.Use(context.WithoutCancel(r.Context()), deps, wsID, agentID, listingID, market.UseRequest{Model: model, Input: "(the chat's question)", Person: person})
+			u, err := store.Use(context.WithoutCancel(r.Context()), deps, wsID, agentID, listingID, market.UseRequest{Model: model, Input: "(the chat's question)", Variables: variables, Person: person})
 			switch {
 			case err != nil && lw.status != 0:
 				// The model call answered, and was relayed as it is; the use was removed and is not charged.
@@ -105,13 +141,24 @@ type chatListingRunner struct {
 	shape string
 	kind  string // the listing's, once the use is charged
 	ran   bool
+	// setModel: the request named the listing as its model, so the model the use resolved is the one called.
+	setModel bool
 }
 
-func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.Message) (string, error) {
-	if (c.kind != "skill" && c.kind != "agent") || c.ran || len(messages) == 0 || messages[0].Role != "system" {
-		return "", fmt.Errorf("%w in Chat: only a skill or an agent can be asked there", market.ErrNotRunnable)
+// listingModelPrefix starts a model id that names a listing (B41.79).
+const listingModelPrefix = "listing/"
+
+func (c *chatListingRunner) Run(_ context.Context, model string, messages []market.Message) (string, error) {
+	// A skill's or an agent's instructions are its system prompt; a prompt's are its filled template.
+	asked := (c.kind == "skill" || c.kind == "agent") && len(messages) > 0 && messages[0].Role == "system" ||
+		c.kind == "prompt" && len(messages) == 1
+	if !asked || c.ran {
+		return "", fmt.Errorf("%w in Chat: only a skill, an agent or a prompt can be asked there", market.ErrNotRunnable)
 	}
 	c.ran = true
+	if c.setModel {
+		c.body["model"] = rawJSON(model)
+	}
 	if err := withSystem(c.body, c.shape, messages[0].Content); err != nil {
 		return "", fmt.Errorf("%w: %v", market.ErrInvalid, err)
 	}
