@@ -75,13 +75,19 @@ func (c Chain) tokenText(ctx context.Context, token, fn string) string {
 	if err != nil {
 		return ""
 	}
+	return abiText(b)
+}
+
+// abiText is an ABI string, or a bytes32, as text of at most 64 bytes; "" when b is neither. b is whatever a token
+// chose to answer.
+func abiText(b []byte) string {
 	var s []byte
 	switch {
 	case len(b) == 32:
 		s = bytes.TrimRight(b, "\x00")
 	case len(b) >= 64:
 		off, n := new(big.Int).SetBytes(b[:32]), new(big.Int).SetBytes(b[32:64])
-		if off.Cmp(big.NewInt(32)) != 0 || !n.IsInt64() || 64+n.Int64() > int64(len(b)) {
+		if off.Cmp(big.NewInt(32)) != 0 || n.Cmp(big.NewInt(int64(len(b)-64))) > 0 { // compared as big: 64+n overflows
 			return ""
 		}
 		s = b[64 : 64+n.Int64()]
