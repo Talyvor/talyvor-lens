@@ -276,6 +276,10 @@ func (s *DualTokenStore) payMoneyAllowance(ctx context.Context, tx pgx.Tx, a Mon
 	if company == "" || agent == "" {
 		return refuse(fmt.Sprintf("the company's or the agent's %s account is not open", a.Currency))
 	}
+	// As a payment out does: the balances read below are the ones posted against, with no payment between.
+	if _, err := sp.Exec(ctx, `SELECT 1 FROM money_accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []string{company, agent}); err != nil {
+		return fmt.Errorf("economy: run allowances: %w", err)
+	}
 	held := func(account string) (int64, error) {
 		var n int64
 		err := sp.QueryRow(ctx, `SELECT COALESCE(sum(balance_minor), 0)::bigint FROM money_account_balances WHERE account_id = $1 AND funding = $2`,
