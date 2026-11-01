@@ -116,3 +116,88 @@ func TestChatListing_TwoQuestionsAreTwoBilledUses(t *testing.T) {
 		t.Errorf("no listing: %d, sent %+v; want the request untouched", w.Code, sent[len(sent)-1])
 	}
 }
+
+// B41.79 — a chat completion whose model is "listing/<id>", from any OpenAI SDK, runs the listing on its own model and
+// bills exactly one use: an agent with its instructions first, a prompt with its template filled from "variables",
+// which never reaches the model's provider — asserted on market_uses and the meter events.
+func TestChatListing_ListingAsModelIsOneBilledUse(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const seller, buyer = "ws-model-seller", "ws-model-buyer"
+
+	stripeFake := &marketStripe{}
+	store := market.NewStore(pool)
+	bank := economy.NewDualTokenStore(nil, pool, nil)
+	svc := billing.New(pool, bank, stripeFake, "whsec_listing_model").WithMarketBill(stripeFake, "price_market", "talyvor_marketplace_use", store)
+
+	var sent map[string]json.RawMessage // what the provider was asked
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = nil
+		_ = json.NewDecoder(r.Body).Decode(&sent)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\ndata: [DONE]\n\n"))
+	})
+	r := chi.NewRouter()
+	mountMarketRoutes(r, store)
+	r.Post("/v1/proxy/openai/*", chatListing(store, svc, bank, chatShapeOpenAI)(proxy))
+	call := func(ws, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		who := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner-" + ws, Scopes: []string{auth.ScopeKeys}}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req.WithContext(auth.WithAuthContext(req.Context(), who)))
+		return w
+	}
+	publish := func(body string) market.Listing {
+		t.Helper()
+		w := call(seller, "/v1/workspaces/"+seller+"/marketplace/listings", body)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("publish = %d %s", w.Code, w.Body)
+		}
+		var l market.Listing
+		_ = json.Unmarshal(w.Body.Bytes(), &l)
+		return l
+	}
+	billed := func(id string) (n int, events int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1 AND buyer_workspace_id = $2
+			AND charge = 'billed' AND price_ulxc = 10000000 AND ran_at IS NOT NULL AND metered_at IS NOT NULL`, id, buyer).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n, len(stripeFake.events)
+	}
+	var msgs []market.Message
+	var model string
+
+	agent := publish(`{"kind":"agent","title":"Pirate","price_per_use_ulxc":10000000,"artifact":{"system_prompt":"Talk like a pirate.","model":"gpt-5-mini"}}`)
+	w := call(buyer, "/v1/proxy/openai/v1/chat/completions", `{"model":"listing/`+agent.ID+`","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	_ = json.Unmarshal(sent["messages"], &msgs)
+	_ = json.Unmarshal(sent["model"], &model)
+	if w.Code != http.StatusOK || w.Header().Get(listingChargeHeader) != market.ChargeBilled || !strings.Contains(w.Body.String(), "[DONE]") {
+		t.Fatalf("listing/<agent> = %d, charge %q, body %q; want the stream, marked billed", w.Code, w.Header().Get(listingChargeHeader), w.Body)
+	}
+	if model != "gpt-5-mini" || len(msgs) != 2 || msgs[0] != (market.Message{Role: "system", Content: "Talk like a pirate."}) || msgs[1].Content != "hello" {
+		t.Errorf("the provider was asked %q with %+v; want the listing's own model, its instructions, then the question", model, msgs)
+	}
+	if n, events := billed(agent.ID); n != 1 || events != 1 {
+		t.Fatalf("listing/<agent>: %d billed uses, %d meter events; want exactly 1 and 1", n, events)
+	}
+
+	prompt := publish(`{"kind":"prompt","title":"Haiku","price_per_use_ulxc":10000000,"artifact":{"template":"Write a haiku about {{topic}}.","model":"gpt-5-nano"}}`)
+	w = call(buyer, "/v1/proxy/openai/v1/chat/completions", `{"model":"listing/`+prompt.ID+`","variables":{"topic":"rain"},"messages":[{"role":"user","content":"go"}]}`)
+	msgs, model = nil, ""
+	_ = json.Unmarshal(sent["messages"], &msgs)
+	_ = json.Unmarshal(sent["model"], &model)
+	if _, leaked := sent["variables"]; w.Code != http.StatusOK || leaked || model != "gpt-5-nano" || len(msgs) != 2 || msgs[0].Content != "Write a haiku about rain." {
+		t.Errorf("listing/<prompt> = %d, provider asked %q with %+v (variables sent on: %v); want the filled template first, on the listing's model", w.Code, model, msgs, leaked)
+	}
+	if n, events := billed(prompt.ID); n != 1 || events != 2 {
+		t.Fatalf("listing/<prompt>: %d billed uses, %d meter events in all; want exactly 1 and 2", n, events)
+	}
+
+	// A model that names no listing is the proxy's alone, and charges nothing.
+	if w := call(buyer, "/v1/proxy/openai/v1/chat/completions", `{"model":"gpt-5-mini","messages":[{"role":"user","content":"hi"}]}`); w.Code != http.StatusOK ||
+		w.Header().Get(listingChargeHeader) != "" || len(stripeFake.events) != 2 {
+		t.Errorf("a plain model: %d, charge %q, %d meter events; want untouched and still 2", w.Code, w.Header().Get(listingChargeHeader), len(stripeFake.events))
+	}
+}
