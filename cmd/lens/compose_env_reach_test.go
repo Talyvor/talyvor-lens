@@ -453,6 +453,8 @@ var trackMustDeclare = []otherServiceVar{
 		"HMAC secret for the inbound Lens spend-alert webhook. MUST equal Lens's own LENS_TRACK_WEBHOOK_SECRET — different names, one value"},
 	{"TRACK_LENS_DASHBOARD_URL", "talyvor-track internal/config/config.go:138",
 		"where the AI-cost API links a human. Unset ⇒ no link is emitted (deliberate; talyvor-track #66)"},
+	{"TRACK_INTEGRATION_ENCRYPTION_KEY", "talyvor-track internal/config/config.go:234",
+		"seals the webhook and integration secrets Track stores. Unset ⇒ webhooks and live imports stay off"},
 }
 
 // declaresMapForm reports whether a MAP-form service block declares `NAME:`.
