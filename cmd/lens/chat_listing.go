@@ -112,6 +112,7 @@ func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.M
 		return "", fmt.Errorf("%w in Chat: only a skill or an agent can be asked there", market.ErrNotRunnable)
 	}
 	c.ran = true
+	c.w.guard, c.w.shape = market.NewPromptGuard(messages[0].Content), c.shape
 	if err := withSystem(c.body, c.shape, messages[0].Content); err != nil {
 		return "", fmt.Errorf("%w: %v", market.ErrInvalid, err)
 	}
@@ -119,6 +120,9 @@ func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.M
 	req := c.r.Clone(c.r.Context())
 	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(b)), int64(len(b))
 	c.next.ServeHTTP(c.w, req)
+	if err := c.w.finish(); err != nil {
+		return "", err
+	}
 	if c.w.status == 0 {
 		c.w.status = http.StatusOK // written without a WriteHeader
 	}
@@ -164,9 +168,19 @@ func rawJSON(v any) json.RawMessage {
 }
 
 // listingWriter relays the proxy's answer and keeps the status it answered; the use's charge is named only on a 2xx.
+// With a guard, a 2xx answer is read before the chat gets it, and one that repeats the listing's instructions is
+// withheld as POST …/use withholds it (B50.31): a stream is relayed frame by frame until the frame that would repeat
+// them, which ends it with the withheld text instead; a whole answer is held until it is complete.
 type listingWriter struct {
 	http.ResponseWriter
 	status int
+	guard  *market.PromptGuard
+	shape  string
+	stream bool
+	held   []byte          // what the proxy wrote that is not yet relayed
+	said   strings.Builder // the answer's text so far
+	block  int             // the content block an Anthropic stream is in
+	cut    bool            // withheld: nothing more is relayed
 }
 
 func (w *listingWriter) WriteHeader(code int) {
@@ -175,8 +189,138 @@ func (w *listingWriter) WriteHeader(code int) {
 		if code/100 != 2 {
 			w.Header().Del(listingChargeHeader)
 		}
+		if w.guarding() {
+			w.Header().Del("Content-Length") // a withheld answer is not as long as the one the proxy wrote
+			w.stream = strings.Contains(w.Header().Get("Content-Type"), "event-stream")
+		}
 	}
 	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *listingWriter) guarding() bool { return w.guard != nil && w.status/100 == 2 }
+
+func (w *listingWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if !w.guarding() {
+		return w.ResponseWriter.Write(p)
+	}
+	if w.cut {
+		return len(p), nil
+	}
+	w.held = append(w.held, p...)
+	for w.stream && !w.cut {
+		i := bytes.Index(w.held, []byte("\n\n"))
+		if i < 0 {
+			break
+		}
+		frame := w.held[:i+2]
+		w.held = w.held[i+2:]
+		if err := w.relay(frame); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// relay passes one frame of a stream to the chat, or ends the stream with the withheld text if, with it, the answer
+// repeats the listing's instructions.
+func (w *listingWriter) relay(frame []byte) error {
+	for _, line := range strings.Split(string(frame), "\n") {
+		if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
+			text, block := answerText([]byte(strings.TrimSpace(data)))
+			w.said.WriteString(text)
+			w.block = max(w.block, block)
+		}
+	}
+	if !w.guard.Leaks(w.said.String()) {
+		_, err := w.ResponseWriter.Write(frame)
+		return err
+	}
+	w.cut, w.held = true, nil
+	withheld := "\n\n" + market.WithheldAnswer
+	var end string
+	if w.shape == chatShapeAnthropic {
+		end = fmt.Sprintf("event: content_block_delta\ndata: %s\n\nevent: content_block_stop\ndata: %s\n\n"+
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			rawJSON(map[string]any{"type": "content_block_delta", "index": w.block, "delta": map[string]string{"type": "text_delta", "text": withheld}}),
+			rawJSON(map[string]any{"type": "content_block_stop", "index": w.block}))
+	} else {
+		end = fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n",
+			rawJSON(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": withheld}, "finish_reason": "stop"}}}))
+	}
+	_, err := io.WriteString(w.ResponseWriter, end)
+	return err
+}
+
+// finish relays what is still held once the proxy is done: the rest of a stream, or a whole answer, its text swapped
+// for the withheld text if it repeats the listing's instructions.
+func (w *listingWriter) finish() error {
+	if !w.guarding() || w.cut || len(w.held) == 0 {
+		return nil
+	}
+	held := w.held
+	w.held = nil
+	if w.stream {
+		return w.relay(held) // shortcut: a stream framed other than by blank lines is held whole and read here
+	}
+	out := held
+	if text, _ := answerText(held); w.guard.Leaks(text) {
+		out = withheldBody(held, w.shape)
+	}
+	_, err := w.ResponseWriter.Write(out)
+	return err
+}
+
+// answerText is the text a whole answer, or one frame of a streamed one, carries in either body format, and the
+// Anthropic content block it is in. shortcut: text only; a tool call's arguments are not read. A body that is not
+// JSON is read as text, so it is checked too.
+func answerText(data []byte) (string, int) {
+	var v struct {
+		Choices []struct {
+			Delta, Message struct{ Content string }
+		}
+		Delta        struct{ Text string }
+		ContentBlock struct{ Text string } `json:"content_block"`
+		Content      []struct{ Text string }
+		Index        int
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return string(data), 0
+	}
+	var b strings.Builder
+	for _, c := range v.Choices {
+		b.WriteString(c.Delta.Content + c.Message.Content)
+	}
+	b.WriteString(v.Delta.Text + v.ContentBlock.Text)
+	for _, c := range v.Content {
+		b.WriteString(c.Text)
+	}
+	return b.String(), v.Index
+}
+
+// withheldBody is a whole answer with its text replaced by the withheld text, everything else in it kept.
+func withheldBody(body []byte, shape string) []byte {
+	var v map[string]json.RawMessage
+	_ = json.Unmarshal(body, &v)
+	if v == nil {
+		v = map[string]json.RawMessage{}
+	}
+	if shape == chatShapeAnthropic {
+		v["content"] = rawJSON([]map[string]string{{"type": "text", "text": market.WithheldAnswer}})
+		return rawJSON(v)
+	}
+	var choices []map[string]json.RawMessage
+	_ = json.Unmarshal(v["choices"], &choices)
+	if len(choices) == 0 {
+		choices = []map[string]json.RawMessage{{"index": rawJSON(0)}}
+	}
+	for _, c := range choices {
+		c["message"] = rawJSON(map[string]string{"role": "assistant", "content": market.WithheldAnswer})
+	}
+	v["choices"] = rawJSON(choices)
+	return rawJSON(v)
 }
 
 // Flush keeps a streamed answer streaming.
