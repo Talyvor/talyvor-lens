@@ -2032,6 +2032,16 @@ func run() error {
 	go haComps.leader.Run(ctx, "sanctions-lists", 30*time.Second, func(lctx context.Context) {
 		refreshSanctionsLists(lctx, screeningLists, sanctionsAlert)
 	})
+	// B48.6 — agents' crypto wallets mirrored in the ledger: each movement seen, confirmed and reconciled nightly.
+	chainIdx, err := newChainIndex(dualToken, cfg.ChainIndex)
+	if err != nil {
+		return err
+	}
+	if chainIdx != nil {
+		go haComps.leader.Run(ctx, "chain-indexer", 30*time.Second, func(lctx context.Context) {
+			chainIdx.indexChains(lctx, sanctionsAlert.sink)
+		})
+	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
 	if cfg.BillingEnabled {
 		taxProfiles.SetStripe(taxStripeByKind{isTest: wsManager.GetSynthetic, mainKeyLive: billing.LiveKey(cfg.StripeSecretKey),
@@ -2860,6 +2870,8 @@ func run() error {
 	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing
 	// webhook; the partner's adapter verifies the signature and a replayed id is refused.
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
+	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
+	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,

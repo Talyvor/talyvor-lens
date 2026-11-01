@@ -76,7 +76,9 @@ func (s *DualTokenStore) ReconcileDay(ctx context.Context, p partners.AccountPar
 	type key struct{ account, ref string }
 	type account struct{ workspace, currency, ref string }
 	accounts := map[string]account{}
-	rows, err := s.pool.Query(ctx, `SELECT id, workspace_id, currency, partner_account_ref FROM money_accounts WHERE purpose = 'partner'`)
+	// B48.6: the ledger's mirrors of agents' crypto wallets are reconciled against the chain (ChainIndexer.Reconcile).
+	rows, err := s.pool.Query(ctx, `SELECT id, workspace_id, currency, partner_account_ref FROM money_accounts WHERE purpose = 'partner'
+		AND partner_account_ref NOT LIKE 'chain:%'`)
 	if err != nil {
 		return nil, fmt.Errorf("economy: reconcile: %w", err)
 	}
@@ -98,7 +100,7 @@ func (s *DualTokenStore) ReconcileDay(ctx context.Context, p partners.AccountPar
 	rows, err = s.pool.Query(ctx, `SELECT p.account_id, CASE WHEN e.partner_ref <> '' THEN e.partner_ref ELSE 'entry:' || e.id END,
 		-sum(p.amount_minor)::bigint
 		FROM money_postings p JOIN money_entries e ON e.id = p.entry_id JOIN money_accounts a ON a.id = p.account_id
-		WHERE a.purpose = 'partner' AND p.funding = $1 AND e.created_at >= $2 AND e.created_at < $3 GROUP BY 1, 2`, funding, from, until)
+		WHERE a.purpose = 'partner' AND a.partner_account_ref NOT LIKE 'chain:%' AND p.funding = $1 AND e.created_at >= $2 AND e.created_at < $3 GROUP BY 1, 2`, funding, from, until)
 	if err != nil {
 		return nil, fmt.Errorf("economy: reconcile: %w", err)
 	}
