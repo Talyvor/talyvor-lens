@@ -13,6 +13,7 @@
 # and on a listed name that becomes forwarded or unread, so this list only shrinks. Move a name to
 # the curated `environment:` list only if it must be set from .env; then delete its line here and
 # keep it out of lens.env.example.
+LENS_ACCOUNT_PARTNER_WEBHOOK_SECRET
 LENS_ANNOTATION_MINTING_ENABLED
 LENS_ANTIGAMING_AUTO_REVOKE_ENABLED
 LENS_ANTIGAMING_INTERVAL
@@ -154,6 +155,7 @@ LENS_STRIPE_ISSUING_WEBHOOK_SECRET
 LENS_STRIPE_TEST_SECRET_KEY
 LENS_STRIPE_TEST_SUBSCRIPTION_PLANS
 LENS_STRIPE_TEST_WEBHOOK_SECRET
+LENS_SUSPENSE_RETURN_DAYS
 LENS_SYNTHETIC_KEY
 LENS_TLS_DOMAIN
 LENS_TOKEN_TTL

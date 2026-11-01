@@ -2241,6 +2241,10 @@ func run() error {
 	go haComps.leader.Run(ctx, "reconciliation", 30*time.Second, func(lctx context.Context) {
 		reconcileDaily(lctx, dualToken, partnerRegistry, sanctionsAlert.sink)
 	})
+	// B30.15 — money in that matched no account goes back to its payer after LENS_SUSPENSE_RETURN_DAYS business days.
+	go haComps.leader.Run(ctx, "suspense-returns", 30*time.Second, func(lctx context.Context) {
+		returnSuspenseHourly(lctx, dualToken, cfg.SuspenseReturnDays)
+	})
 	// B30.8 — the compliance case file: the operator reviews a case, freezes or unfreezes the workspace's money
 	// capabilities, closes it with a reason and exports a report draft; every action behind step-up (a code from the
 	// authenticator app holding LENS_OPERATOR_STEP_UP_SECRET, once on any replica; unset, the actions answer 503) and in
@@ -2599,6 +2603,9 @@ func run() error {
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))
+	// B30.15 — money in that matched no account; the operator assigns it, behind step-up. payments_in_handler.go.
+	r.Get("/v1/admin/money/suspense", requireAdminOrOperatorRead(authManager, newSuspenseListHandler(dualToken, cfg.SuspenseReturnDays)))
+	r.Post("/v1/admin/money/suspense/{entryID}/assign", requireStepUp(authManager, stepUp, newSuspenseAssignHandler(dualToken)))
 	// B30.8 — the compliance case file: read with the admin key, every action behind step-up. compliance_handler.go.
 	r.Get("/v1/admin/compliance/cases", requireAdmin(authManager, newComplianceCasesHandler(caseFile)))
 	r.Get("/v1/admin/compliance/cases/{caseID}", requireAdmin(authManager, newComplianceCaseHandler(caseFile)))
@@ -2855,6 +2862,11 @@ func run() error {
 	// its own secret, no auth), on the bare router like the billing webhook. Unset secret ⇒ unregistered.
 	if cfg.StripeIssuingWebhookSecret != "" {
 		limited.Post("/v1/agent-cards/authorizations", agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates).ServeHTTP)
+	}
+	// B30.15 — the account partner's notice of each payment in — PUBLIC (signed with its own secret, no auth), on the
+	// bare router like the billing webhook. Unset secret ⇒ unregistered. payments_in_handler.go.
+	if cfg.AccountPartnerWebhookSecret != "" {
+		r.Post("/v1/money/payments-in/webhook", newPaymentsInWebhook(cfg.AccountPartnerWebhookSecret, dualToken, partnerRegistry).ServeHTTP)
 	}
 
 	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing

@@ -466,6 +466,10 @@ const undocumentedB41111Routes = 2
 // line of their own.
 const undocumentedB482Routes = 3
 
+// B30.15: POST /v1/money/payments-in/webhook and GET /v1/money/accounts/{id}/statement — on a line of their own, as
+// B30.19's are.
+const undocumentedB3015Routes = 2
+
 func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 	reg, pub := registeredRoutes(t), publishedOps(t)
 	n := 0
@@ -479,10 +483,10 @@ func TestUndocumentedNonAdminRouteCountIsRecorded(t *testing.T) {
 		}
 		n++
 	}
-	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes+undocumentedB512Routes+undocumentedB4611Routes+undocumentedB41105Routes+undocumentedB41107Routes+undocumentedB41111Routes+undocumentedB482Routes {
+	if n != undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes+undocumentedB512Routes+undocumentedB4611Routes+undocumentedB41105Routes+undocumentedB41107Routes+undocumentedB41111Routes+undocumentedB482Routes+undocumentedB3015Routes {
 		t.Errorf("%d non-admin /v1 routes are outside the published contract; W6.29 measured %d.\n"+
 			"    FEWER means somebody documented routes — good, and worth saying which.\n"+
 			"    MORE means the tenant API grew and the contract did not. Neither is automatically "+
-			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes+undocumentedB512Routes+undocumentedB4611Routes+undocumentedB41105Routes+undocumentedB41107Routes+undocumentedB41111Routes+undocumentedB482Routes)
+			"wrong; both should be deliberate.", n, undocumentedNonAdminV1Routes+undocumentedB3019Routes+undocumentedB3020Routes+undocumentedB3021Routes+undocumentedB3299Routes+undocumentedB32102Routes+undocumentedB28125Routes+undocumentedB17189Routes+undocumentedB402Routes+undocumentedB403Routes+undocumentedB404Routes+undocumentedB405Routes+undocumentedB446Routes+undocumentedB4038Routes+undocumentedB4523Routes+undocumentedB41101Routes+undocumentedB41102Routes+undocumentedB463Routes+undocumentedB4524Routes+undocumentedB17255Routes+undocumentedB481Routes+undocumentedB4610Routes+undocumentedB512Routes+undocumentedB4611Routes+undocumentedB41105Routes+undocumentedB41107Routes+undocumentedB41111Routes+undocumentedB482Routes+undocumentedB3015Routes)
 	}
 }

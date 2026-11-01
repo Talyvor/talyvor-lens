@@ -28,3 +28,9 @@ starting value.
 | Setting | Starting value | What it means |
 |---|---|---|
 | `LENS_SCREENING_FUZZY_THRESHOLD` | `0.9` | A name at least this similar (Jaro-Winkler, 0 to 1) to one on a sanctions list holds its payee or payment for an operator. |
+
+## Money in from outside (B30.15)
+
+| Setting | Starting value | What it means |
+|---|---|---|
+| `LENS_SUSPENSE_RETURN_DAYS` | `5` | Money in that matches no account waits in suspense this many business days (Monday to Friday) for the operator to assign it, then goes back to its payer. |
