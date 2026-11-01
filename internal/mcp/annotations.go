@@ -33,6 +33,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"request_marketplace_purchase": {"Prepare a marketplace purchase for approval", moves},
 	"cancel_request":               {"Cancel a payment request", moves},
 	"get_request_status":           {"Payment request status", reads},
+	"prepare_recurring_payments":   {"Prepare recurring payments for approval", moves},
 
 	"agent_balance":          {"Your balance and rules", reads},
 	"agent_request_approval": {"Ask a person to approve a payment", moves},
