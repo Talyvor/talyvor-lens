@@ -106,7 +106,8 @@ func (s *DualTokenStore) heldOutsidePayment(ctx context.Context, op money.Op) (b
 		JOIN money_payees y ON y.id = m.payee_id AND y.workspace_id = m.workspace_id
 		WHERE m.id = $1 AND m.workspace_id = $2 AND m.agent_id = $3 AND m.status = $4 AND m.amount_minor = $5 AND m.currency = $6
 		AND c.partner_account_ref = $7 AND c.partner_account_ref <> '' AND y.name = $8 AND y.iban = $9 AND y.bic = $10
-		AND y.sort_code = $11 AND y.account_number = $12 AND y.routing_number = $13)`,
+		AND y.sort_code = $11 AND y.account_number = $12 AND y.routing_number = $13
+		AND (y.details_changed_at IS NULL OR y.details_changed_at < m.created_at))`,
 		op.Key, op.Workspace, op.Agent, PaymentPending, op.Amount.Minor, op.Amount.Asset, op.Ref,
 		op.To.Name, op.To.IBAN, op.To.BIC, op.To.SortCode, op.To.AccountNumber, op.To.RoutingNumber).Scan(&held)
 	return held, err

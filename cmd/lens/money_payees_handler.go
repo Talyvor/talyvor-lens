@@ -29,6 +29,11 @@ import (
 //	POST /v1/money/payees/{id}/called/challenge — B41.111: the challenge the owner signs to say they called the payee
 //	POST /v1/money/payees/{id}/called    {"assertion": {...}} — they called it on a number they already had: its
 //	                          24-hour cooling-off (cooling_off_until) ends and the payments it held are paid
+//	POST /v1/money/payees/{id}/details/challenge {country, sort_code, account_number | iban, bic | routing_number,
+//	                          account_number | address} — B41.112: the challenge changing its details to these is signed over
+//	POST /v1/money/payees/{id}/details {the same details, "assertion": {...}} — changes them with a passkey: the name is
+//	                          checked afresh at the new account's bank, and every payment to it is held for 24 hours
+//	                          (held_until), with a notice to call them on a number the owner already knows
 //
 // The workspace is the key's; only its owner or an admin may use these. Mounted in the authed group.
 
@@ -39,6 +44,8 @@ type moneyPayeeBank interface {
 	ConfirmOutsidePayee(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (economy.OutsidePayee, error)
 	PayeeCalledChallenge(ctx context.Context, workspaceID, payeeID string) (challenge string, credentialIDs []string, err error)
 	ConfirmPayeeCalled(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (economy.OutsidePayee, error)
+	PayeeDetailsChallenge(ctx context.Context, workspaceID, payeeID string, in economy.OutsidePayee) (challenge string, credentialIDs []string, err error)
+	ChangeOutsidePayeeDetails(ctx context.Context, workspaceID, payeeID string, in economy.OutsidePayee, a *passkey.Assertion) (economy.OutsidePayee, error)
 }
 
 func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
@@ -168,6 +175,55 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 		case err != nil && p.CalledAt == nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default: // kept; a held payment that could not be paid now is tried again by the minute's run
+			writeJSONOK(w, http.StatusOK, p)
+		}
+	})
+	type detailsBody struct {
+		economy.OutsidePayee
+		Assertion *passkey.Assertion `json:"assertion"`
+	}
+	r.Post("/v1/money/payees/{id}/details/challenge", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in detailsBody
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		c, creds, err := bank.PayeeDetailsChallenge(req.Context(), ws, chi.URLParam(req, "id"), in.OutsidePayee)
+		switch {
+		case errors.Is(err, economy.ErrPayeeNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPayee):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPayeePasskey):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required",
+				"notice": economy.PayeeDetailsNotice})
+		}
+	})
+	r.Post("/v1/money/payees/{id}/details", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in detailsBody
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		p, err := bank.ChangeOutsidePayeeDetails(req.Context(), ws, chi.URLParam(req, "id"), in.OutsidePayee, in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPayeeNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPayee):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPayeePasskey), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrPayeeCheckUnavailable):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
 			writeJSONOK(w, http.StatusOK, p)
 		}
 	})
