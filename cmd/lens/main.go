@@ -4753,6 +4753,7 @@ func run() error {
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
+		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
@@ -4808,6 +4809,8 @@ func run() error {
 				}
 			}
 		}()
+
+		go sweepSpendAlerts(ctx, dualToken) // B53.4
 
 		// B21.3 — a workspace deletes its stored answers, or asks Talyvor to delete everything.
 		// See internal/storedanswers.

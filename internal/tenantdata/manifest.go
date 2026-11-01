@@ -281,6 +281,8 @@ var Manifest = map[string]Entry{
 	"agent_spend_permission_uses":  {Delete, "B48.3: each crypto payment the gate allowed under an agent's permission — token, counterparty and amount"},
 	"spend_category_corrections":   {Delete, "B53.3: the owner's corrections — always put this merchant's payments in this category"},
 	"money_entry_tags":             {Delete, "B53.3: the owner's own tags on movements of money, to total spend by tag; the entries themselves are kept"},
+	"spend_budgets":                {Delete, "B53.4: the owner's weekly and monthly budgets — wallet, category, amount, currency and time zone"},
+	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
