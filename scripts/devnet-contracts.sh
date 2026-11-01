@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # B48.2 — builds the audited contracts an agent's smart account runs on, from their pinned sources, for the local devnet
 # test (internal/money/smartaccount): Coinbase Smart Wallet v1.1.0 (its factory and implementation) and ERC-4337's
-# EntryPoint v0.6.0 (the copy smart-wallet pins, with OpenZeppelin 4.9.6, which it was written for). Writes each
+# EntryPoint v0.6.0 (the copy smart-wallet pins, with OpenZeppelin 4.9.6, which it was written for), and for B48.5 the
+# same copy's VerifyingPaymaster (a local paymaster) and OpenZeppelin's ERC20PresetMinterPauser (a local USDC). Writes each
 # contract's creation bytecode as hex into OUTDIR. Needs git and forge (Foundry).
 #
 #   scripts/devnet-contracts.sh OUTDIR
@@ -37,10 +38,14 @@ optimizer = true
 optimizer_runs = 1000000
 allow_paths = ["$work"]
 EOF
-(cd "$work/ep" && forge build -q "$work/sw/lib/account-abstraction/contracts/core/EntryPoint.sol")
+(cd "$work/ep" && forge build -q "$work/sw/lib/account-abstraction/contracts/core/EntryPoint.sol" \
+	"$work/sw/lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol" \
+	"$work/oz/contracts/token/ERC20/presets/ERC20PresetMinterPauser.sol")
 
 bytecode() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytecode"]["object"])' "$1"; }
 bytecode "$work/sw/out/CoinbaseSmartWallet.sol/CoinbaseSmartWallet.json" >"$out/CoinbaseSmartWallet.hex"
 bytecode "$work/sw/out/CoinbaseSmartWalletFactory.sol/CoinbaseSmartWalletFactory.json" >"$out/CoinbaseSmartWalletFactory.hex"
 bytecode "$work/ep/out/EntryPoint.sol/EntryPoint.json" >"$out/EntryPoint.hex"
+bytecode "$work/ep/out/VerifyingPaymaster.sol/VerifyingPaymaster.json" >"$out/VerifyingPaymaster.hex"
+bytecode "$work/ep/out/ERC20PresetMinterPauser.sol/ERC20PresetMinterPauser.json" >"$out/ERC20.hex"
 ls -l "$out"

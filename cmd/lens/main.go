@@ -2001,6 +2001,7 @@ func run() error {
 		return err
 	}
 	dualToken.SetMoneyLayer(moneyLayer)
+	dualToken.SetGasBudgetDefault(cfg.GasBudgetWei) // B48.5: what a workspace's agents' paymaster may pay before its owner tops up
 	// B46.22 — a seller who saved payout details on the money layer is paid by the weekly run there, from Talyvor's accounts.
 	marketStore.SetMoneyPayouts(dualToken, economy.TalyvorWorkspace)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so

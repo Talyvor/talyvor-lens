@@ -92,7 +92,13 @@ func anvil(t *testing.T, chainID int64) Chain {
 // transact sends data from anvil's funded account and answers the mined receipt.
 func transact(t *testing.T, c Chain, to string, data []byte) map[string]any {
 	t.Helper()
-	tx := map[string]string{"from": funded, "data": hexBytes(data), "gas": "0x1c9c380"}
+	return transactValue(t, c, to, new(big.Int), data)
+}
+
+// transactValue is transact, sending wei with data.
+func transactValue(t *testing.T, c Chain, to string, wei *big.Int, data []byte) map[string]any {
+	t.Helper()
+	tx := map[string]string{"from": funded, "data": hexBytes(data), "gas": "0x1c9c380", "value": quantity(wei)}
 	if to != "" {
 		tx["to"] = to
 	}
@@ -225,7 +231,9 @@ func bundle(t *testing.T, c Chain) Chain {
 			for _, l := range rec.Logs {
 				if len(l.Topics) > 1 && l.Topics[0] == hexBytes(event[:]) && l.Topics[1] == hash {
 					d, _ := hex.DecodeString(strings.TrimPrefix(l.Data, "0x"))
-					answer(map[string]any{"success": len(d) >= 64 && d[63] == 1, "receipt": map[string]string{"transactionHash": tx}}, nil)
+					// UserOperationEvent's data: nonce, success, actualGasCost, actualGasUsed.
+					answer(map[string]any{"success": len(d) >= 64 && d[63] == 1, "actualGasCost": quantity(new(big.Int).SetBytes(d[64:96])),
+						"receipt": map[string]string{"transactionHash": tx}}, nil)
 					return
 				}
 			}
