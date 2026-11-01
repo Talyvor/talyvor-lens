@@ -273,6 +273,7 @@ var Manifest = map[string]Entry{
 	"market_reviews":               {Delete, "B32.49: keys `buyer_workspace_id`: the reviews a workspace wrote of listings it paid for; reviews of its own listings cascade with them"},
 	"buyer_tax_profiles":           {Delete, "B32.38: the workspace's declared legal name, address, country and tax id as a buyer; the tax lines of its sales keep their own evidence"},
 	"seller_tax_profiles":          {Delete, "B32.41: the workspace's tax details as a seller — names, address, TINs, date of birth and payout account, the sealed ones under the envelope key — and its reminders and payout hold"},
+	"market_licence_idle_alerts":   {Delete, "B41.176: keys `buyer_workspace_id`: when the workspace was told each renewing licence had gone unused for 30 days"},
 	"market_listing_reports":       {Delete, "B20.4: keys `reporter_workspace_id`: the reports a workspace made of listings; reports of its own listings cascade with them"},
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
 	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},

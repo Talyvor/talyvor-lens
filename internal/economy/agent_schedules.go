@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/workspace"
@@ -76,6 +78,7 @@ type AgentTopUp struct {
 type ScheduleRunResult struct {
 	Paid, Refused, ToppedUp int
 	Renewed, Unpaid         int // marketplace licences renewed, and ended unpaid (B32.20)
+	IdleAlerted             int // renewing marketplace licences whose buyers were told they had gone unused (B41.176)
 }
 
 func nextTick(t time.Time, every string) time.Time {
@@ -194,6 +197,14 @@ type LicenceJudge interface {
 // LicenceRenewer renews the marketplace's licences whose period has ended (B32.20). *market.Store satisfies it.
 type LicenceRenewer interface {
 	RenewLicences(ctx context.Context, now time.Time, judge LicenceJudge) (renewed, unpaid int, err error)
+}
+
+// IdleLicence is a renewing marketplace licence its buyer has not used for 30 days (B41.176).
+type IdleLicence struct{ WorkspaceID, LicenceID, Title string }
+
+// IdleLicenceAlerter records each licence newly idle at now, once per idle stretch. *market.Store satisfies it.
+type IdleLicenceAlerter interface {
+	AlertIdleLicences(ctx context.Context, now time.Time) ([]IdleLicence, error)
 }
 
 // SetListingCharger lets schedules pay marketplace listings.
@@ -395,6 +406,18 @@ func (s *DualTokenStore) RunAgentSchedules(ctx context.Context, now time.Time) (
 		if res.Renewed, res.Unpaid, err = r.RenewLicences(ctx, now, s); err != nil {
 			return res, errors.Join(tickErr, err)
 		}
+	}
+	if a, ok := s.listings.(IdleLicenceAlerter); ok { // an alert that fails holds no money up: it is logged and tried next tick
+		idle, err := a.AlertIdleLicences(ctx, now)
+		if err != nil {
+			slog.Warn("agents: idle licences", slog.String("err", err.Error()))
+		}
+		for _, l := range idle {
+			s.pushDevices(ctx, l.WorkspaceID, nativepush.Message{Title: "Not used in 30 days",
+				Body: l.Title + " renews, but nobody has used it for 30 days. Cancel it?",
+				Data: map[string]string{"type": "idle_licence", "licence_id": l.LicenceID, "workspace_id": l.WorkspaceID}})
+		}
+		res.IdleAlerted = len(idle)
 	}
 	if tickErr != nil {
 		return res, tickErr

@@ -84,7 +84,7 @@ func marketToolDefinitions() []map[string]any {
 				"model":                str("the model to run it on, when the listing names none"),
 				"max_price_usd_micros": num("the most this use may cost, in µUSD; 0 allows only a use that costs nothing")},
 			"listing_id"),
-		tool("market_licences", "The licences that cover your uses: yours, and your workspace's commercial and enterprise ones.", map[string]any{}),
+		tool("market_licences", "The licences that cover your uses: yours, and your workspace's commercial and enterprise ones. One marked idle renews but has not been used for 30 days.", map[string]any{}),
 		tool("market_cancel", "Stop a licence you took from renewing: it runs to its end and nothing more is charged.",
 			map[string]any{"licence_id": str("a licence from market_licences that you took")}, "licence_id"),
 	}
