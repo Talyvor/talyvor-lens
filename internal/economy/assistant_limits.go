@@ -17,6 +17,8 @@ import (
 // anything is kept; every other client is judged as before. What counts is every item not blocked, of every request
 // that client prepared today and nobody cancelled. The cap is on top of the mandates and approvals, never instead of
 // them: raising it lets more be prepared, and each payment still needs its mandate or the person's approval.
+// The cap binds where the client is set for the caller — the connector's OAuth grant, an agent's own key; an owner's or
+// admin's own key names its client and holds the owner's authority anyway, the cap's own included.
 // Class: rules_approvals_statements_pots, GREEN — it refuses requests and moves nothing.
 
 // ErrAssistantLimit: the request would take its client over its daily limit.
