@@ -69,7 +69,8 @@ func marketToolDefinitions() []map[string]any {
 				"capability": str("what it should do: one of GET /v1/marketplace/capabilities, e.g. summarize or extract"), "licence": str("sold under this licence: personal, commercial or enterprise"),
 				"max_price_usd_micros": num("one use costs at most this, in µUSD (1 USD = 1,000,000)")}),
 		tool("market_listing", "One listing: what each version needs (input, variables, model), every offer with its licence terms, and its trust "+
-			"summary: whether the publisher is verified, reviews from paying buyers, eval score, IP claims, the originals it credits and its remixes.",
+			"summary: whether the publisher is verified, reviews from paying buyers, eval score, IP claims, the originals it credits, its remixes, "+
+			"and its success rate, median latency and cost per use over the last 30 days.",
 			map[string]any{"listing_id": listing}, "listing_id"),
 		tool("market_license", "Buy, rent or subscribe to a listing through one of its offers, within your rules. Its uses are then covered. "+
 			"Send the same idempotency_key again to retry without buying twice.",

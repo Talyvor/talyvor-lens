@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	stripe "github.com/stripe/stripe-go/v81"
 
 	"github.com/talyvor/lens/internal/billing"
@@ -288,20 +289,38 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 	if deps.Charged != nil {
 		deps.Charged(u)
 	}
+	started := time.Now()
 	if l.Kind == "pipeline" {
 		err = runPipeline(ctx, deps.Runner, steps, req, &u)
 	} else {
 		err = run(ctx, deps.Runner, calls, model, &u)
 	}
+	// B41.173: every run's outcome is kept for the listing's 30-day performance; a buyer who hung up is not the listing failing.
+	// shortcut: a pipeline's outcome is the pipeline listing's alone, not each step listing's; record steps when step timings exist.
+	outcome := func(q interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}, ok bool) error {
+		_, err := q.Exec(context.WithoutCancel(ctx), `INSERT INTO market_use_outcomes (use_id, listing_id, buyer_workspace_id, ok, latency_ms, charge, price_ulxc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, u.ID, l.ID, buyerWorkspaceID, ok, time.Since(started).Milliseconds(), u.Charge, u.PriceULXC)
+		return err
+	}
 	if err != nil {
 		if _, derr := s.pool.Exec(ctx, `DELETE FROM market_uses WHERE id = ANY($1) AND metered_at IS NULL`, ids); derr != nil {
 			return Use{}, errors.Join(err, derr)
+		}
+		if !errors.Is(err, context.Canceled) {
+			if oerr := outcome(s.pool, false); oerr != nil {
+				return Use{}, errors.Join(err, oerr)
+			}
 		}
 		return Use{}, err
 	}
 	// A trial is journalled once it has answered, with the use it explains.
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE market_uses SET ran_at = now() WHERE id = ANY($1)`, ids); err != nil {
+			return err
+		}
+		if err := outcome(tx, true); err != nil {
 			return err
 		}
 		if u.Charge == ChargeTrial {
