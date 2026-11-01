@@ -6,7 +6,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,11 +24,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/coinbase/cdpfake"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/partners"
+	webauthn "github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/tenant"
 )
@@ -110,6 +115,33 @@ func TestB482_AnAgentsCryptoWalletIsItsOwnSmartAccountOwnedByThePerson(t *testin
 	}
 	cdp := cdpfake.New(t)
 	store.SetSmartAccounts(cdp.Signers(t), "coinbase", smartaccount.CoinbaseV11)
+	// B50.25: the owner key named signs the challenge naming these owners; this test is its authenticator.
+	const rpID = "app.talyvor.test"
+	store.SetApprovalAuth(webauthn.RelyingParty{ID: rpID, Origins: []string{"https://" + rpID}}, nil)
+	b64, counter := base64.RawURLEncoding.EncodeToString, uint32(0)
+	signed := func(agentID, owners string) string {
+		t.Helper()
+		var c struct {
+			Challenge string `json:"challenge"`
+		}
+		if code := call(http.MethodPost, base+"/"+agentID+"/smart-account/challenge", "{"+owners+"}", &c); code != http.StatusOK {
+			t.Fatalf("challenge %s = %d", owners, code)
+		}
+		a := webauthn.Assertion{DeviceID: "dev-b482", Challenge: c.Challenge}
+		h := sha256.Sum256(devicekey.Message(c.Challenge))
+		key := device
+		if strings.Contains(owners, "cred-b482") {
+			counter++
+			rpHash := sha256.Sum256([]byte(rpID))
+			cdj := []byte(`{"type":"webauthn.get","challenge":"` + c.Challenge + `","origin":"https://` + rpID + `"}`)
+			ad, cdh := binary.BigEndian.AppendUint32(append(rpHash[:], 0x05), counter), sha256.Sum256(cdj)
+			h, key = sha256.Sum256(append(append([]byte{}, ad...), cdh[:]...)), passkey
+			a = webauthn.Assertion{CredentialID: "cred-b482", ClientDataJSON: b64(cdj), AuthenticatorData: b64(ad)}
+		}
+		sig, _ := ecdsa.SignASN1(rand.Reader, key, h[:])
+		a.Signature = b64(sig)
+		return "{" + owners + `,"assertion":` + jsonOf(a) + "}"
+	}
 
 	for _, c := range []struct{ agent, body string }{
 		{payroll.ID, body}, // a fiat agent has no crypto wallet
@@ -127,7 +159,7 @@ func TestB482_AnAgentsCryptoWalletIsItsOwnSmartAccountOwnedByThePerson(t *testin
 	}
 
 	var made economy.AgentSmartAccount
-	if code := call(http.MethodPost, path, body, &made); code != http.StatusOK {
+	if code := call(http.MethodPost, path, signed(trader.ID, `"credential_id":"cred-b482","recovery_address":"`+recovery+`"`), &made); code != http.StatusOK {
 		t.Fatalf("POST smart-account = %d", code)
 	}
 	if len(made.Owners) != 3 || made.Owners[0].Role != "person" || made.Owners[0].CredentialID != "cred-b482" ||
@@ -165,7 +197,7 @@ func TestB482_AnAgentsCryptoWalletIsItsOwnSmartAccountOwnedByThePerson(t *testin
 
 	// A "both" agent's account, owned by the phone's device key, is its own: another agent key, another address.
 	var opsAcct economy.AgentSmartAccount
-	if code := call(http.MethodPost, base+"/"+ops.ID+"/smart-account", `{"device_id":"dev-b482"}`, &opsAcct); code != http.StatusOK {
+	if code := call(http.MethodPost, base+"/"+ops.ID+"/smart-account", signed(ops.ID, `"device_id":"dev-b482"`), &opsAcct); code != http.StatusOK {
 		t.Fatalf("POST ops smart-account = %d", code)
 	}
 	if opsAcct.Address == made.Address || opsAcct.Owners[1].Address == agentKey || opsAcct.SolanaAddress == made.SolanaAddress || len(opsAcct.Owners) != 2 || opsAcct.Owners[0].DeviceID != "dev-b482" {
