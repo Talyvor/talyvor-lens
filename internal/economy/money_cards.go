@@ -433,7 +433,7 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 	default:
 		approved = true
 	}
-	d := a.CardDetails.Normal()
+	d := a.Normal() // the charge's CardDetails
 	if _, err := tx.Exec(ctx, `INSERT INTO money_card_authorizations (partner, id, card_id, workspace_id, merchant, amount_minor, currency, approved, reason,
 		mcc, merchant_country, channel, wallet) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, partner, a.ID, c.ID, ws, a.Merchant,
 		a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet); err != nil {
