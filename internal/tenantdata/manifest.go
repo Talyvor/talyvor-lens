@@ -282,6 +282,7 @@ var Manifest = map[string]Entry{
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
 	"webauthn_challenges":          {Delete, ""},
 	"workspace_push_subscriptions": {Delete, "B19.16: the owner's devices' push endpoints and keys"},
+	"workspace_briefing_pushes":    {Delete, "B41.205: the days a workspace's morning briefing was pushed"},
 	"annotator_stakes":             {Delete, ""},
 	"api_keys":                     {Delete, ""},
 	"batch_jobs":                   {Delete, ""},

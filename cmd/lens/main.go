@@ -2190,6 +2190,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("money: held payments paid", slog.Int("requests", n))
 				}
+				// B41.205: the morning briefing pushed to the owners' devices, once a workspace a day, from the push hour.
+				if n, err := dualToken.RunBriefingPushes(ctx, now, cfg.BriefingPushHour); err != nil {
+					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))
