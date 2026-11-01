@@ -4810,7 +4810,10 @@ func run() error {
 			}
 		}()
 
-		go sweepSpendAlerts(ctx, dualToken) // B53.4
+		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
+		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
+			sweepSpendAlerts(lctx, dualToken)
+		})
 
 		// B21.3 — a workspace deletes its stored answers, or asks Talyvor to delete everything.
 		// See internal/storedanswers.
