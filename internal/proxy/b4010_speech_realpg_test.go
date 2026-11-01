@@ -136,6 +136,30 @@ func TestB4010_WithNoSpeechKeySpeechIsNotConfigured(t *testing.T) {
 	}
 }
 
+// B17.296 — production has OpenAI but no Deepgram: an agent naming nova-3 or aura-2 is told speech is not configured.
+func TestB17296_DeepgramModelWithoutItsKeySaysSpeechIsNotConfigured(t *testing.T) {
+	p, _, _ := newLoggingProxy(t, workspace.LoggingFull)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "q.wav")
+	_, _ = fw.Write([]byte("RIFF-clip"))
+	_ = mw.WriteField("model", "nova-3")
+	_ = mw.Close()
+	heard := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	heard.Header.Set("Content-Type", mw.FormDataContentType())
+	spoken := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"aura-2","input":"hello"}`))
+	for _, c := range []struct {
+		r *http.Request
+		h http.HandlerFunc
+	}{{heard, p.HandleTranscription}, {spoken, p.HandleSpeech}} {
+		w := httptest.NewRecorder()
+		c.h(w, c.r)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "speech is not configured") {
+			t.Errorf("%s with OpenAI but no Deepgram: %d %s", c.r.URL.Path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestB4010_SpeechIsSpokenAndChargedPerCharacter(t *testing.T) {
 	pool := agentBankDB(t)
 	ctx := context.Background()
