@@ -10,6 +10,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
 
@@ -23,8 +24,18 @@ import (
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
 //	                          test money into a company account, a payment in from the Test partner
 //
+// B30.24 — the owner freezes, unfreezes and closes an account (economy/account_status.go):
+//
+//	POST /v1/money/accounts/{id}/freeze   — nothing goes out; money coming in still lands
+//	POST /v1/money/accounts/{id}/unfreeze/challenge — the challenge an unfreeze is signed over, and the passkeys that may
+//	POST /v1/money/accounts/{id}/unfreeze {"assertion": {credential_id, client_data_json, authenticator_data, signature}}
+//	                          — needed once the workspace has a passkey
+//	POST /v1/money/accounts/{id}/close    {"payee_id"} — an agent's balance goes to the company's account; the
+//	                          company's to the saved payee; the account then reads closed at zero
+//
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
-// agent's, and opens them with no agent_id. Mounted in the authed group.
+// agent's, and opens them with no agent_id. Only the owner or an admin freezes, unfreezes or closes one. Mounted in
+// the authed group.
 
 type moneyAccountBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
@@ -32,6 +43,10 @@ type moneyAccountBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
+	FreezeCurrencyAccount(ctx context.Context, workspaceID, accountID string) (economy.CurrencyAccount, error)
+	UnfreezeChallenge(ctx context.Context, workspaceID, accountID string) (challenge string, credentialIDs []string, err error)
+	UnfreezeCurrencyAccount(ctx context.Context, workspaceID, accountID string, a *passkey.Assertion) (economy.CurrencyAccount, error)
+	CloseCurrencyAccount(ctx context.Context, workspaceID, accountID, payeeID string) (economy.CurrencyAccount, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -143,5 +158,73 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		default:
 			writeJSONOK(w, http.StatusOK, d)
 		}
+	})
+
+	// B30.24: the owner's, with the account's new state answered.
+	owner := func(w http.ResponseWriter, req *http.Request) (string, bool) {
+		ws, _ := auth.WorkspaceIdentity(req.Context())
+		if ws == "" {
+			writeJSONErr(w, http.StatusBadRequest, "money accounts are a workspace's: use a workspace's key")
+			return "", false
+		}
+		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may freeze, unfreeze or close its accounts")
+			return "", false
+		}
+		return ws, true
+	}
+	answer := func(w http.ResponseWriter, a economy.CurrencyAccount, err error) {
+		switch {
+		case errors.Is(err, economy.ErrAccountStatus), errors.Is(err, economy.ErrAccountNotEmpty):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil: // not found, or a close's payment to the payee
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusOK, a)
+		}
+	}
+	r.Post("/v1/money/accounts/{id}/freeze", func(w http.ResponseWriter, req *http.Request) {
+		if ws, ok := owner(w, req); ok {
+			a, err := bank.FreezeCurrencyAccount(req.Context(), ws, chi.URLParam(req, "id"))
+			answer(w, a, err)
+		}
+	})
+	r.Post("/v1/money/accounts/{id}/unfreeze/challenge", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.UnfreezeChallenge(req.Context(), ws, chi.URLParam(req, "id"))
+		if err != nil {
+			answer(w, economy.CurrencyAccount{}, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+	})
+	r.Post("/v1/money/accounts/{id}/unfreeze", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		a, err := bank.UnfreezeCurrencyAccount(req.Context(), ws, chi.URLParam(req, "id"), in.Assertion)
+		answer(w, a, err)
+	})
+	r.Post("/v1/money/accounts/{id}/close", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			PayeeID string `json:"payee_id"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		a, err := bank.CloseCurrencyAccount(req.Context(), ws, chi.URLParam(req, "id"), in.PayeeID)
+		answer(w, a, err)
 	})
 }
