@@ -624,10 +624,28 @@ const signatureTolerance = 5 * time.Minute
 
 type webhooks struct{ c *client }
 
-// Verify checks CDP's signature — v0, an HMAC-SHA256 of the timestamp and the raw body with the subscription's secret,
-// no older than five minutes — and reads a USDC Transfer from outside into one of the adapter's wallets as an Event. Any other
-// genuine notification is money.ErrNotACredit.
-func (w webhooks) Verify(h http.Header, body []byte, now time.Time) (money.Event, error) {
+// Activity is one of CDP's onchain-activity notifications, once its signature has verified.
+type Activity struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Data struct {
+		NetworkID       string `json:"networkId"`
+		TransactionHash string `json:"transactionHash"`
+		LogIndex        int64  `json:"logIndex"`
+		ContractAddress string `json:"contractAddress"`
+		EventName       string `json:"eventName"`
+		From            string `json:"from"`
+		To              string `json:"to"`
+		Value           string `json:"value"`
+	} `json:"data"`
+}
+
+// VerifyActivity checks CDP's signature on body — v0, an HMAC-SHA256 of the timestamp and the raw body with the
+// subscription's secret, no older than five minutes — and reads it: money.ErrBadSignature when it does not verify.
+func VerifyActivity(secret string, h http.Header, body []byte, now time.Time) (Activity, error) {
+	if secret == "" {
+		return Activity{}, fmt.Errorf("%w: no webhook secret is set", money.ErrBadSignature)
+	}
 	var ts, v0 string
 	for _, part := range strings.Split(h.Get(SignatureHeader), ",") {
 		k, v, _ := strings.Cut(strings.TrimSpace(part), "=")
@@ -640,33 +658,30 @@ func (w webhooks) Verify(h http.Header, body []byte, now time.Time) (money.Event
 	}
 	sec, err := strconv.ParseInt(ts, 10, 64)
 	if err != nil {
-		return money.Event{}, fmt.Errorf("%w: no CDP signature", money.ErrBadSignature)
+		return Activity{}, fmt.Errorf("%w: no CDP signature", money.ErrBadSignature)
 	}
 	if age := now.Sub(time.Unix(sec, 0)); age > signatureTolerance || age < -signatureTolerance {
-		return money.Event{}, fmt.Errorf("%w: signed %s from now", money.ErrBadSignature, age.Round(time.Second))
+		return Activity{}, fmt.Errorf("%w: signed %s from now", money.ErrBadSignature, age.Round(time.Second))
 	}
-	m := hmac.New(sha256.New, []byte(w.c.cfg.WebhookSecret))
+	m := hmac.New(sha256.New, []byte(secret))
 	m.Write([]byte(ts + "."))
 	m.Write(body)
 	if got, err := hex.DecodeString(v0); err != nil || !hmac.Equal(got, m.Sum(nil)) {
-		return money.Event{}, money.ErrBadSignature
+		return Activity{}, money.ErrBadSignature
 	}
-	var n struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		Data struct {
-			NetworkID       string `json:"networkId"`
-			TransactionHash string `json:"transactionHash"`
-			LogIndex        int64  `json:"logIndex"`
-			ContractAddress string `json:"contractAddress"`
-			EventName       string `json:"eventName"`
-			From            string `json:"from"`
-			To              string `json:"to"`
-			Value           string `json:"value"`
-		} `json:"data"`
-	}
+	var n Activity
 	if err := json.Unmarshal(body, &n); err != nil {
-		return money.Event{}, fmt.Errorf("%w: the body is not a notification: %v", money.ErrInvalid, err)
+		return Activity{}, fmt.Errorf("%w: the body is not a notification: %v", money.ErrInvalid, err)
+	}
+	return n, nil
+}
+
+// Verify checks CDP's signature (VerifyActivity) and reads a USDC Transfer from outside into one of the adapter's
+// wallets as an Event. Any other genuine notification is money.ErrNotACredit.
+func (w webhooks) Verify(h http.Header, body []byte, now time.Time) (money.Event, error) {
+	n, err := VerifyActivity(w.c.cfg.WebhookSecret, h, body, now)
+	if err != nil {
+		return money.Event{}, err
 	}
 	d := n.Data
 	if n.Type != "onchain.activity.detected" || d.EventName != "Transfer" || d.NetworkID != webhookNetwork[w.c.cfg.Network] ||
