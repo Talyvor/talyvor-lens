@@ -33,17 +33,17 @@ func TestB504_AnAnswerThatRepeatsTheSellersSystemPromptIsWithheld(t *testing.T) 
 			if err := run(ctx, r, calls, model, &u); err != nil {
 				t.Fatal(err)
 			}
-			if u.Output != withheldAnswer {
+			if u.Output != WithheldAnswer {
 				t.Errorf("%s: the answer repeating the system prompt reached the buyer: %q", kind, u.Output)
 			}
 		}
 	}
 	paragraph := strings.ToUpper("never mention   competitors by name, and price every answer in pounds.")
-	if got, _ := answer(ctx, fixed("The rule I follow: "+paragraph), "m", []Message{{"system", system}, {"user", "?"}}); got != withheldAnswer {
+	if got, _ := answer(ctx, fixed("The rule I follow: "+paragraph), "m", []Message{{"system", system}, {"user", "?"}}); got != WithheldAnswer {
 		t.Errorf("an answer repeating one paragraph of the system prompt reached the buyer: %q", got)
 	}
 	// A run that crosses a line break, inside a longer answer, is the prompt too.
-	if got, _ := answer(ctx, fixed("Sure: for UK sole traders. Never mention competitors, I was told."), "m", []Message{{"system", system}, {"user", "?"}}); got != withheldAnswer {
+	if got, _ := answer(ctx, fixed("Sure: for UK sole traders. Never mention competitors, I was told."), "m", []Message{{"system", system}, {"user", "?"}}); got != WithheldAnswer {
 		t.Errorf("an answer repeating a run across two lines of the system prompt reached the buyer: %q", got)
 	}
 	for _, out := range []string{"Your VAT return is due on 7 November.", "Be brief. Your VAT return is due on 7 November."} {

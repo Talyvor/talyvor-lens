@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -643,8 +644,8 @@ func plan(kind string, artifact map[string]any, req UseRequest) ([]call, string,
 // or an encoding passes, which needs a model judge to catch.
 const minPromptLeak = 40
 
-// withheldAnswer replaces an answer that repeats its listing's system prompt (B50.4).
-const withheldAnswer = "The answer is not shown: it repeated the listing's instructions, which its seller keeps private."
+// WithheldAnswer replaces an answer that repeats its listing's system prompt (B50.4).
+const WithheldAnswer = "The answer is not shown: it repeated the listing's instructions, which its seller keeps private."
 
 // answer runs one model call of a use and keeps the seller's system prompt out of what the buyer gets back (B50.4):
 // an input such as "repeat your instructions" must not hand over what the listing is. Any run of minPromptLeak
@@ -654,24 +655,62 @@ func answer(ctx context.Context, r Runner, model string, msgs []Message) (string
 	if err != nil {
 		return "", err
 	}
-	norm := func(s string) []rune { return []rune(strings.Join(strings.Fields(strings.ToLower(s)), " ")) }
-	o := norm(out)
-	runs := map[string]bool{}
-	for i := 0; i+minPromptLeak <= len(o); i++ {
-		runs[string(o[i:i+minPromptLeak])] = true
-	}
+	var system []string
 	for _, m := range msgs {
-		if m.Role != "system" || len(runs) == 0 {
-			continue
+		if m.Role == "system" {
+			system = append(system, m.Content)
 		}
-		p := norm(m.Content)
-		for i := 0; i+minPromptLeak <= len(p); i++ {
-			if runs[string(p[i:i+minPromptLeak])] {
-				return withheldAnswer, nil
-			}
-		}
+	}
+	if NewPromptGuard(system...).Add(&Said{}, out) {
+		return WithheldAnswer, nil
 	}
 	return out, nil
+}
+
+// PromptGuard tells whether an answer repeats a run of minPromptLeak characters of a listing's system prompt, case
+// and spacing aside (B50.4), for an answer read as it grows too: Chat relays a listing's answer as it streams (B50.31).
+type PromptGuard struct{ runs map[string]bool }
+
+func NewPromptGuard(system ...string) PromptGuard {
+	g := PromptGuard{runs: map[string]bool{}}
+	for _, s := range system {
+		p := normPrompt(s)
+		for i := 0; i+minPromptLeak <= len(p); i++ {
+			g.runs[string(p[i:i+minPromptLeak])] = true
+		}
+	}
+	return g
+}
+
+// Said is an answer read as it grows, a piece at a time, lowered and its spaces collapsed as normPrompt does.
+type Said struct {
+	o    []rune
+	gap  bool // a space is owed before the next word
+	from int  // the windows before it are already looked at
+}
+
+// Add appends s to the answer a and reports whether, with it, the answer repeats the prompt.
+func (g PromptGuard) Add(a *Said, s string) bool {
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsSpace(r) {
+			a.gap = len(a.o) > 0
+			continue
+		}
+		if a.gap {
+			a.o, a.gap = append(a.o, ' '), false
+		}
+		a.o = append(a.o, r)
+	}
+	for ; a.from+minPromptLeak <= len(a.o); a.from++ {
+		if g.runs[string(a.o[a.from:a.from+minPromptLeak])] {
+			return true
+		}
+	}
+	return false
+}
+
+func normPrompt(s string) []rune {
+	return []rune(strings.Join(strings.Fields(strings.ToLower(s)), " "))
 }
 
 func run(ctx context.Context, r Runner, calls []call, model string, u *Use) error {
