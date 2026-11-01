@@ -2166,6 +2166,12 @@ func run() error {
 				} else if res != (economy.LoanRunResult{}) {
 					slog.Info("agents: loan instalments", slog.Int("paid", res.Paid), slog.Int("missed", res.Missed), slog.Int("defaulted", res.Defaulted))
 				}
+				// B30.27: agents' monthly allowances due, paid from the company's currency accounts.
+				if funded, refused, err := dualToken.RunMoneyAllowances(ctx, now); err != nil {
+					slog.Warn("agents: allowances failed", slog.String("err", err.Error()))
+				} else if funded+refused > 0 {
+					slog.Info("agents: allowances paid", slog.Int("funded", funded), slog.Int("refused", refused))
+				}
 				// B46.10: single-use cards unused 24 hours after issue, closed and their caps given back.
 				if n, err := dualToken.RunCardExpiries(ctx, now); err != nil {
 					slog.Warn("agents: card expiries failed", slog.String("err", err.Error()))
@@ -4749,6 +4755,7 @@ func run() error {
 		mountSimTradingRoutes(authed, dualToken)                                        // B22.8
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
+		mountMoneyAllowanceRoutes(authed, dualToken)                                    // B30.27
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107

@@ -153,6 +153,7 @@ var Manifest = map[string]Entry{
 	"money_cards":               {Retain, "B46.10: each single-use card — the merchant it was locked to, its cap, the issuer's reference and what it spent; it explains money_entries; financial-record retention"},
 	"money_card_authorizations": {Retain, "B46.10: each charge an issuer asked about on a card and Lens's answer, append-only; financial-record retention"},
 	"money_payout_details":      {Delete, "B46.11: where the workspace is paid — an IBAN or a USDC address and its holder — and the partner's verification reference; nothing to keep once the workspace is gone"},
+	"money_allowances":          {Retain, "B30.27: each agent's monthly allowance in a currency — amount, day, sweep-back; its money_allowance_runs name the money_entries each month posted; financial-record retention"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
