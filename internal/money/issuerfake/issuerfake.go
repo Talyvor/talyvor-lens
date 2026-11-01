@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/talyvor/lens/internal/money"
@@ -48,12 +49,34 @@ func (i *Issuer) Card(ref string) (money.Card, bool) {
 	return *c, true
 }
 
+// merchants is how a real issuer would report a charge at each of these merchants (B53.1): its category code, country,
+// channel and phone wallet. Any other merchant reads as an online charge in GB under 5999, miscellaneous retail.
+var merchants = map[string]money.CardDetails{
+	"pret a manger":   {MCC: "5814", Country: "GB", Channel: money.ChannelContactless, Wallet: money.WalletApplePay},
+	"tesco":           {MCC: "5411", Country: "GB", Channel: money.ChannelContactless, Wallet: money.WalletGooglePay},
+	"shell":           {MCC: "5541", Country: "GB", Channel: money.ChannelInPerson, Wallet: money.WalletNone},
+	"tfl travel":      {MCC: "4111", Country: "GB", Channel: money.ChannelContactless, Wallet: money.WalletSamsungPay},
+	"british airways": {MCC: "3009", Country: "GB", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+	"marriott lisbon": {MCC: "3509", Country: "PT", Channel: money.ChannelInPerson, Wallet: money.WalletApplePay},
+	"hertz":           {MCC: "3357", Country: "PT", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+	"openai":          {MCC: "5734", Country: "US", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+	"aws":             {MCC: "7372", Country: "US", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+}
+
+// Details is what the issuer reports about a charge at merchant.
+func Details(merchant string) money.CardDetails {
+	if d, ok := merchants[strings.ToLower(strings.Join(strings.Fields(merchant), " "))]; ok {
+		return d
+	}
+	return money.CardDetails{MCC: "5999", Country: "GB", Channel: money.ChannelOnline, Wallet: money.WalletNone}
+}
+
 // Charge is merchant charging amount to the card ref: the issuer asks Lens and approves the charge only if Lens does.
 // Every charge is asked, whatever state the issuer holds the card in, so Lens's answer alone decides it.
 func (i *Issuer) Charge(ctx context.Context, ref, merchant string, amount money.Amount) (bool, string, error) {
 	i.mu.Lock()
 	i.auths++
-	a := money.Authorization{ID: "iauth_" + strconv.Itoa(i.auths), Card: ref, Merchant: merchant, Amount: amount}
+	a := money.Authorization{ID: "iauth_" + strconv.Itoa(i.auths), Card: ref, Merchant: merchant, Amount: amount, CardDetails: Details(merchant)}
 	i.mu.Unlock()
 	return i.decide(ctx, Name, a)
 }
@@ -75,7 +98,8 @@ func (i *Issuer) once(key string, fn func() (money.Card, error)) (money.Card, er
 func (i *Issuer) Issue(_ context.Context, req money.IssueCard) (money.Card, error) {
 	return i.once("issue:"+req.Key, func() (money.Card, error) {
 		ref := fmt.Sprintf("ic_%04d", len(i.cards)+1)
-		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive}
+		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive,
+			FormFactor: money.CardVirtual}
 		i.cards[ref] = c
 		return *c, nil
 	})

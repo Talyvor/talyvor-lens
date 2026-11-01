@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 )
@@ -106,17 +107,18 @@ type MoneyPosting struct {
 
 // MoneyEntry is one movement of money and its postings.
 type MoneyEntry struct {
-	ID             string         `json:"id"`
-	WorkspaceID    string         `json:"workspace_id"`
-	Capability     string         `json:"capability"` // the wallet capability the money moves for (B30.1)
-	Kind           string         `json:"kind"`       // what moved it, in lower_snake_case
-	IdempotencyKey string         `json:"idempotency_key"`
-	Funding        string         `json:"funding"` // test or live
-	Memo           string         `json:"memo,omitempty"`
-	Counterparty   string         `json:"counterparty,omitempty"` // who money through a partner is from or to, screened first (B30.6)
-	PartnerRef     string         `json:"partner_ref,omitempty"`  // the partner's reference for that payment, reconciled daily (B30.11)
-	CreatedAt      time.Time      `json:"created_at"`
-	Postings       []MoneyPosting `json:"postings"`
+	ID             string             `json:"id"`
+	WorkspaceID    string             `json:"workspace_id"`
+	Capability     string             `json:"capability"` // the wallet capability the money moves for (B30.1)
+	Kind           string             `json:"kind"`       // what moved it, in lower_snake_case
+	IdempotencyKey string             `json:"idempotency_key"`
+	Funding        string             `json:"funding"` // test or live
+	Memo           string             `json:"memo,omitempty"`
+	Counterparty   string             `json:"counterparty,omitempty"` // who money through a partner is from or to, screened first (B30.6)
+	PartnerRef     string             `json:"partner_ref,omitempty"`  // the partner's reference for that payment, reconciled daily (B30.11)
+	Card           *money.CardDetails `json:"card,omitempty"`         // a card payment's category code, country, channel and wallet (B53.1)
+	CreatedAt      time.Time          `json:"created_at"`
+	Postings       []MoneyPosting     `json:"postings"`
 
 	payeeWorkspaceID string // a mandate pull's payee company (B30.19), or an invoice's issuer (B30.20): its account may be credited too
 }
@@ -318,9 +320,15 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	e.Counterparty = strings.TrimSpace(e.Counterparty)
 	e.PartnerRef = strings.TrimSpace(e.PartnerRef)
 	e.ID = "mle_" + uuid.NewString()
-	err := tx.QueryRow(ctx, `INSERT INTO money_entries (id, workspace_id, capability, kind, idempotency_key, memo, counterparty, partner_ref)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
-		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef).Scan(&e.CreatedAt)
+	var card [4]*string // NULL for an entry that is not a card payment
+	if e.Card != nil {
+		d := e.Card.Normal()
+		e.Card, card = &d, [4]*string{&d.MCC, &d.Country, &d.Channel, &d.Wallet}
+	}
+	err := tx.QueryRow(ctx, `INSERT INTO money_entries (id, workspace_id, capability, kind, idempotency_key, memo, counterparty, partner_ref,
+		card_mcc, card_country, card_channel, card_wallet)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
+		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef, card[0], card[1], card[2], card[3]).Scan(&e.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return replayedMoneyEntry(ctx, tx, e, postings)
 	}
@@ -483,6 +491,7 @@ func replayedMoneyEntry(ctx context.Context, tx pgx.Tx, e MoneyEntry, postings [
 // readMoneyEntry reads the one entry where matches, and its postings in order.
 func readMoneyEntry(ctx context.Context, q pgxDB, where string, args ...any) (MoneyEntry, error) {
 	rows, err := q.Query(ctx, `SELECT e.id, e.workspace_id, e.capability, e.kind, e.idempotency_key, e.memo, e.counterparty, e.partner_ref, e.created_at,
+		COALESCE(e.card_mcc, ''), COALESCE(e.card_country, ''), COALESCE(e.card_channel, ''), COALESCE(e.card_wallet, ''),
 		p.account_id, p.amount_minor, p.currency, p.funding
 		FROM money_entries e JOIN money_postings p ON p.entry_id = e.id WHERE `+where+` ORDER BY p.line`, args...)
 	if err != nil {
@@ -490,10 +499,11 @@ func readMoneyEntry(ctx context.Context, q pgxDB, where string, args ...any) (Mo
 	}
 	defer rows.Close()
 	var e MoneyEntry
+	var card money.CardDetails
 	for rows.Next() {
 		var p MoneyPosting
 		if err := rows.Scan(&e.ID, &e.WorkspaceID, &e.Capability, &e.Kind, &e.IdempotencyKey, &e.Memo, &e.Counterparty, &e.PartnerRef, &e.CreatedAt,
-			&p.AccountID, &p.AmountMinor, &p.Currency, &p.Funding); err != nil {
+			&card.MCC, &card.Country, &card.Channel, &card.Wallet, &p.AccountID, &p.AmountMinor, &p.Currency, &p.Funding); err != nil {
 			return MoneyEntry{}, fmt.Errorf("economy: read money entry: %w", err)
 		}
 		e.Funding = p.Funding
@@ -504,6 +514,10 @@ func readMoneyEntry(ctx context.Context, q pgxDB, where string, args ...any) (Mo
 	}
 	if e.ID == "" {
 		return MoneyEntry{}, errors.New("economy: read money entry: none")
+	}
+	if e.Kind == "card_charge" || card.MCC != "" { // a card payment from before B53.1 reads as unknown
+		card = card.Normal()
+		e.Card = &card
 	}
 	return e, nil
 }
