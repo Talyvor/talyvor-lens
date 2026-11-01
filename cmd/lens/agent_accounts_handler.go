@@ -16,6 +16,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -154,6 +155,13 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/smart-account  its address (the same on every chain), its owners, and its
 //	                                                     Solana wallet, held for the agent by the same provider
 //
+// B48.4 — the networks and tokens a full wallet holds (agent_crypto_balances.go, internal/money/holdings):
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/crypto-balances?currency=GBP|EUR|USD   its balances per token on Base,
+//	                                                     Ethereum, Arbitrum, Optimism, Polygon and Solana, valued in
+//	                                                     the owner's currency; tokens off the verified list under
+//	                                                     Other, spam hidden, tokens their country bars not offered
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -172,6 +180,7 @@ type agentBank interface {
 	SmartAccountChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (challenge string, credentialIDs []string, err error)
 	CreateAgentSmartAccount(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (economy.AgentSmartAccount, error)
 	AgentSmartAccount(ctx context.Context, workspaceID, agentID string) (economy.AgentSmartAccount, error)
+	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -554,6 +563,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		out, err := bank.AgentSmartAccount(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeSmartAccount(w, out, err)
 	})
+	// The owner's view: one agent's key never reads another agent's balances.
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/crypto-balances", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.AgentCryptoBalances(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), req.URL.Query().Get("currency"))
+		if errors.Is(err, holdings.ErrCurrency) {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeSmartAccount(w, economy.AgentSmartAccount{}, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, out)
+	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
 		dec := json.NewDecoder(req.Body)
