@@ -16,6 +16,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -164,6 +165,13 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{id}/freeze        the gate refuses everything for the agent at once; answers the
 //	                                                     call the person's passkey signs to take its key off chain
 //
+// B48.4 — the networks and tokens a full wallet holds (agent_crypto_balances.go, internal/money/holdings):
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/crypto-balances?currency=GBP|EUR|USD   its balances per token on Base,
+//	                                                     Ethereum, Arbitrum, Optimism, Polygon and Solana, valued in
+//	                                                     the owner's currency; tokens off the verified list under
+//	                                                     Other, spam hidden, tokens their country bars not offered
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -186,6 +194,7 @@ type agentBank interface {
 	SetSpendPermission(ctx context.Context, workspaceID, agentID, by, canonical string, a *passkey.Assertion) (economy.SpendPermission, error)
 	AgentSpendPermission(ctx context.Context, workspaceID, agentID string) (economy.SpendPermission, error)
 	FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (economy.AgentFreeze, error)
+	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -616,6 +625,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/freeze", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.FreezeAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req))
 		writeSpend(w, out, err)
+	}))
+	// The owner's view: one agent's key never reads another agent's balances.
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/crypto-balances", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.AgentCryptoBalances(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), req.URL.Query().Get("currency"))
+		if errors.Is(err, holdings.ErrCurrency) {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeSmartAccount(w, economy.AgentSmartAccount{}, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, out)
 	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
