@@ -590,6 +590,11 @@ services:
       # registers only under LENS_DASHBOARD_ENABLED (default off) and does not forward at
       # all, so it 404'd for everyone (talyvor-track #66).
       TRACK_LENS_DASHBOARD_URL: ${TRACK_LENS_DASHBOARD_URL:-}
+      # Seals the webhook and integration secrets Track stores (AES-256, 32 bytes base64).
+      # OPTIONAL to Track: unset ⇒ webhooks and live imports stay off (the webhook routes 404).
+      # ⚠ Never show, log or commit the value, and never lose it: without it every secret
+      # Track has sealed becomes unreadable.
+      TRACK_INTEGRATION_ENCRYPTION_KEY: ${TRACK_INTEGRATION_ENCRYPTION_KEY:-}
       TRACK_LOG_LEVEL: info
     depends_on:
       postgres:
