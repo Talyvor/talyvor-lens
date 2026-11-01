@@ -107,6 +107,9 @@ type PaymentRequestIn struct {
 	Client  string                 `json:"client"`
 	AgentID string                 `json:"agent_id"`
 	Items   []PaymentRequestItemIn `json:"items"`
+	// B45.29: an outside agent's request — who Talyvor took it to be. Every item it asks for waits for a person.
+	// It is an agentsig.Result as JSON: agentsig's tests import economy, through kya.
+	AgentTrust json.RawMessage `json:"-"`
 }
 
 // PaymentRequestItem is one frozen item and how it was judged.
@@ -149,6 +152,9 @@ type PaymentRequest struct {
 	Items       []PaymentRequestItem `json:"items"`
 	CreatedAt   time.Time            `json:"created_at"`
 	CancelledAt *time.Time           `json:"cancelled_at,omitempty"`
+	// B45.29: set on an outside agent's request — "Verified agent of <business>", "Signed by <domain> (business not
+	// checked)" or "Unverified agent", for the approval card.
+	AgentTrust json.RawMessage `json:"agent_trust,omitempty"`
 }
 
 // PaymentRequestClient is who a request is judged as: an agent's key always as itself, "key:<its id>"; the person as
@@ -286,7 +292,11 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	}
 	c := canonicalRequest{Version: PaymentRequestVersion, ID: id, WorkspaceID: workspaceID, Kind: kind, Items: []canonicalItem{}}
 	status := ItemBlocked
-	for _, it := range items {
+	for i := range items {
+		if in.AgentTrust != nil && items[i].Decision == ItemAuto {
+			items[i].Decision, items[i].Reason, items[i].Rule, items[i].MandateID = ItemNeedsApproval, "an outside agent asks to be paid: a person approves it", "outside_agent", ""
+		}
+		it := items[i]
 		c.Items = append(c.Items, canonicalItem{it.PayeeID, it.ListingID, it.Currency, it.AmountMinor, it.Reference, it.BillID})
 		switch {
 		case it.Decision == ItemNeedsApproval:
@@ -297,8 +307,8 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	}
 	canonical, _ := json.Marshal(c)
 	if _, err := tx.Exec(ctx, `INSERT INTO payment_requests (id, workspace_id, idempotency_key, args_hash, kind, client, agent_id,
-		canonical, payload_hash, status, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, workspaceID, idempotencyKey, argsHash, kind, in.Client, in.AgentID, string(canonical), sha256Hex(string(canonical)), status, by); err != nil {
+		canonical, payload_hash, status, created_by, agent_trust) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		id, workspaceID, idempotencyKey, argsHash, kind, in.Client, in.AgentID, string(canonical), sha256Hex(string(canonical)), status, by, in.AgentTrust); err != nil {
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 	for _, it := range items {
@@ -311,7 +321,7 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	}
 	// B40.5: the request and how each item was judged are the first links of its record.
 	if err := appendAudit(ctx, tx, workspaceID, id, "request", map[string]any{"by": by, "client": in.Client, "agent_id": in.AgentID,
-		"kind": kind, "canonical": string(canonical), "payload_hash": sha256Hex(string(canonical))}); err != nil {
+		"agent_trust": in.AgentTrust, "kind": kind, "canonical": string(canonical), "payload_hash": sha256Hex(string(canonical))}); err != nil {
 		return r, false, err
 	}
 	decisions := []map[string]any{}
@@ -539,14 +549,14 @@ func (s *DualTokenStore) resolveListing(ctx context.Context, workspaceID string,
 	return "", nil
 }
 
-const paymentRequestCols = `id, kind, status, client, agent_id, canonical, payload_hash, created_at, cancelled_at`
+const paymentRequestCols = `id, kind, status, client, agent_id, canonical, payload_hash, created_at, cancelled_at, agent_trust`
 
 // PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared.
 func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (PaymentRequest, error) {
 	var r PaymentRequest
 	err := s.pool.QueryRow(ctx, `SELECT `+paymentRequestCols+` FROM payment_requests WHERE id = $1 AND workspace_id = $2
 		AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID).
-		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt)
+		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.AgentTrust)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrPaymentRequestNotFound
 	}
