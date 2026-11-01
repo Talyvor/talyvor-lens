@@ -196,6 +196,14 @@ func (w *listingWriter) WriteHeader(code int) {
 			w.Header().Del("Content-Length") // a withheld answer is not as long as the one the proxy wrote
 			w.stream = strings.Contains(w.Header().Get("Content-Type"), "event-stream")
 		}
+		// B43.23 (CodeQL go/reflected-xss #53, #54): the answer is JSON, an event stream or a plain refusal, never a page:
+		// one with no type (which the server would sniff, and could echo the request as HTML) or an HTML one goes out as
+		// plain text, and is never sniffed.
+		h := w.ResponseWriter.Header()
+		if ct := strings.ToLower(h.Get("Content-Type")); ct == "" || strings.Contains(ct, "html") {
+			h.Set("Content-Type", "text/plain; charset=utf-8")
+		}
+		h.Set("X-Content-Type-Options", "nosniff")
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
