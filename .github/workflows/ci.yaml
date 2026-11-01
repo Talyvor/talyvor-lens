@@ -193,6 +193,20 @@ jobs:
   # live network; LENS_TEST_DEVNET_CONTRACTS makes the test fail rather than skip if anvil is missing.
   devnet:
     runs-on: ubuntu-latest
+    # B48.6: the chain indexer's test posts to the ledger, so this job has a Postgres of its own too.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: lens_test
+          POSTGRES_DB: lens_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -208,6 +222,11 @@ jobs:
         env:
           LENS_TEST_DEVNET_CONTRACTS: /tmp/devnet-contracts
         run: go test -count=1 -v -run TestAgentSmartAccountOnDevnet ./internal/money/smartaccount/
+      - name: every movement of an agent's wallet seen, confirmed, reversed by a reorg and reconciled (B48.6)
+        env:
+          LENS_TEST_DEVNET_CONTRACTS: /tmp/devnet-contracts
+          LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable
+        run: go test -count=1 -v -run TestB486_ ./cmd/lens/
 
   # Formal static-analysis gate: golangci-lint (errcheck, govet, ineffassign,
   # staticcheck, unused). Config in .golangci.yml. Blocking — a finding fails the
