@@ -82,6 +82,7 @@ type Version struct {
 	Scan           Scan            `json:"scan"`
 	CreatedAt      time.Time       `json:"created_at"`
 	Needs          Needs           `json:"needs"`
+	Privacy        Privacy         `json:"privacy"`           // which models it calls, the tools it uses and the data it keeps (B41.193, privacy.go)
 	Parents        []Parent        `json:"parents,omitempty"` // the listing versions it builds on (lineage.go)
 	Artifact       json.RawMessage `json:"artifact,omitempty"`
 }
@@ -224,6 +225,9 @@ func checkArtifact(kind string, artifact json.RawMessage, words ...string) (cano
 		}
 	default:
 		return nil, "", scan, invalid("a %s's artifact needs %q", kind, field)
+	}
+	if err := checkPrivacy(obj); err != nil {
+		return nil, "", scan, err
 	}
 	canonical, _ = json.Marshal(obj)
 	h := sha256.Sum256(canonical)
@@ -628,10 +632,21 @@ func (s *Store) Get(ctx context.Context, viewerWorkspace, listingID string) (Lis
 		_ = json.Unmarshal(scan, &v.Scan)
 		v.Needs = needsOf(l.Kind, artifact)
 		v.Parents = parents[v.Version]
-		if owner {
-			v.Artifact = artifact
-		}
+		v.Artifact = artifact
 		l.Versions = append(l.Versions, v)
 	}
-	return l, rows.Err()
+	if err := rows.Err(); err != nil {
+		return Listing{}, err
+	}
+	rows.Close() // a pipeline's label reads its steps' listings
+	steps := map[string]map[string]any{}
+	for i, v := range l.Versions {
+		var a map[string]any
+		_ = json.Unmarshal(v.Artifact, &a)
+		l.Versions[i].Privacy = s.privacyOf(ctx, l, a, steps)
+		if !owner {
+			l.Versions[i].Artifact = nil
+		}
+	}
+	return l, nil
 }
