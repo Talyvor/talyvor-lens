@@ -45,6 +45,9 @@ var ErrBudgetNotFound = errors.New("economy: no such budget")
 
 var budgetCurrency = regexp.MustCompile(`^[A-Z]{3,4}$`)
 
+// spendMaxBudgets bounds one workspace's budgets, and so the reads every minute's sweep makes for it.
+const spendMaxBudgets = 100
+
 // SpendBudget is one budget and how far its current period has gone.
 type SpendBudget struct {
 	ID          string    `json:"id"`
@@ -116,6 +119,14 @@ func (s *DualTokenStore) SetSpendBudget(ctx context.Context, workspaceID string,
 		if !ok {
 			return SpendBudget{}, fmt.Errorf("%w: agent_id must be empty (your own wallet), %q or one of your agents", ErrSpending, BudgetAllWallets)
 		}
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM spend_budgets WHERE workspace_id = $1 AND NOT (agent_id = $2 AND category = $3
+		AND period = $4 AND currency = $5)`, workspaceID, b.AgentID, b.Category, b.Period, b.Currency).Scan(&count); err != nil {
+		return SpendBudget{}, fmt.Errorf("economy: budget: %w", err)
+	}
+	if count >= spendMaxBudgets {
+		return SpendBudget{}, fmt.Errorf("%w: at most %d budgets in a workspace", ErrSpending, spendMaxBudgets)
 	}
 	err := s.pool.QueryRow(ctx, `INSERT INTO spend_budgets (id, workspace_id, agent_id, category, period, amount_minor, currency, timezone, set_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -330,7 +341,9 @@ func (s *DualTokenStore) SweepSpendAlerts(ctx context.Context, now time.Time) (i
 	n := 0
 	var errs []error
 	for _, ws := range workspaces {
-		raised, err := s.CheckSpendAlerts(ctx, ws, now)
+		wsCtx, cancel := context.WithTimeout(ctx, 20*time.Second) // one slow workspace does not hold up the rest
+		raised, err := s.CheckSpendAlerts(wsCtx, ws, now)
+		cancel()
 		n += len(raised)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ws, err))
