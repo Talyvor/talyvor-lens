@@ -164,14 +164,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
-			out := map[string]any{"account_id": chi.URLParam(req, "id"), "lines": lines}
-			for _, l := range lines {
-				if l.Funding == economy.FundingTest {
-					out["notice"] = "Preview — test money only"
-					break
-				}
-			}
-			writeJSONOK(w, http.StatusOK, out)
+			writeJSONOK(w, http.StatusOK, map[string]any{"account_id": chi.URLParam(req, "id"), "lines": lines})
 		}
 	})
 }
