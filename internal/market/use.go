@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -660,21 +661,18 @@ func answer(ctx context.Context, r Runner, model string, msgs []Message) (string
 			system = append(system, m.Content)
 		}
 	}
-	if NewPromptGuard(system...).Leaks(out) {
+	if NewPromptGuard(system...).Add(&Said{}, out) {
 		return WithheldAnswer, nil
 	}
 	return out, nil
 }
 
 // PromptGuard tells whether an answer repeats a run of minPromptLeak characters of a listing's system prompt, case
-// and spacing aside (B50.4), for an answer read as it grows: Chat relays a listing's answer as it streams (B50.31).
-type PromptGuard struct {
-	runs    map[string]bool
-	checked int // the windows of the answer already looked at
-}
+// and spacing aside (B50.4), for an answer read as it grows too: Chat relays a listing's answer as it streams (B50.31).
+type PromptGuard struct{ runs map[string]bool }
 
-func NewPromptGuard(system ...string) *PromptGuard {
-	g := &PromptGuard{runs: map[string]bool{}}
+func NewPromptGuard(system ...string) PromptGuard {
+	g := PromptGuard{runs: map[string]bool{}}
 	for _, s := range system {
 		p := normPrompt(s)
 		for i := 0; i+minPromptLeak <= len(p); i++ {
@@ -684,12 +682,27 @@ func NewPromptGuard(system ...string) *PromptGuard {
 	return g
 }
 
-// Leaks reports whether answer, the whole answer so far, repeats the prompt. Each call looks only at the windows the
-// last one had not, so answer must be what the last call was given with more appended.
-func (g *PromptGuard) Leaks(answer string) bool {
-	o := normPrompt(answer)
-	for ; g.checked+minPromptLeak <= len(o); g.checked++ {
-		if g.runs[string(o[g.checked:g.checked+minPromptLeak])] {
+// Said is an answer read as it grows, a piece at a time, lowered and its spaces collapsed as normPrompt does.
+type Said struct {
+	o    []rune
+	gap  bool // a space is owed before the next word
+	from int  // the windows before it are already looked at
+}
+
+// Add appends s to the answer a and reports whether, with it, the answer repeats the prompt.
+func (g PromptGuard) Add(a *Said, s string) bool {
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsSpace(r) {
+			a.gap = len(a.o) > 0
+			continue
+		}
+		if a.gap {
+			a.o, a.gap = append(a.o, ' '), false
+		}
+		a.o = append(a.o, r)
+	}
+	for ; a.from+minPromptLeak <= len(a.o); a.from++ {
+		if g.runs[string(a.o[a.from:a.from+minPromptLeak])] {
 			return true
 		}
 	}

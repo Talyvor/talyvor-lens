@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/talyvor/lens/internal/auth"
@@ -112,7 +113,8 @@ func (c *chatListingRunner) Run(_ context.Context, _ string, messages []market.M
 		return "", fmt.Errorf("%w in Chat: only a skill or an agent can be asked there", market.ErrNotRunnable)
 	}
 	c.ran = true
-	c.w.guard, c.w.shape = market.NewPromptGuard(messages[0].Content), c.shape
+	guard := market.NewPromptGuard(messages[0].Content)
+	c.w.guard, c.w.shape = &guard, c.shape
 	if err := withSystem(c.body, c.shape, messages[0].Content); err != nil {
 		return "", fmt.Errorf("%w: %v", market.ErrInvalid, err)
 	}
@@ -177,10 +179,10 @@ type listingWriter struct {
 	guard  *market.PromptGuard
 	shape  string
 	stream bool
-	held   []byte          // what the proxy wrote that is not yet relayed
-	said   strings.Builder // the answer's text so far
-	block  int             // the content block an Anthropic stream is in
-	cut    bool            // withheld: nothing more is relayed
+	held   []byte                  // what the proxy wrote that is not yet relayed
+	said   map[string]*market.Said // each string field of the stream's frames, by its path, so far
+	block  int                     // the content block an Anthropic stream is in
+	cut    bool                    // withheld: nothing more is relayed
 }
 
 func (w *listingWriter) WriteHeader(code int) {
@@ -227,14 +229,31 @@ func (w *listingWriter) Write(p []byte) (int, error) {
 // relay passes one frame of a stream to the chat, or ends the stream with the withheld text if, with it, the answer
 // repeats the listing's instructions.
 func (w *listingWriter) relay(frame []byte) error {
+	leaks := false
 	for _, line := range strings.Split(string(frame), "\n") {
-		if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
-			text, block := answerText([]byte(strings.TrimSpace(data)))
-			w.said.WriteString(text)
-			w.block = max(w.block, block)
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+		if !ok {
+			continue
 		}
+		v := decodeAnswer([]byte(strings.TrimSpace(data)))
+		if m, ok := v.(map[string]any); ok {
+			if i, ok := m["index"].(float64); ok {
+				w.block = int(i)
+			}
+		}
+		// Every string a frame carries is checked as its own run: the text, a tool call's arguments, reasoning, and
+		// each choice of several apart, since their frames interleave.
+		eachString("", v, func(path, s string) {
+			if w.said == nil {
+				w.said = map[string]*market.Said{}
+			}
+			if w.said[path] == nil {
+				w.said[path] = &market.Said{}
+			}
+			leaks = w.guard.Add(w.said[path], s) || leaks
+		})
 	}
-	if !w.guard.Leaks(w.said.String()) {
+	if !leaks {
 		_, err := w.ResponseWriter.Write(frame)
 		return err
 	}
@@ -265,42 +284,42 @@ func (w *listingWriter) finish() error {
 	if w.stream {
 		return w.relay(held) // shortcut: a stream framed other than by blank lines is held whole and read here
 	}
-	out := held
-	if text, _ := answerText(held); w.guard.Leaks(text) {
+	out, leaks := held, false
+	eachString("", decodeAnswer(held), func(_, s string) { leaks = w.guard.Add(&market.Said{}, s) || leaks })
+	if leaks {
 		out = withheldBody(held, w.shape)
 	}
 	_, err := w.ResponseWriter.Write(out)
 	return err
 }
 
-// answerText is the text a whole answer, or one frame of a streamed one, carries in either body format, and the
-// Anthropic content block it is in. shortcut: text only; a tool call's arguments are not read. A body that is not
-// JSON is read as text, so it is checked too.
-func answerText(data []byte) (string, int) {
-	var v struct {
-		Choices []struct {
-			Delta, Message struct{ Content string }
-		}
-		Delta        struct{ Text string }
-		ContentBlock struct{ Text string } `json:"content_block"`
-		Content      []struct{ Text string }
-		Index        int
-	}
+// decodeAnswer is a whole answer or one frame of a streamed one; one that is not JSON is its text, so it is checked too.
+func decodeAnswer(data []byte) any {
+	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
-		return string(data), 0
+		return string(data)
 	}
-	var b strings.Builder
-	for _, c := range v.Choices {
-		b.WriteString(c.Delta.Content + c.Message.Content)
-	}
-	b.WriteString(v.Delta.Text + v.ContentBlock.Text)
-	for _, c := range v.Content {
-		b.WriteString(c.Text)
-	}
-	return b.String(), v.Index
+	return v
 }
 
-// withheldBody is a whole answer with its text replaced by the withheld text, everything else in it kept.
+// eachString calls f with the path and the value of every string in v.
+func eachString(path string, v any, f func(path, s string)) {
+	switch v := v.(type) {
+	case string:
+		f(path, v)
+	case map[string]any:
+		for k, e := range v {
+			eachString(path+"."+k, e, f)
+		}
+	case []any:
+		for i, e := range v {
+			eachString(path+"."+strconv.Itoa(i), e, f)
+		}
+	}
+}
+
+// withheldBody is a whole answer whose content, tool calls and log probabilities are replaced by the withheld text;
+// its id, model and usage are kept.
 func withheldBody(body []byte, shape string) []byte {
 	var v map[string]json.RawMessage
 	_ = json.Unmarshal(body, &v)
@@ -311,15 +330,13 @@ func withheldBody(body []byte, shape string) []byte {
 		v["content"] = rawJSON([]map[string]string{{"type": "text", "text": market.WithheldAnswer}})
 		return rawJSON(v)
 	}
-	var choices []map[string]json.RawMessage
+	var choices []json.RawMessage
 	_ = json.Unmarshal(v["choices"], &choices)
-	if len(choices) == 0 {
-		choices = []map[string]json.RawMessage{{"index": rawJSON(0)}}
+	withheld := make([]any, max(len(choices), 1))
+	for i := range withheld {
+		withheld[i] = map[string]any{"index": i, "message": map[string]string{"role": "assistant", "content": market.WithheldAnswer}, "finish_reason": "stop"}
 	}
-	for _, c := range choices {
-		c["message"] = rawJSON(map[string]string{"role": "assistant", "content": market.WithheldAnswer})
-	}
-	v["choices"] = rawJSON(choices)
+	v["choices"] = rawJSON(withheld)
 	return rawJSON(v)
 }
 

@@ -16,7 +16,7 @@ import (
 )
 
 // B50.31 — a listing asked in Chat whose model answers with the seller's instructions word for word does not hand
-// them over: streamed or not, OpenAI or Anthropic, the buyer gets the withheld text where the instructions would be,
+// them over: streamed or not, as its text or a tool call's arguments, OpenAI or Anthropic, the buyer gets the withheld text where the instructions would be,
 // as POST …/use gives it; an answer that repeats none of them reaches the buyer unchanged.
 func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -49,7 +49,11 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for i := 0; i < len(text); i += 7 {
-			frame, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": text[i:min(i+7, len(text))]}}}})
+			delta := map[string]any{"content": text[i:min(i+7, len(text))]}
+			if r.URL.Query().Get("tool") == "1" { // the answer as a tool call's arguments
+				delta = map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]string{"arguments": text[i:min(i+7, len(text))]}}}}
+			}
+			frame, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta}}})
 			ev := "data: " + string(frame) + "\n\n"
 			_, _ = w.Write([]byte(ev[:len(ev)/2])) // a frame split across two writes
 			_, _ = w.Write([]byte(ev[len(ev)/2:]))
@@ -96,7 +100,11 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 		var out strings.Builder
 		var ev struct {
 			Choices []struct {
-				Delta, Message struct{ Content string }
+				Delta struct {
+					Content   string
+					ToolCalls []struct{ Function struct{ Arguments string } } `json:"tool_calls"`
+				}
+				Message struct{ Content string }
 			}
 			Delta struct{ Text string }
 		}
@@ -109,6 +117,9 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 			if data, ok := strings.CutPrefix(line, "data: "); ok && json.Unmarshal([]byte(data), &ev) == nil {
 				for _, c := range ev.Choices {
 					out.WriteString(c.Delta.Content)
+					for _, tc := range c.Delta.ToolCalls {
+						out.WriteString(tc.Function.Arguments)
+					}
 				}
 				out.WriteString(ev.Delta.Text)
 			}
@@ -118,6 +129,7 @@ func TestChatListing_AnAnswerRepeatingTheListingsInstructionsIsWithheld(t *testi
 	norm := func(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 	for _, tc := range []struct{ name, path, body string }{
 		{"OpenAI, streamed", "/v1/proxy/openai/v1/chat/completions?stream=1", `{"model":"gpt-5-mini","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
+		{"OpenAI, streamed as a tool call", "/v1/proxy/openai/v1/chat/completions?stream=1&tool=1", `{"model":"gpt-5-mini","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
 		{"OpenAI, whole", "/v1/proxy/openai/v1/chat/completions", `{"model":"gpt-5-mini","messages":[{"role":"user","content":"%s"}]}`},
 		{"Anthropic, streamed", "/v1/proxy/anthropic/v1/messages", `{"model":"claude-x","stream":true,"messages":[{"role":"user","content":"%s"}]}`},
 	} {
