@@ -277,6 +277,8 @@ var Manifest = map[string]Entry{
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
 	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},
 	"agent_smart_accounts":         {Delete, "B48.2: each crypto agent's smart account — its address, the owner's passkey public key, the address of the agent's key at the provider and the recovery address"},
+	"agent_spend_permissions":      {Delete, "B48.3: each permission the owner signed for a crypto agent's key — its limits, counterparties and the owner's passkey assertion"},
+	"agent_spend_permission_uses":  {Delete, "B48.3: each crypto payment the gate allowed under an agent's permission — token, counterparty and amount"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
