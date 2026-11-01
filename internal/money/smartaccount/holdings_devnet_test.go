@@ -138,3 +138,14 @@ func TestAgentSmartAccountOnDevnetHoldsTokens(t *testing.T) {
 		}
 	}
 }
+
+// A token answers its own name: a length past the end of its answer is no name, not a crash.
+func TestAbiTextRefusesALengthPastTheAnswer(t *testing.T) {
+	hostile := append(uintW(32).enc(), bigW(new(big.Int).SetUint64(1<<63-1)).enc()...)
+	if got := abiText(append(hostile, make([]byte, 32)...)); got != "" {
+		t.Errorf("hostile length: %q", got)
+	}
+	if got := abiText(append(append(uintW(32).enc(), uintW(4).enc()...), bytesV("USDC").enc()[32:]...)); got != "USDC" {
+		t.Errorf("a plain name: %q", got)
+	}
+}
