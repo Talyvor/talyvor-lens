@@ -22,6 +22,8 @@ import (
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
 //	                          test money into a company account, a payment in from the Test partner
+//	POST /v1/money/credits    {amount_minor, currency, funding, idempotency_key} — B30.25: the owner or an admin buys
+//	                          credits at list from the company's account in the currency, with no card fee
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.
@@ -32,6 +34,7 @@ type moneyAccountBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
+	BuyCredits(ctx context.Context, workspaceID string, in economy.CreditPurchase) (economy.CreditPurchase, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -121,6 +124,31 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writePaymentErr(w, err)
 		default:
 			writeJSONOK(w, http.StatusCreated, e)
+		}
+	})
+	r.Post("/v1/money/credits", func(w http.ResponseWriter, req *http.Request) {
+		ws, _ := auth.WorkspaceIdentity(req.Context())
+		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); ws == "" || !owner {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may buy credits from its accounts")
+			return
+		}
+		var in economy.CreditPurchase
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"amount_minor": <positive>, "currency": "GBP", "idempotency_key": "<key>"}`)
+			return
+		}
+		if k := req.Header.Get("Idempotency-Key"); k != "" {
+			in.IdempotencyKey = k
+		}
+		p, err := bank.BuyCredits(req.Context(), ws, economy.CreditPurchase{AmountMinor: in.AmountMinor, Currency: in.Currency,
+			Funding: in.Funding, IdempotencyKey: in.IdempotencyKey})
+		switch {
+		case errors.Is(err, economy.ErrCreditPurchase):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusCreated, p)
 		}
 	})
 	r.Get("/v1/money/accounts/{id}/details", func(w http.ResponseWriter, req *http.Request) {
