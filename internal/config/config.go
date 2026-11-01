@@ -220,6 +220,9 @@ type Config struct {
 	// ApprovalTTL (LENS_APPROVAL_TTL, Go duration, default 24h) is how long an approval lasts (B50.18): an agent's
 	// request or a payment request waits that long for its tap, and once approved may be used that long.
 	ApprovalTTL time.Duration
+	// BriefingPushHour (LENS_BRIEFING_PUSH_HOUR, a UTC hour 0-23, default unset = -1) is when each morning the daily
+	// briefing's line is pushed to the owner's web push subscriptions (B41.205); unset, none is sent.
+	BriefingPushHour int
 	// B40.4 — the phone app's device keys. DeviceAppleAppID (LENS_DEVICE_APPLE_APP_ID, "<team id>.<bundle id>",
 	// default empty) is the iPhone app App Attest attestations must be for; empty, no iPhone key registers.
 	// DeviceTestAttestation (LENS_DEVICE_TEST_ATTESTATION, default false) accepts device keys with a fake
@@ -1710,6 +1713,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid LENS_POOL_MINT_CAP_PER_ENTRY (must be >= 0; 0 disables): %s", v)
 		}
 		c.PoolMintCapPerEntry = n
+	}
+	c.BriefingPushHour = -1
+	if v := os.Getenv("LENS_BRIEFING_PUSH_HOUR"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 23 {
+			return nil, fmt.Errorf("invalid LENS_BRIEFING_PUSH_HOUR (a UTC hour, 0-23): %s", v)
+		}
+		c.BriefingPushHour = n
 	}
 	c.ApprovalTTL = 24 * time.Hour
 	if v := os.Getenv("LENS_APPROVAL_TTL"); v != "" {

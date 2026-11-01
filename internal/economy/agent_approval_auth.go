@@ -336,27 +336,32 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if pusher == nil {
 			return
 		}
-		rows, err := s.pool.Query(ctx, `SELECT endpoint, p256dh, auth FROM workspace_push_subscriptions WHERE workspace_id = $1`, workspaceID)
-		if err != nil {
-			slog.Warn("agents: approval push: subscriptions", slog.String("err", err.Error()))
-			return
-		}
-		var subs [][3]string
-		for rows.Next() {
-			var sub [3]string
-			if rows.Scan(&sub[0], &sub[1], &sub[2]) == nil {
-				subs = append(subs, sub)
-			}
-		}
-		rows.Close()
-		for _, sub := range subs {
-			err := pusher.Send(ctx, sub[0], sub[1], sub[2], payload)
-			switch {
-			case errors.Is(err, webpush.ErrGone):
-				_ = s.DeletePushSubscription(ctx, workspaceID, sub[0])
-			case err != nil:
-				slog.Warn("agents: approval push", slog.String("err", err.Error()))
-			}
-		}
+		s.webPush(ctx, pusher, workspaceID, payload)
 	}()
+}
+
+// webPush sends payload to every web push subscription of workspaceID, forgetting those the push service says are gone.
+func (s *DualTokenStore) webPush(ctx context.Context, pusher ApprovalPusher, workspaceID string, payload []byte) {
+	rows, err := s.pool.Query(ctx, `SELECT endpoint, p256dh, auth FROM workspace_push_subscriptions WHERE workspace_id = $1`, workspaceID)
+	if err != nil {
+		slog.Warn("agents: push: subscriptions", slog.String("err", err.Error()))
+		return
+	}
+	var subs [][3]string
+	for rows.Next() {
+		var sub [3]string
+		if rows.Scan(&sub[0], &sub[1], &sub[2]) == nil {
+			subs = append(subs, sub)
+		}
+	}
+	rows.Close()
+	for _, sub := range subs {
+		err := pusher.Send(ctx, sub[0], sub[1], sub[2], payload)
+		switch {
+		case errors.Is(err, webpush.ErrGone):
+			_ = s.DeletePushSubscription(ctx, workspaceID, sub[0])
+		case err != nil:
+			slog.Warn("agents: push", slog.String("err", err.Error()))
+		}
+	}
 }
