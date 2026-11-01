@@ -143,7 +143,7 @@ type Trust struct {
 const performanceDays = 30
 
 // Performance is how a listing's runs went over the last 30 days (market_use_outcomes): every use that ran, answered or
-// failed, but its seller's own and those of buyers linked to it, so a seller cannot pad its own record.
+// failed, but its seller's own and those of buyers linked to it (asked at every read), so a seller cannot pad its record.
 type Performance struct {
 	Days                int      `json:"days"`
 	Uses                int      `json:"uses"`
@@ -283,8 +283,8 @@ func (s *Store) Trust(ctx context.Context, viewer, listingID string) (Trust, err
 			percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok),
 			avg(price_ulxc) FILTER (WHERE ok AND charge = 'billed')
 		FROM market_use_outcomes WHERE listing_id = $1 AND ran_at > $2::timestamptz - make_interval(days => $3)
-		  AND charge NOT IN ('own', 'linked')`,
-		l.ID, s.now(), performanceDays).Scan(&pf.Uses, &pf.Failed, &median, &cost); err != nil {
+		  AND buyer_workspace_id <> $4 AND NOT `+linkedSQL("$4", "buyer_workspace_id"),
+		l.ID, s.now(), performanceDays, l.WorkspaceID).Scan(&pf.Uses, &pf.Failed, &median, &cost); err != nil {
 		return Trust{}, fmt.Errorf("market: trust: %w", err)
 	}
 	if pf.Uses > 0 {
