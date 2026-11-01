@@ -23,11 +23,12 @@ import (
 // and the same transfer told of twice, or by both, is one chain_movements row (migration 0286).
 //
 // It moves the ledger only once it has its network's confirmations, more for a large amount (Confirm): then it is
-// posted between the agent's USDC account and the ledger's mirror of the wallet on that network — a partner account
-// whose balance reads as the negative of what the chain says the wallet holds. Until it is deep enough not to move it
-// is watched: a reorg that takes it off the chain posts the reversal, and it posts again if it comes back.
+// posted between the agent's account for the wallet on that network — purpose chain, which nothing in Lens spends, as
+// the money is the person's on the chain and not Talyvor's to move — and the partner account it came in or went out
+// through. Until it is deep enough not to move it is watched: a reorg that takes it off the chain posts the reversal,
+// and it posts again if it comes back.
 //
-// Each night every wallet's balance on the chain is compared with the mirror and the movements seen but not yet
+// Each night every wallet's balance on the chain is compared with its account and the movements seen but not yet
 // confirmed (Reconcile); any difference — money that moved behind Talyvor's back — is kept and raised to the operator.
 
 // ChainNetwork is one EVM network the indexer reads, and how deep a movement there must be before it posts.
@@ -337,38 +338,39 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 	return res, errors.Join(errs...)
 }
 
-// chainMirrorRef is the partner reference of the ledger's mirror of wallet on network.
-func chainMirrorRef(network, wallet string) string {
+// chainRef is the reference the ledger's accounts for wallet on network carry.
+func chainRef(network, wallet string) string {
 	return "chain:" + network + ":" + strings.ToLower(wallet)
 }
 
-// chainMirror is the ledger's mirror of wallet on network in workspaceID, opened the first time it moves.
-func (x *ChainIndexer) chainMirror(ctx context.Context, workspaceID, network, wallet string) (string, error) {
-	ref := chainMirrorRef(network, wallet)
+// chainAccount is the ledger's account of purpose — chain, for agentID's, or partner — for wallet on network, opened
+// the first time money moves there.
+func (x *ChainIndexer) chainAccount(ctx context.Context, workspaceID, agentID, purpose, network, wallet string) (string, error) {
+	ref := chainRef(network, wallet)
 	var id string
-	err := x.s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND purpose = 'partner' AND partner_account_ref = $2
-		AND currency = 'USDC' ORDER BY created_at LIMIT 1`, workspaceID, ref).Scan(&id)
+	err := x.s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND purpose = $2 AND partner_account_ref = $3
+		AND currency = 'USDC' ORDER BY created_at LIMIT 1`, workspaceID, purpose, ref).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		a, err := x.s.OpenMoneyAccount(ctx, MoneyAccount{WorkspaceID: workspaceID, Currency: money.USDC, Purpose: MoneyPartner,
+		if purpose != MoneyChain {
+			agentID = ""
+		}
+		a, err := x.s.OpenMoneyAccount(ctx, MoneyAccount{WorkspaceID: workspaceID, AgentID: agentID, Currency: money.USDC, Purpose: purpose,
 			Name: "chain:" + network, PartnerAccountRef: ref})
 		return a.ID, err
 	}
 	if err != nil {
-		return "", fmt.Errorf("economy: chain mirror: %w", err)
+		return "", fmt.Errorf("economy: chain account: %w", err)
 	}
 	return id, nil
 }
 
 // move posts m to the ledger — or, reverse, takes back its last posting — and records it on m's row.
 func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) error {
-	if x.s.moneyLayer == nil {
-		return ErrAgentWalletsOff
-	}
-	wallet, err := x.s.agentWalletIn(ctx, m.workspaceID, m.agentID, money.USDC)
+	wallet, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyChain, m.network, m.wallet)
 	if err != nil {
 		return err
 	}
-	mirror, err := x.chainMirror(ctx, m.workspaceID, m.network, m.wallet)
+	mirror, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyPartner, m.network, m.wallet)
 	if err != nil {
 		return err
 	}
@@ -381,7 +383,7 @@ func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) 
 	}
 	e, err := x.s.PostMoney(ctx, MoneyEntry{WorkspaceID: m.workspaceID, Capability: CapabilityStablecoins, Kind: kind, IdempotencyKey: key,
 		Funding: m.funding, Counterparty: m.counterparty, PartnerRef: m.txHash + ":" + strconv.Itoa(m.position),
-		Postings: []MoneyPosting{{AccountID: wallet.AccountID, AmountMinor: amount, Currency: money.USDC},
+		Postings: []MoneyPosting{{AccountID: wallet, AmountMinor: amount, Currency: money.USDC},
 			{AccountID: mirror, AmountMinor: -amount, Currency: money.USDC}}})
 	if err != nil {
 		return err
@@ -405,13 +407,13 @@ type ChainReconciliation struct {
 	Asset           string `json:"asset"`
 	BlockNumber     int64  `json:"block_number"`
 	ChainMinor      int64  `json:"chain_minor"`      // what the chain says the wallet holds at BlockNumber
-	LedgerMinor     int64  `json:"ledger_minor"`     // what the ledger's mirror of the wallet says it holds
+	LedgerMinor     int64  `json:"ledger_minor"`     // what the ledger says the wallet holds
 	PendingMinor    int64  `json:"pending_minor"`    // movements seen on the chain by BlockNumber, not yet confirmed
 	DifferenceMinor int64  `json:"difference_minor"` // chain minus ledger and pending: 0 when they agree
 }
 
 // Reconcile compares every agent's wallet on network with the ledger and keeps each comparison: what the chain says
-// it holds at the deepest block a confirmed movement can be in, against the ledger's mirror of it and the movements
+// it holds at the deepest block a confirmed movement can be in, against its account in the ledger and the movements
 // seen by then but not yet confirmed. It answers those that differ.
 func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainReconciliation, error) {
 	n, err := x.network(network)
@@ -439,12 +441,12 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 		r := ChainReconciliation{ID: "crec_" + uuid.NewString(), WorkspaceID: w.workspaceID, AgentID: w.agentID, Network: network,
 			Wallet: w.address, Asset: money.USDC, BlockNumber: block, ChainMinor: on.Int64()}
 		if err := x.s.pool.QueryRow(ctx, `SELECT
-			COALESCE((SELECT -sum(b.balance_minor) FROM money_accounts a JOIN money_account_balances b ON b.account_id = a.id
-				WHERE a.workspace_id = $1 AND a.purpose = 'partner' AND a.partner_account_ref = $2), 0)::bigint,
+			COALESCE((SELECT sum(b.balance_minor) FROM money_accounts a JOIN money_account_balances b ON b.account_id = a.id
+				WHERE a.workspace_id = $1 AND a.purpose = 'chain' AND a.partner_account_ref = $2), 0)::bigint,
 			COALESCE((SELECT sum(CASE direction WHEN 'in' THEN amount_minor ELSE -amount_minor END) FROM chain_movements
 				WHERE workspace_id = $1 AND agent_id = $3 AND network = $4 AND status IN ('seen', 'reversed')
 				AND block_number IS NOT NULL AND block_number <= $5), 0)::bigint`,
-			w.workspaceID, chainMirrorRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor); err != nil {
+			w.workspaceID, chainRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor); err != nil {
 			return out, fmt.Errorf("economy: reconcile: %w", err)
 		}
 		r.DifferenceMinor = r.ChainMinor - r.LedgerMinor - r.PendingMinor

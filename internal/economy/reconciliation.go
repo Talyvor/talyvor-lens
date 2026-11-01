@@ -76,7 +76,7 @@ func (s *DualTokenStore) ReconcileDay(ctx context.Context, p partners.AccountPar
 	type key struct{ account, ref string }
 	type account struct{ workspace, currency, ref string }
 	accounts := map[string]account{}
-	// B48.6: the ledger's mirrors of agents' crypto wallets are reconciled against the chain (ChainIndexer.Reconcile).
+	// B48.6: the partner accounts agents' crypto wallets move through are reconciled against the chain (ChainIndexer.Reconcile).
 	rows, err := s.pool.Query(ctx, `SELECT id, workspace_id, currency, partner_account_ref FROM money_accounts WHERE purpose = 'partner'
 		AND partner_account_ref NOT LIKE 'chain:%'`)
 	if err != nil {

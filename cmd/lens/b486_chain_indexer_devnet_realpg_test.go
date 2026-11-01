@@ -32,7 +32,7 @@ import (
 
 // B48.6 on a local devnet and the real schema: an agent's wallet receives USDC (a mock token) on an anvil chain. The
 // provider's signed webhook, sent twice, makes one movement, posted once and only after its confirmations — a large
-// one after more. A forced reorg takes a posted deposit off the chain and the ledger posts its reversal; when it comes
+// one after more — to the agent's account for the wallet on the chain, never to the wallet Talyvor's rails spend. A forced reorg takes a posted deposit off the chain and the ledger posts its reversal; when it comes
 // back it posts again, once. Money moved out of the wallet behind Talyvor's back is caught by the nightly
 // reconciliation and raised to the operator; the node's logs then find it and the ledger agrees again. Every check is on
 // the ledger's rows. CI's devnet job runs it (LENS_TEST_DEVNET_CONTRACTS and LENS_TEST_DATABASE_URL).
@@ -96,17 +96,22 @@ func TestB486_EveryMovementSeenConfirmedAndReconciled(t *testing.T) {
 		idx.serveWebhook(w, req)
 		return w.Code
 	}
-	// ledger is what the agent's USDC account holds, and how many entries of each kind moved it.
+	// ledger is what the agent's account for its wallet on the chain holds, and how many entries of each kind moved it.
 	ledger := func() (int64, map[string]int) {
 		t.Helper()
-		var held int64
-		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor), 0)::bigint FROM money_postings WHERE account_id = $1`,
-			usdcWallet.AccountID).Scan(&held); err != nil {
+		var held, spendable int64
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(p.amount_minor), 0)::bigint FROM money_postings p
+			JOIN money_accounts a ON a.id = p.account_id WHERE a.agent_id = $1 AND a.purpose = 'chain'`, agent.ID).Scan(&held); err != nil {
 			t.Fatal(err)
+		}
+		// The money is the person's, on the chain: the wallet Talyvor's rails spend from never holds it.
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor), 0)::bigint FROM money_postings WHERE account_id = $1`,
+			usdcWallet.AccountID).Scan(&spendable); err != nil || spendable != 0 {
+			t.Fatalf("the agent's spendable USDC wallet holds %d, %v; want 0", spendable, err)
 		}
 		kinds := map[string]int{}
 		rows, err := pool.Query(ctx, `SELECT e.kind, count(DISTINCT e.id) FROM money_entries e JOIN money_postings p ON p.entry_id = e.id
-			WHERE p.account_id = $1 GROUP BY 1`, usdcWallet.AccountID)
+			JOIN money_accounts a ON a.id = p.account_id WHERE a.agent_id = $1 AND a.purpose = 'chain' GROUP BY 1`, agent.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +138,7 @@ func TestB486_EveryMovementSeenConfirmedAndReconciled(t *testing.T) {
 		t.Helper()
 		got, gotKinds := ledger()
 		if got != held || fmt.Sprint(gotKinds) != fmt.Sprint(kinds) {
-			t.Fatalf("%s: the agent's USDC account holds %d by %v; want %d by %v", step, got, gotKinds, held, kinds)
+			t.Fatalf("%s: the agent's wallet on the chain holds %d in the ledger by %v; want %d by %v", step, got, gotKinds, held, kinds)
 		}
 	}
 

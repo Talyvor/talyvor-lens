@@ -61,10 +61,11 @@ const (
 	MoneySuspense = "suspense" // money in that is not yet matched to an account
 	MoneyPartner  = "partner"  // what has come in and gone out through a partner
 	MoneyRevenue  = "revenue"  // Talyvor's fees
+	MoneyChain    = "chain"    // what an agent's crypto wallet holds on a chain (B48.6): only a movement there moves it
 )
 
 var moneyPurposes = map[string]bool{MoneyCompany: true, MoneyAgent: true, MoneyPot: true, MoneyHold: true,
-	MoneySuspense: true, MoneyPartner: true, MoneyRevenue: true}
+	MoneySuspense: true, MoneyPartner: true, MoneyRevenue: true, MoneyChain: true}
 
 // The states of a money account. Only an open one takes postings.
 const (
@@ -161,11 +162,11 @@ func (s *DualTokenStore) OpenMoneyAccount(ctx context.Context, a MoneyAccount) (
 		return MoneyAccount{}, fmt.Errorf("economy: a money account holds GBP, EUR, USD or USDC, not %q", a.Currency)
 	case !moneyPurposes[a.Purpose]:
 		return MoneyAccount{}, fmt.Errorf("economy: %q is not a money account's purpose", a.Purpose)
-	case a.Purpose == MoneyAgent && a.AgentID == "":
+	case (a.Purpose == MoneyAgent || a.Purpose == MoneyChain) && a.AgentID == "":
 		return MoneyAccount{}, errors.New("economy: an agent's money account needs the agent")
-	case a.AgentID != "" && a.Purpose != MoneyAgent && a.Purpose != MoneyPot && a.Purpose != MoneyHold:
+	case a.AgentID != "" && a.Purpose != MoneyAgent && a.Purpose != MoneyPot && a.Purpose != MoneyHold && a.Purpose != MoneyChain:
 		return MoneyAccount{}, fmt.Errorf("economy: a %s account belongs to the company, not to an agent", a.Purpose)
-	case a.PartnerAccountRef != "" && a.Purpose != MoneyPartner:
+	case a.PartnerAccountRef != "" && a.Purpose != MoneyPartner && a.Purpose != MoneyChain:
 		return MoneyAccount{}, fmt.Errorf("economy: only a partner account names an account at the partner, not a %s account", a.Purpose)
 	}
 	if a.AgentID != "" {
