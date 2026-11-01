@@ -23,8 +23,8 @@ type Network struct {
 	ChainID int64  `json:"chain_id,omitempty"` // EVM networks; 0 on Solana
 }
 
-// DefaultNetwork is where a wallet receives and pays unless told otherwise.
-const DefaultNetwork = "base"
+// defaultNetwork is where a wallet receives and pays unless told otherwise.
+const defaultNetwork = "base"
 
 // Networks are the networks a wallet holds tokens on, the default first.
 var Networks = []Network{
@@ -204,7 +204,7 @@ func (l List) Statement(ctx context.Context, country, currency string, held map[
 			}
 			amounts[k] = h
 		}
-		nb := NetworkBalances{Network: n, Default: n.ID == DefaultNetwork, Tokens: []Balance{}, Other: []Balance{}}
+		nb := NetworkBalances{Network: n, Default: n.ID == defaultNetwork, Tokens: []Balance{}, Other: []Balance{}}
 		value := func(t Token, amount *big.Int) (*int64, error) {
 			p, err := prices.Price(ctx, t.Symbol, currency)
 			if err != nil {
