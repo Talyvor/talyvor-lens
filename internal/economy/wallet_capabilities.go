@@ -110,6 +110,8 @@ var Capabilities = []Capability{
 	{CapabilityPriceLock, "Prepaid usage at today's prices", ClassAmber, LevelIdentity},
 	{CapabilityCover, "Cover for agent mistakes", ClassRed, LevelIdentity},
 	{CapabilityPayoutsToPeople, "Paying people for tasks", ClassRed, LevelIdentity},
+	// B41.141: moves no money; its clearance is the lawyer's approval of the wording (Q44, Q54).
+	{CapabilityRoomEquity, "Shared ownership in rooms (intent only)", ClassRed, LevelSignedIn},
 }
 
 // The B30 capabilities. Each is asked at the point its money moves.
@@ -133,6 +135,8 @@ const (
 	CapabilityPriceLock          = "price_lock"
 	CapabilityCover              = "cover"
 	CapabilityPayoutsToPeople    = "payouts_to_people"
+	// CapabilityRoomEquity is a room's shared ownership (B41.41): synthetic workspaces only until it is cleared.
+	CapabilityRoomEquity = "room_equity"
 )
 
 // b30 is every capability B30 registers: on a plan without live money each takes test money only, whatever its
@@ -473,6 +477,13 @@ func clearanceCountries(ctx context.Context, q pgxDB, key string) ([]string, err
 func capabilityCleared(ctx context.Context, q pgxDB, key string) (bool, error) {
 	countries, err := clearanceCountries(ctx, q, key)
 	return slices.Contains(countries, useCountry(ctx)), err
+}
+
+// ClearedAnywhere reports whether capability key has a clearance in force for any country: what a RED capability that
+// moves no money, such as room_equity, needs before a workspace that is not synthetic sees it.
+func ClearedAnywhere(ctx context.Context, q pgx.Tx, key string) (bool, error) {
+	countries, err := clearanceCountries(ctx, q, key)
+	return len(countries) > 0, err
 }
 
 // CapabilityCleared reports whether capability key has a clearance in force for the country the use comes from
