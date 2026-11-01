@@ -84,7 +84,12 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 	base := "/v1/workspaces/" + ws + "/agents/" + agent.ID
 	var acct economy.AgentSmartAccount
-	if code := call(http.MethodPost, base+"/smart-account", `{"credential_id":"`+keys[0].CredentialID+`"}`, &acct); code != http.StatusOK {
+	owners := `"credential_id":"` + keys[0].CredentialID + `"`
+	var ch struct{ Challenge string }
+	if code := call(http.MethodPost, base+"/smart-account/challenge", "{"+owners+"}", &ch); code != http.StatusOK {
+		t.Fatalf("smart account challenge = %d", code)
+	}
+	if code := call(http.MethodPost, base+"/smart-account", "{"+owners+`,"assertion":`+jsonOf(sign(ch.Challenge))+"}", &acct); code != http.StatusOK {
 		t.Fatalf("smart account = %d", code)
 	}
 	if code := call(http.MethodGet, base+"/spend-permission", "", nil); code != http.StatusNotFound {
