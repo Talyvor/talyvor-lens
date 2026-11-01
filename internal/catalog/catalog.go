@@ -61,10 +61,13 @@ type Model struct {
 	MaxOutput        int          `json:"max_output"`
 	Deprecated       bool         `json:"deprecated,omitempty"`
 	Aliases          []string     `json:"aliases,omitempty"` // e.g. dated snapshots → this canonical id
-	// B38.8 — set only once the provider has RETIRED the model (requests to it fail there), never while it is
-	// merely deprecated: Lens refuses a request for it with a "model retired" error naming this successor, and
-	// never sends it to the successor instead.
+	// B38.8 — set only once the provider has RETIRED the model (requests to it fail there), or with RetiresAt
+	// for a retirement the provider has dated: from then on Lens refuses a request for it with a "model retired"
+	// error naming this successor, and never sends it to the successor instead.
 	RetiredSuccessor string `json:"retired_successor,omitempty"`
+	// B38.11 — when the provider retires the model (its /v1/models retires_at). Until then it is offered with
+	// "retiring on <date>" beside its name in the listing; from then it is retired as above. nil = no date.
+	RetiresAt *time.Time `json:"retires_at,omitempty"`
 	// B18.12 — when the provider released the model (YYYY-MM-DD, from its release notes) and its tier,
 	// so the chat picker can list the newest first and default to the newest frontier model without
 	// guessing either from the name.
@@ -265,6 +268,29 @@ func (r *Registry) All() []Model {
 	return out
 }
 
+// Retired reports whether the model is retired now, and the successor to name: a RetiredSuccessor with no
+// RetiresAt, or one whose RetiresAt has passed (B38.11).
+func (r *Registry) Retired(m Model) bool {
+	return m.RetiredSuccessor != "" && (m.RetiresAt == nil || !r.clock().Before(*m.RetiresAt))
+}
+
+// Listing is All as the catalog routes show it (B38.11): a model with a dated retirement still ahead carries
+// "retiring on <date>" beside its name, and one whose date has passed is deprecated, so it leaves the picker.
+// All itself stays raw: model watch writes what it reads back with Override.
+func (r *Registry) Listing() []Model {
+	out := r.All()
+	for i, m := range out {
+		switch {
+		case m.RetiresAt == nil:
+		case r.Retired(m):
+			out[i].Deprecated = true
+		default:
+			out[i].DisplayName += " · retiring on " + m.RetiresAt.UTC().Format("2 Jan 2006")
+		}
+	}
+	return out
+}
+
 // ByProvider returns a provider's models sorted by input price (cheapest first).
 //
 // ⚠ ITS DOC COMMENT USED TO SAY "the order the modality redirect uses to pick a capable model" AND
@@ -458,6 +484,8 @@ func PriceDetailedAt(id string, promptTokens int) (in, cachedIn, cacheWrite, out
 func CapabilitiesOf(id string) Capabilities { return defaultRegistry.CapabilitiesOf(id) }
 func Resolve(id string) string              { return defaultRegistry.Resolve(id) }
 func All() []Model                          { return defaultRegistry.All() }
+func Listing() []Model                      { return defaultRegistry.Listing() }
+func Retired(m Model) bool                  { return defaultRegistry.Retired(m) }
 func ByProvider(provider string) []Model    { return defaultRegistry.ByProvider(provider) }
 func Override(m Model)                      { defaultRegistry.Override(m) }
 func LoadOverrides(models []Model)          { defaultRegistry.LoadOverrides(models) }

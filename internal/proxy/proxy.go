@@ -794,7 +794,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		return
 	}
 	// B38.8: a model its provider retired fails there — say so here and name the successor, never serve another.
-	if m, ok := catalog.Get(model); ok && m.RetiredSuccessor != "" {
+	if m, ok := catalog.Get(model); ok && catalog.Retired(m) {
 		writeError(w, http.StatusGone, fmt.Sprintf("model retired: %s is no longer offered by its provider — use %s", model, m.RetiredSuccessor))
 		return
 	}

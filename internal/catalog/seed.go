@@ -24,6 +24,7 @@ func seedModels() []Model {
 	vision := Capabilities{Vision: true}
 	visionDoc := Capabilities{Vision: true, Document: true}
 	visionAudioDoc := Capabilities{Vision: true, Audio: true, Document: true}
+	sonnet45RetiresAt := time.Date(2026, 11, 30, 17, 0, 0, 0, time.UTC)
 
 	return withCacheRates([]Model{
 		// ─── OpenAI (vision) ───
@@ -176,7 +177,10 @@ func seedModels() []Model {
 
 		// ─── Anthropic (vision + document) ───
 		{ID: "claude-opus-4-5", Provider: "anthropic", DisplayName: "Claude Opus 4.5", ReleaseDate: "2025-11-24", Tier: TierFrontier, InputPer1M: 5.00, OutputPer1M: 25.00, CachedInputPer1M: 0.50, CacheWritePer1M: 6.25, Capabilities: visionDoc, ContextTokens: 200000, MaxOutput: 8192, Aliases: []string{"claude-opus-4-5-20251101"}},
-		{ID: "claude-sonnet-4-5", Provider: "anthropic", DisplayName: "Claude Sonnet 4.5", ReleaseDate: "2025-09-29", Tier: TierBalanced, InputPer1M: 3.00, OutputPer1M: 15.00, Capabilities: visionDoc, ContextTokens: 200000, MaxOutput: 8192, Aliases: []string{"claude-sonnet-4-5-20250929"}},
+		// B38.11 — Anthropic retires it at 2026-11-30T17:00:00Z (/v1/models capture 2026-10-31: deprecated_at
+		// 2026-09-30, retires_at 2026-11-30T17:00:00Z); https://platform.claude.com/docs/en/about-claude/model-deprecations
+		// (read 2026-11-01) names claude-sonnet-5-5 as the replacement. Offered with its retirement date until then.
+		{ID: "claude-sonnet-4-5", Provider: "anthropic", DisplayName: "Claude Sonnet 4.5", ReleaseDate: "2025-09-29", Tier: TierBalanced, InputPer1M: 3.00, OutputPer1M: 15.00, Capabilities: visionDoc, ContextTokens: 200000, MaxOutput: 8192, Aliases: []string{"claude-sonnet-4-5-20250929"}, RetiredSuccessor: "claude-sonnet-5-5", RetiresAt: &sonnet45RetiresAt},
 		{ID: "claude-haiku-4-5", Provider: "anthropic", DisplayName: "Claude Haiku 4.5", ReleaseDate: "2025-10-15", Tier: TierFast, InputPer1M: 1.00, OutputPer1M: 5.00, CachedInputPer1M: 0.10, CacheWritePer1M: 1.25, Capabilities: visionDoc, ContextTokens: 200000, MaxOutput: 8192, Aliases: []string{"claude-haiku-4-5-20251001"}},
 
 		// ⚠ THE DATED IDS ABOVE ARE THE PROVIDER'S PRIMARY IDS, NOT VARIANTS. Anthropic's model table
