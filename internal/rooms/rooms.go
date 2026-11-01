@@ -141,6 +141,8 @@ type Detail struct {
 	// UnderReview: a public room off the public list, reported by LENS_ROOM_REPORTS_HIDE workspaces, until the operator
 	// reviews it (B32.52).
 	UnderReview bool `json:"under_review,omitempty"`
+	// ForkedFromRoomID is the room this one was forked from while its owner was away (B41.148); nil, none.
+	ForkedFromRoomID *string `json:"forked_from_room_id,omitempty"`
 }
 
 // Draft is POST /v1/workspaces/{ws}/rooms.
@@ -428,8 +430,8 @@ func (s *Store) get(ctx context.Context, viewer string, admin bool, roomID strin
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var wallet *string
 		var reporters int
-		r, err := scanRoom(tx.QueryRow(ctx, `SELECT `+roomCols+`, r.wallet_agent_id, `+openReporters+` FROM rooms r WHERE r.id = $1`, roomID),
-			&wallet, &reporters)
+		r, err := scanRoom(tx.QueryRow(ctx, `SELECT `+roomCols+`, r.wallet_agent_id, `+openReporters+`, r.forked_from_room_id FROM rooms r WHERE r.id = $1`, roomID),
+			&wallet, &reporters, &d.ForkedFromRoomID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: no such room", ErrNotFound)
 		}
