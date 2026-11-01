@@ -70,6 +70,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"wallet_credential":      {"Know Your Agent credential", reads},
 
 	"market_search":   {"Search the marketplace", reads},
+	"market_ask":      {"Ask the marketplace", reads},
 	"market_listing":  {"Marketplace listing", reads},
 	"market_license":  {"Buy, rent or subscribe to a listing", moves},
 	"market_use":      {"Use a listing", moves},
