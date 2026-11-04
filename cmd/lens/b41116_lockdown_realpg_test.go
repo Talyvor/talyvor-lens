@@ -192,9 +192,9 @@ func TestB41116_LostPhoneLockdown(t *testing.T) {
 	}
 }
 
-// B41.116 review: a lockdown of every key leaves the workspace no live signer. Lifting it, after a new identity check,
-// lets the owner enrol one new passkey with no other key's signature, and that passkey resumes the agents; before the
-// lift no key enrols that way, and after the first one the next needs its signature again.
+// B41.116 review: a lockdown of every key leaves the workspace no live signer. Lifting it, after a new identity check of
+// the same person, returns a challenge one new passkey enrols over with no other key's signature, and that passkey
+// resumes the agents; before the lift, over any other challenge, or a second time, no key enrols that way.
 func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -254,14 +254,14 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 		}
 	}
 	agents := "/v1/workspaces/" + ws + "/agents"
-	enrol := func(a authenticator, signer *authenticator) (int, map[string]any) {
+	// enrol registers a over over, or over a fresh registration challenge when over is "".
+	enrol := func(a authenticator, over string) (int, map[string]any) {
 		t.Helper()
-		_, c := call(agents+"/passkeys/challenge", nil)
-		body := a.register(c["challenge"].(string))
-		if signer != nil {
-			body["assertion"] = signer.sign(c["challenge"].(string))
+		if over == "" {
+			_, c := call(agents+"/passkeys/challenge", nil)
+			over = c["challenge"].(string)
 		}
-		return call(agents+"/passkeys", body)
+		return call(agents+"/passkeys", a.register(over))
 	}
 	verification := "/v1/workspaces/" + ws + "/verification"
 	ada := map[string]string{"name": "Ada Lovelace", "country": "GB", "date_of_birth": "1990-12-10"}
@@ -272,7 +272,7 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 		t.Fatalf("identity check = %d %v", code, out)
 	}
 	phone := newAuthenticator("Ada's phone")
-	if code, out := enrol(phone, nil); code != http.StatusCreated {
+	if code, out := enrol(phone, ""); code != http.StatusCreated {
 		t.Fatalf("registering the phone's passkey = %d %v", code, out)
 	}
 	if _, err := store.CreateAgent(ctx, ws, "researcher", "user-ada"); err != nil {
@@ -284,27 +284,33 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 		t.Fatalf("lockdown = %d %v", code, out)
 	}
 	laptop := newAuthenticator("Ada's laptop")
-	if code, out := enrol(laptop, nil); code != http.StatusForbidden {
+	if code, out := enrol(laptop, ""); code != http.StatusForbidden {
 		t.Fatalf("enrolling a key during the lockdown with no signature = %d %v; want 403", code, out)
 	}
 	if code, out := call(verification+"/identity", ada); code != http.StatusCreated {
 		t.Fatalf("Ada's new identity check = %d %v", code, out)
 	}
-	if code, out := call("/v1/money/lockdown/lift", nil); code != http.StatusOK {
-		t.Fatalf("lift = %d %v", code, out)
+	code, lift := call("/v1/money/lockdown/lift", nil)
+	enrolChallenge, _ := lift["enrol_challenge"].(string)
+	if code != http.StatusOK || enrolChallenge == "" {
+		t.Fatalf("lift = %d %v; want 200 and an enrol_challenge", code, lift)
 	}
 
-	// After the lift, one new passkey enrols with no signature, is on the audit chain, and resumes the agents.
-	if code, out := enrol(laptop, nil); code != http.StatusCreated {
-		t.Fatalf("enrolling the first key after the lift = %d %v; want 201", code, out)
+	// Another session holding the owner's cookie, but not the lift's challenge, enrols nothing.
+	if code, out := enrol(newAuthenticator("Mallory's"), ""); code != http.StatusForbidden {
+		t.Fatalf("a key over a fresh challenge after the lift = %d %v; want 403", code, out)
+	}
+	// One new passkey over the lift's challenge enrols with no signature, is on the audit chain, and resumes the agents.
+	if code, out := enrol(laptop, enrolChallenge); code != http.StatusCreated {
+		t.Fatalf("enrolling over the lift's challenge = %d %v; want 201", code, out)
 	}
 	var audited int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'key_enrolled_after_lockdown'`,
 		ws, "lockdown:"+ws).Scan(&audited); err != nil || audited != 1 {
 		t.Fatalf("audit entries for the re-enrolment = %d (%v); want 1", audited, err)
 	}
-	if code, out := enrol(newAuthenticator("Mallory's"), nil); code != http.StatusForbidden {
-		t.Fatalf("a second key with no signature after the lift = %d %v; want 403", code, out)
+	if code, out := enrol(newAuthenticator("Mallory's"), enrolChallenge); code != http.StatusForbidden {
+		t.Fatalf("a second key over the lift's spent challenge = %d %v; want 403", code, out)
 	}
 	_, c := call(agents+"/resume-all/challenge", nil)
 	if code, out := call(agents+"/resume-all", map[string]any{"assertion": laptop.sign(c["challenge"].(string))}); code != http.StatusOK {

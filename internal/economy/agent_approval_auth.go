@@ -300,7 +300,8 @@ func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, works
 // passkey or device key, and otherwise only with a's assertion, by one of them, over that same challenge — so a session
 // alone cannot add a key and then pass every passkey gate. It holds the workspace's enrolment lock until tx ends, so two
 // keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned —
-// except just after a lockdown that left no live key is lifted, when one key enrols free (reenrolAfterLift).
+// except for the one key registered over the challenge a lift returned, after a lockdown left no key live
+// (reenrolAfterLift).
 func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, a *passkey.Assertion) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
@@ -310,15 +311,11 @@ func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspac
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
 	}
-	free := n == 0
-	if !free {
-		var err error
-		if free, err = reenrolAfterLift(ctx, tx, workspaceID, purpose); err != nil {
-			return err
-		}
-	}
-	if free {
+	if n == 0 {
 		return useChallenge(ctx, tx, workspaceID, purpose, challenge)
+	}
+	if free, err := reenrolAfterLift(ctx, tx, workspaceID, purpose, challenge); free || err != nil {
+		return err
 	}
 	if a == nil {
 		return ErrPasskeyRequired

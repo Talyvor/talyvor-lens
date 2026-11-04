@@ -21,13 +21,16 @@ import (
 //	                                agent, at once and with no signature; nothing restarts until it is lifted
 //	POST /v1/money/lockdown/lift  — lifts it once an identity check (POST /v1/workspaces/{wsID}/verification/identity) has passed
 //	                                since it began; 403 until then. Agents and cards then restart one by one, as before.
+//	                                {"active": false, "enrol_challenge"}: when the check matched the person checked before,
+//	                                one new passkey or device key registered over enrol_challenge, within five minutes,
+//	                                enrols with no other key's signature if the lockdown left none live.
 //
 // Every route is the owner's or an admin's (the device key routes' rule). Mounted in the authed group.
 
 type lockdownBank interface {
 	LockDown(ctx context.Context, workspaceID, by, reason string, deviceIDs, passkeyIDs []string) (economy.Lockdown, error)
 	LockdownStatus(ctx context.Context, workspaceID string) (economy.Lockdown, error)
-	LiftLockdown(ctx context.Context, workspaceID string) error
+	LiftLockdown(ctx context.Context, workspaceID string) (string, error)
 }
 
 func mountLockdownRoutes(r chi.Router, bank lockdownBank) {
@@ -81,14 +84,14 @@ func mountLockdownRoutes(r chi.Router, bank lockdownBank) {
 		if !ok {
 			return
 		}
-		err := bank.LiftLockdown(req.Context(), ws)
+		enrol, err := bank.LiftLockdown(req.Context(), ws)
 		switch {
 		case errors.Is(err, economy.ErrIdentityRecheck):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
-			writeJSONOK(w, http.StatusOK, map[string]any{"active": false})
+			writeJSONOK(w, http.StatusOK, map[string]any{"active": false, "enrol_challenge": enrol})
 		}
 	})
 }
