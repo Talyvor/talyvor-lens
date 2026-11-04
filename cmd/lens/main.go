@@ -2225,8 +2225,12 @@ func run() error {
 	// B52.21 — Scan's energy collectors read EU gas storage and LNG (GIE), gas flows (ENTSOG), US oil stocks (EIA) and
 	// ECMWF's temperature forecasts into the provenance store every six hours, backfilling five years where the source
 	// keeps them. One without its API key (LENS_SCAN_GIE_KEY, LENS_SCAN_EIA_KEY) stays off and says so on /status.
+	// B52.23 adds SEC EDGAR (insider Form 4s, with the buying clusters among them, and funds' 13F holdings) and
+	// USAspending's contract awards, matched to a listed company only by a UEI checked to be it.
 	scanKeys := map[string]string{scan.SettingGIE: os.Getenv(scan.SettingGIE), scan.SettingEIA: os.Getenv(scan.SettingEIA)}
-	scanCollectors := scan.NewCollectors(scan.NewStore(pool), &http.Client{Timeout: 2 * time.Minute}, scanKeys, scan.Energy(scanKeys)...)
+	scanStore := scan.NewStore(pool)
+	scanCollectors := scan.NewCollectors(scanStore, &http.Client{Timeout: 2 * time.Minute}, scanKeys,
+		append(scan.Energy(scanKeys), &scan.EDGAR{Store: scanStore}, &scan.USAspending{})...)
 	statusPage.UseCollectors(scanCollectors)
 	go haComps.leader.Run(ctx, "scan-collectors", 30*time.Second, func(lctx context.Context) {
 		scanCollectors.Every(lctx, 6*time.Hour)
