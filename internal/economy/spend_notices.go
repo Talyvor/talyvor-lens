@@ -27,6 +27,7 @@ import (
 //	unusual — each unusual payment (B53.5), in the Coach's words; urgent, so it ignores quiet hours
 //	tip     — the Coach's sentence on a budget at half or more (B53.6), from 08:00; at most one tip is sent a day
 //	digest  — on Monday from 08:00, last week's spending in the Coach's review
+//	plan    — each way the month plan is off (B53.15), once; urgent when it leaves a payment uncovered
 //
 // The owner sets quiet hours in their own time zone and can switch any kind off. A notice that is not urgent and falls
 // due in quiet hours waits until they end; a tip over the day's one waits, and is dropped when its day is over. Every
@@ -39,10 +40,11 @@ const (
 	NoticeUnusual = "unusual"
 	NoticeTip     = "tip"
 	NoticeDigest  = "digest"
+	NoticePlan    = "plan"
 )
 
 // NoticeKinds is every kind of notice, each of which the owner can switch off.
-var NoticeKinds = []string{NoticePayment, NoticeBudget, NoticeUnusual, NoticeTip, NoticeDigest}
+var NoticeKinds = []string{NoticePayment, NoticeBudget, NoticeUnusual, NoticeTip, NoticeDigest, NoticePlan}
 
 // Why a waiting notice waits.
 const (
@@ -168,14 +170,15 @@ func (s *DualTokenStore) SpendNotices(ctx context.Context, workspaceID string) (
 	return out, nil
 }
 
-// SweepSpendNotices runs NotifySpending for every workspace with a payment in the last eight days, an alert, or a
-// notice waiting, and answers how many notices it sent.
+// SweepSpendNotices runs NotifySpending for every workspace with a payment in the last eight days, an alert, a
+// notice waiting or an income set (B53.15), and answers how many notices it sent.
 // shortcut: reads eight days of entries each minute to find them; keep a list of active workspaces when that grows slow.
 func (s *DualTokenStore) SweepSpendNotices(ctx context.Context, ai CoachInferer, model string, now time.Time) (int, error) {
 	week := now.AddDate(0, 0, -8)
 	rows, err := s.pool.Query(ctx, `SELECT workspace_id FROM money_entries WHERE kind IN ('card_charge', 'payment_out') AND created_at >= $1
 		UNION SELECT workspace_id FROM spend_alerts WHERE created_at >= $1
-		UNION SELECT workspace_id FROM spend_notices WHERE status = 'waiting'`, week)
+		UNION SELECT workspace_id FROM spend_notices WHERE status = 'waiting'
+		UNION SELECT workspace_id FROM spend_plan_income`, week)
 	if err != nil {
 		return 0, fmt.Errorf("economy: sweep notices: %w", err)
 	}
@@ -287,6 +290,18 @@ func (s *DualTokenStore) NotifySpending(ctx context.Context, workspaceID string,
 				if err := add(alertNotice(a), a.ID); err != nil {
 					return 0, err
 				}
+			}
+		}
+	}
+	if on(NoticePlan) {
+		plan, err := s.SpendPlan(ctx, workspaceID, now)
+		if err != nil {
+			return 0, err
+		}
+		for _, f := range plan.Findings {
+			if err := add(SpendNotice{Kind: NoticePlan, Title: "Month plan", Body: f.Sentence, Urgent: f.Urgent,
+				Data: map[string]any{"finding": f}}, f.planSubject()); err != nil {
+				return 0, err
 			}
 		}
 	}
