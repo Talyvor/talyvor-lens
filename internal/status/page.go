@@ -161,7 +161,7 @@ type StatusResponse struct {
 	CardPayments string           `json:"card_payments"` // B51.2: "live", "test" or "off" — billing.CardPayments
 	// Collectors are Scan's data collectors (B52.21): each on or off and why, and when its source last gave a figure.
 	Collectors []scan.CollectorStatus `json:"collectors,omitempty"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	UpdatedAt  time.Time              `json:"updated_at"`
 }
 
 // screeningLists says how old the sanctions lists are, and whether that makes them stale: *screening.Store.
