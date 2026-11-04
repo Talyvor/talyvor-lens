@@ -147,6 +147,17 @@ func TestMarketReceipts_APaidBillGetsTheNextReceiptOfTheYear(t *testing.T) {
 		!bytes.HasSuffix(doc, []byte("%%EOF\n")) {
 		t.Fatalf("the GB receipt's PDF is not a PDF of receipt %s", r.Number)
 	}
+	// A TEST- receipt issued while the VAT number is unset is as much a Preview reading it as a live one.
+	if _, err := pool.Exec(ctx, `INSERT INTO market_receipts (id, series, year, number, invoice_id, buyer_workspace_id, paid_at, supplier, buyer)
+		SELECT 'rcpt_test_gb', 'test', year, 1, 'in_rcpt_gb_test', buyer_workspace_id, paid_at, supplier, buyer FROM market_receipts WHERE id = $1`,
+		r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tr, err := m.store.Receipt(ctx, gb, "rcpt_test_gb"); err != nil || tr.Number != fmt.Sprintf("TEST-%d-000001", year) || !tr.Preview ||
+		tr.PreviewReason != VATRegistrationPending {
+		t.Fatalf("the GB test receipt is %s, preview %v %q (%v); want TEST-%d-000001, a Preview reading %q", tr.Number, tr.Preview,
+			tr.PreviewReason, err, year, VATRegistrationPending)
+	}
 
 	// Talyvor's VAT number is set; the next paid bill, a DE business's, is reverse charged.
 	supplier.VATNumber = "GB123456789"

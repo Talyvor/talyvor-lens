@@ -52,13 +52,31 @@ var (
 	registerVerbRe = regexp.MustCompile(`\.(Get|Post|Put|Patch|Delete|Head|Options|Handle|HandleFunc|Method|get|post|put|patch|del|handle)\(`)
 	// Identifiers that could name a gate or a handler we must follow into.
 	identRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\b`)
-	funcDef = func(name string) *regexp.Regexp {
-		return regexp.MustCompile(`(?m)^func ` + regexp.QuoteMeta(name) + `\(`)
-	}
-	varDef = func(name string) *regexp.Regexp {
-		return regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*:?=\s`)
+	// varDefRe is varDef's pattern after the line start; it begins with the literal name so the
+	// engine jumps to candidates instead of walking every line under -race (B54.2).
+	varDefRe = func(name string) *regexp.Regexp {
+		return regexp.MustCompile(regexp.QuoteMeta(name) + `\s*:?=\s`)
 	}
 )
+
+// funcDef is the index of the line `func name(` starts in src, or -1.
+func funcDef(name, src string) int {
+	if i := strings.Index(src, "\nfunc "+name+"("); i >= 0 {
+		return i + 1
+	}
+	return -1
+}
+
+// varDef is the index of the line where `name =` or `name :=` is the first thing on it, or -1.
+func varDef(re *regexp.Regexp, src string) int {
+	for _, loc := range re.FindAllStringIndex(src, -1) {
+		start := strings.LastIndexByte(src[:loc[0]], '\n') + 1
+		if strings.Trim(src[start:loc[0]], " \t\f\r") == "" {
+			return start
+		}
+	}
+	return -1
+}
 
 // adminAuthDecisionToken is the READ every gate in this package ends at, and the
 // leading dot is load-bearing.
@@ -178,14 +196,15 @@ func gateReachable(stmt string, srcs map[string]string, memo map[string]string) 
 // nameReachesGate is where name is defined with an authorization decision in its
 // block — "func name (file)" or "value name (file)" — or "" when nowhere.
 func nameReachesGate(name string, srcs map[string]string) string {
+	v := varDefRe(name)
 	for file, src := range srcs {
-		if loc := funcDef(name).FindStringIndex(src); loc != nil {
-			if strings.Contains(blockFrom(src, loc[0]), adminAuthDecisionToken) {
+		if at := funcDef(name, src); at >= 0 {
+			if strings.Contains(blockFrom(src, at), adminAuthDecisionToken) {
 				return "func " + name + " (" + file + ")"
 			}
 		}
-		if loc := varDef(name).FindStringIndex(src); loc != nil {
-			if strings.Contains(blockFrom(src, loc[0]), adminAuthDecisionToken) {
+		if at := varDef(v, src); at >= 0 {
+			if strings.Contains(blockFrom(src, at), adminAuthDecisionToken) {
 				return "value " + name + " (" + file + ")"
 			}
 		}

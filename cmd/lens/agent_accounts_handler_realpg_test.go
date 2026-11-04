@@ -12,6 +12,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +31,8 @@ import (
 // B19.1 — a workspace creates two agents, gives each a key, funds them and takes funds back, through
 // the real routes on a migrated schema.
 
+// agentRoutesDB gives each test its own database, cloned from a template migrated once per run: 161
+// tests share this helper, and migrating for each of them took cmd/lens past its 600s CI timeout (B54.2).
 func agentRoutesDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("LENS_TEST_DATABASE_URL")
@@ -37,28 +41,20 @@ func agentRoutesDB(t *testing.T) *pgxpool.Pool {
 	}
 	const schema = "cmd_agent_routes_realpg"
 	ctx := context.Background()
-	cfg, err := pgx.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
+	agentRoutesTemplateOnce.Do(func() { agentRoutesTemplateErr = agentRoutesTemplate(ctx, url, schema) })
+	if agentRoutesTemplateErr != nil {
+		t.Fatal(agentRoutesTemplateErr)
 	}
-	cfg.RuntimeParams["search_path"] = schema + ",public"
-	conn, err := pgx.ConnectConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
+	name := fmt.Sprintf("%s_%d", agentRoutesTemplateName, agentRoutesClones.Add(1))
+	if err := agentRoutesAdmin(ctx, url, `CREATE DATABASE `+name+` TEMPLATE `+agentRoutesTemplateName); err != nil {
+		t.Fatalf("clone the migrated database: %v", err)
 	}
-	for _, ddl := range []string{`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`, `CREATE SCHEMA ` + schema} {
-		if _, err := conn.Exec(ctx, ddl); err != nil {
-			t.Fatalf("reset schema: %v", err)
-		}
-	}
-	if _, err := dbmigrate.Run(ctx, conn, migrations.FS); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	_ = conn.Close(ctx)
+	t.Cleanup(func() { _ = agentRoutesAdmin(ctx, url, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`) })
 	poolCfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatal(err)
 	}
+	poolCfg.ConnConfig.Database = name
 	poolCfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
@@ -66,6 +62,60 @@ func agentRoutesDB(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+var (
+	agentRoutesTemplateName = fmt.Sprintf("lens_cmd_agent_routes_%d", os.Getpid())
+	agentRoutesTemplateOnce sync.Once
+	agentRoutesTemplateErr  error
+	agentRoutesClones       atomic.Int64
+)
+
+// agentRoutesTemplate creates the template database and migrates it into schema, as each test used to.
+func agentRoutesTemplate(ctx context.Context, url, schema string) error {
+	if err := agentRoutesAdmin(ctx, url, `CREATE DATABASE `+agentRoutesTemplateName); err != nil {
+		return fmt.Errorf("create the template database: %w", err)
+	}
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return err
+	}
+	cfg.Database = agentRoutesTemplateName
+	cfg.RuntimeParams["search_path"] = schema + ",public"
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	// Closed before any clone: Postgres refuses to copy a template that has a session open on it.
+	defer conn.Close(ctx)
+	for _, ddl := range []string{`CREATE EXTENSION IF NOT EXISTS vector SCHEMA public`, `CREATE SCHEMA ` + schema} {
+		if _, err := conn.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("prepare the template: %w", err)
+		}
+	}
+	if _, err := dbmigrate.Run(ctx, conn, migrations.FS); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
+}
+
+// agentRoutesAdmin runs one statement on the base database; CREATE and DROP DATABASE cannot run on the
+// database they name.
+func agentRoutesAdmin(ctx context.Context, url, stmt string) error {
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	_, err = conn.Exec(ctx, stmt)
+	return err
+}
+
+// dropAgentRoutesTemplate removes this run's template database; TestMain calls it after the tests.
+func dropAgentRoutesTemplate() {
+	if url := os.Getenv("LENS_TEST_DATABASE_URL"); url != "" {
+		_ = agentRoutesAdmin(context.Background(), url, `DROP DATABASE IF EXISTS `+agentRoutesTemplateName+` WITH (FORCE)`)
+	}
 }
 
 func TestAgentRoutes_AWorkspaceFundsTwoAgentsAndTakesFundsBack(t *testing.T) {

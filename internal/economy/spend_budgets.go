@@ -193,7 +193,7 @@ func (s *DualTokenStore) SpendBudgets(ctx context.Context, workspaceID string, n
 			payments, periods[key] = sp.Payments, sp.Payments
 		}
 		for _, p := range payments {
-			if p.Currency == b.Currency && (b.AgentID == BudgetAllWallets || p.AgentID == b.AgentID) && (b.Category == "" || p.Category == b.Category) {
+			if b.covers(p) {
 				b.SpentMinor += p.AmountMinor
 			}
 		}
