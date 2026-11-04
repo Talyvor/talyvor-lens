@@ -29,3 +29,10 @@ PUBLISH THRESHOLD (written first): the mean absolute error of the model on the t
 Passes:    Scan may publish the tank reading in reports.
 Otherwise: the pilot stays internal; the result is recorded here as it came out and stored as a failed backtest, and
            nothing derived from the tanks reaches a report.
+
+Result (recorded 4 Nov 2026, after the plan above): 72 scenes read (70 Sentinel-1A, 2 Sentinel-1C), every one with all
+305 tanks readable; 27 fitted (2023), 45 tested. The fit slopes as expected (-17,056 thousand barrels per unit of
+index: the index falls as Cushing fills), and it put the stocks on the right side of the 2023 mean in 67% of test
+scenes, but its error is 5,689 thousand barrels against the training mean's 6,116. FAILED: outside the 2,500 written
+down first. The pilot stays internal; TankFillPublishable answers false and nothing derived from the tanks reaches a
+report.

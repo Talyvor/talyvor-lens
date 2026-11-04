@@ -1,0 +1,821 @@
+{
+ "source": "US EIA, Weekly Cushing, OK Ending Stocks excluding SPR of Crude Oil (W_EPC0_SAX_YCUOK_MBBL), https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=W_EPC0_SAX_YCUOK_MBBL&f=W, retrieved 2026-11-04",
+ "stocks": [
+  {
+   "week_ending": "2022-12-02",
+   "thousand_barrels": 23942
+  },
+  {
+   "week_ending": "2022-12-09",
+   "thousand_barrels": 24368
+  },
+  {
+   "week_ending": "2022-12-16",
+   "thousand_barrels": 25221
+  },
+  {
+   "week_ending": "2022-12-23",
+   "thousand_barrels": 25026
+  },
+  {
+   "week_ending": "2022-12-30",
+   "thousand_barrels": 25270
+  },
+  {
+   "week_ending": "2023-01-06",
+   "thousand_barrels": 27781
+  },
+  {
+   "week_ending": "2023-01-13",
+   "thousand_barrels": 31427
+  },
+  {
+   "week_ending": "2023-01-20",
+   "thousand_barrels": 35694
+  },
+  {
+   "week_ending": "2023-01-27",
+   "thousand_barrels": 38009
+  },
+  {
+   "week_ending": "2023-02-03",
+   "thousand_barrels": 39052
+  },
+  {
+   "week_ending": "2023-02-10",
+   "thousand_barrels": 39711
+  },
+  {
+   "week_ending": "2023-02-17",
+   "thousand_barrels": 40411
+  },
+  {
+   "week_ending": "2023-02-24",
+   "thousand_barrels": 40718
+  },
+  {
+   "week_ending": "2023-03-03",
+   "thousand_barrels": 39828
+  },
+  {
+   "week_ending": "2023-03-10",
+   "thousand_barrels": 37912
+  },
+  {
+   "week_ending": "2023-03-17",
+   "thousand_barrels": 36849
+  },
+  {
+   "week_ending": "2023-03-24",
+   "thousand_barrels": 35217
+  },
+  {
+   "week_ending": "2023-03-31",
+   "thousand_barrels": 34247
+  },
+  {
+   "week_ending": "2023-04-07",
+   "thousand_barrels": 33838
+  },
+  {
+   "week_ending": "2023-04-14",
+   "thousand_barrels": 32750
+  },
+  {
+   "week_ending": "2023-04-21",
+   "thousand_barrels": 33069
+  },
+  {
+   "week_ending": "2023-04-28",
+   "thousand_barrels": 33610
+  },
+  {
+   "week_ending": "2023-05-05",
+   "thousand_barrels": 34007
+  },
+  {
+   "week_ending": "2023-05-12",
+   "thousand_barrels": 35468
+  },
+  {
+   "week_ending": "2023-05-19",
+   "thousand_barrels": 37230
+  },
+  {
+   "week_ending": "2023-05-26",
+   "thousand_barrels": 38858
+  },
+  {
+   "week_ending": "2023-06-02",
+   "thousand_barrels": 40579
+  },
+  {
+   "week_ending": "2023-06-09",
+   "thousand_barrels": 42133
+  },
+  {
+   "week_ending": "2023-06-16",
+   "thousand_barrels": 42035
+  },
+  {
+   "week_ending": "2023-06-23",
+   "thousand_barrels": 43244
+  },
+  {
+   "week_ending": "2023-06-30",
+   "thousand_barrels": 42844
+  },
+  {
+   "week_ending": "2023-07-07",
+   "thousand_barrels": 41239
+  },
+  {
+   "week_ending": "2023-07-14",
+   "thousand_barrels": 38348
+  },
+  {
+   "week_ending": "2023-07-21",
+   "thousand_barrels": 35739
+  },
+  {
+   "week_ending": "2023-07-28",
+   "thousand_barrels": 34480
+  },
+  {
+   "week_ending": "2023-08-04",
+   "thousand_barrels": 34639
+  },
+  {
+   "week_ending": "2023-08-11",
+   "thousand_barrels": 33802
+  },
+  {
+   "week_ending": "2023-08-18",
+   "thousand_barrels": 30669
+  },
+  {
+   "week_ending": "2023-08-25",
+   "thousand_barrels": 29165
+  },
+  {
+   "week_ending": "2023-09-01",
+   "thousand_barrels": 27415
+  },
+  {
+   "week_ending": "2023-09-08",
+   "thousand_barrels": 24965
+  },
+  {
+   "week_ending": "2023-09-15",
+   "thousand_barrels": 22901
+  },
+  {
+   "week_ending": "2023-09-22",
+   "thousand_barrels": 21958
+  },
+  {
+   "week_ending": "2023-09-29",
+   "thousand_barrels": 22090
+  },
+  {
+   "week_ending": "2023-10-06",
+   "thousand_barrels": 21771
+  },
+  {
+   "week_ending": "2023-10-13",
+   "thousand_barrels": 21013
+  },
+  {
+   "week_ending": "2023-10-20",
+   "thousand_barrels": 21226
+  },
+  {
+   "week_ending": "2023-10-27",
+   "thousand_barrels": 21498
+  },
+  {
+   "week_ending": "2023-11-03",
+   "thousand_barrels": 23085
+  },
+  {
+   "week_ending": "2023-11-10",
+   "thousand_barrels": 25010
+  },
+  {
+   "week_ending": "2023-11-17",
+   "thousand_barrels": 25868
+  },
+  {
+   "week_ending": "2023-11-24",
+   "thousand_barrels": 27722
+  },
+  {
+   "week_ending": "2023-12-01",
+   "thousand_barrels": 29551
+  },
+  {
+   "week_ending": "2023-12-08",
+   "thousand_barrels": 30779
+  },
+  {
+   "week_ending": "2023-12-15",
+   "thousand_barrels": 32465
+  },
+  {
+   "week_ending": "2023-12-22",
+   "thousand_barrels": 33973
+  },
+  {
+   "week_ending": "2023-12-29",
+   "thousand_barrels": 34679
+  },
+  {
+   "week_ending": "2024-01-05",
+   "thousand_barrels": 34173
+  },
+  {
+   "week_ending": "2024-01-12",
+   "thousand_barrels": 32074
+  },
+  {
+   "week_ending": "2024-01-19",
+   "thousand_barrels": 30066
+  },
+  {
+   "week_ending": "2024-01-26",
+   "thousand_barrels": 28094
+  },
+  {
+   "week_ending": "2024-02-02",
+   "thousand_barrels": 28061
+  },
+  {
+   "week_ending": "2024-02-09",
+   "thousand_barrels": 28771
+  },
+  {
+   "week_ending": "2024-02-16",
+   "thousand_barrels": 29512
+  },
+  {
+   "week_ending": "2024-02-23",
+   "thousand_barrels": 30970
+  },
+  {
+   "week_ending": "2024-03-01",
+   "thousand_barrels": 31671
+  },
+  {
+   "week_ending": "2024-03-08",
+   "thousand_barrels": 31451
+  },
+  {
+   "week_ending": "2024-03-15",
+   "thousand_barrels": 31433
+  },
+  {
+   "week_ending": "2024-03-22",
+   "thousand_barrels": 33540
+  },
+  {
+   "week_ending": "2024-03-29",
+   "thousand_barrels": 33163
+  },
+  {
+   "week_ending": "2024-04-05",
+   "thousand_barrels": 32993
+  },
+  {
+   "week_ending": "2024-04-12",
+   "thousand_barrels": 33026
+  },
+  {
+   "week_ending": "2024-04-19",
+   "thousand_barrels": 32367
+  },
+  {
+   "week_ending": "2024-04-26",
+   "thousand_barrels": 33456
+  },
+  {
+   "week_ending": "2024-05-03",
+   "thousand_barrels": 35336
+  },
+  {
+   "week_ending": "2024-05-10",
+   "thousand_barrels": 34995
+  },
+  {
+   "week_ending": "2024-05-17",
+   "thousand_barrels": 36320
+  },
+  {
+   "week_ending": "2024-05-24",
+   "thousand_barrels": 34554
+  },
+  {
+   "week_ending": "2024-05-31",
+   "thousand_barrels": 35408
+  },
+  {
+   "week_ending": "2024-06-07",
+   "thousand_barrels": 33815
+  },
+  {
+   "week_ending": "2024-06-14",
+   "thousand_barrels": 34122
+  },
+  {
+   "week_ending": "2024-06-21",
+   "thousand_barrels": 33896
+  },
+  {
+   "week_ending": "2024-06-28",
+   "thousand_barrels": 34241
+  },
+  {
+   "week_ending": "2024-07-05",
+   "thousand_barrels": 33539
+  },
+  {
+   "week_ending": "2024-07-12",
+   "thousand_barrels": 32664
+  },
+  {
+   "week_ending": "2024-07-19",
+   "thousand_barrels": 30956
+  },
+  {
+   "week_ending": "2024-07-26",
+   "thousand_barrels": 29850
+  },
+  {
+   "week_ending": "2024-08-02",
+   "thousand_barrels": 30429
+  },
+  {
+   "week_ending": "2024-08-09",
+   "thousand_barrels": 28764
+  },
+  {
+   "week_ending": "2024-08-16",
+   "thousand_barrels": 28204
+  },
+  {
+   "week_ending": "2024-08-23",
+   "thousand_barrels": 27536
+  },
+  {
+   "week_ending": "2024-08-30",
+   "thousand_barrels": 26394
+  },
+  {
+   "week_ending": "2024-09-06",
+   "thousand_barrels": 24690
+  },
+  {
+   "week_ending": "2024-09-13",
+   "thousand_barrels": 22711
+  },
+  {
+   "week_ending": "2024-09-20",
+   "thousand_barrels": 22827
+  },
+  {
+   "week_ending": "2024-09-27",
+   "thousand_barrels": 23667
+  },
+  {
+   "week_ending": "2024-10-04",
+   "thousand_barrels": 24914
+  },
+  {
+   "week_ending": "2024-10-11",
+   "thousand_barrels": 25022
+  },
+  {
+   "week_ending": "2024-10-18",
+   "thousand_barrels": 24676
+  },
+  {
+   "week_ending": "2024-10-25",
+   "thousand_barrels": 25357
+  },
+  {
+   "week_ending": "2024-11-01",
+   "thousand_barrels": 25879
+  },
+  {
+   "week_ending": "2024-11-08",
+   "thousand_barrels": 25191
+  },
+  {
+   "week_ending": "2024-11-15",
+   "thousand_barrels": 25051
+  },
+  {
+   "week_ending": "2024-11-22",
+   "thousand_barrels": 24142
+  },
+  {
+   "week_ending": "2024-11-29",
+   "thousand_barrels": 24192
+  },
+  {
+   "week_ending": "2024-12-06",
+   "thousand_barrels": 22894
+  },
+  {
+   "week_ending": "2024-12-13",
+   "thousand_barrels": 23002
+  },
+  {
+   "week_ending": "2024-12-20",
+   "thousand_barrels": 22682
+  },
+  {
+   "week_ending": "2024-12-27",
+   "thousand_barrels": 22540
+  },
+  {
+   "week_ending": "2025-01-03",
+   "thousand_barrels": 20038
+  },
+  {
+   "week_ending": "2025-01-10",
+   "thousand_barrels": 20803
+  },
+  {
+   "week_ending": "2025-01-17",
+   "thousand_barrels": 20655
+  },
+  {
+   "week_ending": "2025-01-24",
+   "thousand_barrels": 20981
+  },
+  {
+   "week_ending": "2025-01-31",
+   "thousand_barrels": 20947
+  },
+  {
+   "week_ending": "2025-02-07",
+   "thousand_barrels": 21819
+  },
+  {
+   "week_ending": "2025-02-14",
+   "thousand_barrels": 23291
+  },
+  {
+   "week_ending": "2025-02-21",
+   "thousand_barrels": 24573
+  },
+  {
+   "week_ending": "2025-02-28",
+   "thousand_barrels": 25697
+  },
+  {
+   "week_ending": "2025-03-07",
+   "thousand_barrels": 24469
+  },
+  {
+   "week_ending": "2025-03-14",
+   "thousand_barrels": 23460
+  },
+  {
+   "week_ending": "2025-03-21",
+   "thousand_barrels": 22705
+  },
+  {
+   "week_ending": "2025-03-28",
+   "thousand_barrels": 25078
+  },
+  {
+   "week_ending": "2025-04-04",
+   "thousand_barrels": 25759
+  },
+  {
+   "week_ending": "2025-04-11",
+   "thousand_barrels": 25105
+  },
+  {
+   "week_ending": "2025-04-18",
+   "thousand_barrels": 25019
+  },
+  {
+   "week_ending": "2025-04-25",
+   "thousand_barrels": 25701
+  },
+  {
+   "week_ending": "2025-05-02",
+   "thousand_barrels": 24961
+  },
+  {
+   "week_ending": "2025-05-09",
+   "thousand_barrels": 23892
+  },
+  {
+   "week_ending": "2025-05-16",
+   "thousand_barrels": 23435
+  },
+  {
+   "week_ending": "2025-05-23",
+   "thousand_barrels": 23510
+  },
+  {
+   "week_ending": "2025-05-30",
+   "thousand_barrels": 24086
+  },
+  {
+   "week_ending": "2025-06-06",
+   "thousand_barrels": 23683
+  },
+  {
+   "week_ending": "2025-06-13",
+   "thousand_barrels": 22688
+  },
+  {
+   "week_ending": "2025-06-20",
+   "thousand_barrels": 22224
+  },
+  {
+   "week_ending": "2025-06-27",
+   "thousand_barrels": 20731
+  },
+  {
+   "week_ending": "2025-07-04",
+   "thousand_barrels": 21195
+  },
+  {
+   "week_ending": "2025-07-11",
+   "thousand_barrels": 21408
+  },
+  {
+   "week_ending": "2025-07-18",
+   "thousand_barrels": 21863
+  },
+  {
+   "week_ending": "2025-07-25",
+   "thousand_barrels": 22553
+  },
+  {
+   "week_ending": "2025-08-01",
+   "thousand_barrels": 23006
+  },
+  {
+   "week_ending": "2025-08-08",
+   "thousand_barrels": 23051
+  },
+  {
+   "week_ending": "2025-08-15",
+   "thousand_barrels": 23470
+  },
+  {
+   "week_ending": "2025-08-22",
+   "thousand_barrels": 22632
+  },
+  {
+   "week_ending": "2025-08-29",
+   "thousand_barrels": 24222
+  },
+  {
+   "week_ending": "2025-09-05",
+   "thousand_barrels": 23857
+  },
+  {
+   "week_ending": "2025-09-12",
+   "thousand_barrels": 23561
+  },
+  {
+   "week_ending": "2025-09-19",
+   "thousand_barrels": 23738
+  },
+  {
+   "week_ending": "2025-09-26",
+   "thousand_barrels": 23467
+  },
+  {
+   "week_ending": "2025-10-03",
+   "thousand_barrels": 22704
+  },
+  {
+   "week_ending": "2025-10-10",
+   "thousand_barrels": 22001
+  },
+  {
+   "week_ending": "2025-10-17",
+   "thousand_barrels": 21231
+  },
+  {
+   "week_ending": "2025-10-24",
+   "thousand_barrels": 22565
+  },
+  {
+   "week_ending": "2025-10-31",
+   "thousand_barrels": 22865
+  },
+  {
+   "week_ending": "2025-11-07",
+   "thousand_barrels": 22519
+  },
+  {
+   "week_ending": "2025-11-14",
+   "thousand_barrels": 21821
+  },
+  {
+   "week_ending": "2025-11-21",
+   "thousand_barrels": 21753
+  },
+  {
+   "week_ending": "2025-11-28",
+   "thousand_barrels": 21296
+  },
+  {
+   "week_ending": "2025-12-05",
+   "thousand_barrels": 21604
+  },
+  {
+   "week_ending": "2025-12-12",
+   "thousand_barrels": 20862
+  },
+  {
+   "week_ending": "2025-12-19",
+   "thousand_barrels": 21569
+  },
+  {
+   "week_ending": "2025-12-26",
+   "thousand_barrels": 22112
+  },
+  {
+   "week_ending": "2026-01-02",
+   "thousand_barrels": 22840
+  },
+  {
+   "week_ending": "2026-01-09",
+   "thousand_barrels": 23585
+  },
+  {
+   "week_ending": "2026-01-16",
+   "thousand_barrels": 25063
+  },
+  {
+   "week_ending": "2026-01-23",
+   "thousand_barrels": 24785
+  },
+  {
+   "week_ending": "2026-01-30",
+   "thousand_barrels": 24042
+  },
+  {
+   "week_ending": "2026-02-06",
+   "thousand_barrels": 25113
+  },
+  {
+   "week_ending": "2026-02-13",
+   "thousand_barrels": 24018
+  },
+  {
+   "week_ending": "2026-02-20",
+   "thousand_barrels": 24899
+  },
+  {
+   "week_ending": "2026-02-27",
+   "thousand_barrels": 26463
+  },
+  {
+   "week_ending": "2026-03-06",
+   "thousand_barrels": 26580
+  },
+  {
+   "week_ending": "2026-03-13",
+   "thousand_barrels": 27524
+  },
+  {
+   "week_ending": "2026-03-20",
+   "thousand_barrels": 30945
+  },
+  {
+   "week_ending": "2026-03-27",
+   "thousand_barrels": 31465
+  },
+  {
+   "week_ending": "2026-04-03",
+   "thousand_barrels": 31489
+  },
+  {
+   "week_ending": "2026-04-10",
+   "thousand_barrels": 29762
+  },
+  {
+   "week_ending": "2026-04-17",
+   "thousand_barrels": 30568
+  },
+  {
+   "week_ending": "2026-04-24",
+   "thousand_barrels": 29772
+  },
+  {
+   "week_ending": "2026-05-01",
+   "thousand_barrels": 29124
+  },
+  {
+   "week_ending": "2026-05-08",
+   "thousand_barrels": 27422
+  },
+  {
+   "week_ending": "2026-05-15",
+   "thousand_barrels": 25818
+  },
+  {
+   "week_ending": "2026-05-22",
+   "thousand_barrels": 23024
+  },
+  {
+   "week_ending": "2026-05-29",
+   "thousand_barrels": 22441
+  },
+  {
+   "week_ending": "2026-06-05",
+   "thousand_barrels": 21640
+  },
+  {
+   "week_ending": "2026-06-12",
+   "thousand_barrels": 20034
+  },
+  {
+   "week_ending": "2026-06-19",
+   "thousand_barrels": 18957
+  },
+  {
+   "week_ending": "2026-06-26",
+   "thousand_barrels": 19666
+  },
+  {
+   "week_ending": "2026-07-03",
+   "thousand_barrels": 19614
+  },
+  {
+   "week_ending": "2026-07-10",
+   "thousand_barrels": 20044
+  },
+  {
+   "week_ending": "2026-07-17",
+   "thousand_barrels": 19370
+  },
+  {
+   "week_ending": "2026-07-24",
+   "thousand_barrels": 18599
+  },
+  {
+   "week_ending": "2026-07-31",
+   "thousand_barrels": 20955
+  },
+  {
+   "week_ending": "2026-08-07",
+   "thousand_barrels": 22566
+  },
+  {
+   "week_ending": "2026-08-14",
+   "thousand_barrels": 21252
+  },
+  {
+   "week_ending": "2026-08-21",
+   "thousand_barrels": 22428
+  },
+  {
+   "week_ending": "2026-08-28",
+   "thousand_barrels": 22508
+  },
+  {
+   "week_ending": "2026-09-04",
+   "thousand_barrels": 21824
+  },
+  {
+   "week_ending": "2026-09-11",
+   "thousand_barrels": 21482
+  },
+  {
+   "week_ending": "2026-09-18",
+   "thousand_barrels": 23748
+  },
+  {
+   "week_ending": "2026-09-25",
+   "thousand_barrels": 24301
+  },
+  {
+   "week_ending": "2026-10-02",
+   "thousand_barrels": 24745
+  },
+  {
+   "week_ending": "2026-10-09",
+   "thousand_barrels": 26607
+  },
+  {
+   "week_ending": "2026-10-16",
+   "thousand_barrels": 27594
+  },
+  {
+   "week_ending": "2026-10-23",
+   "thousand_barrels": 26970
+  }
+ ]
+}

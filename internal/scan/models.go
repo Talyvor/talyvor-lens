@@ -61,6 +61,8 @@ var Unmodelled = []struct {
 	{"crop.ndvi.", "already read against its own five-year normal (B52.22); clouds leave gaps a fixed-step outlook cannot use"},
 	{"sec.", "filings are events, not levels: a buying cluster is reported as found, without a normal"},
 	{"usaspending.", "contract awards are events, not levels"},
+	{"tanks.", "a pilot with its own written-down backtest (B52.29, pilot/cushing.plan.txt): stored as " + TankSeries +
+		"'s backtest, and kept out of reports unless it passed"},
 	{"gie.", "only each country's fill (gie.agsi.<country>.full) is modelled; the other GIE figures follow from it"},
 }
 
@@ -327,8 +329,12 @@ func (m *Models) points(ctx context.Context, series string) ([]storedPoint, stri
 	return pts, unit, rows.Err()
 }
 
-// Run backtests every series of every family and assesses each that passed. One failing is logged; the rest still run.
+// Run backtests every series of every family and assesses each that passed, and stores the tank pilot's backtest.
+// One failing is logged; the rest still run.
 func (m *Models) Run(ctx context.Context) {
+	if _, err := m.RunTankPilot(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("scan: tank pilot backtest failed", slog.String("err", err.Error()))
+	}
 	for _, f := range Families {
 		rows, err := m.store.pool.Query(ctx, `SELECT DISTINCT series FROM scan_points WHERE kind = 'observed'
 			AND starts_with(series, $1) AND right(series, length($2)) = $2`, f.Prefix, f.Suffix)
