@@ -1,7 +1,7 @@
--- 0285_gas_budgets.sql — B48.5: each workspace's budget for the network fees a paymaster pays for its agents.
+-- 0304_gas_budgets.sql — B48.5: each workspace's budget for the network fees a paymaster pays for its agents.
 --
--- Per workspace and chain, in wei of the chain's coin: the budget is LENS_GAS_BUDGET_WEI plus every top-up the owner
--- made; each sponsored operation holds its most possible fee when it is sent and is charged what the chain took once
+-- Per workspace and chain, in wei of the chain's coin: the budget is LENS_GAS_BUDGET_WEI plus every top-up
+-- an admin made; each sponsored operation holds its most possible fee when it is sent and is charged what the chain took once
 -- it is on the chain. gas_budgets is the row a hold locks, and remembers when the owner was asked to top up, so they
 -- are asked once until they do.
 
