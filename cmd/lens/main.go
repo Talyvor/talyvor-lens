@@ -2202,6 +2202,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
 				}
+				// B48.5: network fees a paymaster paid for agents, charged to their workspaces' budgets from the receipts.
+				if n, err := dualToken.SettleSponsoredGas(ctx); err != nil {
+					slog.Warn("agents: sponsored network fees not settled", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: sponsored network fees charged", slog.Int("operations", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))

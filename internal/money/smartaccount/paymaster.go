@@ -18,16 +18,20 @@ import (
 var ErrGasBudgetSpent = errors.New("smartaccount: the workspace's budget for network fees is used up")
 
 // GasBudget is one workspace's budget for the network fees a paymaster pays for its agents on one chain, in wei of
-// the chain's coin.
+// the chain's coin. Each operation is held under ref: its hash when that is known before it is sent, or else the
+// sender's idempotency key for it.
 type GasBudget interface {
-	// Hold sets fee aside for operation hash, or refuses with an error wrapping ErrGasBudgetSpent when what is left
-	// cannot cover it. Holding the same hash again holds nothing more.
-	Hold(ctx context.Context, hash string, fee *big.Int) error
-	// Release frees hash's hold: the operation never reached the chain.
-	Release(ctx context.Context, hash string) error
-	// Charge settles hash's hold at charged, what the chain took for it, and frees the rest. Charging it again
+	// Hold sets fee aside for operation ref, or refuses with an error wrapping ErrGasBudgetSpent when what is left
+	// cannot cover it. Holding the same ref again holds nothing more.
+	Hold(ctx context.Context, ref string, fee *big.Int) error
+	// Sent records that ref is user operation hash, which may now reach the chain: from then on it is charged from its
+	// receipt (FeeCharged), even once released.
+	Sent(ctx context.Context, ref, hash string) error
+	// Release frees ref's hold: the operation was refused.
+	Release(ctx context.Context, ref string) error
+	// Charge settles ref's hold at charged, what the chain took for it, and frees the rest. Charging it again
 	// changes nothing.
-	Charge(ctx context.Context, hash string, charged *big.Int) error
+	Charge(ctx context.Context, ref string, charged *big.Int) error
 }
 
 // Sponsor has the chain's paymaster pay op's network fee: it puts the paymaster's paymasterAndData on op and answers
@@ -71,8 +75,23 @@ func nz(n *big.Int) *big.Int {
 	return n
 }
 
+// QuoteSponsored is the most a sponsored operation given Lens's gas limits can be charged at the node's gas price now:
+// what is held from a workspace's budget for an operation whose gas fields its provider fills in.
+//
+// shortcut: Lens's fixed limits, far above a USDC transfer's, so the hold is generous and the charge is the receipt's;
+// upgrade with the provider's own estimate when it answers one.
+func (c Chain) QuoteSponsored(ctx context.Context) (*big.Int, error) {
+	price, err := c.quantity(ctx, "eth_gasPrice", nil)
+	if err != nil {
+		return nil, err
+	}
+	return MaxFee(UserOp{CallGasLimit: callGas, VerificationGasLimit: verificationGas, PreVerificationGas: preVerification,
+		MaxFeePerGas: price.Mul(price, big.NewInt(2)), PaymasterAndData: []byte{1}}), nil
+}
+
 // SendSponsored holds op's fee in b and hands op to the bundler, answering its hash; an operation the bundler
-// refuses releases its hold. op is sponsored (Sponsor) and signed.
+// refuses releases its hold, and is still charged if it reaches the chain after all. op is sponsored (Sponsor) and
+// signed.
 func (c Chain) SendSponsored(ctx context.Context, b GasBudget, op UserOp) (string, error) {
 	if len(op.PaymasterAndData) == 0 {
 		return "", fmt.Errorf("%w: the operation is not sponsored", ErrInvalid)
@@ -83,6 +102,9 @@ func (c Chain) SendSponsored(ctx context.Context, b GasBudget, op UserOp) (strin
 	}
 	hash := hexBytes(h[:])
 	if err := b.Hold(ctx, hash, MaxFee(op)); err != nil {
+		return "", err
+	}
+	if err := b.Sent(ctx, hash, hash); err != nil {
 		return "", err
 	}
 	sent, err := c.Send(ctx, op)
@@ -105,9 +127,27 @@ func (c Chain) Settle(ctx context.Context, b GasBudget, hash string) (*Receipt, 
 	if err != nil || r == nil {
 		return r, err
 	}
+	charged, err := actualGasCost(r, hash)
+	if err != nil {
+		return nil, err
+	}
+	return r, b.Charge(ctx, hash, charged)
+}
+
+// FeeCharged is what the chain took for operation hash's network fee, from its bundler's receipt: nil while it is not
+// on the chain.
+func (c Chain) FeeCharged(ctx context.Context, hash string) (*big.Int, error) {
+	r, err := c.Receipt(ctx, hash)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	return actualGasCost(r, hash)
+}
+
+func actualGasCost(r *Receipt, hash string) (*big.Int, error) {
 	charged, ok := new(big.Int).SetString(strings.TrimPrefix(r.ActualGasCost, "0x"), 16)
 	if !ok || !strings.HasPrefix(r.ActualGasCost, "0x") {
 		return nil, fmt.Errorf("smartaccount: the bundler answered no actualGasCost for %s", hash)
 	}
-	return r, b.Charge(ctx, hash, charged)
+	return charged, nil
 }

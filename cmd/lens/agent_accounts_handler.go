@@ -193,7 +193,8 @@ import (
 // for them on each chain (internal/economy/gas_budgets.go):
 //
 //	GET  /v1/workspaces/{wsID}/agents/gas-budget?chain_id=8453   the budget, what is held and charged, what is left,
-//	                                                     and whether the owner was asked to top it up
+//	                                                     and whether the owner was asked to top it up; a chain no
+//	                                                     paymaster serves is 400
 //	POST /v1/workspaces/{wsID}/agents/gas-budget/top-up  {"chain_id", "wei"}   Talyvor's admin adds to it: Talyvor
 //	                                                     pays what it sponsors, so an owner cannot until a top-up
 //	                                                     is paid for (403)
@@ -753,7 +754,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	writeGasBudget := func(w http.ResponseWriter, b economy.GasBudget, err error) {
 		switch {
-		case errors.Is(err, economy.ErrGasTopUp):
+		case errors.Is(err, economy.ErrGasTopUp), errors.Is(err, economy.ErrGasChain):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())

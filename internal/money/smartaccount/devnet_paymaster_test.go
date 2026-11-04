@@ -86,6 +86,8 @@ func (b *budget) Hold(_ context.Context, hash string, fee *big.Int) error {
 	return nil
 }
 
+func (b *budget) Sent(context.Context, string, string) error { return nil }
+
 func (b *budget) Release(_ context.Context, hash string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
