@@ -2,7 +2,7 @@
 // where it came from. An observed point carries its source, the licence it was retrieved under, the retrieval time,
 // the SHA-256 of the content it was read from and every transformation applied; a derived figure lists every input
 // it came from; and a figure is shown to a user only with its sources' attribution. The database refuses a point
-// without its provenance too (migrations/0287_scan_provenance.sql), so this package is not the only guard.
+// without its provenance too (migrations/0307_scan_provenance.sql), so this package is not the only guard.
 package scan
 
 import (

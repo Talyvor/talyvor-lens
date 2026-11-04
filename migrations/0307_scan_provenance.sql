@@ -1,4 +1,4 @@
--- 0287_scan_provenance.sql — B52.20: Scan, part 1. Every number knows where it came from.
+-- 0307_scan_provenance.sql — B52.20: Scan, part 1. Every number knows where it came from.
 --
 -- scan_sources is the source register: each data source Scan may read, with what its licence allows (commercial use,
 -- display to the public, redistribution of derived figures), the attribution text it requires, its cost, its rate
