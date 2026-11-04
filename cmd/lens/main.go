@@ -2262,6 +2262,12 @@ func run() error {
 	go haComps.leader.Run(ctx, "scan-models", 30*time.Second, func(lctx context.Context) {
 		scanModels.Every(lctx, 24*time.Hour)
 	})
+	// B52.25 — Scan's reports: every hour each passed model's new finding is written up, checked by the code rules and
+	// the second model, and queued for a person at /v1/admin/scan/reports; only their approval publishes it.
+	scanWriter := scan.NewWriter(scan.NewStore(pool), routingInferer, cfg.ScanWriterModel, cfg.ScanCheckModel, cfg.ScanConflicts)
+	go haComps.leader.Run(ctx, "scan-reports", 30*time.Second, func(lctx context.Context) {
+		scanWriter.Every(lctx, time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
@@ -2642,6 +2648,9 @@ func run() error {
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.
 	r.Get("/v1/admin/compliance/alerts", requireAdminOrOperatorRead(authManager, newMonitoringAlertsHandler(moneyMonitor)))
 	r.Get("/v1/admin/scan/models", requireAdminOrOperatorRead(authManager, newScanModelsHandler(scanModels)))
+	r.Get("/v1/admin/scan/reports", requireAdminOrOperatorRead(authManager, newScanReportsHandler(scanWriter)))                     // B52.25
+	r.Post("/v1/admin/scan/reports/{id}/approve", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, true))) // B52.25
+	r.Post("/v1/admin/scan/reports/{id}/reject", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, false))) // B52.25
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))
