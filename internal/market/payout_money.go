@@ -28,6 +28,7 @@ const PayoutMoney = "money"
 // EarningsPayer pays earnings out on the money layer. *economy.DualTokenStore satisfies it.
 type EarningsPayer interface {
 	PayEarnings(ctx context.Context, workspaceID string, e economy.Earnings) ([]economy.EarningsPayout, error)
+	CollectEarnings(ctx context.Context, workspaceID, currency, funding, key string, amountMinor int64) error
 }
 
 // SetMoneyPayouts pays sellers who saved payout details on the money layer through payer, from workspace from's accounts.
@@ -125,6 +126,10 @@ func (s *Store) payMoney(ctx context.Context, d moneyDue) error {
 	for i, kind := range []string{economy.EarningsSale, economy.EarningsRoyalty} {
 		if parts[i] == 0 {
 			continue
+		}
+		// B17.343 — what the buyers' bills collected for this payout comes into the paying account first, so it pays from it.
+		if err := s.moneyPayer.CollectEarnings(ctx, s.moneyPayerFrom, d.asset, funding(d.livemode, d.test), d.id+":"+kind, parts[i]); err != nil {
+			return err
 		}
 		if _, err := s.moneyPayer.PayEarnings(ctx, s.moneyPayerFrom, economy.Earnings{Kind: kind, Source: "market:" + d.period,
 			Agreement: "market_payouts:" + d.id, Currency: d.asset, Funding: funding(d.livemode, d.test),
