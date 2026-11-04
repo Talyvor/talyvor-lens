@@ -583,7 +583,8 @@ func EvaluatePermissionMandate(t PermissionMandateTerms, revokedAt *time.Time, p
 		if c.MinTrust != "" && counterpartyTrust[who.Level] < counterpartyTrust[c.MinTrust] {
 			return d(MandateBlock, "counterparty.min_trust", "the mandate pays only %s agents, and this one is %s", c.MinTrust, cmp.Or(who.Level, "unverified"))
 		}
-		if len(c.Operators) > 0 && !slices.Contains(c.Operators, strings.ToLower(who.Domain)) {
+		// a domain counts only when signed: an unverified agent's claimed domain names no operator.
+		if len(c.Operators) > 0 && (counterpartyTrust[who.Level] == 0 || !slices.Contains(c.Operators, strings.ToLower(who.Domain))) {
 			return d(MandateBlock, "counterparty.operators", "the mandate pays only agents signed by %s, and this one is %s", strings.Join(c.Operators, ", "),
 				cmp.Or(who.Domain, "not signed by any"))
 		}

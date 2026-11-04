@@ -98,6 +98,7 @@ func TestB4530_MandateRulesOnTheCounterpartysTrustAndOperator(t *testing.T) {
 	judge(trusted, "an agent signed by a trusted operator", unchecked, 9000, economy.MandateAllow, "")
 	judge(trusted, "an agent signed by another operator", stranger, 9000, economy.MandateBlock, "counterparty.operators")
 	judge(trusted, "an unsigned agent", &economy.Counterparty{Level: string(agentsig.Unverified)}, 9000, economy.MandateBlock, "counterparty.operators")
+	judge(trusted, "an unverified agent claiming a trusted domain", &economy.Counterparty{Level: string(agentsig.Unverified), Domain: "agents.acme.example"}, 9000, economy.MandateBlock, "counterparty.operators")
 
 	anyone, canonical := sign(nil)
 	if strings.Contains(canonical, "counterparty") {
