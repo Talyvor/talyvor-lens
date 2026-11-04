@@ -302,6 +302,30 @@ func (d CardDetails) Normal() CardDetails {
 	}
 }
 
+// testMerchants is how a real issuer would report a charge at each of these merchants (B53.1): its category code, country,
+// channel and phone wallet. Any other merchant reads as an online charge in GB under 5999, miscellaneous retail.
+var testMerchants = map[string]CardDetails{
+	"pret a manger":   {MCC: "5814", Country: "GB", Channel: ChannelContactless, Wallet: WalletApplePay},
+	"tesco":           {MCC: "5411", Country: "GB", Channel: ChannelContactless, Wallet: WalletGooglePay},
+	"shell":           {MCC: "5541", Country: "GB", Channel: ChannelInPerson, Wallet: WalletNone},
+	"tfl travel":      {MCC: "4111", Country: "GB", Channel: ChannelContactless, Wallet: WalletSamsungPay},
+	"british airways": {MCC: "3009", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
+	"marriott lisbon": {MCC: "3509", Country: "PT", Channel: ChannelInPerson, Wallet: WalletApplePay},
+	"hertz":           {MCC: "3357", Country: "PT", Channel: ChannelOnline, Wallet: WalletNone},
+	"openai":          {MCC: "5734", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"aws":             {MCC: "7372", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"bet365":          {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
+	"netflix":         {MCC: "4899", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+}
+
+// TestMerchantDetails is what a test issuer (issuerfake, and the synthetic charge of B53.18) reports about a charge at merchant.
+func TestMerchantDetails(merchant string) CardDetails {
+	if d, ok := testMerchants[strings.ToLower(strings.Join(strings.Fields(merchant), " "))]; ok {
+		return d
+	}
+	return CardDetails{MCC: "5999", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone}
+}
+
 // KnownFormFactor is f if it is CardVirtual or CardPhysical, and Unknown otherwise.
 func KnownFormFactor(f string) string {
 	if f == CardVirtual || f == CardPhysical {
