@@ -1090,6 +1090,15 @@ type Config struct {
 	// CoachModel is the model that words the Coach's sentences (B53.6). Env: LENS_COACH_MODEL, default empty: every
 	// sentence is its fixed template.
 	CoachModel string
+	// ScanWriterModel words Scan's reports around the engine's figures (B52.25). Env: LENS_SCAN_WRITER_MODEL, default
+	// empty: every report is its fixed template.
+	ScanWriterModel string
+	// ScanCheckModel is the second model of Scan's compliance check (B52.25). Env: LENS_SCAN_CHECK_MODEL, default
+	// empty: the code rules alone, then the person reviewing.
+	ScanCheckModel string
+	// ScanConflicts is the conflicts statement every Scan report's box carries (B52.25). Env: LENS_SCAN_CONFLICTS,
+	// default empty: no report is written, since a conflict is never assumed. A statement for Nicolai.
+	ScanConflicts string
 	// BankConsentRemindDays is how many days before an open-banking consent runs out its connection says its renewal is
 	// due (B53.13). Env: LENS_BANK_CONSENT_REMIND_DAYS, default 7 — a setting for Nicolai.
 	BankConsentRemindDays int
@@ -2426,7 +2435,10 @@ func Load() (*Config, error) {
 		}
 		c.SpendDuplicateMinutes = n
 	}
-	c.CoachModel = strings.TrimSpace(os.Getenv("LENS_COACH_MODEL")) // B53.6
+	c.CoachModel = strings.TrimSpace(os.Getenv("LENS_COACH_MODEL"))            // B53.6
+	c.ScanWriterModel = strings.TrimSpace(os.Getenv("LENS_SCAN_WRITER_MODEL")) // B52.25
+	c.ScanCheckModel = strings.TrimSpace(os.Getenv("LENS_SCAN_CHECK_MODEL"))
+	c.ScanConflicts = strings.TrimSpace(os.Getenv("LENS_SCAN_CONFLICTS"))
 	// B53.13 — the open-banking consent reminder. A malformed value is refused.
 	c.BankConsentRemindDays = 7
 	if v := os.Getenv("LENS_BANK_CONSENT_REMIND_DAYS"); v != "" {
