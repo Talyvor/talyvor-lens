@@ -63,6 +63,7 @@ type SpendFinding struct {
 	EntryID     string    `json:"entry_id,omitempty"`
 	AgentID     string    `json:"agent_id,omitempty"` // empty: the owner's own wallet
 	Merchant    string    `json:"merchant,omitempty"`
+	MCC         string    `json:"mcc,omitempty"` // so the Coach knows a sensitive merchant (B53.6)
 	Category    string    `json:"category,omitempty"`
 	Country     string    `json:"country,omitempty"`
 	AmountMinor int64     `json:"amount_minor,omitempty"`
@@ -137,7 +138,7 @@ func spendFindings(payments []SpendPayment, from time.Time, newMerchantMinor int
 		dupKey := [3]string{merchant, p.Currency, fmt.Sprint(p.AmountMinor)}
 		if !p.CreatedAt.Before(from) {
 			finding := func(rule string) *SpendFinding {
-				out = append(out, SpendFinding{Rule: rule, EntryID: p.EntryID, AgentID: p.AgentID, Merchant: p.Merchant, Category: p.Category,
+				out = append(out, SpendFinding{Rule: rule, EntryID: p.EntryID, AgentID: p.AgentID, Merchant: p.Merchant, MCC: p.MCC, Category: p.Category,
 					Country: p.Country, AmountMinor: p.AmountMinor, Currency: p.Currency, At: p.CreatedAt})
 				return &out[len(out)-1]
 			}

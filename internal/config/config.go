@@ -1084,6 +1084,9 @@ type Config struct {
 	// SpendDuplicateMinutes is how close two payments to one merchant for one amount must be to read as a likely
 	// duplicate (B53.5). Env: LENS_SPEND_DUPLICATE_MINUTES, default 10 — a setting for Nicolai.
 	SpendDuplicateMinutes int
+	// CoachModel is the model that words the Coach's sentences (B53.6). Env: LENS_COACH_MODEL, default empty: every
+	// sentence is its fixed template.
+	CoachModel string
 	// MarketPayoutWeekday is the day of the week, UTC, sellers are paid on (B32.42). Env: LENS_MARKET_PAYOUT_WEEKDAY,
 	// MON to SUN, default MON.
 	MarketPayoutWeekday time.Weekday
@@ -2409,6 +2412,7 @@ func Load() (*Config, error) {
 		}
 		c.SpendDuplicateMinutes = n
 	}
+	c.CoachModel = strings.TrimSpace(os.Getenv("LENS_COACH_MODEL")) // B53.6
 	// B32.42 — the day of the week sellers are paid on. A malformed value is refused.
 	c.MarketPayoutWeekday = time.Monday
 	if v := os.Getenv("LENS_MARKET_PAYOUT_WEEKDAY"); v != "" {
