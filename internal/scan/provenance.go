@@ -92,7 +92,8 @@ func (s *Store) Source(ctx context.Context, id string) (Source, error) {
 	return src, err
 }
 
-// SetEnabled switches a source on or off. A ruled-out source is refused by name.
+// SetEnabled switches a source on or off. A ruled-out source is refused by name. No production caller until the
+// first collector (B52.21) switches its own source on.
 func (s *Store) SetEnabled(ctx context.Context, id string, on bool) error {
 	src, err := s.Source(ctx, id)
 	if err != nil {
@@ -118,12 +119,12 @@ func (s *Store) Record(ctx context.Context, o Observation) (int64, error) {
 	if !src.Enabled {
 		return 0, fmt.Errorf("%w: %s", ErrSourceOff, src.Name)
 	}
-	transforms, _ := json.Marshal(o.Transforms)
+	transforms, _ := json.Marshal(o.Transforms) // passed as a string: a []byte arrives as bytea under the simple protocol
 	var id int64
 	err = s.pool.QueryRow(ctx, `INSERT INTO scan_points
 		(kind, series, observed_at, value, unit, source_id, licence, retrieved_at, content_hash, transforms)
 		VALUES ('observed', $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		o.Series, o.ObservedAt, o.Value, o.Unit, src.ID, src.Licence, o.RetrievedAt, o.ContentHash, transforms).Scan(&id)
+		o.Series, o.ObservedAt, o.Value, o.Unit, src.ID, src.Licence, o.RetrievedAt, o.ContentHash, string(transforms)).Scan(&id)
 	return id, err
 }
 
@@ -140,7 +141,7 @@ func (s *Store) Derive(ctx context.Context, d Derivation) (int64, error) {
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `INSERT INTO scan_points (kind, series, observed_at, value, unit, transforms)
 			VALUES ('derived', $1, $2, $3, $4, $5) RETURNING id`,
-			d.Series, d.ObservedAt, d.Value, d.Unit, transforms).Scan(&id); err != nil {
+			d.Series, d.ObservedAt, d.Value, d.Unit, string(transforms)).Scan(&id); err != nil {
 			return err
 		}
 		for _, in := range d.Inputs {
