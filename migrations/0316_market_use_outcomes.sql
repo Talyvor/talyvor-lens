@@ -1,4 +1,4 @@
--- 0294_market_use_outcomes.sql — B41.173: live performance on every listing.
+-- 0316_market_use_outcomes.sql — B41.173: live performance on every listing.
 --
 -- Every run of a listing leaves one row here, whether it answered or failed, with how long it took and what it
 -- was charged. A failed use's market_uses row is still removed (it was never billed and no limit counts it); this
