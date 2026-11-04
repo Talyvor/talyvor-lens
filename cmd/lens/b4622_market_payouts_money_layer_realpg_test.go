@@ -130,7 +130,7 @@ func TestB4622_TheWeeklyRunPaysSellersAndRoyaltiesOnTheMoneyLayerOnce(t *testing
 	if p := got[seller+" sale"]; p.Partner != money.SandboxName || p.PartnerRef == "" {
 		t.Errorf("the seller's sale was paid by %q (%q), want the sandbox", p.Partner, p.PartnerRef)
 	}
-	for currency, want := range map[string]int64{"USD": 10_000 - 3000 - 1000 - 4000, "GBP": 10_000 - 1805} {
+	for currency, want := range map[string]int64{"USD": 10_000, "GBP": 10_000} { // B17.343: each payout is collected, then paid
 		if b, err := bank.Balance(ctx, marketplace, accounts[currency]); err != nil || b.TestMinor != want {
 			t.Errorf("the marketplace's %s account holds %+v (%v), want %d: each payout taken once", currency, b, err, want)
 		}
