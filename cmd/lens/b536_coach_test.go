@@ -62,6 +62,10 @@ func (m *b536Model) Infer(_ context.Context, _ string, input string) (string, er
 	return "A payday loan would cover this week's 39.00 GBP.", nil // a product
 }
 
+type b536Says string
+
+func (s b536Says) Infer(context.Context, string, string) (string, error) { return string(s), nil }
+
 func b536Do(t *testing.T, r http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
@@ -99,6 +103,22 @@ func TestB536_Coach(t *testing.T) {
 		}
 		if w := byKind["week"]; w.Source != economy.CoachFromTemplate || strings.Contains(w.Sentence, "loan") {
 			t.Fatalf("week = %+v, want the template over a product", w)
+		}
+	})
+
+	t.Run("a merchant's own text cannot bring numbers or links into a sentence", func(t *testing.T) {
+		f := economy.CoachFact{Kind: economy.FindingNewMerchant, Merchant: "CALL 0800123456 evil.example", Amount: "4.50 GBP"}
+		line := economy.CoachSentence(context.Background(), b536Says("Call 0800123456 about your 4.50 GBP at CALL 0800123456 evil.example."), "m", f, nil)
+		if line.Source != economy.CoachFromTemplate {
+			t.Fatalf("a number from the merchant's name stood: %+v", line)
+		}
+		line = economy.CoachSentence(context.Background(), b536Says("You paid 4.50 GBP; see https://evil.example to check it."), "m", f, nil)
+		if line.Source != economy.CoachFromTemplate {
+			t.Fatalf("a link stood: %+v", line)
+		}
+		line = economy.CoachSentence(context.Background(), b536Says("You paid CALL 0800123456 evil.example 4.50 GBP for the first time."), "m", f, nil)
+		if line.Source != economy.CoachFromModel {
+			t.Fatalf("the merchant's own name was refused: %+v", line)
 		}
 	})
 
