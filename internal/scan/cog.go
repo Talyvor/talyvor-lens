@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // A minimal reader for the Cloud-Optimised GeoTIFFs Sentinel-2 scenes are published as: classic little-endian TIFF,
-// single band, 8- or 16-bit unsigned, tiled, Deflate with or without horizontal differencing. It reads one overview
+// single band, 8- or 16-bit unsigned, tiled, Deflate or Zstandard (Sentinel-1 GRD) with or without horizontal
+// differencing. It reads one overview
 // level tile by tile over HTTP ranges, so a regional reading fetches a few hundred kilobytes, not a 200 MB scene.
 
 var errCOG = errors.New("scan: unsupported GeoTIFF")
@@ -121,7 +124,7 @@ func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 				return nil, fmt.Errorf("%w: a %d-byte tile", errCOG, n)
 			}
 		}
-		if lv.compression != 1 && lv.compression != 8 && lv.compression != 32946 {
+		if lv.compression != 1 && lv.compression != 8 && lv.compression != 32946 && lv.compression != 50000 {
 			return nil, fmt.Errorf("%w: compression %d", errCOG, lv.compression)
 		}
 		if lv.predictor != 1 && lv.predictor != 2 {
@@ -217,9 +220,17 @@ func (f *cogFile) window(ctx context.Context, level, x0, y0, x1, y1 int) ([]uint
 	return out, raw.Bytes(), nil
 }
 
+// zstdDecoder decodes whole tiles; its memory is bounded by the tile size checked in openCOG.
+var zstdDecoder, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(64<<20))
+
 func (lv cogLevel) decode(b []byte) ([]uint16, error) {
 	want := lv.tileW * lv.tileH * lv.bits / 8
-	if lv.compression != 1 {
+	if lv.compression == 50000 {
+		var err error
+		if b, err = zstdDecoder.DecodeAll(b, make([]byte, 0, want)); err != nil {
+			return nil, fmt.Errorf("%w: %v", errCOG, err)
+		}
+	} else if lv.compression != 1 {
 		z, err := zlib.NewReader(bytes.NewReader(b))
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", errCOG, err)
