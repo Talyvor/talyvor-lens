@@ -266,8 +266,8 @@ func (s *DualTokenStore) RotateAgentSigner(ctx context.Context, workspaceID, age
 		if call, err = smartaccount.RetireCall(o.account(), next); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET `+keepMadeWith+`, rotated_from_signer = agent_signer,
-			rotated_from_index = agent_index, agent_signer = $3, agent_index = $4, next_owner_index = $4 + 1, rotated_at = $5
+		_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET `+keepMadeWith+`, rotated_from_signers = array_append(rotated_from_signers, agent_signer),
+			rotated_from_indexes = array_append(rotated_from_indexes, agent_index), agent_signer = $3, agent_index = $4, next_owner_index = $4 + 1, rotated_at = $5
 			WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, next, o.next, time.Now())
 		return err
 	})

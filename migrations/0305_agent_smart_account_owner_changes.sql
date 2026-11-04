@@ -5,8 +5,8 @@
 -- owner columns always name the owners now; the made_with_ columns keep the ones the account was made with, from the
 -- first change, because its address and its first operation on a chain it is not yet on are worked out from them.
 -- next_owner_index is NULL until the first change: then it is 2, or 3 when the account was made with a recovery signer.
--- rotated_from_ names the key the agent last rotated from: until its rotation is on chain that key is still an owner
--- there, so a freeze answers the call that takes it out too.
+-- rotated_from_ lists every key the agent rotated from, with its index: until a rotation is on chain the key it
+-- replaced is still an owner there, so a freeze answers the call that takes out each of them too.
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS owner_index INT NOT NULL DEFAULT 0;
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS agent_index INT NOT NULL DEFAULT 1;
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS recovery_index INT NOT NULL DEFAULT 2;
@@ -16,5 +16,5 @@ ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS made_with_agent_signer
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS made_with_recovery_address TEXT;
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS recovered_at TIMESTAMPTZ;
 ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMPTZ;
-ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS rotated_from_signer TEXT NOT NULL DEFAULT '';
-ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS rotated_from_index INT NOT NULL DEFAULT 0;
+ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS rotated_from_signers TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE agent_smart_accounts ADD COLUMN IF NOT EXISTS rotated_from_indexes INT[] NOT NULL DEFAULT '{}';

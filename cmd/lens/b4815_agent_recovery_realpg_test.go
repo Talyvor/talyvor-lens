@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -199,16 +200,21 @@ func TestB4815_RecoveryRotationAndLockdown(t *testing.T) {
 		t.Fatalf("made with %s, now %s (%v)", made, now, err)
 	}
 
+	// Rotated again before the first rotation is on chain: both keys it rotated from are kept.
+	if code := call(http.MethodPost, base+"/rotate-signer", nil, &rotated); code != http.StatusOK || rotated.Smart.Owners[1].Index != 5 {
+		t.Fatalf("rotate again = %d %+v", code, rotated)
+	}
+
 	// Lockdown: every agent of the workspace frozen at once.
 	otherID, _ := newAgent("Buyer", "cred-new", newPhone)
 	var locked struct{ Frozen []economy.AgentFreeze }
 	if code := call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/lockdown", nil, &locked); code != http.StatusOK || len(locked.Frozen) != 2 {
 		t.Fatalf("lockdown = %d %+v", code, locked)
 	}
-	// The rotated agent's freeze also takes out the key it rotated from, in case that rotation is not on chain yet.
+	// The rotated agent's freeze also takes out each key it rotated from, in case a rotation is not on chain yet.
 	for _, f := range locked.Frozen {
-		if rotatedAgent := f.AgentID == agentID; rotatedAgent == (f.PreviousKeyRevokeCall == "") || f.RevokeCall == f.PreviousKeyRevokeCall {
-			t.Fatalf("lockdown of %s: %+v", f.AgentID, f)
+		if want := map[bool]int{true: 2, false: 0}[f.AgentID == agentID]; len(f.PreviousKeyRevokeCalls) != want || slices.Contains(f.PreviousKeyRevokeCalls, f.RevokeCall) {
+			t.Fatalf("lockdown of %s: %+v, want %d calls for the keys it rotated from", f.AgentID, f, want)
 		}
 	}
 	for _, id := range []string{agentID, otherID} {
