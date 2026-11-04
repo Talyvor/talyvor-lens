@@ -2042,6 +2042,8 @@ func run() error {
 	// held from the payout run until they are complete.
 	sellerTax := sellertax.NewStore(pool, cfg.ProviderSecretKeyring, partnerRegistry)
 	sellerTax.SetReminderEvery(time.Duration(cfg.SellerTaxReminderDays) * 24 * time.Hour)
+	economy.SpendNewMerchantMinor = cfg.SpendNewMerchantMinor                             // B53.5
+	economy.SpendDuplicateWindow = time.Duration(cfg.SpendDuplicateMinutes) * time.Minute // B53.5
 	go haComps.leader.Run(ctx, "seller-tax-reminders", 30*time.Second, func(lctx context.Context) {
 		remindSellersOfTaxDetails(lctx, sellerTax)
 	})

@@ -1078,6 +1078,12 @@ type Config struct {
 	// SellerTaxReminderDays is the days between the requests to a seller with earnings for incomplete tax details
 	// (B32.41). Env: LENS_SELLER_TAX_REMINDER_DAYS, default 30 — a proposal for Nicolai.
 	SellerTaxReminderDays int
+	// SpendNewMerchantMinor is the least a payment to a merchant a wallet has never paid must be to be an unusual-spending
+	// finding (B53.5), in minor units. Env: LENS_SPEND_NEW_MERCHANT_MINOR, default 0 — a setting for Nicolai.
+	SpendNewMerchantMinor int64
+	// SpendDuplicateMinutes is how close two payments to one merchant for one amount must be to read as a likely
+	// duplicate (B53.5). Env: LENS_SPEND_DUPLICATE_MINUTES, default 10 — a setting for Nicolai.
+	SpendDuplicateMinutes int
 	// MarketPayoutWeekday is the day of the week, UTC, sellers are paid on (B32.42). Env: LENS_MARKET_PAYOUT_WEEKDAY,
 	// MON to SUN, default MON.
 	MarketPayoutWeekday time.Weekday
@@ -2386,6 +2392,22 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_SELLER_TAX_REMINDER_DAYS must be a positive integer, got %q", v)
 		}
 		c.SellerTaxReminderDays = n
+	}
+	// B53.5 — the unusual-spending settings. A malformed value is refused.
+	if v := os.Getenv("LENS_SPEND_NEW_MERCHANT_MINOR"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_SPEND_NEW_MERCHANT_MINOR must be a whole number of minor units, got %q", v)
+		}
+		c.SpendNewMerchantMinor = n
+	}
+	c.SpendDuplicateMinutes = 10
+	if v := os.Getenv("LENS_SPEND_DUPLICATE_MINUTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("config: LENS_SPEND_DUPLICATE_MINUTES must be a positive integer, got %q", v)
+		}
+		c.SpendDuplicateMinutes = n
 	}
 	// B32.42 — the day of the week sellers are paid on. A malformed value is refused.
 	c.MarketPayoutWeekday = time.Monday
