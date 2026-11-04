@@ -24,6 +24,10 @@ import (
 //	                          category; an empty category forgets the correction
 //	PUT /v1/money/entries/{id}/tags    {tags: [...]} — the owner's own tags on one movement of money, replacing its
 //	                          last ones
+//	GET /v1/money/spending/unusual?from=&to= — B53.5: what was unusual in [from, to), newest first, each finding with
+//	                          its rule and the numbers it compared (economy/spend_findings.go)
+//	GET /v1/money/spending/subscriptions — B53.5 and B41.120: the payments that recur weekly or monthly, each with its
+//	                          next date, the day to be reminded, and its monthly and yearly cost
 //
 // The workspace is the key's; only its owner or an admin may use these. Mounted in the authed group.
 
@@ -31,6 +35,8 @@ type moneySpendingBank interface {
 	Spending(ctx context.Context, workspaceID string, from, to time.Time) (economy.Spending, error)
 	SetSpendCategory(ctx context.Context, workspaceID, merchant, category, by string) error
 	SetEntryTags(ctx context.Context, workspaceID, entryID string, tags []string) ([]string, error)
+	SpendFindings(ctx context.Context, workspaceID string, from, to time.Time) ([]economy.SpendFinding, error)
+	SpendSubscriptions(ctx context.Context, workspaceID string, now time.Time) ([]economy.SpendSubscription, error)
 }
 
 // spendingOwner is the key's workspace and who is asking, when they are its owner or an admin; otherwise it answers.
@@ -62,12 +68,7 @@ func mountMoneySpendingRoutes(r chi.Router, bank moneySpendingBank) {
 			ok()
 		}
 	}
-	r.Get("/v1/money/spending", func(w http.ResponseWriter, req *http.Request) {
-		ws, _, ok := owner(w, req)
-		if !ok {
-			return
-		}
-		var at [2]time.Time
+	period := func(w http.ResponseWriter, req *http.Request) (at [2]time.Time, ok bool) {
 		for i, name := range []string{"from", "to"} {
 			v := req.URL.Query().Get(name)
 			if v == "" {
@@ -77,13 +78,44 @@ func mountMoneySpendingRoutes(r chi.Router, bank moneySpendingBank) {
 			if err != nil {
 				if t, err = time.Parse(time.RFC3339, v); err != nil {
 					writeJSONErr(w, http.StatusBadRequest, name+" must be a date (YYYY-MM-DD) or an RFC 3339 time")
-					return
+					return at, false
 				}
 			}
 			at[i] = t
 		}
+		return at, true
+	}
+	r.Get("/v1/money/spending", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		at, ok := period(w, req)
+		if !ok {
+			return
+		}
 		out, err := bank.Spending(req.Context(), ws, at[0], at[1])
 		answer(w, err, func() { writeJSONOK(w, http.StatusOK, out) })
+	})
+	r.Get("/v1/money/spending/unusual", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		at, ok := period(w, req)
+		if !ok {
+			return
+		}
+		out, err := bank.SpendFindings(req.Context(), ws, at[0], at[1])
+		answer(w, err, func() { writeJSONOK(w, http.StatusOK, map[string]any{"findings": out}) })
+	})
+	r.Get("/v1/money/spending/subscriptions", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		out, err := bank.SpendSubscriptions(req.Context(), ws, time.Now().UTC())
+		answer(w, err, func() { writeJSONOK(w, http.StatusOK, map[string]any{"subscriptions": out}) })
 	})
 	r.Put("/v1/money/spending/merchants", func(w http.ResponseWriter, req *http.Request) {
 		ws, who, ok := owner(w, req)

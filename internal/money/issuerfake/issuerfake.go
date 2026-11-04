@@ -61,6 +61,8 @@ var merchants = map[string]money.CardDetails{
 	"hertz":           {MCC: "3357", Country: "PT", Channel: money.ChannelOnline, Wallet: money.WalletNone},
 	"openai":          {MCC: "5734", Country: "US", Channel: money.ChannelOnline, Wallet: money.WalletNone},
 	"aws":             {MCC: "7372", Country: "US", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+	"bet365":          {MCC: "7995", Country: "GB", Channel: money.ChannelOnline, Wallet: money.WalletNone},
+	"netflix":         {MCC: "4899", Country: "US", Channel: money.ChannelOnline, Wallet: money.WalletNone},
 }
 
 // Details is what the issuer reports about a charge at merchant.

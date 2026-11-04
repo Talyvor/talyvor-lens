@@ -70,6 +70,7 @@ type SpendPayment struct {
 	Kind           string    `json:"kind"` // card_charge or payment_out
 	Merchant       string    `json:"merchant"`
 	MCC            string    `json:"mcc,omitempty"`
+	Country        string    `json:"country,omitempty"`  // the card's merchant country (B53.5)
 	AgentID        string    `json:"agent_id,omitempty"` // empty: the owner's own wallet
 	AmountMinor    int64     `json:"amount_minor"`
 	Currency       string    `json:"currency"`
@@ -188,7 +189,7 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 	if !to.After(from) {
 		return Spending{}, fmt.Errorf("%w: to must be after from", ErrSpending)
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.id, e.kind, e.counterparty, COALESCE(e.card_mcc, ''), e.created_at, COALESCE(w.agent_id, ''),
+	rows, err := s.pool.Query(ctx, `SELECT e.id, e.kind, e.counterparty, COALESCE(e.card_mcc, ''), COALESCE(e.card_country, ''), e.created_at, COALESCE(w.agent_id, ''),
 			o.currency, o.amount, COALESCE(cc.category, ''),
 			COALESCE(p.payee_id <> '' AND EXISTS (SELECT 1 FROM money_bills b WHERE b.workspace_id = e.workspace_id AND b.payee_id = p.payee_id), false),
 			COALESCE((SELECT array_agg(t.tag ORDER BY t.tag) FROM money_entry_tags t WHERE t.workspace_id = e.workspace_id AND t.entry_id = e.id), '{}')
@@ -211,7 +212,7 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 		var p SpendPayment
 		var correction string
 		var sentBill bool
-		if err := rows.Scan(&p.EntryID, &p.Kind, &p.Merchant, &p.MCC, &p.CreatedAt, &p.AgentID, &p.Currency, &p.AmountMinor,
+		if err := rows.Scan(&p.EntryID, &p.Kind, &p.Merchant, &p.MCC, &p.Country, &p.CreatedAt, &p.AgentID, &p.Currency, &p.AmountMinor,
 			&correction, &sentBill, &p.Tags); err != nil {
 			return Spending{}, fmt.Errorf("economy: spending: %w", err)
 		}
