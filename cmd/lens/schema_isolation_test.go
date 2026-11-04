@@ -11,5 +11,7 @@ import (
 // `go test ./...` on one database cannot collide with another package's tables (internal/testschema).
 func TestMain(m *testing.M) {
 	testschema.Isolate("lens_pkg_cmd_lens")
-	os.Exit(m.Run())
+	code := m.Run()
+	dropAgentRoutesTemplate()
+	os.Exit(code)
 }
