@@ -294,6 +294,10 @@ func readsLensEnvVars(t *testing.T) map[string]string {
 			if rerr != nil {
 				return nil
 			}
+			// Every match contains `"LENS_`; skipping files without it keeps this walk cheap under -race (B54.2).
+			if !strings.Contains(string(b), `"LENS_`) {
+				return nil
+			}
 			for _, m := range pat.FindAllStringSubmatch(string(b), -1) {
 				if _, seen := found[m[1]]; !seen {
 					found[m[1]] = path
