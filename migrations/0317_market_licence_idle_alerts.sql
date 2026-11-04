@@ -1,4 +1,4 @@
--- 0295_market_licence_idle_alerts.sql — B41.176: a renewing licence nobody uses is flagged to its buyer once.
+-- 0317_market_licence_idle_alerts.sql — B41.176: a renewing licence nobody uses is flagged to its buyer once.
 --
 -- A rent or subscription that renews and has had no use of its listing by the buyer's workspace for 30 days is idle
 -- (market/idle.go). The schedules' tick pushes its buyer one alert per idle stretch, recorded here: idle_since is the

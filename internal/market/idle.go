@@ -14,7 +14,7 @@ import (
 //
 // A rent or subscription that renews is idle once its buyer's workspace has not used its listing for IdleFor: since
 // the later of the licence's start and the listing's last use. The licences list marks it idle, so the buyer can cancel
-// it there (CancelLicence); the schedules' tick pushes the buyer one alert for each idle stretch (migration 0295).
+// it there (CancelLicence); the schedules' tick pushes the buyer one alert for each idle stretch (migration 0317).
 
 // IdleFor is how long a renewing licence goes unused before it is idle.
 const IdleFor = 30 * 24 * time.Hour
