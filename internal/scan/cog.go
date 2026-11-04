@@ -33,7 +33,6 @@ type cogFile struct {
 // cogHeaderBytes covers every IFD of a COG, which keeps them all before the first tile.
 const cogHeaderBytes = 64 << 10
 
-const maxTileBytes = 32 << 20 // a 4096 px 16-bit tile stored uncompressed
 
 func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 	head, err := read(ctx, 0, cogHeaderBytes)
@@ -113,13 +112,15 @@ func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 		if lv.width <= 0 || lv.height <= 0 || lv.width > 1<<15 || lv.height > 1<<15 || lv.tileW > 4096 || lv.tileH > 4096 {
 			return nil, fmt.Errorf("%w: %d×%d px in %d×%d tiles", errCOG, lv.width, lv.height, lv.tileW, lv.tileH)
 		}
-		for _, n := range lv.counts {
-			if n < 0 || n > maxTileBytes {
-				return nil, fmt.Errorf("%w: a %d-byte tile", errCOG, n)
-			}
-		}
 		if lv.bits != 8 && lv.bits != 16 {
 			return nil, fmt.Errorf("%w: %d bits per sample", errCOG, lv.bits)
+		}
+		// Deflate never stores a tile in more than its raw size plus a few bytes per 64 KB block.
+		maxTile := int64(lv.tileW*lv.tileH*lv.bits/8) + 4096
+		for _, n := range lv.counts {
+			if n < 0 || n > maxTile {
+				return nil, fmt.Errorf("%w: a %d-byte tile", errCOG, n)
+			}
 		}
 		if lv.compression != 1 && lv.compression != 8 && lv.compression != 32946 {
 			return nil, fmt.Errorf("%w: compression %d", errCOG, lv.compression)
