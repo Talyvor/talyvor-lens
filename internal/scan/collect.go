@@ -47,7 +47,15 @@ func NewFetcher(client *http.Client, perMinute int) *Fetcher {
 	if perMinute > 0 {
 		gap = time.Minute / time.Duration(perMinute)
 	}
-	return &Fetcher{client: client, gap: gap, now: time.Now}
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// A redirect off the source's host would carry its API key (GIE's x-key header) to that host.
+		if req.URL.Host != via[0].URL.Host || len(via) >= 5 {
+			return errors.New("redirected off the source's host")
+		}
+		return nil
+	}
+	return &Fetcher{client: &c, gap: gap, now: time.Now}
 }
 
 // Get fetches req and returns the body, its hex SHA-256 and when it was retrieved. A status other than 200 is an

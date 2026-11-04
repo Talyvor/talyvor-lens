@@ -167,11 +167,23 @@ func TestEnergyCollectorsReadTheirFixtures(t *testing.T) {
 	}
 }
 
-// An error never carries the request's URL, which can hold an API key.
-func TestFetcherErrorHidesTheKey(t *testing.T) {
-	f := scan.NewFetcher(&http.Client{Timeout: time.Millisecond}, 60000)
+// An error never carries the request's URL, which can hold an API key, and a redirect off the source's host is refused
+// so the key never follows it.
+func TestFetcherKeepsTheKey(t *testing.T) {
+	f := scan.NewFetcher(&http.Client{Timeout: time.Second}, 60000)
 	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/v2/data?api_key=secret-key", nil)
 	if _, _, _, err := f.Get(context.Background(), req); err == nil || strings.Contains(err.Error(), "secret-key") {
 		t.Errorf("error: %v", err)
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the redirect was followed to another host, x-key %q", r.Header.Get("x-key"))
+	}))
+	defer other.Close()
+	source := httptest.NewServer(http.RedirectHandler(strings.Replace(other.URL, "127.0.0.1", "localhost", 1), http.StatusFound))
+	defer source.Close()
+	req, _ = http.NewRequest(http.MethodGet, source.URL, nil)
+	req.Header.Set("x-key", "secret-key")
+	if _, _, _, err := f.Get(context.Background(), req); err == nil {
+		t.Error("a redirect to another host was followed")
 	}
 }
