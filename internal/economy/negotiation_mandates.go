@@ -460,7 +460,7 @@ func (s *DualTokenStore) RecordNegotiationTerms(ctx context.Context, workspaceID
 	}
 	terms, _ := json.Marshal(o.Terms)
 	err = s.pool.QueryRow(ctx, `INSERT INTO negotiation_terms (mandate_id, workspace_id, counterparty, party, channel, terms, message)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`, id, workspaceID, o.Counterparty, o.Party, o.Channel, terms, o.Message).
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`, id, workspaceID, o.Counterparty, o.Party, o.Channel, string(terms), o.Message).
 		Scan(&o.ID, &o.CreatedAt)
 	if err != nil {
 		return NegotiationOffer{}, fmt.Errorf("economy: negotiation terms: %w", err)
