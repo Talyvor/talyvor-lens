@@ -43,8 +43,8 @@ has one aircraft that one executive uses. Jet tracking has been described as sta
 ## 5. Rights
 
 An erasure or objection request about an aircraft is handled by the operator at `POST /v1/admin/scan/jets/exclusions`
-with reason `erasure`: the aircraft is never counted again, and every stored figure it was part of is deleted in the
-same transaction (with anything derived from them). The next run recounts those days without it, where AeroAPI still
+with reason `erasure`: the aircraft is never counted again, and every stored figure it was part of is deleted (with
+anything derived from them), including a figure a run was storing at that moment. The next run recounts those days without it, where AeroAPI still
 holds them (ten days).
 
 ## 6. Risks and measures

@@ -262,15 +262,20 @@ func (j *Jets) Collect(ctx context.Context, f *Fetcher, since, now time.Time, pu
 				series, unit = "jets."+slug+".arrivals."+strings.ToLower(k.dest), "arrivals"
 				tf = append(append([]string{}, transforms...), "only flights landing at "+k.dest)
 			}
-			if err := put(Observation{Series: series, ObservedAt: k.day, Value: counts[k], Unit: unit,
-				RetrievedAt: retrieved, ContentHash: contentHash, Transforms: tf}); err != nil {
-				return err
-			}
 			regs := make([]string, 0, len(flown[k]))
 			for r := range flown[k] {
 				regs = append(regs, r)
 			}
-			if err := j.Store.linkJets(ctx, j.Source(), series, k.day, regs); err != nil {
+			// Linked first and checked after: an exclusion is committed before it deletes, so one made while this
+			// figure is stored either finds it through its links or is seen by the check.
+			if err := j.Store.linkJets(ctx, series, k.day, regs); err != nil {
+				return err
+			}
+			if err := put(Observation{Series: series, ObservedAt: k.day, Value: counts[k], Unit: unit,
+				RetrievedAt: retrieved, ContentHash: contentHash, Transforms: tf}); err != nil {
+				return err
+			}
+			if err := j.Store.dropIfExcluded(ctx, j.Source(), series, k.day, regs); err != nil {
 				return err
 			}
 		}
@@ -341,19 +346,28 @@ func (s *Store) JetExclusions(ctx context.Context) (map[string]bool, error) {
 	return out, err
 }
 
-func (s *Store) linkJets(ctx context.Context, source, series string, at time.Time, regs []string) error {
+func (s *Store) linkJets(ctx context.Context, series string, at time.Time, regs []string) error {
 	if len(regs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO scan_jet_aircraft (point_id, registration)
-		SELECT p.id, r FROM scan_points p, unnest($4::text[]) r
-		WHERE p.kind = 'observed' AND p.source_id = $1 AND p.series = $2 AND p.observed_at = $3
-		ON CONFLICT DO NOTHING`, source, series, at, regs)
+	_, err := s.pool.Exec(ctx, `INSERT INTO scan_jet_aircraft (series, observed_at, registration)
+		SELECT $1, $2, r FROM unnest($3::text[]) r ON CONFLICT DO NOTHING`, series, at, regs)
+	return err
+}
+
+func (s *Store) dropIfExcluded(ctx context.Context, source, series string, at time.Time, regs []string) error {
+	if len(regs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM scan_points WHERE kind = 'observed' AND source_id = $1 AND series = $2
+		AND observed_at = $3 AND EXISTS (SELECT 1 FROM scan_jet_exclusions WHERE registration = ANY($4::text[]))`,
+		source, series, at, regs)
 	return err
 }
 
 // ExcludeAircraft keeps an aircraft out of every future count and deletes every stored figure it was part of, with
-// every figure derived from those. An erasure request is reason "erasure". It returns how many figures went.
+// every figure derived from those, and the record of which figures it was in. An erasure request is reason "erasure".
+// It returns how many figures went.
 func (s *Store) ExcludeAircraft(ctx context.Context, registration, reason string) (int64, error) {
 	reg := Registration(registration)
 	ok := false
@@ -363,14 +377,16 @@ func (s *Store) ExcludeAircraft(ctx context.Context, registration, reason string
 	if reg == "" || !ok {
 		return 0, ErrExclusionReason
 	}
+	// Committed before the delete, so a collector storing a figure meanwhile sees it (Jets.Collect).
+	if _, err := s.pool.Exec(ctx, `INSERT INTO scan_jet_exclusions (registration, reason) VALUES ($1, $2)
+		ON CONFLICT (registration) DO NOTHING`, reg, reason); err != nil {
+		return 0, err
+	}
 	var n int64
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO scan_jet_exclusions (registration, reason) VALUES ($1, $2)
-			ON CONFLICT (registration) DO NOTHING`, reg, reason); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE scan_erased ON COMMIT DROP AS WITH RECURSIVE tree(id) AS (
-				SELECT point_id FROM scan_jet_aircraft WHERE registration = $1
+				SELECT p.id FROM scan_points p JOIN scan_jet_aircraft a ON a.series = p.series AND a.observed_at = p.observed_at
+				WHERE p.kind = 'observed' AND p.source_id = 'flightaware-standard' AND a.registration = $1
 				UNION SELECT i.point_id FROM scan_point_inputs i JOIN tree t ON i.input_id = t.id)
 			SELECT id FROM tree`, reg); err != nil {
 			return err
@@ -380,7 +396,11 @@ func (s *Store) ExcludeAircraft(ctx context.Context, registration, reason string
 			return err
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM scan_points WHERE id IN (SELECT id FROM scan_erased)`)
+		if err != nil {
+			return err
+		}
 		n = tag.RowsAffected()
+		_, err = tx.Exec(ctx, `DELETE FROM scan_jet_aircraft WHERE registration = $1`, reg)
 		return err
 	})
 	return n, err

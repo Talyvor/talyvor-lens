@@ -103,6 +103,7 @@ func jetsStore(t *testing.T) (*scan.Store, *pgxpool.Pool) {
 	clear := func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM scan_points WHERE series LIKE 'jets.%'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM scan_jet_exclusions WHERE registration LIKE 'N1__EX'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM scan_jet_aircraft WHERE series LIKE 'jets.%'`)
 		_, _ = pool.Exec(ctx, `UPDATE scan_sources SET enabled = FALSE WHERE id = 'flightaware-standard'`)
 	}
 	clear()
@@ -235,5 +236,33 @@ func TestExcludingAnAircraftDeletesEveryFigureItWasIn(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT value FROM scan_points WHERE series = 'jets.example-industries-inc.flights'
 		AND observed_at = '2026-11-01T00:00:00Z'`).Scan(&stored); err != nil || stored != 1 {
 		t.Fatalf("stored 1 Nov flights = %v (%v), want 1", stored, err)
+	}
+}
+
+func TestAnExclusionMadeWhileCollectingStillRemovesTheFigure(t *testing.T) {
+	s, pool := jetsStore(t)
+	src := newJetSource(t)
+	ctx := context.Background()
+	if err := s.SetEnabled(ctx, "flightaware-standard", true); err != nil {
+		t.Fatal(err)
+	}
+	// N101EX is erased after the run read the exclusions and before the 1 Nov figure it is in is stored.
+	err := src.jets(s, true).Collect(ctx, scan.NewFetcher(src.Client(), 60000), time.Time{}, jetsNow, func(o scan.Observation) error {
+		if o.Series == "jets.example-industries-inc.flights" && o.ObservedAt.Day() == 1 {
+			if _, err := s.ExcludeAircraft(ctx, "N101EX", "erasure"); err != nil {
+				return err
+			}
+		}
+		o.SourceID = "flightaware-standard"
+		_, err := s.Record(ctx, o)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scan_points WHERE series = 'jets.example-industries-inc.flights'
+		AND observed_at = '2026-11-01T00:00:00Z'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("the 1 Nov figure counting the erased aircraft is still stored (%d, %v)", n, err)
 	}
 }
