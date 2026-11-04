@@ -4761,6 +4761,7 @@ func run() error {
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
+		mountMoneyPlanRoutes(authed, dualToken)                                         // B53.15
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3

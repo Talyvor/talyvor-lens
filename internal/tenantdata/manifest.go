@@ -287,6 +287,7 @@ var Manifest = map[string]Entry{
 	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
 	"spend_notice_settings":        {Delete, "B53.7: the owner's quiet hours, time zone and the kinds of notice switched off"},
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
+	"spend_plan_income":            {Delete, "B53.15: the owner's expected income — payday, amount, currency and payer — for the month plan"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
