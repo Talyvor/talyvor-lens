@@ -26,7 +26,7 @@ const OwnershipNotice = "No shares, options or rights arise unless and until a c
 const (
 	MinPoolBPS     = 1000
 	MaxPoolBPS     = 5000
-	DefaultPoolBPS = 2500
+	defaultPoolBPS = 2500
 )
 
 // SharedOwnership is a room's shared-ownership setting as its members see it.
@@ -82,7 +82,7 @@ func ownershipMember(ctx context.Context, tx pgx.Tx, roomID, ws string) (Member,
 }
 
 func readOwnership(ctx context.Context, tx pgx.Tx, roomID string) (SharedOwnership, error) {
-	o := SharedOwnership{RoomID: roomID, PoolBPS: DefaultPoolBPS, Notice: OwnershipNotice}
+	o := SharedOwnership{RoomID: roomID, PoolBPS: defaultPoolBPS, Notice: OwnershipNotice}
 	err := tx.QueryRow(ctx, `SELECT enabled, pool_bps, updated_at FROM room_shared_ownership WHERE room_id = $1`, roomID).
 		Scan(&o.Enabled, &o.PoolBPS, &o.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -105,7 +105,7 @@ func (s *Store) SharedOwnership(ctx context.Context, ws, roomID string) (o Share
 
 // SetSharedOwnership switches roomID's shared ownership on or off and sets its pool; only the room's owner does.
 func (s *Store) SetSharedOwnership(ctx context.Context, ws, user, roomID string, c OwnershipChange) (o SharedOwnership, err error) {
-	pool := DefaultPoolBPS
+	pool := defaultPoolBPS
 	if c.PoolBPS != nil {
 		pool = *c.PoolBPS
 	}
