@@ -103,13 +103,8 @@ type chainWallet struct{ agentID, workspaceID, address string }
 
 // wallets is the agents' smart accounts, by lower-case address; only those among addresses unless it is nil.
 func (x *ChainIndexer) wallets(ctx context.Context, addresses []string) (map[string]chainWallet, error) {
-	q := `SELECT agent_id, workspace_id, address FROM agent_smart_accounts`
-	var args []any
-	if addresses != nil {
-		q += ` WHERE lower(address) = ANY($1)`
-		args = append(args, addresses)
-	}
-	rows, err := x.s.pool.Query(ctx, q, args...)
+	rows, err := x.s.pool.Query(ctx, `SELECT agent_id, workspace_id, address FROM agent_smart_accounts
+		WHERE $1::text[] IS NULL OR lower(address) = ANY($1)`, addresses)
 	if err != nil {
 		return nil, fmt.Errorf("economy: chain wallets: %w", err)
 	}
@@ -388,12 +383,9 @@ func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) 
 	if err != nil {
 		return err
 	}
-	block := "block_number"
-	if reverse {
-		block = "NULL"
-	}
-	_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4, block_number = `+block+`,
-		updated_at = now() WHERE id = $1`, m.id, status, posted, e.ID)
+	_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4,
+		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
+		m.id, status, posted, e.ID, reverse)
 	return err
 }
 
