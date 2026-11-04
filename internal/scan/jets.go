@@ -362,6 +362,12 @@ func (s *Store) dropIfExcluded(ctx context.Context, source, series string, at ti
 	_, err := s.pool.Exec(ctx, `DELETE FROM scan_points WHERE kind = 'observed' AND source_id = $1 AND series = $2
 		AND observed_at = $3 AND EXISTS (SELECT 1 FROM scan_jet_exclusions WHERE registration = ANY($4::text[]))`,
 		source, series, at, regs)
+	if err != nil {
+		return err
+	}
+	// A link this run wrote after the exclusion had cleared that aircraft's links.
+	_, err = s.pool.Exec(ctx, `DELETE FROM scan_jet_aircraft WHERE registration IN
+		(SELECT registration FROM scan_jet_exclusions WHERE registration = ANY($1::text[]))`, regs)
 	return err
 }
 

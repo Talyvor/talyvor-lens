@@ -265,4 +265,7 @@ func TestAnExclusionMadeWhileCollectingStillRemovesTheFigure(t *testing.T) {
 		AND observed_at = '2026-11-01T00:00:00Z'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("the 1 Nov figure counting the erased aircraft is still stored (%d, %v)", n, err)
 	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scan_jet_aircraft WHERE registration = 'N101EX'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("the erased aircraft is still recorded against %d figures (%v)", n, err)
+	}
 }
