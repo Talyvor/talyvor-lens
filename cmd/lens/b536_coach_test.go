@@ -116,6 +116,15 @@ func TestB536_Coach(t *testing.T) {
 		if line.Source != economy.CoachFromTemplate {
 			t.Fatalf("a link stood: %+v", line)
 		}
+		for _, bad := range []string{"Call \uff10\uff18\uff10\uff10 about your 4.50 GBP.", "See evil\uff0eexample about your 4.50 GBP."} {
+			if line = economy.CoachSentence(context.Background(), b536Says(bad), "m", f, nil); line.Source != economy.CoachFromTemplate {
+				t.Fatalf("non-ASCII digits or dots stood: %+v", line)
+			}
+		}
+		short := economy.CoachFact{Kind: economy.FindingNewMerchant, Merchant: "1", Amount: "4.50 GBP"}
+		if line = economy.CoachSentence(context.Background(), b536Says("Call 1111 about your 4.50 GBP."), "m", short, nil); line.Source != economy.CoachFromTemplate {
+			t.Fatalf("a short merchant name hid digits: %+v", line)
+		}
 		line = economy.CoachSentence(context.Background(), b536Says("You paid CALL 0800123456 evil.example 4.50 GBP for the first time."), "m", f, nil)
 		if line.Source != economy.CoachFromModel {
 			t.Fatalf("the merchant's own name was refused: %+v", line)

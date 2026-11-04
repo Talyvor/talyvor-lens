@@ -120,6 +120,8 @@ var (
 	coachProductWords = regexp.MustCompile(`(?i)\b(loans?|borrow\w*|credit|overdraft\w*|mortgages?|isas?|invest\w*|savings? accounts?|insurance|insure\w*|pensions?|stocks?|shares|crypto\w*|debts?|interest rates?|bank accounts?)\b`)
 	coachNumber       = regexp.MustCompile(`\d+(?:[.,]\d+)*`)
 	coachLink         = regexp.MustCompile(`(?i)://|www\.|@|[a-z]\.[a-z]{2,}`)
+	coachOddRune      = regexp.MustCompile(`[^\P{N}0-9]|[\x{3002}\x{FF0E}\x{FF61}]`) // digits and dots the checks above would not read
+	coachLetters      = regexp.MustCompile(`\pL`)
 )
 
 // sensitiveMCCs are the merchant category codes the Coach sees only as a broad category: gambling, religious and
@@ -221,16 +223,16 @@ func CoachSentence(ctx context.Context, ai CoachInferer, model string, f CoachFa
 }
 
 // coachValid is whether sentence may stand for f: one short line; no product, credit, investment, insurance or debt;
-// and, once f's own merchant is taken out of it, no link, every number one of f's figures (never digits from a
-// merchant's or country's text, which come from outside) and no other merchant named.
+// no digit or dot but ASCII ones; and, once f's own merchant is taken out of it, no link, every number one of f's
+// figures (never digits from a merchant's or country's text, which come from outside) and no other merchant named.
 func coachValid(sentence string, f CoachFact, merchants []string) bool {
 	if sentence == "" || len(sentence) > coachMaxSentence || strings.ContainsAny(sentence, "\r\n") ||
-		coachProductWords.MatchString(sentence) {
+		coachProductWords.MatchString(sentence) || coachOddRune.MatchString(sentence) {
 		return false
 	}
 	s := strings.ToLower(sentence)
-	if f.Merchant != "" {
-		s = strings.ReplaceAll(s, strings.ToLower(f.Merchant), "")
+	if len(coachLetters.FindAllString(f.Merchant, 3)) == 3 { // a name of a letter or two would take digits out with it
+		s = strings.ReplaceAll(s, strings.ToLower(f.Merchant), "merchant") // a word, so a link around it still reads as one
 	}
 	if coachLink.MatchString(s) {
 		return false
