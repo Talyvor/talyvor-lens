@@ -365,9 +365,10 @@ func (s *Store) dropIfExcluded(ctx context.Context, source, series string, at ti
 	if err != nil {
 		return err
 	}
-	// A link this run wrote after the exclusion had cleared that aircraft's links.
-	_, err = s.pool.Exec(ctx, `DELETE FROM scan_jet_aircraft WHERE registration IN
-		(SELECT registration FROM scan_jet_exclusions WHERE registration = ANY($1::text[]))`, regs)
+	// The link this run wrote for the figure it just dropped: only this figure's, so an erasure still running finds
+	// the aircraft's other figures through theirs.
+	_, err = s.pool.Exec(ctx, `DELETE FROM scan_jet_aircraft WHERE series = $1 AND observed_at = $2
+		AND registration = ANY($3::text[]) AND registration IN (SELECT registration FROM scan_jet_exclusions)`, series, at, regs)
 	return err
 }
 
