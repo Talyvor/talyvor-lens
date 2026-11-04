@@ -333,30 +333,37 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		}
 		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Data: map[string]string{
 			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID}})
-		if pusher == nil {
-			return
-		}
-		rows, err := s.pool.Query(ctx, `SELECT endpoint, p256dh, auth FROM workspace_push_subscriptions WHERE workspace_id = $1`, workspaceID)
-		if err != nil {
-			slog.Warn("agents: approval push: subscriptions", slog.String("err", err.Error()))
-			return
-		}
-		var subs [][3]string
-		for rows.Next() {
-			var sub [3]string
-			if rows.Scan(&sub[0], &sub[1], &sub[2]) == nil {
-				subs = append(subs, sub)
-			}
-		}
-		rows.Close()
-		for _, sub := range subs {
-			err := pusher.Send(ctx, sub[0], sub[1], sub[2], payload)
-			switch {
-			case errors.Is(err, webpush.ErrGone):
-				_ = s.DeletePushSubscription(ctx, workspaceID, sub[0])
-			case err != nil:
-				slog.Warn("agents: approval push", slog.String("err", err.Error()))
-			}
-		}
+		s.pushWeb(ctx, workspaceID, payload)
 	}()
+}
+
+// pushWeb sends payload to each browser subscribed for workspaceID, forgetting the subscriptions the push services say
+// are gone; with no VAPID key it sends nothing.
+func (s *DualTokenStore) pushWeb(ctx context.Context, workspaceID string, payload []byte) {
+	pusher := s.approvalPusher
+	if pusher == nil {
+		return
+	}
+	rows, err := s.pool.Query(ctx, `SELECT endpoint, p256dh, auth FROM workspace_push_subscriptions WHERE workspace_id = $1`, workspaceID)
+	if err != nil {
+		slog.Warn("web push: subscriptions", slog.String("err", err.Error()))
+		return
+	}
+	var subs [][3]string
+	for rows.Next() {
+		var sub [3]string
+		if rows.Scan(&sub[0], &sub[1], &sub[2]) == nil {
+			subs = append(subs, sub)
+		}
+	}
+	rows.Close()
+	for _, sub := range subs {
+		err := pusher.Send(ctx, sub[0], sub[1], sub[2], payload)
+		switch {
+		case errors.Is(err, webpush.ErrGone):
+			_ = s.DeletePushSubscription(ctx, workspaceID, sub[0])
+		case err != nil:
+			slog.Warn("web push", slog.String("err", err.Error()))
+		}
+	}
 }

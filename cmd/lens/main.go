@@ -4760,6 +4760,7 @@ func run() error {
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
+		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
@@ -4823,6 +4824,10 @@ func run() error {
 		// B53.13: one replica reads the connected bank accounts in the background.
 		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {
 			sweepBankConnections(lctx, dualToken)
+		})
+		// B53.7: one replica makes and sends the spend notices; the unique key keeps each notice once.
+		go haComps.leader.Run(ctx, "spend-notices", 30*time.Second, func(lctx context.Context) {
+			sweepSpendNotices(lctx, dualToken, routingInferer, cfg.CoachModel)
 		})
 
 		// B21.3 — a workspace deletes its stored answers, or asks Talyvor to delete everything.
