@@ -237,8 +237,11 @@ func (w *Watcher) runWatch(ctx context.Context, id, workspaceID string, wt Watch
 		last := pts[len(pts)-1]
 		var done bool
 		if err := w.store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scan_watch_alerts WHERE watch_id = $1
-			AND series = $2 AND observed_at = $3)`, id, series, last.at).Scan(&done); err != nil || done {
+			AND series = $2 AND observed_at = $3)`, id, series, last.at).Scan(&done); err != nil {
 			return sent, "", err
+		}
+		if done {
+			continue // this series already alerted on its latest point; the watch's other series still run
 		}
 		fd, err := w.models.Assess(ctx, series)
 		if errors.Is(err, ErrNoModel) || errors.Is(err, ErrNotTested) || errors.Is(err, ErrModelRefused) || errors.Is(err, ErrNoNormal) {
@@ -315,20 +318,20 @@ func alertBody(series, unit string, f Family, rule string, fd Finding, lo, hi fl
 		side = "below"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s was %s %s on %s", series, num(fd.Value), unit, fd.At.Format(time.DateOnly))
+	fmt.Fprintf(&b, "%s was %s %s on %s", series, figure(fd.Value), unit, fd.At.Format(time.DateOnly))
 	if rule == RuleRange {
-		fmt.Fprintf(&b, ", outside its range for the same weeks of the past %d years (%s–%s)", normalYears, num(lo), num(hi))
+		fmt.Fprintf(&b, ", outside its range for the same weeks of the past %d years (%s–%s)", normalYears, figure(lo), figure(hi))
 	}
 	fmt.Fprintf(&b, ", %.1f standard deviations %s its normal for the time of year (%s–%s). ", math.Abs(fd.Z), side,
-		num(fd.NormalLow), num(fd.NormalHigh))
+		figure(fd.NormalLow), figure(fd.NormalHigh))
 	fmt.Fprintf(&b, "The model's 80%% range for %s, %s ahead, is %s–%s %s; it passed its backtest on this series' own history. ",
-		fd.OutlookAt.Format(time.DateOnly), ahead(f), num(fd.OutlookLow), num(fd.OutlookHigh), unit)
+		fd.OutlookAt.Format(time.DateOnly), ahead(f), figure(fd.OutlookLow), figure(fd.OutlookHigh), unit)
 	fmt.Fprintf(&b, "Sources: %s.", strings.Join(attribution, "; "))
 	return b.String()
 }
 
-// num writes a figure with as many decimals as its size needs.
-func num(v float64) string {
+// figure writes a number with as many decimals as its size needs.
+func figure(v float64) string {
 	switch a := math.Abs(v); {
 	case a >= 100:
 		return fmt.Sprintf("%.0f", v)

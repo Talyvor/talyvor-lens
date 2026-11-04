@@ -18,12 +18,13 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 	ctx := context.Background()
 	run := time.Now().UnixNano()
 	series := fmt.Sprintf("eia.stocks.test-watch-%d", run)
+	second := series + "-second"
 	ws := fmt.Sprintf("ws-scan-watch-%d", run)
 	t.Cleanup(func() {
 		for _, q := range []string{
 			`DELETE FROM scan_point_inputs WHERE point_id IN (SELECT id FROM scan_points WHERE starts_with(series, $1))`,
 			`DELETE FROM scan_points WHERE starts_with(series, $1)`,
-			`DELETE FROM scan_backtests WHERE series = $1`,
+			`DELETE FROM scan_backtests WHERE starts_with(series, $1)`,
 		} {
 			if _, err := s.pool.Exec(ctx, q, series); err != nil {
 				t.Error(err)
@@ -39,9 +40,11 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 	pts[n-2].value = mean
 	mean, sd, _, _ := normalAt(pts, pts[n-1].at, f.Window)
 	pts[n-1].value = mean + 8*sd
-	recordSeries(t, s, series, pts)
-	if r, err := NewModels(s).RunSeries(ctx, series); err != nil || !r.Passed {
-		t.Fatalf("the series' model: %+v, %v", r, err)
+	for _, sr := range []string{series, second} {
+		recordSeries(t, s, sr, pts)
+		if r, err := NewModels(s).RunSeries(ctx, sr); err != nil || !r.Passed {
+			t.Fatalf("the series' model: %+v, %v", r, err)
+		}
 	}
 
 	bank := economy.NewDualTokenStore(nil, s.pool, nil)
@@ -81,8 +84,9 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 	for _, c := range []struct {
 		agent, rule string
 		z           *float64
-	}{{paid, RuleRange, nil}, {paused, RuleZ, &z}, {poor, RuleZ, &z}} {
-		wt, err := w.Create(ctx, ws, c.agent, []string{series}, c.rule, c.z)
+		series      []string
+	}{{paid, RuleRange, nil, []string{series, second}}, {paused, RuleZ, &z, []string{series}}, {poor, RuleZ, &z, []string{series}}} {
+		wt, err := w.Create(ctx, ws, c.agent, c.series, c.rule, c.z)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,18 +120,18 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 	}
 
 	a := got[paid]
-	if len(a.Alerts) != 1 || a.Alerts[0].ChargedULXC != price || a.LastRefusal != "" {
+	if len(a.Alerts) != 2 || a.Alerts[1].ChargedULXC != price || a.LastRefusal != "" {
 		t.Fatalf("the paid agent's watch after three runs: %+v", a)
 	}
-	if rows, total := charged(paid); rows != 1 || total != price {
-		t.Fatalf("the paid agent was charged %d µLXC in %d ledger rows, want %d in one", total, rows, price)
+	if rows, total := charged(paid); rows != 2 || total != 2*price {
+		t.Fatalf("the paid agent was charged %d µLXC in %d ledger rows, want %d in each of two", total, rows, price)
 	}
 	var ledger int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM lxc_ledger WHERE workspace_id = $1 AND type = 'spend'
-		AND amount = $2 AND metadata->>'request_id' LIKE 'scan-watch:%'`, ws, -price).Scan(&ledger); err != nil || ledger != 1 {
-		t.Fatalf("%d workspace ledger rows for the alert (%v), want 1", ledger, err)
+		AND amount = $2 AND metadata->>'request_id' LIKE 'scan-watch:' || $3 || ':%'`, ws, -price, watches[paid].ID).Scan(&ledger); err != nil || ledger != 2 {
+		t.Fatalf("%d workspace ledger rows for the alerts (%v), want 2", ledger, err)
 	}
-	body := a.Alerts[0].Body
+	body := a.Alerts[1].Body
 	for _, want := range []string{series, "outside its range for the same weeks of the past 5 years", "standard deviations above",
 		"80% range", "Sources: Source: U.S. Energy Information Administration."} {
 		if !strings.Contains(body, want) {
@@ -170,5 +174,25 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 	}
 	if err := w.Stop(ctx, "ws-other", watches[paid].ID); err == nil {
 		t.Fatal("another workspace stopped this workspace's watch")
+	}
+
+	// A watch of two series whose first has already alerted on its latest point still checks, and alerts on, the
+	// second when that one crosses.
+	if _, err := s.pool.Exec(ctx, `DELETE FROM scan_watch_alerts WHERE watch_id = $1 AND series = $2`,
+		watches[paid].ID, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	alerts, err := w.alerts(ctx, watches[paid].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 2 || alerts[0].Series != second {
+		t.Fatalf("the two-series watch's alerts after its second series crossed: %+v", alerts)
+	}
+	if rows, total := charged(paid); rows != 2 || total != 2*price {
+		t.Fatalf("the second series' alert was charged again: %d µLXC in %d rows", total, rows)
 	}
 }
