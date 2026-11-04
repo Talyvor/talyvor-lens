@@ -59,6 +59,10 @@ type CoachFact struct {
 	Difference    string `json:"difference,omitempty"`
 	More          bool   `json:"more,omitempty"`
 	CategorySpent string `json:"category_spent,omitempty"` // week: what went on Category, the biggest
+	Due           string `json:"due,omitempty"`            // a month plan's payment's date, or its payday (B53.15)
+	Short         string `json:"short,omitempty"`
+	Pace          string `json:"pace,omitempty"` // a day, over the last seven
+	KeepTo        string `json:"keep_to,omitempty"`
 }
 
 // CoachHelp is a free service the Coach points to.
@@ -415,6 +419,16 @@ func coachTemplate(f CoachFact) string {
 			than = fmt.Sprintf(", %s %s than the week before (%s)", f.Difference, more, f.LastWeek)
 		}
 		return fmt.Sprintf("This week you spent %s%s; the most went on %s (%s).", f.Amount, than, f.Category, f.CategorySpent)
+	case PlanUncovered:
+		return fmt.Sprintf("The %s payment to %s on %s is short by %s with the money you have now; add money or hold back other spending before then.",
+			f.Amount, f.Merchant, f.Due, f.Short)
+	case PlanPaceShort:
+		return fmt.Sprintf("At this pace, %s a day, the %s payment to %s on %s is short by %s; keeping to %s a day until then covers it.",
+			f.Pace, f.Amount, f.Merchant, f.Due, f.Short, f.KeepTo)
+	case PlanBillLarger:
+		return fmt.Sprintf("The %s bill of %s due on %s is larger than before (up to %s); check it before it is paid.", f.Merchant, f.Amount, f.Due, f.Usual)
+	case PlanIncomeLate:
+		return fmt.Sprintf("Your income of %s expected on %s has not come in yet; the plan leaves it out until it does.", f.Amount, f.Due)
 	}
 	return fmt.Sprintf("%s paid %s at %s.", who, f.Amount, merchant)
 }

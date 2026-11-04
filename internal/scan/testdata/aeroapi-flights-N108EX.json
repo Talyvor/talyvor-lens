@@ -1,0 +1,28 @@
+{
+ "links": null,
+ "num_pages": 1,
+ "flights": [
+  {
+   "ident": "EXA7",
+   "ident_icao": "EXA7",
+   "fa_flight_id": "EXA7-1730000000-0",
+   "registration": "N108EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KPBI",
+    "code_icao": "KPBI",
+    "code_iata": "PBI"
+   },
+   "actual_off": "2026-11-01T02:00:00Z",
+   "actual_on": "2026-11-01T12:00:00Z",
+   "aircraft_type": "GLF6"
+  }
+ ]
+}

@@ -221,7 +221,7 @@ func (s *Server) MountAuthenticated(r chi.Router) {
 // handleCatalog returns the full model catalog for the dashboard. Static
 // (read-mostly), no state.
 func (s *Server) handleCatalog(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, catalog.All())
+	writeJSON(w, http.StatusOK, catalog.Listing())
 }
 
 // SetGuardrailsEngine wires the guardrails engine for the dashboard panel.
