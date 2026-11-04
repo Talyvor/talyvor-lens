@@ -643,6 +643,7 @@ var headerCopyLoops = map[string]string{
 	`cmd/lens/market_use_handler.go: []string{"Authorization", "X-Talyvor-Key", "X-Api-Key"}`: "B20.2: copies the caller's credential onto an IN-PROCESS request to Lens's own router (lens.ServeHTTP), so a listing's model calls pass the same authentication and are billed to the same buyer. It never leaves the process; the proxy handler it reaches builds the upstream request and strips credentials there like any other.",
 	`internal/proxy/run_code.go: []string{"Idempotency-Key", "X-Talyvor-Request-ID"}`:         "B28.119: renames two headers on a Run code round's OWN clone of the inbound request, so each round is its own request. It copies nothing anywhere; the clone goes to serve, which builds the upstream request and strips credentials there like any other.",
 	`internal/proxy/web_search.go: []string{"Idempotency-Key", "X-Talyvor-Request-ID"}`:       "B28.118: renames two headers on the web search round's OWN clone of the inbound request, so the search is its own request. It copies nothing anywhere; the clone goes to serve, which builds the upstream request and strips credentials there like any other.",
+	"internal/scan/contracts.go: listed":                                                      "B52.23: builds Scan's own request to USAspending's public search, setting only Content-Type. No inbound request is in reach, so nothing of a caller's can be copied.",
 }
 
 func TestHeaderCopyLoops_AllClassified(t *testing.T) {
