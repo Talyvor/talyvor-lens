@@ -2231,6 +2231,14 @@ func run() error {
 	go haComps.leader.Run(ctx, "scan-collectors", 30*time.Second, func(lctx context.Context) {
 		scanCollectors.Every(lctx, 6*time.Hour)
 	})
+	// B52.22 — Scan's crop collectors read USDA NASS crop-condition ratings, the monthly WASDE, the JRC MARS
+	// bulletins and a crop-health index (NDVI) for six growing regions from Sentinel-2 images into the provenance
+	// store twice a day. NASS stays off without its key (LENS_SCAN_NASS_KEY).
+	// The image addresses come from the catalogue's answers, so the client refuses private and internal addresses.
+	cropCollectors := scan.NewCropCollectors(scan.NewStore(pool), safehttp.Client(2*time.Minute), os.Getenv(scan.SettingNASSKey))
+	go haComps.leader.Run(ctx, "scan-crops", 30*time.Second, func(lctx context.Context) {
+		cropCollectors.Every(lctx, 12*time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
