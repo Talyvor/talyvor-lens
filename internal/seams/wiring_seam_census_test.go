@@ -166,10 +166,6 @@ var unwiredSeams = map[string]string{
 		"which cmd/lens builds nowhere yet because real crypto stays off until Nick adds CDP's keys. " +
 		"Until then POST …/agents/{id}/smart-account answers 503 and no agent has a smart account.",
 
-	"internal/scan:Store.SetEnabled": "OFF UNTIL SCAN'S FIRST COLLECTOR, and says so (B52.20). Every " +
-		"register entry starts off and nothing reads a source yet; each collector (B52.21 onwards) " +
-		"switches its own source on. A ruled-out source refuses it.",
-
 	// ── the remaining six are unwired AND SAY SO IN THEIR OWN DOC COMMENTS. They are
 	// recorded rather than filtered out, because "unwired and honest about it" is a
 	// different fact from "unwired and reads as finished", and a census that silently

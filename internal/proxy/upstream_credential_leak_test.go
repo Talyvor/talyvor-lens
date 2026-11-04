@@ -635,6 +635,8 @@ func TestRunUpstreamCallSites_CarryNoRawInboundHeaders(t *testing.T) {
 // A new entry here is not automatically a defect. It is a question: does this loop put an INBOUND
 // request's headers onto an OUTBOUND one? If yes it must range over auth.StripCredentialHeaders.
 var headerCopyLoops = map[string]string{
+	"internal/scan/energy.go: countries":                                                      "B52.21: builds Scan's OWN outbound request to GIE per country and sets Talyvor's GIE key on it (LENS_SCAN_GIE_KEY). No inbound request is in reach; the fetcher refuses a redirect off GIE's host so the key never follows one.",
+	"internal/scan/energy.go: ecmwfSteps":                                                     "B52.21: builds Scan's OWN outbound request to ECMWF's open-data portal per forecast step and sets only a Range header from ECMWF's index. No inbound request is in reach and no credential is set.",
 	"internal/inference/runupstream.go: extraHeaders":                                         "the round-trip seam. It copies whatever it is GIVEN; sanitising is the caller's job and TestRunUpstreamCallSites_CarryNoRawInboundHeaders pins every caller.",
 	"internal/proxy/stream.go: auth.StripCredentialHeaders(r.Header)":                         "the streaming seam — inbound → upstream, sanitised at the range.",
 	"internal/compat/helicone.go: propertyKeys":                                               "rewrites the INBOUND request in place (r.Header.Set on r itself). It builds no upstream request, so it cannot leak to a provider.",

@@ -92,8 +92,8 @@ func (s *Store) Source(ctx context.Context, id string) (Source, error) {
 	return src, err
 }
 
-// SetEnabled switches a source on or off. A ruled-out source is refused by name. No production caller until the
-// first collector (B52.21) switches its own source on.
+// SetEnabled switches a source on or off. A ruled-out source is refused by name. Each collector switches its own
+// source on when it can run and off when it cannot (Collectors.Run).
 func (s *Store) SetEnabled(ctx context.Context, id string, on bool) error {
 	src, err := s.Source(ctx, id)
 	if err != nil {
@@ -106,7 +106,8 @@ func (s *Store) SetEnabled(ctx context.Context, id string, on bool) error {
 	return err
 }
 
-// Record stores an observed point from a switched-on source, under the licence the register holds for it now.
+// Record stores an observed point from a switched-on source, under the licence the register holds for it now. A point
+// the source already gave for the same series and time is kept as first stored, and its id returned.
 func (s *Store) Record(ctx context.Context, o Observation) (int64, error) {
 	if o.SourceID == "" || o.Series == "" || o.Unit == "" || o.ObservedAt.IsZero() || o.RetrievedAt.IsZero() ||
 		!sha256Hex.MatchString(o.ContentHash) || o.Transforms == nil {
@@ -123,8 +124,14 @@ func (s *Store) Record(ctx context.Context, o Observation) (int64, error) {
 	var id int64
 	err = s.pool.QueryRow(ctx, `INSERT INTO scan_points
 		(kind, series, observed_at, value, unit, source_id, licence, retrieved_at, content_hash, transforms)
-		VALUES ('observed', $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		VALUES ('observed', $1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (source_id, series, observed_at) WHERE kind = 'observed' DO NOTHING RETURNING id`,
 		o.Series, o.ObservedAt, o.Value, o.Unit, src.ID, src.Licence, o.RetrievedAt, o.ContentHash, string(transforms)).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// shortcut: a later revision by the source is not stored; keep revisions as their own points once B52.24 needs them.
+		err = s.pool.QueryRow(ctx, `SELECT id FROM scan_points WHERE kind = 'observed' AND source_id = $1 AND series = $2
+			AND observed_at = $3`, src.ID, o.Series, o.ObservedAt).Scan(&id)
+	}
 	return id, err
 }
 
