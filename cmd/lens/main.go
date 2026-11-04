@@ -2283,6 +2283,12 @@ func run() error {
 	go haComps.leader.Run(ctx, "scan-reports", 30*time.Second, func(lctx context.Context) {
 		scanWriter.Every(lctx, time.Hour)
 	})
+	// B52.27 — Scan agents' watches run every hour: a series the owner picked that crosses into what they called
+	// unusual sends one alert, paid for by the agent's wallet (fees' LENS_SCAN_ALERT_ULXC); a paused agent sends nothing.
+	scanWatcher := scan.NewWatcher(scan.NewStore(pool), dualToken, func() int64 { return fees.Current().ScanAlertULXC })
+	go haComps.leader.Run(ctx, "scan-watches", 30*time.Second, func(lctx context.Context) {
+		scanWatcher.Every(lctx, time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
@@ -4809,6 +4815,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
