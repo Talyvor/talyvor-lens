@@ -227,21 +227,27 @@ var executeSelector = selector("execute(address,uint256,bytes)")
 // call out of the account: an operation that would deploy another account, call the account itself (its owners, an
 // upgrade) or be replayed on other chains is refused before anything is signed.
 func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
-	if len(a.Owners) <= OwnerAgent {
-		return fmt.Errorf("%w: the account has no agent key", ErrInvalid)
+	if len(op.CallData) < 4+32 || !bytes.Equal(op.CallData[:4], executeSelector) {
+		return fmt.Errorf("%w: the agent's key signs only a call out of the account", ErrInvalid)
 	}
-	if owner, err := AddressOwner(agentKey); err != nil || !bytes.Equal(owner, a.Owners[OwnerAgent]) {
+	self, err := addressW(a.Address)
+	if err != nil || bytes.Equal(op.CallData[4:36], self[:]) {
+		return fmt.Errorf("%w: the account's owners and code are the person's to change", ErrInvalid)
+	}
+	return c.signAsAgent(ctx, s, a, agentKey, op)
+}
+
+// signAsAgent has agentKey, which must be a's agent key now, sign op, which must be a's, at the key's place.
+func (c Chain) signAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
+	agent, index, err := a.agent()
+	if err != nil {
+		return err
+	}
+	if owner, err := AddressOwner(agentKey); err != nil || !bytes.Equal(owner, agent) {
 		return fmt.Errorf("%w: %s is not the agent's key of %s", ErrInvalid, agentKey, a.Address)
 	}
 	if !strings.EqualFold(op.Sender, a.Address) || (len(op.InitCode) > 0 && !bytes.Equal(op.InitCode, a.InitCode())) {
 		return fmt.Errorf("%w: the operation is not %s's", ErrInvalid, a.Address)
-	}
-	if len(op.CallData) < 4+32 || !bytes.Equal(op.CallData[:4], executeSelector) {
-		return fmt.Errorf("%w: the agent's key signs only a call out of the account", ErrInvalid)
-	}
-	self, _ := addressW(a.Address)
-	if bytes.Equal(op.CallData[4:36], self[:]) {
-		return fmt.Errorf("%w: the account's owners and code are the person's to change", ErrInvalid)
 	}
 	h, err := op.Hash(c.ID)
 	if err != nil {
@@ -251,7 +257,7 @@ func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey st
 	if err != nil {
 		return err
 	}
-	op.Signature, err = KeySignature(OwnerAgent, sig)
+	op.Signature, err = KeySignature(index, sig)
 	return err
 }
 

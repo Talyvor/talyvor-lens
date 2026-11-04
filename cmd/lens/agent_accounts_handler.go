@@ -172,6 +172,20 @@ import (
 //	                                                     the owner's currency; tokens off the verified list under
 //	                                                     Other, spam hidden, tokens their country bars not offered
 //
+// B48.15 — recovery, rotation, lockdown and sweep (agent_recovery.go); each change answers the account's call that
+// makes it on chain:
+//
+//	POST /v1/workspaces/{wsID}/agents/{id}/recovery-signer/challenge  {"recovery_address"}  the challenge the passkey
+//	                                                     that owns the account signs to add a recovery signer
+//	PUT  /v1/workspaces/{wsID}/agents/{id}/recovery-signer  {"recovery_address", "assertion"}  add it
+//	POST /v1/workspaces/{wsID}/agents/{id}/recover/challenge  {"credential_id" | "device_id"}  the challenge the
+//	                                                     recovery signer signs to put that passkey in the lost one's place
+//	POST /v1/workspaces/{wsID}/agents/{id}/recover       {"credential_id" | "device_id", "challenge", "signature"}
+//	POST /v1/workspaces/{wsID}/agents/{id}/rotate-signer the provider's next key signs for the agent from now on
+//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs
+//	POST /v1/workspaces/{wsID}/agents/{id}/sweep         {"network", "to"}  the call that pays everything the account
+//	                                                     holds there to the person's own wallet, for their passkey
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -194,6 +208,13 @@ type agentBank interface {
 	SetSpendPermission(ctx context.Context, workspaceID, agentID, by, canonical string, a *passkey.Assertion) (economy.SpendPermission, error)
 	AgentSpendPermission(ctx context.Context, workspaceID, agentID string) (economy.SpendPermission, error)
 	FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (economy.AgentFreeze, error)
+	RecoverySignerChallenge(ctx context.Context, workspaceID, agentID, recovery string) (string, []string, error)
+	AddRecoverySigner(ctx context.Context, workspaceID, agentID, by, recovery string, a *passkey.Assertion) (economy.OwnerChange, error)
+	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, error)
+	RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r economy.SmartAccountOwnerRequest, challenge, signature string) (economy.OwnerChange, error)
+	RotateAgentSigner(ctx context.Context, workspaceID, agentID, by string) (economy.OwnerChange, error)
+	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
+	AgentSweepCall(ctx context.Context, workspaceID, agentID, network, to string) (economy.AgentSweep, error)
 	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
@@ -373,7 +394,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, economy.ErrAgentArchived), errors.Is(err, economy.ErrAgentPotsHeld):
+		case errors.Is(err, economy.ErrAgentArchived), errors.Is(err, economy.ErrAgentPotsHeld), errors.Is(err, economy.ErrAgentWalletHeld):
 			writeJSONErr(w, http.StatusConflict, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -625,6 +646,81 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/freeze", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.FreezeAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req))
 		writeSpend(w, out, err)
+	}))
+	writeOwners := func(w http.ResponseWriter, out any, err error) {
+		switch {
+		case errors.Is(err, economy.ErrOwnerSigner), errors.Is(err, economy.ErrRecoverySigner):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPasskeyRequired):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, smartaccount.ErrFrozen), errors.Is(err, economy.ErrSmartAccountExists):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrSmartAccountsOff):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		default:
+			writeSpend(w, out, err)
+		}
+	}
+	var owners struct {
+		economy.SmartAccountOwnerRequest
+		Challenge string `json:"challenge"`
+		Signature string `json:"signature"`
+	}
+	decode := func(w http.ResponseWriter, req *http.Request, in any, usage string) bool {
+		if err := json.NewDecoder(req.Body).Decode(in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "body must be "+usage)
+			return false
+		}
+		return true
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/recovery-signer/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in := owners
+		if !decode(w, req, &in, `{"recovery_address"}`) {
+			return
+		}
+		c, ids, err := bank.RecoverySignerChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Recovery)
+		writeOwners(w, map[string]any{"challenge": c, "credential_ids": ids}, err)
+	}))
+	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/recovery-signer", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in := owners
+		if !decode(w, req, &in, `{"recovery_address", "assertion"}`) {
+			return
+		}
+		out, err := bank.AddRecoverySigner(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req), in.Recovery, in.Assertion)
+		writeOwners(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/recover/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in := owners
+		if !decode(w, req, &in, `{"credential_id" | "device_id"}`) {
+			return
+		}
+		c, err := bank.RecoveryChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.SmartAccountOwnerRequest)
+		writeOwners(w, map[string]string{"challenge": c}, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/recover", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in := owners
+		if !decode(w, req, &in, `{"credential_id" | "device_id", "challenge", "signature"}`) {
+			return
+		}
+		out, err := bank.RecoverAgentOwner(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req),
+			in.SmartAccountOwnerRequest, in.Challenge, in.Signature)
+		writeOwners(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rotate-signer", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.RotateAgentSigner(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), actor(req))
+		writeOwners(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
+		writeOwners(w, map[string]any{"frozen": out}, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct{ Network, To string }
+		if !decode(w, req, &in, `{"network", "to"}`) {
+			return
+		}
+		out, err := bank.AgentSweepCall(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Network, in.To)
+		writeOwners(w, out, err)
 	}))
 	// The owner's view: one agent's key never reads another agent's balances.
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/crypto-balances", ownerOnly(func(w http.ResponseWriter, req *http.Request) {

@@ -65,14 +65,15 @@ type SpendPermission struct {
 type spendAccount struct {
 	address, credentialID, deviceID, agentSigner string
 	ownerKey                                     []byte
+	agentIndex                                   uint64
 	frozenAt                                     *time.Time
 }
 
 func (s *DualTokenStore) spendAccount(ctx context.Context, q pgx.Tx, workspaceID, agentID string) (spendAccount, error) {
 	var a spendAccount
-	err := q.QueryRow(ctx, `SELECT address, owner_credential_id, owner_device_id, agent_signer, owner_public_key, frozen_at
+	err := q.QueryRow(ctx, `SELECT address, owner_credential_id, owner_device_id, agent_signer, owner_public_key, agent_index, frozen_at
 		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2 FOR UPDATE`, agentID, workspaceID).
-		Scan(&a.address, &a.credentialID, &a.deviceID, &a.agentSigner, &a.ownerKey, &a.frozenAt)
+		Scan(&a.address, &a.credentialID, &a.deviceID, &a.agentSigner, &a.ownerKey, &a.agentIndex, &a.frozenAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, _, kerr := s.agentWalletKind(ctx, workspaceID, agentID); kerr != nil {
 			return a, kerr
@@ -335,11 +336,7 @@ func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, 
 			WHERE agent_id = $1 AND workspace_id = $2 RETURNING frozen_at`, agentID, workspaceID, by).Scan(&f.FrozenAt); err != nil {
 			return fmt.Errorf("economy: freeze: %w", err)
 		}
-		agentOwner, err := smartaccount.AddressOwner(acct.agentSigner)
-		if err != nil {
-			return err
-		}
-		call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, Owners: [][]byte{acct.ownerKey, agentOwner}})
+		call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.agentSigner, AgentIndex: acct.agentIndex})
 		if err != nil {
 			return err
 		}
