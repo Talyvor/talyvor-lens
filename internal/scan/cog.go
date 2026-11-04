@@ -33,7 +33,6 @@ type cogFile struct {
 // cogHeaderBytes covers every IFD of a COG, which keeps them all before the first tile.
 const cogHeaderBytes = 64 << 10
 
-
 func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 	head, err := read(ctx, 0, cogHeaderBytes)
 	if err != nil {
