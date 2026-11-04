@@ -76,3 +76,18 @@ func newScanReportDecideHandler(q scanReportQueue, approve bool) http.Handler {
 		}
 	})
 }
+
+// GET /v1/public/scan/track-record — B52.26: every published report's observations and range, scored once the
+// outcome is known: hits, misses and those still waiting. Public, like the reports it scores.
+func newScanTrackRecordHandler(tr interface {
+	TrackRecord(ctx context.Context) (scan.TrackRecord, error)
+}) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		rec, err := tr.TrackRecord(req.Context())
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, "the track record could not be read")
+			return
+		}
+		writeJSONOK(w, http.StatusOK, rec)
+	})
+}
