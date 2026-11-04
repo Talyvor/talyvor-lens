@@ -33,6 +33,8 @@ type cogFile struct {
 // cogHeaderBytes covers every IFD of a COG, which keeps them all before the first tile.
 const cogHeaderBytes = 64 << 10
 
+const maxTileBytes = 32 << 20 // a 4096 px 16-bit tile stored uncompressed
+
 func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 	head, err := read(ctx, 0, cogHeaderBytes)
 	if err != nil {
@@ -106,6 +108,16 @@ func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 			len(lv.offsets) != ceilDiv(lv.width, lv.tileW)*ceilDiv(lv.height, lv.tileH) {
 			return nil, fmt.Errorf("%w: not tiled as a COG", errCOG)
 		}
+		// Bounds well above Sentinel-2's (10980 px, 1024 px tiles, a few MB a tile), so a bad header cannot make
+		// the reader allocate or fetch without limit.
+		if lv.width <= 0 || lv.height <= 0 || lv.width > 1<<15 || lv.height > 1<<15 || lv.tileW > 4096 || lv.tileH > 4096 {
+			return nil, fmt.Errorf("%w: %d×%d px in %d×%d tiles", errCOG, lv.width, lv.height, lv.tileW, lv.tileH)
+		}
+		for _, n := range lv.counts {
+			if n < 0 || n > maxTileBytes {
+				return nil, fmt.Errorf("%w: a %d-byte tile", errCOG, n)
+			}
+		}
 		if lv.bits != 8 && lv.bits != 16 {
 			return nil, fmt.Errorf("%w: %d bits per sample", errCOG, lv.bits)
 		}
@@ -127,7 +139,7 @@ func openCOG(ctx context.Context, read rangeReader) (*cogFile, error) {
 // tiffValues reads an IFD entry's values: SHORT or LONG, inline when they fit in four bytes.
 func tiffValues(at func(off, n int64) ([]byte, error), typ uint16, count int64, inline []byte) ([]int64, error) {
 	size := map[uint16]int64{3: 2, 4: 4}[typ]
-	if size == 0 || count > 1<<20 {
+	if size == 0 || count > 1<<16 {
 		return nil, nil // a tag this reader does not use
 	}
 	b := inline

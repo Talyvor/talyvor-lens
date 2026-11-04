@@ -131,8 +131,8 @@ func (c *CropCollectors) get(ctx context.Context, u string) ([]byte, string, tim
 	}
 	req.Header.Set("User-Agent", "TalyvorScan/1 (+https://talyvor.com)")
 	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, "", time.Time{}, err
+	if err != nil { // the error carries the URL, and NASS's carries its key
+		return nil, "", time.Time{}, errors.New(redactKey(err.Error()))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
