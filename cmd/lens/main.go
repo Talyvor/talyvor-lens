@@ -2251,9 +2251,24 @@ func run() error {
 	filingStore := scan.NewStore(pool)
 	filingCollectors := scan.NewCollectors(filingStore, &http.Client{Timeout: 2 * time.Minute}, nil,
 		&scan.EDGAR{Store: filingStore}, &scan.USAspending{})
-	statusPage.UseCollectors(scanStatuses{scanCollectors, filingCollectors})
+	// B52.30 — Scan's company jets beta: the flights of the named companies' company-owned jets (FAA registry, then
+	// FlightAware AeroAPI), counted per company and UTC day at least 24 hours late. Off unless LENS_SCAN_JETS is "on"
+	// with LENS_SCAN_FLIGHTAWARE_KEY set; the operator excludes an aircraft, an erasure request among them, at
+	// POST /v1/admin/scan/jets/exclusions.
+	jetsStore := scan.NewStore(pool)
+	jets := &scan.Jets{On: os.Getenv(scan.SettingJets) == "on", Key: os.Getenv(scan.SettingFlightAwareKey), Store: jetsStore,
+		Companies: strings.FieldsFunc(os.Getenv(scan.SettingJetsCompanies), func(r rune) bool { return r == ';' })}
+	jetKeys := map[string]string{}
+	if jets.On {
+		jetKeys[scan.SettingFlightAwareKey] = jets.Key
+	}
+	jetCollectors := scan.NewCollectors(jetsStore, &http.Client{Timeout: 2 * time.Minute}, jetKeys, jets)
+	statusPage.UseCollectors(scanStatuses{scanCollectors, filingCollectors, jetCollectors})
 	go haComps.leader.Run(ctx, "scan-filings", 30*time.Second, func(lctx context.Context) {
 		filingCollectors.Every(lctx, 6*time.Hour)
+	})
+	go haComps.leader.Run(ctx, "scan-jets", 30*time.Second, func(lctx context.Context) {
+		jetCollectors.Every(lctx, 24*time.Hour)
 	})
 	// B52.24 — Scan's models: once a day every modelled series is backtested on its own history and, if its model
 	// passed, its latest point is read against its normal with an outlook; a failed model is never used. The operator
@@ -2651,6 +2666,7 @@ func run() error {
 	r.Get("/v1/admin/scan/reports", requireAdminOrOperatorRead(authManager, newScanReportsHandler(scanWriter)))                     // B52.25
 	r.Post("/v1/admin/scan/reports/{id}/approve", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, true))) // B52.25
 	r.Post("/v1/admin/scan/reports/{id}/reject", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, false))) // B52.25
+	r.Post("/v1/admin/scan/jets/exclusions", requireAdmin(authManager, newScanJetExclusionHandler(jetsStore)))
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))

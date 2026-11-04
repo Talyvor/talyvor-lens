@@ -76,6 +76,7 @@ var operatorMustNotReach = map[string]string{
 	"/v1/admin/workspaces/{wsID}/rate-limits":                    "B39.9: sets one workspace's request limits. Lifts a protection; requireAdmin only.",
 	"/v1/admin/deletion-requests":                                "B21.3: which workspaces asked Talyvor to delete their data. requireAdmin only.",
 	"/v1/admin/deletion-requests/{id}/complete":                  "B21.3: DELETES a workspace's stored answers and conversions. Irreversible.",
+	"/v1/admin/scan/jets/exclusions":                             "B52.30: excludes an aircraft from Scan's company jets and DELETES every figure it was part of (an erasure request). Irreversible; requireAdmin only.",
 	"/v1/admin/conversion-rate/approve":                          "CHANGES A PRICE.",
 	"/v1/admin/bonds/{bond_id}/settle":                           "slashes or releases a provenance bond. Moves money.",
 	"/v1/admin/distill-royalty/adjudicate":                       "REVOKES A PAYOUT.",
