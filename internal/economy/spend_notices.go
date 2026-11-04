@@ -222,7 +222,7 @@ func (s *DualTokenStore) NotifySpending(ctx context.Context, workspaceID string,
 		data, _ := json.Marshal(n.Data)
 		_, err := s.pool.Exec(ctx, `INSERT INTO spend_notices (id, workspace_id, kind, subject, title, body, urgent, data, status, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (workspace_id, kind, subject) DO NOTHING`,
-			"snt_"+uuid.NewString(), workspaceID, n.Kind, subject, n.Title, n.Body, n.Urgent, data, n.Status, now)
+			"snt_"+uuid.NewString(), workspaceID, n.Kind, subject, n.Title, n.Body, n.Urgent, string(data), n.Status, now)
 		if err != nil {
 			return fmt.Errorf("economy: notice: %w", err)
 		}
