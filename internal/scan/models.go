@@ -63,6 +63,7 @@ var Unmodelled = []struct {
 	{"usaspending.", "contract awards are events, not levels"},
 	{"tanks.", "a pilot with its own written-down backtest (B52.29, pilot/cushing.plan.txt): stored as " + TankSeries +
 		"'s backtest, and kept out of reports unless it passed"},
+	{"jets.", "a beta behind a switch that stays off (B52.30): counts of company flights, not yet modelled"},
 	{"gie.", "only each country's fill (gie.agsi.<country>.full) is modelled; the other GIE figures follow from it"},
 }
 
