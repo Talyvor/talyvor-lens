@@ -2016,6 +2016,8 @@ func run() error {
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
 	dualToken.SetAccountPartners(partnerRegistry)
+	dualToken.SetBankInfo(partnerRegistry.AccountInfo)                                          // B53.13
+	economy.BankConsentRemindBefore = time.Duration(cfg.BankConsentRemindDays) * 24 * time.Hour // B53.13
 	// B30.9 — each capability's terms, accepted before first use: version 1 of every text Lens carries
 	// (docs/terms/<capability>.md) is published now, and the capability refuses a workspace that has not accepted it.
 	if published, err := dualToken.PublishFirstTerms(ctx, economy.CapabilityTermsTexts(capabilityterms.FS)); err != nil {
@@ -4757,6 +4759,7 @@ func run() error {
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
+		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
@@ -4816,6 +4819,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B53.13: one replica reads the connected bank accounts in the background.
+		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {
+			sweepBankConnections(lctx, dualToken)
 		})
 
 		// B21.3 — a workspace deletes its stored answers, or asks Talyvor to delete everything.

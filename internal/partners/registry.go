@@ -24,6 +24,9 @@ const (
 	ServiceTax        Service = "tax"
 )
 
+// ServiceAccountInfo reads accounts at other banks (B53.13). Not in Services: it moves no money, so it has no rail.
+const ServiceAccountInfo Service = "account_info"
+
 // Clearances says whether a wallet capability may take live money now: the operator's clearance for it is in
 // force, and lists the country the use comes from (economy.DualTokenStore.CapabilityCleared).
 type Clearances interface {
@@ -52,6 +55,7 @@ type Registry struct {
 	insurer    *TestInsurerPartner
 	agentToken *TestAgentTokenProvider
 	tax        *TestTaxPartner
+	bankInfo   *TestAccountInfoPartner
 	screening  TestScreeningProvider
 	verifiers  map[string]verifier // by subject
 }
@@ -71,7 +75,8 @@ func NewRegistry(clearances Clearances) *Registry {
 	}
 	return &Registry{clearances: clearances, adapters: map[Service]any{}, health: health, account: &TestAccountPartner{}, fx: &TestFXPartner{},
 		broker: &TestBrokerPartner{}, stablecoin: &TestStablecoinPartner{}, kyc: &TestKYCProvider{}, capital: &TestCapitalPartner{},
-		insurer: &TestInsurerPartner{}, agentToken: &TestAgentTokenProvider{}, tax: &TestTaxPartner{}}
+		insurer: &TestInsurerPartner{}, agentToken: &TestAgentTokenProvider{}, tax: &TestTaxPartner{},
+		bankInfo: &TestAccountInfoPartner{}}
 }
 
 // UseTaxData is where the Test tax partner reads the rates and registrations: a TaxStore.
@@ -127,6 +132,8 @@ func (r *Registry) Configure(s Service, adapter any) error {
 		_, ok = adapter.(AgentTokenProvider)
 	case ServiceTax:
 		_, ok = adapter.(TaxPartner)
+	case ServiceAccountInfo:
+		_, ok = adapter.(AccountInfoPartner)
 	default:
 		return fmt.Errorf("partners: no service is called %q", s)
 	}
@@ -289,6 +296,23 @@ func (r *Registry) Tax() TaxPartner {
 	r.mu.RUnlock()
 	return observedTax{p, r.observer(ServiceTax)}
 }
+
+// AccountInfo is the open-banking partner for a workspace (B53.13): the Test one for a tester's workspace, and the
+// configured one for anyone else — nil until one is configured, so no one sees a Test bank's made-up transactions.
+func (r *Registry) AccountInfo(synthetic bool) AccountInfoPartner {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if synthetic {
+		return r.bankInfo
+	}
+	if adapter, ok := r.adapters[ServiceAccountInfo]; ok {
+		return adapter.(AccountInfoPartner)
+	}
+	return nil
+}
+
+// TestAccountInfo is the registry's Test open-banking partner, to plant a Test bank's transactions in.
+func (r *Registry) TestAccountInfo() *TestAccountInfoPartner { return r.bankInfo }
 
 // TestAccount, TestStablecoin and TestKYC are the registry's Test partners whatever is cleared or configured, observed
 // as every other call is: the money layer's sandbox adapter (B46.3) answers with them.

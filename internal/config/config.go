@@ -1087,6 +1087,9 @@ type Config struct {
 	// CoachModel is the model that words the Coach's sentences (B53.6). Env: LENS_COACH_MODEL, default empty: every
 	// sentence is its fixed template.
 	CoachModel string
+	// BankConsentRemindDays is how many days before an open-banking consent runs out its connection says its renewal is
+	// due (B53.13). Env: LENS_BANK_CONSENT_REMIND_DAYS, default 7 — a setting for Nicolai.
+	BankConsentRemindDays int
 	// MarketPayoutWeekday is the day of the week, UTC, sellers are paid on (B32.42). Env: LENS_MARKET_PAYOUT_WEEKDAY,
 	// MON to SUN, default MON.
 	MarketPayoutWeekday time.Weekday
@@ -2413,6 +2416,15 @@ func Load() (*Config, error) {
 		c.SpendDuplicateMinutes = n
 	}
 	c.CoachModel = strings.TrimSpace(os.Getenv("LENS_COACH_MODEL")) // B53.6
+	// B53.13 — the open-banking consent reminder. A malformed value is refused.
+	c.BankConsentRemindDays = 7
+	if v := os.Getenv("LENS_BANK_CONSENT_REMIND_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("config: LENS_BANK_CONSENT_REMIND_DAYS must be a positive integer, got %q", v)
+		}
+		c.BankConsentRemindDays = n
+	}
 	// B32.42 — the day of the week sellers are paid on. A malformed value is refused.
 	c.MarketPayoutWeekday = time.Monday
 	if v := os.Getenv("LENS_MARKET_PAYOUT_WEEKDAY"); v != "" {

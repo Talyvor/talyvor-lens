@@ -21,6 +21,9 @@ import (
 // otherwise other. So one correction moves that merchant's past payments and its future ones alike. Gambling,
 // religious, political and health merchants only ever read as a broad category (B53's rules).
 //
+// A transaction read from an account at another bank (B53.13, bank_connections.go) is a payment too, on the owner's
+// own wallet: kind bank, with the bank as its source and when it was read.
+//
 // Totals are by wallet — the owner's own (agent_id empty) and each agent's — and currency, then by category and by
 // the owner's own tags on each payment. A payment with two tags counts in both tags' totals.
 
@@ -67,7 +70,7 @@ var spendTagShape = regexp.MustCompile(`^[a-z0-9][a-z0-9 _-]{0,39}$`)
 // SpendPayment is one payment and its category.
 type SpendPayment struct {
 	EntryID        string    `json:"entry_id"`
-	Kind           string    `json:"kind"` // card_charge or payment_out
+	Kind           string    `json:"kind"` // card_charge, payment_out or bank
 	Merchant       string    `json:"merchant"`
 	MCC            string    `json:"mcc,omitempty"`
 	Country        string    `json:"country,omitempty"`  // the card's merchant country (B53.5)
@@ -78,6 +81,9 @@ type SpendPayment struct {
 	CategorySource string    `json:"category_source"`
 	Tags           []string  `json:"tags"`
 	CreatedAt      time.Time `json:"created_at"`
+	// Source is the bank a kind bank payment was read from, and RefreshedAt when: it is as of then, never instant.
+	Source      string     `json:"source,omitempty"`
+	RefreshedAt *time.Time `json:"refreshed_at,omitempty"`
 }
 
 // SpendTotal is one wallet's spend in one currency.
@@ -207,7 +213,6 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 	}
 	defer rows.Close()
 	out := Spending{From: from, To: to, Categories: SpendCategories, Payments: []SpendPayment{}, Totals: []SpendTotal{}}
-	totals := map[[2]string]int{} // agent, currency → index in out.Totals
 	for rows.Next() {
 		var p SpendPayment
 		var correction string
@@ -218,6 +223,39 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 		}
 		p.Category, p.CategorySource = spendCategory(correction, p.MCC, p.Merchant, p.Kind, sentBill)
 		out.Payments = append(out.Payments, p)
+	}
+	if err := rows.Err(); err != nil {
+		return Spending{}, fmt.Errorf("economy: spending: %w", err)
+	}
+	rows.Close()
+	rows, err = s.pool.Query(ctx, `SELECT t.id, t.merchant, t.mcc, t.booked_at, t.currency, -t.amount_minor, COALESCE(cc.category, ''), c.bank, c.refreshed_at
+		FROM bank_transactions t JOIN bank_connections c ON c.id = t.connection_id
+		LEFT JOIN spend_category_corrections cc ON cc.workspace_id = t.workspace_id AND cc.merchant_key = lower(btrim(t.merchant))
+		WHERE t.workspace_id = $1 AND t.amount_minor < 0 AND t.booked_at >= $2 AND t.booked_at < $3`, workspaceID, from, to)
+	if err != nil {
+		return Spending{}, fmt.Errorf("economy: spending: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		p := SpendPayment{Kind: "bank", Tags: []string{}}
+		var correction string
+		if err := rows.Scan(&p.EntryID, &p.Merchant, &p.MCC, &p.CreatedAt, &p.Currency, &p.AmountMinor, &correction, &p.Source, &p.RefreshedAt); err != nil {
+			return Spending{}, fmt.Errorf("economy: spending: %w", err)
+		}
+		p.Category, p.CategorySource = spendCategory(correction, p.MCC, p.Merchant, p.Kind, false)
+		out.Payments = append(out.Payments, p)
+	}
+	if err := rows.Err(); err != nil {
+		return Spending{}, fmt.Errorf("economy: spending: %w", err)
+	}
+	slices.SortStableFunc(out.Payments, func(a, b SpendPayment) int { // newest first, as the ledger's query orders them
+		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.EntryID, b.EntryID)
+	})
+	totals := map[[2]string]int{} // agent, currency → index in out.Totals
+	for _, p := range out.Payments {
 		i, ok := totals[[2]string{p.AgentID, p.Currency}]
 		if !ok {
 			i = len(out.Totals)
@@ -230,9 +268,6 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 		for _, tag := range p.Tags {
 			t.ByTag[tag] += p.AmountMinor
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return Spending{}, fmt.Errorf("economy: spending: %w", err)
 	}
 	return out, nil
 }

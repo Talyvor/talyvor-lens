@@ -30,6 +30,7 @@ import (
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -356,6 +357,8 @@ type DualTokenStore struct {
 	monitor MoneyMonitor
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
+	// bankInfo is the open-banking partner for a workspace, by whether it is a tester's (B53.13); nil, none connects.
+	bankInfo func(synthetic bool) partners.AccountInfoPartner
 	// moneyLayer opens and reads every agent's wallet (B46.4); nil, no agent has one.
 	moneyLayer *money.Registry
 	// smartAccounts makes each crypto agent's wallet its own smart account (B48.2); nil, none is made.
