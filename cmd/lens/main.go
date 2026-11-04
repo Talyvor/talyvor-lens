@@ -134,6 +134,7 @@ import (
 	"github.com/talyvor/lens/internal/routingscore"
 	"github.com/talyvor/lens/internal/royaltyhaircut"
 	"github.com/talyvor/lens/internal/safehttp"
+	"github.com/talyvor/lens/internal/scan"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/sellertax"
 	"github.com/talyvor/lens/internal/session"
@@ -2194,6 +2195,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("money: held payments paid", slog.Int("requests", n))
 				}
+				// B41.205: the morning briefing pushed to the owners' devices, once a workspace a day, from the push hour.
+				if n, err := dualToken.RunBriefingPushes(ctx, now, cfg.BriefingPushHour); err != nil {
+					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))
@@ -2221,6 +2228,61 @@ func run() error {
 			}
 		}
 	}()
+	// B52.21 — Scan's energy collectors read EU gas storage and LNG (GIE), gas flows (ENTSOG), US oil stocks (EIA) and
+	// ECMWF's temperature forecasts into the provenance store every six hours, backfilling five years where the source
+	// keeps them. One without its API key (LENS_SCAN_GIE_KEY, LENS_SCAN_EIA_KEY) stays off and says so on /status.
+	scanKeys := map[string]string{scan.SettingGIE: os.Getenv(scan.SettingGIE), scan.SettingEIA: os.Getenv(scan.SettingEIA)}
+	scanCollectors := scan.NewCollectors(scan.NewStore(pool), &http.Client{Timeout: 2 * time.Minute}, scanKeys, scan.Energy(scanKeys)...)
+	statusPage.UseCollectors(scanCollectors)
+	go haComps.leader.Run(ctx, "scan-collectors", 30*time.Second, func(lctx context.Context) {
+		scanCollectors.Every(lctx, 6*time.Hour)
+	})
+	// B52.22 — Scan's crop collectors read USDA NASS crop-condition ratings, the monthly WASDE, the JRC MARS
+	// bulletins and a crop-health index (NDVI) for six growing regions from Sentinel-2 images into the provenance
+	// store twice a day. NASS stays off without its key (LENS_SCAN_NASS_KEY).
+	// The image addresses come from the catalogue's answers, so the client refuses private and internal addresses.
+	cropCollectors := scan.NewCropCollectors(scan.NewStore(pool), safehttp.Client(2*time.Minute), os.Getenv(scan.SettingNASSKey))
+	go haComps.leader.Run(ctx, "scan-crops", 30*time.Second, func(lctx context.Context) {
+		cropCollectors.Every(lctx, 12*time.Hour)
+	})
+	// B52.23 — SEC EDGAR (insiders' Form 4s and the buying clusters among them, funds' 13F holdings) and USAspending's
+	// contract awards, matched to a listed company only by a UEI checked to be it. Their own runner and leader job, so
+	// EDGAR's first walk of three weeks of filings never holds up the energy collectors; /status lists both runners.
+	filingStore := scan.NewStore(pool)
+	filingCollectors := scan.NewCollectors(filingStore, &http.Client{Timeout: 2 * time.Minute}, nil,
+		&scan.EDGAR{Store: filingStore}, &scan.USAspending{})
+	// B52.30 — Scan's company jets beta: the flights of the named companies' company-owned jets (FAA registry, then
+	// FlightAware AeroAPI), counted per company and UTC day at least 24 hours late. Off unless LENS_SCAN_JETS is "on"
+	// with LENS_SCAN_FLIGHTAWARE_KEY set; the operator excludes an aircraft, an erasure request among them, at
+	// POST /v1/admin/scan/jets/exclusions.
+	jetsStore := scan.NewStore(pool)
+	jets := &scan.Jets{On: os.Getenv(scan.SettingJets) == "on", Key: os.Getenv(scan.SettingFlightAwareKey), Store: jetsStore,
+		Companies: strings.FieldsFunc(os.Getenv(scan.SettingJetsCompanies), func(r rune) bool { return r == ';' })}
+	jetKeys := map[string]string{}
+	if jets.On {
+		jetKeys[scan.SettingFlightAwareKey] = jets.Key
+	}
+	jetCollectors := scan.NewCollectors(jetsStore, &http.Client{Timeout: 2 * time.Minute}, jetKeys, jets)
+	statusPage.UseCollectors(scanStatuses{scanCollectors, filingCollectors, jetCollectors})
+	go haComps.leader.Run(ctx, "scan-filings", 30*time.Second, func(lctx context.Context) {
+		filingCollectors.Every(lctx, 6*time.Hour)
+	})
+	go haComps.leader.Run(ctx, "scan-jets", 30*time.Second, func(lctx context.Context) {
+		jetCollectors.Every(lctx, 24*time.Hour)
+	})
+	// B52.24 — Scan's models: once a day every modelled series is backtested on its own history and, if its model
+	// passed, its latest point is read against its normal with an outlook; a failed model is never used. The operator
+	// reads every backtest at /v1/admin/scan/models.
+	scanModels := scan.NewModels(scan.NewStore(pool))
+	go haComps.leader.Run(ctx, "scan-models", 30*time.Second, func(lctx context.Context) {
+		scanModels.Every(lctx, 24*time.Hour)
+	})
+	// B52.25 — Scan's reports: every hour each passed model's new finding is written up, checked by the code rules and
+	// the second model, and queued for a person at /v1/admin/scan/reports; only their approval publishes it.
+	scanWriter := scan.NewWriter(scan.NewStore(pool), routingInferer, cfg.ScanWriterModel, cfg.ScanCheckModel, cfg.ScanConflicts)
+	go haComps.leader.Run(ctx, "scan-reports", 30*time.Second, func(lctx context.Context) {
+		scanWriter.Every(lctx, time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
@@ -2600,6 +2662,11 @@ func run() error {
 	r.Post("/v1/admin/screening/cases/{caseID}/refuse", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, false)))
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.
 	r.Get("/v1/admin/compliance/alerts", requireAdminOrOperatorRead(authManager, newMonitoringAlertsHandler(moneyMonitor)))
+	r.Get("/v1/admin/scan/models", requireAdminOrOperatorRead(authManager, newScanModelsHandler(scanModels)))
+	r.Get("/v1/admin/scan/reports", requireAdminOrOperatorRead(authManager, newScanReportsHandler(scanWriter)))                     // B52.25
+	r.Post("/v1/admin/scan/reports/{id}/approve", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, true))) // B52.25
+	r.Post("/v1/admin/scan/reports/{id}/reject", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, false))) // B52.25
+	r.Post("/v1/admin/scan/jets/exclusions", requireAdmin(authManager, newScanJetExclusionHandler(jetsStore)))
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))
@@ -2828,6 +2895,9 @@ func run() error {
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
 
+		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
+		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -2867,7 +2937,7 @@ func run() error {
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
-		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)}
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4766,6 +4836,7 @@ func run() error {
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
+		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
@@ -4801,6 +4872,7 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
+		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()
@@ -5988,4 +6060,15 @@ func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
 		propagation.Baggage{},
 	))
 	return tp, nil
+}
+
+// scanStatuses lists every Scan collector runner's collectors on /status.
+type scanStatuses []*scan.Collectors
+
+func (r scanStatuses) Status(ctx context.Context) []scan.CollectorStatus {
+	var out []scan.CollectorStatus
+	for _, c := range r {
+		out = append(out, c.Status(ctx)...)
+	}
+	return out
 }
