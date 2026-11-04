@@ -2249,6 +2249,13 @@ func run() error {
 	go haComps.leader.Run(ctx, "scan-filings", 30*time.Second, func(lctx context.Context) {
 		filingCollectors.Every(lctx, 6*time.Hour)
 	})
+	// B52.24 — Scan's models: once a day every modelled series is backtested on its own history and, if its model
+	// passed, its latest point is read against its normal with an outlook; a failed model is never used. The operator
+	// reads every backtest at /v1/admin/scan/models.
+	scanModels := scan.NewModels(scan.NewStore(pool))
+	go haComps.leader.Run(ctx, "scan-models", 30*time.Second, func(lctx context.Context) {
+		scanModels.Every(lctx, 24*time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
@@ -2628,6 +2635,7 @@ func run() error {
 	r.Post("/v1/admin/screening/cases/{caseID}/refuse", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, false)))
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.
 	r.Get("/v1/admin/compliance/alerts", requireAdminOrOperatorRead(authManager, newMonitoringAlertsHandler(moneyMonitor)))
+	r.Get("/v1/admin/scan/models", requireAdminOrOperatorRead(authManager, newScanModelsHandler(scanModels)))
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))
