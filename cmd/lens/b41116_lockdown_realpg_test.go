@@ -114,10 +114,25 @@ func TestB41116_LostPhoneLockdown(t *testing.T) {
 		return jsonOf(map[string]any{"assertion": map[string]string{"device_id": deviceID, "challenge": challenge, "signature": sign(challenge)}})
 	}
 
+	// The phone also holds a passkey.
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_passkeys (credential_id, workspace_id, public_key) VALUES ('cred-b41116-phone', $1, '\x00')`, ws); err != nil {
+		t.Fatal(err)
+	}
+
 	// The lockdown, from another session: no signature.
-	code, l := call(http.MethodPost, "/v1/money/lockdown", `{"device_ids": ["`+deviceID+`"], "reason": "lost my phone"}`)
+	code, l := call(http.MethodPost, "/v1/money/lockdown", `{"device_ids": ["`+deviceID+`"], "passkey_ids": ["cred-b41116-phone"], "reason": "lost my phone"}`)
 	if revoked, _ := l["revoked_devices"].([]any); code != http.StatusOK || l["active"] != true || len(revoked) != 1 || revoked[0] != deviceID || l["frozen_cards"] != float64(1) {
 		t.Fatalf("lockdown = %d %v; want 200, the phone's key revoked and one card frozen", code, l)
+	}
+	// The access list (B41.115) shows both of the phone's signers revoked.
+	access, err := store.ConnectedAccess(ctx, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range access {
+		if (it.ID == deviceID || it.ID == "cred-b41116-phone") && it.Status != "revoked" {
+			t.Errorf("after lockdown the access list shows %s %s as %q; want revoked", it.Kind, it.ID, it.Status)
+		}
 	}
 	if code, out := call(http.MethodPost, "/v1/money/lockdown", `{"device_ids": ["dev_nobody"]}`); code != http.StatusNotFound {
 		t.Errorf("a lockdown naming a device the workspace never had = %d %v; want 404", code, out)
