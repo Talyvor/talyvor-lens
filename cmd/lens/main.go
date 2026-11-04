@@ -2239,6 +2239,16 @@ func run() error {
 	go haComps.leader.Run(ctx, "scan-crops", 30*time.Second, func(lctx context.Context) {
 		cropCollectors.Every(lctx, 12*time.Hour)
 	})
+	// B52.23 — SEC EDGAR (insiders' Form 4s and the buying clusters among them, funds' 13F holdings) and USAspending's
+	// contract awards, matched to a listed company only by a UEI checked to be it. Their own runner and leader job, so
+	// EDGAR's first walk of three weeks of filings never holds up the energy collectors; /status lists both runners.
+	filingStore := scan.NewStore(pool)
+	filingCollectors := scan.NewCollectors(filingStore, &http.Client{Timeout: 2 * time.Minute}, nil,
+		&scan.EDGAR{Store: filingStore}, &scan.USAspending{})
+	statusPage.UseCollectors(scanStatuses{scanCollectors, filingCollectors})
+	go haComps.leader.Run(ctx, "scan-filings", 30*time.Second, func(lctx context.Context) {
+		filingCollectors.Every(lctx, 6*time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
@@ -6007,4 +6017,15 @@ func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
 		propagation.Baggage{},
 	))
 	return tp, nil
+}
+
+// scanStatuses lists every Scan collector runner's collectors on /status.
+type scanStatuses []*scan.Collectors
+
+func (r scanStatuses) Status(ctx context.Context) []scan.CollectorStatus {
+	var out []scan.CollectorStatus
+	for _, c := range r {
+		out = append(out, c.Status(ctx)...)
+	}
+	return out
 }
