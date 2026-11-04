@@ -134,6 +134,7 @@ import (
 	"github.com/talyvor/lens/internal/routingscore"
 	"github.com/talyvor/lens/internal/royaltyhaircut"
 	"github.com/talyvor/lens/internal/safehttp"
+	"github.com/talyvor/lens/internal/scan"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/sellertax"
 	"github.com/talyvor/lens/internal/session"
@@ -2221,6 +2222,15 @@ func run() error {
 			}
 		}
 	}()
+	// B52.21 — Scan's energy collectors read EU gas storage and LNG (GIE), gas flows (ENTSOG), US oil stocks (EIA) and
+	// ECMWF's temperature forecasts into the provenance store every six hours, backfilling five years where the source
+	// keeps them. One without its API key (LENS_SCAN_GIE_KEY, LENS_SCAN_EIA_KEY) stays off and says so on /status.
+	scanKeys := map[string]string{scan.SettingGIE: os.Getenv(scan.SettingGIE), scan.SettingEIA: os.Getenv(scan.SettingEIA)}
+	scanCollectors := scan.NewCollectors(scan.NewStore(pool), &http.Client{Timeout: 2 * time.Minute}, scanKeys, scan.Energy(scanKeys)...)
+	statusPage.UseCollectors(scanCollectors)
+	go haComps.leader.Run(ctx, "scan-collectors", 30*time.Second, func(lctx context.Context) {
+		scanCollectors.Every(lctx, 6*time.Hour)
+	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).

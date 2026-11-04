@@ -24,6 +24,7 @@ import (
 	"github.com/talyvor/lens/internal/brand"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/scan"
 )
 
 // pgxPinger is the subset of *pgxpool.Pool the status check uses.
@@ -158,12 +159,19 @@ type StatusResponse struct {
 	Rails        []MoneyRail      `json:"rails"`
 	RailsSummary RailsSummary     `json:"rails_summary"`
 	CardPayments string           `json:"card_payments"` // B51.2: "live", "test" or "off" — billing.CardPayments
+	// Collectors are Scan's data collectors (B52.21): each on or off and why, and when its source last gave a figure.
+	Collectors []scan.CollectorStatus `json:"collectors,omitempty"`
 	UpdatedAt    time.Time        `json:"updated_at"`
 }
 
 // screeningLists says how old the sanctions lists are, and whether that makes them stale: *screening.Store.
 type screeningLists interface {
 	ListsAge(ctx context.Context) (time.Duration, bool, error)
+}
+
+// collectorReader is Scan's collectors: *scan.Collectors.
+type collectorReader interface {
+	Status(ctx context.Context) []scan.CollectorStatus
 }
 
 // railReader is the partners registry.
@@ -216,6 +224,14 @@ type StatusPage struct {
 	clearances clearanceReader
 	lists      screeningLists
 	cards      string
+	collectors collectorReader
+}
+
+// UseCollectors adds Scan's data collectors to the page. A collector off or failing never moves the banner.
+func (s *StatusPage) UseCollectors(c collectorReader) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.collectors = c
 }
 
 // SetCardPayments states whether a card can be charged (billing.CardPayments); unset, the page says "off".
@@ -388,8 +404,21 @@ func (s *StatusPage) Check(ctx context.Context) StatusResponse {
 		Rails:        rails,
 		RailsSummary: summariseRails(rails),
 		CardPayments: s.cardPayments(),
+		Collectors:   s.dataCollectors(ctx),
 		UpdatedAt:    now,
 	}
+}
+
+func (s *StatusPage) dataCollectors(ctx context.Context) []scan.CollectorStatus {
+	s.mu.RLock()
+	c := s.collectors
+	s.mu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	readCtx, cancel := context.WithTimeout(ctx, postgresTimeout)
+	defer cancel()
+	return c.Status(readCtx)
 }
 
 func (s *StatusPage) cardPayments() string {
@@ -830,6 +859,27 @@ func renderHTML(s *StatusResponse) string {
 		for _, r := range s.Rails {
 			fmt.Fprintf(&b, `<tr><td>%s<div class="msg">%s · %s</div></td><td>%s%s<div class="msg">last success <span class="num">%s</span></div><div class="msg">last failure <span class="num">%s</span></div></td></tr>`,
 				htmlEscape(r.Name), modeWord(r.Mode), clearedWord(r.Capabilities), railPill(r.Status), listsAge(r), railTime(r.LastSuccess), railTime(r.LastFailure))
+		}
+		b.WriteString(`</tbody></table></div></section>`)
+	}
+
+	if len(s.Collectors) > 0 {
+		b.WriteString(`<section><h2 class="eyebrow">Data collectors</h2>
+<div class="tbl"><table class="rails"><thead><tr><th>Source</th><th>Status</th></tr></thead><tbody>`)
+		for _, c := range s.Collectors {
+			pill := `<span class="pill good">collecting</span>`
+			switch {
+			case !c.On:
+				pill = `<span class="pill">off</span>`
+			case c.Failing:
+				pill = `<span class="pill bad">failing</span>`
+			}
+			note := ""
+			if c.Note != "" {
+				note = `<div class="msg">` + htmlEscape(c.Note) + `</div>`
+			}
+			fmt.Fprintf(&b, `<tr><td>%s%s</td><td>%s<div class="msg">last data <span class="num">%s</span></div></td></tr>`,
+				htmlEscape(c.Name), note, pill, railTime(c.LastRetrieved))
 		}
 		b.WriteString(`</tbody></table></div></section>`)
 	}

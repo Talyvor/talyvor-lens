@@ -1,0 +1,5 @@
+{"response":{"total":"3","dateFormat":"YYYY-MM-DD","frequency":"weekly","data":[
+{"period":"2026-10-23","duoarea":"YCUOK","area-name":"CUSHING, OK","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"W_EPC0_SAX_YCUOK_MBBL","series-description":"Cushing, OK Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"22981","units":"MBBL"},
+{"period":"2026-10-30","duoarea":"YCUOK","area-name":"CUSHING, OK","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"W_EPC0_SAX_YCUOK_MBBL","series-description":"Cushing, OK Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"22412","units":"MBBL"},
+{"period":"2026-10-30","duoarea":"NUS","area-name":"U.S.","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"WCESTUS1","series-description":"U.S. Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":416789,"units":"MBBL"}
+]},"apiVersion":"2.1.8"}
