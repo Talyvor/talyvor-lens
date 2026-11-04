@@ -178,8 +178,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{id}/recovery-signer/challenge  {"recovery_address"}  the challenge the passkey
 //	                                                     that owns the account signs to add a recovery signer
 //	PUT  /v1/workspaces/{wsID}/agents/{id}/recovery-signer  {"recovery_address", "assertion"}  add it
-//	POST /v1/workspaces/{wsID}/agents/{id}/recover/challenge  {"credential_id" | "device_id"}  the challenge the
-//	                                                     recovery signer signs to put that passkey in the lost one's place
+//	POST /v1/workspaces/{wsID}/agents/{id}/recover/challenge  {"credential_id" | "device_id"}  the message, naming the
+//	                                                     account and that passkey, the recovery signer signs to put it
+//	                                                     in the lost one's place, and its challenge
 //	POST /v1/workspaces/{wsID}/agents/{id}/recover       {"credential_id" | "device_id", "challenge", "signature"}
 //	POST /v1/workspaces/{wsID}/agents/{id}/rotate-signer the provider's next key signs for the agent from now on
 //	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs
@@ -210,7 +211,7 @@ type agentBank interface {
 	FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (economy.AgentFreeze, error)
 	RecoverySignerChallenge(ctx context.Context, workspaceID, agentID, recovery string) (string, []string, error)
 	AddRecoverySigner(ctx context.Context, workspaceID, agentID, by, recovery string, a *passkey.Assertion) (economy.OwnerChange, error)
-	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, error)
+	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, string, error)
 	RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r economy.SmartAccountOwnerRequest, challenge, signature string) (economy.OwnerChange, error)
 	RotateAgentSigner(ctx context.Context, workspaceID, agentID, by string) (economy.OwnerChange, error)
 	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
@@ -694,8 +695,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if !decode(w, req, &in, `{"credential_id" | "device_id"}`) {
 			return
 		}
-		c, err := bank.RecoveryChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.SmartAccountOwnerRequest)
-		writeOwners(w, map[string]string{"challenge": c}, err)
+		c, msg, err := bank.RecoveryChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.SmartAccountOwnerRequest)
+		writeOwners(w, map[string]string{"challenge": c, "message": msg}, err)
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/recover", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		in := owners

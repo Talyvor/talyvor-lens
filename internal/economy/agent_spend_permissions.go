@@ -66,14 +66,16 @@ type spendAccount struct {
 	address, credentialID, deviceID, agentSigner string
 	ownerKey                                     []byte
 	agentIndex                                   uint64
+	rotatedFrom                                  string // B48.15: the key the agent last rotated from, and its index
+	rotatedFromIndex                             uint64
 	frozenAt                                     *time.Time
 }
 
 func (s *DualTokenStore) spendAccount(ctx context.Context, q pgx.Tx, workspaceID, agentID string) (spendAccount, error) {
 	var a spendAccount
-	err := q.QueryRow(ctx, `SELECT address, owner_credential_id, owner_device_id, agent_signer, owner_public_key, agent_index, frozen_at
-		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2 FOR UPDATE`, agentID, workspaceID).
-		Scan(&a.address, &a.credentialID, &a.deviceID, &a.agentSigner, &a.ownerKey, &a.agentIndex, &a.frozenAt)
+	err := q.QueryRow(ctx, `SELECT address, owner_credential_id, owner_device_id, agent_signer, owner_public_key, agent_index, rotated_from_signer,
+		rotated_from_index, frozen_at FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2 FOR UPDATE`, agentID, workspaceID).
+		Scan(&a.address, &a.credentialID, &a.deviceID, &a.agentSigner, &a.ownerKey, &a.agentIndex, &a.rotatedFrom, &a.rotatedFromIndex, &a.frozenAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, _, kerr := s.agentWalletKind(ctx, workspaceID, agentID); kerr != nil {
 			return a, kerr
@@ -318,6 +320,9 @@ type AgentFreeze struct {
 	Account    string    `json:"account"`
 	FrozenAt   time.Time `json:"frozen_at"`
 	RevokeCall string    `json:"revoke_call"` // 0x calldata
+	// B48.15: the call that takes out the key the agent last rotated from, in case that rotation is not on chain yet;
+	// on chain one of the two calls is refused, harmlessly, and the other takes the agent's key out.
+	PreviousKeyRevokeCall string `json:"previous_key_revoke_call,omitempty"`
 }
 
 // FreezeAgent freezes agentID at once: the gate refuses everything for it from now on. Freezing again answers the
@@ -341,6 +346,13 @@ func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, 
 			return err
 		}
 		f.AgentID, f.Account, f.RevokeCall = agentID, acct.address, fmt.Sprintf("0x%x", call)
+		if acct.rotatedFrom != "" {
+			prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.rotatedFrom, AgentIndex: acct.rotatedFromIndex})
+			if err != nil {
+				return err
+			}
+			f.PreviousKeyRevokeCall = fmt.Sprintf("0x%x", prev)
+		}
 		return nil
 	})
 	if err != nil {

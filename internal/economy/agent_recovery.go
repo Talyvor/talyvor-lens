@@ -161,24 +161,39 @@ func recoverPurpose(agentID string, r SmartAccountOwnerRequest) string {
 	return "recover:" + agentID + ":" + r.CredentialID + ":" + r.DeviceID
 }
 
-// RecoveryChallenge issues the challenge the recovery signer of agentID's account signs (personal_sign, EIP-191) to
-// put the workspace's passkey or device key r names in the place of the one the person lost.
-func (s *DualTokenStore) RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r SmartAccountOwnerRequest) (string, error) {
-	if _, err := s.ownerKey(ctx, workspaceID, r); err != nil {
-		return "", err
+// recoveryMessage is what the recovery signer reads and signs: the account, and exactly which key takes its owner's place.
+func recoveryMessage(workspaceID, agentID, account string, r SmartAccountOwnerRequest, pub []byte, challenge string) string {
+	key := "passkey " + r.CredentialID
+	if r.DeviceID != "" {
+		key = "device key " + r.DeviceID
+	}
+	return fmt.Sprintf("Talyvor: recover the wallet of agent %s in workspace %s.\nAccount: %s\nIts new owner: %s, public key 0x%x\nChallenge: %s",
+		agentID, workspaceID, account, key, pub, challenge)
+}
+
+// RecoveryChallenge issues the message the recovery signer of agentID's account signs (personal_sign, EIP-191) to put
+// the workspace's passkey or device key r names in the place of the one the person lost, and its challenge.
+func (s *DualTokenStore) RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r SmartAccountOwnerRequest) (challenge, message string, err error) {
+	pub, err := s.ownerKey(ctx, workspaceID, r)
+	if err != nil {
+		return "", "", err
 	}
 	smart, err := s.AgentSmartAccount(ctx, workspaceID, agentID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if recoveryOf(smart) == "" {
-		return "", fmt.Errorf("%w: the account has none: it is added with the passkey that owns it", ErrRecoverySigner)
+		return "", "", fmt.Errorf("%w: the account has none: it is added with the passkey that owns it", ErrRecoverySigner)
 	}
-	return s.newChallenge(ctx, workspaceID, recoverPurpose(agentID, r))
+	owner, _ := smartaccount.PasskeyOwner(pub)
+	if challenge, err = s.newChallenge(ctx, workspaceID, recoverPurpose(agentID, r)); err != nil {
+		return "", "", err
+	}
+	return challenge, recoveryMessage(workspaceID, agentID, smart.Address, r, owner, challenge), nil
 }
 
 // RecoverAgentOwner puts the passkey or device key r names in the place of the one that owns agentID's account, only
-// with signature (65 bytes, hex), the account's recovery signer's personal_sign of RecoveryChallenge's challenge.
+// with signature (65 bytes, hex), the account's recovery signer's personal_sign of RecoveryChallenge's message.
 func (s *DualTokenStore) RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r SmartAccountOwnerRequest, challenge, signature string) (OwnerChange, error) {
 	pub, err := s.ownerKey(ctx, workspaceID, r)
 	if err != nil {
@@ -194,8 +209,10 @@ func (s *DualTokenStore) RecoverAgentOwner(ctx context.Context, workspaceID, age
 		if err != nil {
 			return err
 		}
-		if o.recovery == "" || !strings.EqualFold(smartaccount.PersonalSigner(challenge, sig), o.recovery) {
-			return fmt.Errorf("%w: the challenge is not signed by the account's recovery signer", passkey.ErrInvalid)
+		next, _ := smartaccount.PasskeyOwner(pub)
+		msg := recoveryMessage(workspaceID, agentID, o.address, r, next, challenge)
+		if o.recovery == "" || !strings.EqualFold(smartaccount.PersonalSigner(msg, sig), o.recovery) {
+			return fmt.Errorf("%w: the recovery is not signed by the account's recovery signer", passkey.ErrInvalid)
 		}
 		if err := useChallenge(ctx, tx, workspaceID, recoverPurpose(agentID, r), challenge); err != nil {
 			return err
@@ -203,7 +220,6 @@ func (s *DualTokenStore) RecoverAgentOwner(ctx context.Context, workspaceID, age
 		if call, err = smartaccount.RecoverCall(o.account(), pub); err != nil {
 			return err
 		}
-		next, _ := smartaccount.PasskeyOwner(pub)
 		_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET `+keepMadeWith+`, owner_credential_id = $3, owner_device_id = $4,
 			owner_public_key = $5, owner_index = $6, next_owner_index = $6 + 1, recovered_at = now()
 			WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, r.CredentialID, r.DeviceID, next, o.next)
@@ -250,8 +266,9 @@ func (s *DualTokenStore) RotateAgentSigner(ctx context.Context, workspaceID, age
 		if call, err = smartaccount.RetireCall(o.account(), next); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET `+keepMadeWith+`, agent_signer = $3, agent_index = $4,
-			next_owner_index = $4 + 1, rotated_at = $5 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, next, o.next, time.Now())
+		_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET `+keepMadeWith+`, rotated_from_signer = agent_signer,
+			rotated_from_index = agent_index, agent_signer = $3, agent_index = $4, next_owner_index = $4 + 1, rotated_at = $5
+			WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, next, o.next, time.Now())
 		return err
 	})
 	if err != nil {

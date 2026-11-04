@@ -151,22 +151,27 @@ func TestB4815_RecoveryRotationAndLockdown(t *testing.T) {
 		c := secpecdsa.SignCompact(k, h.Sum(nil), false)
 		return "0x" + hex.EncodeToString(append(c[1:], c[0]))
 	}
-	if code := call(http.MethodPost, base+"/recover/challenge", map[string]string{"credential_id": "cred-new"}, &ch); code != http.StatusOK {
-		t.Fatalf("recover challenge = %d", code)
+	var rc struct{ Challenge, Message string }
+	if code := call(http.MethodPost, base+"/recover/challenge", map[string]string{"credential_id": "cred-new"}, &rc); code != http.StatusOK ||
+		!strings.Contains(rc.Message, acct.Address) || !strings.Contains(rc.Message, "passkey cred-new") || !strings.Contains(rc.Message, rc.Challenge) {
+		t.Fatalf("recover challenge = %d %+v: the recovery signer must read what it signs", code, rc)
 	}
 	stranger, _ := secp256k1.GeneratePrivateKey()
 	recover := func(sig string, out any) int {
-		return call(http.MethodPost, base+"/recover", map[string]string{"credential_id": "cred-new", "challenge": ch.Challenge, "signature": sig}, out)
+		return call(http.MethodPost, base+"/recover", map[string]string{"credential_id": "cred-new", "challenge": rc.Challenge, "signature": sig}, out)
 	}
-	if code := recover(personalSign(stranger, ch.Challenge), nil); code != http.StatusForbidden {
+	if code := recover(personalSign(recovery, rc.Challenge), nil); code != http.StatusForbidden {
+		t.Fatalf("the bare challenge signed, not the message naming the new owner = %d, want 403", code)
+	}
+	if code := recover(personalSign(stranger, rc.Message), nil); code != http.StatusForbidden {
 		t.Fatalf("a recovery signed by a stranger's key = %d, want 403", code)
 	}
 	var recovered economy.OwnerChange
-	if code := recover(personalSign(recovery, ch.Challenge), &recovered); code != http.StatusOK || recovered.Smart.Owners[0].CredentialID != "cred-new" ||
+	if code := recover(personalSign(recovery, rc.Message), &recovered); code != http.StatusOK || recovered.Smart.Owners[0].CredentialID != "cred-new" ||
 		recovered.Smart.Owners[0].Index != 3 || recovered.SignedBy != "recovery" || !strings.HasPrefix(recovered.Call, "0x34fcd5be") { // executeBatch
 		t.Fatalf("recover = %d %+v", code, recovered)
 	}
-	if code := recover(personalSign(recovery, ch.Challenge), nil); code != http.StatusForbidden {
+	if code := recover(personalSign(recovery, rc.Message), nil); code != http.StatusForbidden {
 		t.Fatalf("the same recovery again = %d, want 403: its challenge is spent", code)
 	}
 	if err := gate(agentID); !errors.Is(err, smartaccount.ErrPermission) {
@@ -199,6 +204,12 @@ func TestB4815_RecoveryRotationAndLockdown(t *testing.T) {
 	var locked struct{ Frozen []economy.AgentFreeze }
 	if code := call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/lockdown", nil, &locked); code != http.StatusOK || len(locked.Frozen) != 2 {
 		t.Fatalf("lockdown = %d %+v", code, locked)
+	}
+	// The rotated agent's freeze also takes out the key it rotated from, in case that rotation is not on chain yet.
+	for _, f := range locked.Frozen {
+		if rotatedAgent := f.AgentID == agentID; rotatedAgent == (f.PreviousKeyRevokeCall == "") || f.RevokeCall == f.PreviousKeyRevokeCall {
+			t.Fatalf("lockdown of %s: %+v", f.AgentID, f)
+		}
 	}
 	for _, id := range []string{agentID, otherID} {
 		if err := gate(id); !errors.Is(err, smartaccount.ErrFrozen) {
