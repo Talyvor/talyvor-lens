@@ -182,10 +182,14 @@ type gatedCards struct {
 	a Cards
 }
 
-// A card's cap is money that may leave, so issuing and locking a card are judged by the owner's limits.
+// A card's cap is money that may leave, so issuing and locking a card are judged by the owner's limits. A physical
+// card ordered with no cap (B53.19) lets nothing leave: Lens declines its every charge, so there is nothing to judge.
 func (w gatedCards) Issue(ctx context.Context, req IssueCard) (Card, error) {
-	return through(ctx, w.g, call{method: "issue", key: req.Key, ref: req.Wallet, out: &req.Cap, payee: req.Merchant, write: true},
-		func() (Card, error) { return w.a.Issue(ctx, req) })
+	c := call{method: "issue", key: req.Key, ref: req.Wallet, out: &req.Cap, payee: req.Merchant, write: true}
+	if req.FormFactor == CardPhysical && req.Cap == (Amount{}) {
+		c.out = nil
+	}
+	return through(ctx, w.g, c, func() (Card, error) { return w.a.Issue(ctx, req) })
 }
 
 func (w gatedCards) Lock(ctx context.Context, req LockCard) (Card, error) {
@@ -199,6 +203,39 @@ func (w gatedCards) Freeze(ctx context.Context, key, ref string) (Card, error) {
 
 func (w gatedCards) Close(ctx context.Context, key, ref string) (Card, error) {
 	return through(ctx, w.g, call{method: "close", key: key, ref: ref, write: true}, func() (Card, error) { return w.a.Close(ctx, key, ref) })
+}
+
+// gatedIssuer is a CardIssuer through the gate: every write audited, and a cap judged by the owner's limits.
+type gatedIssuer struct {
+	gatedCards
+	a CardIssuer
+}
+
+func (w gatedIssuer) Unfreeze(ctx context.Context, key, ref string) (Card, error) {
+	return through(ctx, w.g, call{method: "unfreeze", key: key, ref: ref, write: true}, func() (Card, error) { return w.a.Unfreeze(ctx, key, ref) })
+}
+
+func (w gatedIssuer) Activate(ctx context.Context, key, ref string) (Card, error) {
+	return through(ctx, w.g, call{method: "activate", key: key, ref: ref, write: true}, func() (Card, error) { return w.a.Activate(ctx, key, ref) })
+}
+
+func (w gatedIssuer) Tokens(ctx context.Context, ref string) ([]WalletToken, error) {
+	return through(ctx, w.g, call{method: "tokens", ref: ref}, func() ([]WalletToken, error) { return w.a.Tokens(ctx, ref) })
+}
+
+func (w gatedIssuer) SuspendToken(ctx context.Context, key, token string) (WalletToken, error) {
+	return through(ctx, w.g, call{method: "suspend_token", key: key, ref: token, write: true},
+		func() (WalletToken, error) { return w.a.SuspendToken(ctx, key, token) })
+}
+
+func (w gatedIssuer) ResumeToken(ctx context.Context, key, token string) (WalletToken, error) {
+	return through(ctx, w.g, call{method: "resume_token", key: key, ref: token, write: true},
+		func() (WalletToken, error) { return w.a.ResumeToken(ctx, key, token) })
+}
+
+func (w gatedIssuer) DeleteToken(ctx context.Context, key, token string) (WalletToken, error) {
+	return through(ctx, w.g, call{method: "delete_token", key: key, ref: token, write: true},
+		func() (WalletToken, error) { return w.a.DeleteToken(ctx, key, token) })
 }
 
 type gatedPayouts struct {
