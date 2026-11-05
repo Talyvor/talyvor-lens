@@ -1,0 +1,94 @@
+{
+ "links": null,
+ "num_pages": 1,
+ "flights": [
+  {
+   "ident": "EXA1",
+   "ident_icao": "EXA1",
+   "fa_flight_id": "EXA1-1730000000-0",
+   "registration": "N101EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KPBI",
+    "code_icao": "KPBI",
+    "code_iata": "PBI"
+   },
+   "actual_off": "2026-11-01T05:41:00Z",
+   "actual_on": "2026-11-01T15:41:00Z",
+   "aircraft_type": "GLF6"
+  },
+  {
+   "ident": "EXA2",
+   "ident_icao": "EXA2",
+   "fa_flight_id": "EXA2-1730000000-0",
+   "registration": "N101EX",
+   "blocked": true,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KPBI",
+    "code_icao": "KPBI",
+    "code_iata": "PBI"
+   },
+   "actual_off": "2026-11-01T08:10:00Z",
+   "actual_on": "2026-11-01T18:10:00Z",
+   "aircraft_type": "GLF6"
+  },
+  {
+   "ident": "EXA3",
+   "ident_icao": "EXA3",
+   "fa_flight_id": "EXA3-1730000000-0",
+   "registration": "",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KPBI",
+    "code_icao": "KPBI",
+    "code_iata": "PBI"
+   },
+   "actual_off": "2026-11-01T09:20:00Z",
+   "actual_on": "2026-11-01T19:20:00Z",
+   "aircraft_type": "GLF6"
+  },
+  {
+   "ident": "EXA4",
+   "ident_icao": "EXA4",
+   "fa_flight_id": "EXA4-1730000000-0",
+   "registration": "N101EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KSFO",
+    "code_icao": "KSFO",
+    "code_iata": "SFO"
+   },
+   "actual_off": "2026-11-03T08:05:00Z",
+   "actual_on": "2026-11-03T18:05:00Z",
+   "aircraft_type": "GLF6"
+  }
+ ]
+}

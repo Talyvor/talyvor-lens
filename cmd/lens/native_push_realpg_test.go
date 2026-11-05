@@ -185,17 +185,35 @@ func TestNativePush_ApprovalsReachEachPhoneUntilRevoked(t *testing.T) {
 		VALUES ('payee_b4015', $1, 'Carol Consulting', 'GB', '20-00-00', '55779911', 'exact_match', 'test')`, ws); err != nil {
 		t.Fatal(err)
 	}
+	// B41.134: a second iPhone, so the request reaches APNs as well as FCM.
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_device_keys (id, workspace_id, person, platform, public_key, attestation, push_token)
+		VALUES ('dev_b41134_iphone', $1, 'jwt:user:ada', 'ios', '\x00', '\x00', $2)`, ws, iosToken); err != nil {
+		t.Fatal(err)
+	}
 	prepared, _, err := store.PreparePaymentRequest(ctx, ws, "ada", "b4015-1", economy.PaymentRequestIn{Client: "chat",
 		Items: []economy.PaymentRequestItemIn{{PayeeID: "payee_b4015", Currency: "GBP", AmountMinor: 5000, Reference: "INV-9"}}})
 	if err != nil || prepared.Status != "pending_approval" {
 		t.Fatalf("prepare = %v %v", prepared.Status, err)
 	}
-	wait(1, 3)
+	wait(2, 3)
 	msg, _ = fcmGot[2].body["message"].(map[string]any)
 	note, _ = msg["notification"].(map[string]any)
 	data, _ = msg["data"].(map[string]any)
 	if note["body"] != "Pay Carol Consulting · GBP 50.00" || data["url"] != "talyvor://approve/"+prepared.ID {
 		t.Errorf("the prepared request's push = %v", msg)
+	}
+	// B41.134: both services carry the payment_request category (the phone's Approve button) and exactly the items that
+	// need approval, as the statement the button signs names them.
+	const wantItems = `[{"position":1,"payee_id":"payee_b4015","payee_name":"Carol Consulting","currency":"GBP","amount_minor":5000,"reference":"INV-9"}]`
+	aps, _ := apnsGot[1].body["aps"].(map[string]any)
+	if aps["category"] != "payment_request" || apnsGot[1].body["items"] != wantItems {
+		t.Errorf("the prepared request's APNs push = %v", apnsGot[1].body)
+	}
+	if data["categoryId"] != "payment_request" || data["items"] != wantItems {
+		t.Errorf("the prepared request's FCM data = %v", data)
+	}
+	if _, ok := apnsGot[0].body["aps"].(map[string]any)["category"]; ok {
+		t.Errorf("a held payment's push carries a category: %v", apnsGot[0].body)
 	}
 	if raw, _ := json.Marshal(fcmGot); strings.Contains(string(raw), "55779911") {
 		t.Errorf("a push carried the payee's account number: %s", raw)
