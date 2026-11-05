@@ -261,13 +261,14 @@ func (s *DualTokenStore) SetReusableCardControls(ctx context.Context, workspaceI
 	if err := card.controls(); err != nil {
 		return card, err
 	}
-	if err := s.writeReusableCardControls(ctx, card); err != nil {
+	if err := s.writeReusableCardControls(ctx, card, nil); err != nil {
 		return card, err
 	}
 	// Written first, so the money layer's limits see the cap the owner set (issuingReusableCard); taken back if refused.
 	if card.DailyLimitMinor != old.DailyLimitMinor && card.partnerRef != "" {
 		if err := s.lockReusableCardCap(ctx, card); err != nil {
-			if werr := s.writeReusableCardControls(context.WithoutCancel(ctx), old); werr != nil {
+			// Only while the card still holds what this call wrote: a change made since, a freeze above all, stands.
+			if werr := s.writeReusableCardControls(context.WithoutCancel(ctx), old, &card); werr != nil {
 				return old, errors.Join(err, werr)
 			}
 			return old, fmt.Errorf("economy: the issuer kept the card's daily limit at %s: %w", minorString(old.DailyLimitMinor, old.Currency), err)
@@ -276,10 +277,16 @@ func (s *DualTokenStore) SetReusableCardControls(ctx context.Context, workspaceI
 	return s.reusableCard(ctx, workspaceID, "", id, "")
 }
 
-func (s *DualTokenStore) writeReusableCardControls(ctx context.Context, card ReusableCard) error {
+// writeReusableCardControls writes card's controls — with was set, only if the card still has was's.
+func (s *DualTokenStore) writeReusableCardControls(ctx context.Context, card ReusableCard, was *ReusableCard) error {
+	if was == nil {
+		was = &ReusableCard{}
+	}
 	if _, err := s.pool.Exec(ctx, `UPDATE money_reusable_cards SET status = $3, per_payment_limit_minor = $4, daily_limit_minor = $5,
-		allowed_mccs = $6, blocked_mccs = $7, updated_at = now() WHERE id = $1 AND workspace_id = $2`, card.ID, card.WorkspaceID, card.Status,
-		card.PerPaymentLimitMinor, card.DailyLimitMinor, card.AllowedMCCs, card.BlockedMCCs); err != nil {
+		allowed_mccs = $6, blocked_mccs = $7, updated_at = now() WHERE id = $1 AND workspace_id = $2 AND ($8 = '' OR (status = $8
+		AND per_payment_limit_minor = $9 AND daily_limit_minor = $10 AND allowed_mccs = $11 AND blocked_mccs = $12))`, card.ID, card.WorkspaceID,
+		card.Status, card.PerPaymentLimitMinor, card.DailyLimitMinor, card.AllowedMCCs, card.BlockedMCCs,
+		was.Status, was.PerPaymentLimitMinor, was.DailyLimitMinor, was.AllowedMCCs, was.BlockedMCCs); err != nil {
 		return fmt.Errorf("economy: reusable card: %w", err)
 	}
 	return nil
