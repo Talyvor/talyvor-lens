@@ -160,7 +160,10 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 	}
 	var payTo string
 	var own bool
-	err := x.s.pool.QueryRow(ctx, `SELECT address, `+ownWallet("$2", "$3")+` FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+	// own: the payer named is one of the workspace's own wallets, or a key or recovery signer of one.
+	err := x.s.pool.QueryRow(ctx, `SELECT address, ($3 <> '' AND EXISTS (SELECT 1 FROM agent_smart_accounts o WHERE o.workspace_id = $2
+			AND lower($3) IN (lower(o.address), lower(o.agent_signer), lower(o.recovery_address))))
+		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
 		in.AgentID, in.WorkspaceID, in.PayerAddress).Scan(&payTo, &own)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CryptoRequest{}, ErrSmartAccountNotFound
@@ -276,12 +279,6 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		x.s.notifyApproval(payerWS, approval)
 	}
 	return x.s.CryptoPaymentRequest(ctx, in.WorkspaceID, id)
-}
-
-// ownWallet is SQL for: address is one of workspace's own wallets, or a key or recovery signer of one.
-func ownWallet(workspace, address string) string {
-	return `(` + address + ` <> '' AND EXISTS (SELECT 1 FROM agent_smart_accounts o WHERE o.workspace_id = ` + workspace + ` AND lower(` +
-		address + `) IN (lower(o.address), lower(o.agent_signer), lower(o.recovery_address))))`
 }
 
 // requesterTrust is how far Talyvor trusts an agent of workspaceID, in the words an approval card shows (B45.24): the
@@ -451,7 +448,9 @@ func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, revers
 						WHERE p.request_id = r.id AND NOT p.late), 0) AS remaining
 				FROM crypto_payment_requests r, mv
 				WHERE r.workspace_id = $2 AND r.agent_id = $3 AND r.network = $4 AND lower(r.asset) = lower($5)
-					AND (r.payer_address = '' OR lower(r.payer_address) = lower($6)) AND NOT `+ownWallet("$2", "$6")+`)
+					AND (r.payer_address = '' OR lower(r.payer_address) = lower($6))
+					AND NOT EXISTS (SELECT 1 FROM agent_smart_accounts o WHERE o.workspace_id = $2
+						AND lower($6) IN (lower(o.address), lower(o.agent_signer), lower(o.recovery_address))))
 			INSERT INTO crypto_payment_request_payments (movement_id, request_id, workspace_id, amount_minor, late)
 			SELECT $1, id, $2, $7::bigint, late FROM due
 			WHERE remaining > 0 AND (named OR (NOT late AND remaining = $7::bigint))
