@@ -2014,6 +2014,9 @@ func run() error {
 	screener.HoldWhenListsStale(screeningLists)
 	statusPage.UseScreeningLists(screeningLists)
 	dualToken.SetScreener(screener)
+	// B48.7 — the Travel Rule's identity data goes with a USDC payment to another regulated provider: the Test adapter
+	// until a live partner is chosen, which knows no provider, so every address is self-hosted.
+	dualToken.SetTravelRule(&partners.TestTravelRuleProvider{})
 	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).

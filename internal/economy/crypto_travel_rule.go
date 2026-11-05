@@ -136,6 +136,6 @@ func (s *DualTokenStore) sendTravelRule(ctx context.Context, p OutsidePayment, f
 	beneficiary, _ := json.Marshal(t.Beneficiary)
 	_, err = s.pool.Exec(ctx, `INSERT INTO travel_rule_transfers (payment_id, workspace_id, provider, provider_ref, vasp, network, asset, amount_minor,
 		originator, beneficiary) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (payment_id) DO NOTHING`,
-		p.ID, p.WorkspaceID, tr.Name(), ref, vasp, payee.Network, p.Currency, p.AmountMinor, originator, beneficiary)
+		p.ID, p.WorkspaceID, tr.Name(), ref, vasp, payee.Network, p.Currency, p.AmountMinor, string(originator), string(beneficiary))
 	return err
 }
