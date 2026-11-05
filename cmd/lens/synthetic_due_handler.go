@@ -47,6 +47,9 @@ import (
 //	                                                                   single-use card, as its issuer asks Lens:
 //	                                                                   {"authorization_id","approved","reason","mcc",
 //	                                                                   "country","channel","wallet"}
+//	POST /v1/synthetic/workspaces/{wsID}/money/schedules/{scheduleID}/due
+//	                                                                   B45.42: a test plan's signed standing order's
+//	                                                                   next tick due now: the minute tick runs it once
 //	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
 //	                                                                   the two linked as though both paid with one
 //	                                                                   card, so a trust panel's linked buyer is testable
@@ -92,6 +95,11 @@ type syntheticMoneyCards interface {
 	AuthorizeCardCharge(ctx context.Context, partner string, a money.Authorization) (bool, string, error)
 }
 
+// syntheticSchedules is *economy.DualTokenStore: B45.42 brings a standing order's next tick due.
+type syntheticSchedules interface {
+	BringTestScheduleDue(ctx context.Context, workspaceID, scheduleID string, now time.Time) (economy.AgentSchedule, error)
+}
+
 type syntheticDueDeps struct {
 	db         syntheticQuerier
 	loans      syntheticLoans
@@ -101,6 +109,7 @@ type syntheticDueDeps struct {
 	cards      syntheticCards
 	authorizer syntheticCardAuthorizer
 	moneyCards syntheticMoneyCards
+	schedules  syntheticSchedules
 }
 
 func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
@@ -121,6 +130,10 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 	if due.moneyCards != nil {
 		r.Post("/v1/synthetic/workspaces/{wsID}/money/cards/{cardID}/charge",
 			syntheticGuard(key, "money-card-charge", limit, d, due.testOnly(due.moneyCardCharge)))
+	}
+	if due.schedules != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/money/schedules/{scheduleID}/due",
+			syntheticGuard(key, "schedule-due", limit, d, due.testOnly(due.scheduleDue)))
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
 }
@@ -153,6 +166,20 @@ func (d syntheticDueDeps) loanDue(w http.ResponseWriter, r *http.Request, ws str
 		return 0, "error: " + err.Error()
 	}
 	writeJSONOK(w, http.StatusOK, loan)
+	return 1, "ok"
+}
+
+func (d syntheticDueDeps) scheduleDue(w http.ResponseWriter, r *http.Request, ws string) (int, string) {
+	sc, err := d.schedules.BringTestScheduleDue(r.Context(), ws, chi.URLParam(r, "scheduleID"), time.Now())
+	switch {
+	case errors.Is(err, economy.ErrScheduleNotFound):
+		writeJSONErr(w, http.StatusNotFound, "no running standing order of this workspace has that id")
+		return 0, "refused: no such schedule"
+	case err != nil:
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	writeJSONOK(w, http.StatusOK, sc)
 	return 1, "ok"
 }
 
