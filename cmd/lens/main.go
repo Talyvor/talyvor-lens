@@ -3116,7 +3116,7 @@ func run() error {
 		authed.With(proxyScope).Post("/oai/*", listingOpenAI(p.HandleOpenAI))
 		authed.With(proxyScope).Post("/anthropic/*", listingAnthropic(p.HandleAnthropic))
 
-		authed.Post("/v1/api/keys", keyOwnerOnly(newCreateAPIKeyHandler(keyStore)))
+		authed.Post("/v1/api/keys", apiKeysRetired)
 
 		authed.Post("/v1/api/injection/patterns", requireAdmin(authManager, http.HandlerFunc(newInjectionPatternAddHandler(injectionDetector))))
 

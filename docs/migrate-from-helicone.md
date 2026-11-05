@@ -108,7 +108,7 @@ The `/oai/*` and `/anthropic/*` paths are first-class routes — they're not a d
 ## Migration steps
 
 1. **Stand up Lens** alongside Helicone (no traffic yet). See the [main README](../README.md) for `docker compose up` or systemd setup.
-2. **Issue a Talyvor key** via `POST /v1/api/keys`.
+2. **Issue a Talyvor key** via `POST /v1/workspaces/{wsID}/api-keys` with `{"name": "...", "scopes": ["proxy"]}`, signed in as the workspace owner.
 3. **Flip one client's `base_url`** to the Lens-compatible `/oai/v1` path. Leave the `Helicone-Auth` header — the compat layer handles it.
 4. **Verify** the request appears in `/v1/api/spend/summary`.
 5. **Roll out** the URL flip to remaining clients.

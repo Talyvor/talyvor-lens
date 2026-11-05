@@ -1371,7 +1371,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": chi.URLParam(req, "agentID"), "topup": nil})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		c, rpID, err := bank.PasskeyRegistrationChallenge(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -1389,7 +1389,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none", "credential_ids": creds})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			CredentialID      string             `json:"credential_id"`
 			Name              string             `json:"name"`

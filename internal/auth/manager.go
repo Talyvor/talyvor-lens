@@ -639,7 +639,7 @@ func WorkspaceIdentity(ctx context.Context) (workspaceID string, isAdmin bool) {
 // empty scope set nor a fast-path api_keys credential (auth.KeyStore, which has no scope
 // field at all). Both used to be grandfathered as all-scopes, so any key that could mint
 // a scopeless one — the legacy POST /v1/api/keys had no gate — handed out proxy. Migration
-// 0324 gives the workspace keys minted before scopes existed the {proxy} they reached.
+// 0325 gives the workspace keys minted before scopes existed the {proxy} they reached.
 //
 // Admin is unchanged: the global key sets IsAdmin, which short-circuits HasScope.
 // A request that reached here with NO credential (i.e. not behind AuthMiddleware) is

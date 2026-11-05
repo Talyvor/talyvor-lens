@@ -1,4 +1,4 @@
--- 0324: B50.33 — a key with no scopes passes no scope gate any more (auth.RequireScope).
+-- 0325: B50.33 — a key with no scopes passes no scope gate any more (auth.RequireScope).
 --
 -- Workspace keys minted before scopes existed carry an empty set, and the only gate that set ever
 -- passed was the proxy one (RequireScope(proxy) is the sole production RequireScope). Give them

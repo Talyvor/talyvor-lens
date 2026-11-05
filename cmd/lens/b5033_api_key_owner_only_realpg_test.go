@@ -7,12 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/tenant"
 )
 
@@ -24,11 +24,10 @@ func TestB5033_OnlyTheOwnersSessionMintsKeys(t *testing.T) {
 	ctx := context.Background()
 	const ws = "ws-b5033"
 	ts := tenant.NewStore(pool)
-	legacy := &countingKeyGen{}
 	r := chi.NewRouter()
 	mountAgentAccountRoutes(r, economy.NewDualTokenStore(nil, pool, nil), ts)
 	r.Post("/v1/workspaces/{wsID}/api-keys", keyOwnerOnly(apiKeyCreateHandler(ts)))
-	r.Post("/v1/api/keys", keyOwnerOnly(newCreateAPIKeyHandler(legacy)))
+	r.Post("/v1/api/keys", apiKeysRetired)
 	call := func(who *auth.AuthContext, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -78,15 +77,14 @@ func TestB5033_OnlyTheOwnersSessionMintsKeys(t *testing.T) {
 		{"an admin key issuing an agent's key", adminKey, "/v1/workspaces/" + ws + "/agents/" + ag.ID + "/keys", `{"name":"x"}`},
 		{"a key that claims the keys scope", wsKey("k-forged", auth.ScopeKeys), mint, `{"name":"x","scopes":["proxy"]}`},
 		{"the browser chat's session key", &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodSessionKey, Scopes: []string{auth.ScopeProxy}}, mint, `{"name":"x","scopes":["proxy"]}`},
-		{"an analytics key minting a legacy (scopeless) key", analyticsKey, "/v1/api/keys", `{"name":"x"}`},
-		{"an admin key minting a legacy key", adminKey, "/v1/api/keys", `{"name":"x"}`},
+		{"an analytics key minting a key", analyticsKey, mint, `{"name":"x","scopes":["proxy"]}`},
 	} {
 		if w := call(c.who, c.path, c.body); w.Code != http.StatusForbidden {
 			t.Errorf("%s = %d %s, want 403", c.name, w.Code, w.Body.String())
 		}
 	}
-	if n := keys(); n != before || legacy.n != 0 {
-		t.Errorf("refused mints still made %d workspace key(s) and %d legacy key(s)", n-before, legacy.n)
+	if n := keys(); n != before {
+		t.Errorf("refused mints still made %d key(s)", n-before)
 	}
 
 	for _, c := range []struct {
@@ -105,17 +103,49 @@ func TestB5033_OnlyTheOwnersSessionMintsKeys(t *testing.T) {
 	if n := keys(); n != before+3 {
 		t.Errorf("the owner's mints made %d key(s), want 3", n-before)
 	}
-	if w := call(owner, "/v1/api/keys", `{"name":"l"}`); w.Code != http.StatusCreated || legacy.n != 1 {
-		t.Errorf("the owner minting a legacy key = %d (%d minted), want 201 and 1", w.Code, legacy.n)
+	// The legacy route minted scopeless keys, which no longer pass any scope gate: it is gone, for the owner too, and
+	// names the route that replaced it.
+	for _, who := range []*auth.AuthContext{owner, operator, analyticsKey} {
+		if w := call(who, "/v1/api/keys", `{"name":"l"}`); w.Code != http.StatusGone || !strings.Contains(w.Body.String(), "/v1/workspaces/{wsID}/api-keys") {
+			t.Errorf("POST /v1/api/keys = %d %s, want 410 naming the workspace route", w.Code, w.Body.String())
+		}
+	}
+	if n := keys(); n != before+3 {
+		t.Errorf("the retired route made %d key(s)", n-before-3)
 	}
 }
 
-// countingKeyGen stands in for the legacy auth.KeyStore and counts the keys it was asked for.
-type countingKeyGen struct{ n int }
-
-func (g *countingKeyGen) GenerateKey(_ context.Context, ws, _, _ string, _ *time.Time) (string, *auth.APIKey, error) {
-	g.n++
-	return "tlv_legacy", &auth.APIKey{ID: "legacy-1", WorkspaceID: ws}, nil
+// An admin key passed ownerOnly, so in a workspace with no passkey or device key yet it could register the first
+// approval key and then approve what its agents ask. Registering one is the owner's signed-in session's alone.
+func TestB5033_OnlyTheOwnersSessionRegistersAnApprovalKey(t *testing.T) {
+	pool := agentRoutesDB(t)
+	const ws = "ws-b5033-approval-keys"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetApprovalAuth(passkey.RelyingParty{ID: "app.talyvor.com", Origins: []string{"https://app.talyvor.com"}}, nil)
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	mountDeviceKeyRoutes(r, store)
+	call := func(who *auth.AuthContext, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	adminKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "k-admin", Scopes: []string{auth.ScopeAdmin}}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	passkeys, devices := "/v1/workspaces/"+ws+"/agents/passkeys", "/v1/money/devices"
+	for _, path := range []string{passkeys + "/challenge", passkeys, devices + "/challenge", devices} {
+		if w := call(adminKey, path, `{}`); w.Code != http.StatusForbidden {
+			t.Errorf("an admin key on POST %s = %d %s, want 403", path, w.Code, w.Body.String())
+		}
+	}
+	for _, path := range []string{passkeys + "/challenge", devices + "/challenge"} {
+		if w := call(owner, path, `{}`); w.Code != http.StatusOK {
+			t.Errorf("the owner on POST %s = %d %s, want 200", path, w.Code, w.Body.String())
+		}
+	}
 }
 
 // The admin keys minted before B50.33 cannot be told apart from the owner's: the sweep lists them all, and --revoke
@@ -168,9 +198,11 @@ func TestB5033_TheSweepRevokesEveryAdminKeyOnTheAuditChain(t *testing.T) {
 }
 
 // main.go composes these routes inline, so the wrapping is read from its source: every route that mints, rotates or
-// revokes a workspace key goes through keyOwnerOnly — the legacy /v1/api/keys pair included.
+// revokes a workspace key goes through keyOwnerOnly — the legacy DELETE /v1/api/keys included — and the legacy mint is
+// the retired handler.
 func TestB5033_EveryKeyMintingOrRevokingRouteIsOwnerOnly(t *testing.T) {
 	_, f := mainGoAST(t)
+	retired := false
 	want := map[string]bool{
 		"POST /v1/workspaces/{wsID}/api-keys":                            false,
 		"POST /v1/workspaces/{wsID}/api-keys/{keyID}/rotate":             false,
@@ -178,8 +210,7 @@ func TestB5033_EveryKeyMintingOrRevokingRouteIsOwnerOnly(t *testing.T) {
 		"POST /v1/workspaces/{wsID}/key-rotations/{rotationID}/complete": false,
 		"POST /v1/workspaces/{wsID}/key-rotations/{rotationID}/abandon":  false,
 		"DELETE /v1/workspaces/{wsID}/api-keys/{keyID}":                  false,
-		"POST /v1/api/keys":           false,
-		"DELETE /v1/api/keys/{keyID}": false,
+		"DELETE /v1/api/keys/{keyID}":                                    false,
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -192,6 +223,10 @@ func TestB5033_EveryKeyMintingOrRevokingRouteIsOwnerOnly(t *testing.T) {
 			return true
 		}
 		route := strings.ToUpper(sel.Sel.Name) + " " + strings.Trim(lit.Value, `"`)
+		if route == "POST /v1/api/keys" {
+			id, ok := call.Args[1].(*ast.Ident)
+			retired = ok && id.Name == "apiKeysRetired"
+		}
 		if _, tracked := want[route]; !tracked {
 			return true
 		}
@@ -206,5 +241,8 @@ func TestB5033_EveryKeyMintingOrRevokingRouteIsOwnerOnly(t *testing.T) {
 		if !gated {
 			t.Errorf("%s is not wrapped in keyOwnerOnly in main.go: a key of the workspace can manage its keys", route)
 		}
+	}
+	if !retired {
+		t.Error("POST /v1/api/keys is not mounted as apiKeysRetired in main.go: it can still mint a scopeless key")
 	}
 }
