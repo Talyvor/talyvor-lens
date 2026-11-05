@@ -316,13 +316,22 @@ func TestB485_AnAgentsUSDCSendThroughTheAppIsRefusedWhenTheGasBudgetIsSpentAndCh
 	if got, want := b468Postings(t, pool, ws, "usdc-2"), "payment_out_hold agent -10000000; payment_out_hold hold 10000000; payment_out_failed hold -10000000; payment_out_failed agent 10000000"; got != want {
 		t.Fatalf("the refused send posted %q, want %q", got, want)
 	}
-	select {
-	case m := <-push:
-		if m.Data["type"] != "gas_budget_spent" || m.Data["chain_id"] != "84532" {
-			t.Fatalf("the owner was told %+v", m)
+	// The owner is also told the payment failed; the two pushes arrive in either order.
+	for asked, deadline := false, time.After(5*time.Second); !asked; {
+		select {
+		case m := <-push:
+			switch m.Data["type"] {
+			case "gas_budget_spent":
+				if asked = m.Data["chain_id"] == "84532"; !asked {
+					t.Fatalf("the owner was asked to top up %+v", m)
+				}
+			case "payment_failed":
+			default:
+				t.Fatalf("the owner was told %+v", m)
+			}
+		case <-deadline:
+			t.Fatal("the owner was never asked to top the gas budget up")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the owner was never asked to top the gas budget up")
 	}
 
 	// The minute's sweep charges the first what its receipt says the paymaster paid, and frees the rest of its hold.
