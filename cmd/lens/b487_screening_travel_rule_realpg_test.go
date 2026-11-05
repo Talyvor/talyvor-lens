@@ -179,6 +179,16 @@ func TestB487_AnAgentsUSDCPaymentIsScreenedAndCarriesTheTravelRule(t *testing.T)
 	if got, want := b468Postings(t, pool, ws, "self-2"), "payment_out_hold agent -1500000000; payment_out_hold hold 1500000000"; got != want {
 		t.Fatalf("1,500 USDC to the proved address posted %q, want %q", got, want)
 	}
+	// Nor is the proof dodged in pieces: what is already paid to the address counts.
+	_, split := b487Key(t)
+	pieces := save("Split", split)
+	if p, err := pay(pieces, "split-1", 600_000000); err != nil || p.Status != economy.PaymentSent {
+		t.Fatalf("pay 600 USDC to a self-hosted address = %+v, %v; want sent", p, err)
+	}
+	if _, err := pay(pieces, "split-2", 600_000000); !errors.Is(err, economy.ErrAddressProofNeeded) {
+		t.Fatalf("a second 600 USDC to it = %v, want the owner asked to prove it is theirs: 1,200 in all", err)
+	}
+	nothingMoved("split-2")
 	if n := len(travel.Sent()); n != 1 {
 		t.Fatalf("the Travel Rule provider was sent %d transfers, want only the exchange's: a self-hosted address has no provider", n)
 	}

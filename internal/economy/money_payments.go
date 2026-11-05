@@ -239,8 +239,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
 		return OutsidePayment{}, err
 	}
+	var selfHosted bool
 	if payee.Address != "" { // B48.7: and the address it goes to
-		if err := s.screenAddress(ctx, p, payee); err != nil {
+		if selfHosted, err = s.screenAddress(ctx, p, payee); err != nil {
 			return OutsidePayment{}, err
 		}
 	}
@@ -267,6 +268,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if err := s.coolingOffTx(ctx, tx, payee, p.Currency, p.AmountMinor); err != nil { // B50.21
 		return OutsidePayment{}, err
+	}
+	if selfHosted {
+		if err := addressProofTx(ctx, tx, p, payee); err != nil {
+			return OutsidePayment{}, err
+		}
 	}
 	var held int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(balance_minor), 0)::bigint FROM money_account_balances WHERE account_id = $1 AND funding = $2`,
