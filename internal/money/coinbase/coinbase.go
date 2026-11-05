@@ -32,6 +32,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // Name is the adapter's name: its switches and its webhook endpoint, POST /v1/money/webhooks/coinbase.
@@ -64,16 +65,35 @@ type Screener interface {
 	Screen(ctx context.Context, network, address string) error
 }
 
+// GasBudgets is each workspace's budget for the network fees CDP's paymaster pays for its agents
+// (economy.DualTokenStore).
+type GasBudgets interface {
+	// ServeGas has the budgets pay for the paymaster on chainID: rpcURL quotes each operation's fee, and bundlerURL
+	// answers its receipt.
+	ServeGas(chainID int64, rpcURL, bundlerURL string)
+	// HoldGas holds the most an operation's fee can be under ref, or refuses, wrapping money.ErrRefused, when the
+	// workspace's budget cannot cover it.
+	HoldGas(ctx context.Context, workspaceID string, chainID int64, ref string) error
+	// SentGas records that ref is user operation hash, charged from its receipt from then on.
+	SentGas(ctx context.Context, workspaceID string, chainID int64, ref, hash string) error
+	// ReleaseGas frees ref's hold: CDP sent nothing.
+	ReleaseGas(ctx context.Context, workspaceID string, chainID int64, ref string) error
+}
+
+// chainIDs is each network's EVM chain id.
+var chainIDs = map[string]int64{"base": 8453, "base-sepolia": 84532}
+
 // Config is what the adapter needs from CDP's portal.
 type Config struct {
 	BaseURL       string // https://api.cdp.coinbase.com/platform
 	APIKeyID      string
-	APIKeySecret  string // the Ed25519 secret API key, base64, as the portal gives it
-	WalletSecret  string // the wallet secret, base64 DER PKCS#8, as the portal gives it
-	Network       string // base, or base-sepolia on CDP's testnet
-	PaymasterURL  string // CDP's paymaster, so agents' smart accounts never need ETH; base-sepolia is sponsored without one
-	RPCURL        string // a Base node, such as CDP's: deposits are checked against their receipts
-	WebhookSecret string // the onchain-activity subscription's secret
+	APIKeySecret  string     // the Ed25519 secret API key, base64, as the portal gives it
+	WalletSecret  string     // the wallet secret, base64 DER PKCS#8, as the portal gives it
+	Network       string     // base, or base-sepolia on CDP's testnet
+	PaymasterURL  string     // CDP's paymaster, so agents' smart accounts never need ETH; base-sepolia is sponsored without one
+	Gas           GasBudgets // B48.5: each workspace's budget for what the paymaster pays; needed with a paymaster
+	RPCURL        string     // a Base node, such as CDP's: deposits are checked against their receipts
+	WebhookSecret string     // the onchain-activity subscription's secret
 	Allowlist     Allowlist
 	Screener      Screener
 	HTTP          *http.Client
@@ -102,6 +122,8 @@ func New(cfg Config) (*money.Adapter, error) {
 		return nil, fmt.Errorf("coinbase: the adapter runs on base or base-sepolia, not %q", cfg.Network)
 	case cfg.Network == "base" && cfg.PaymasterURL == "":
 		return nil, errors.New("coinbase: on base the adapter needs CDP's paymaster, so agents never need ETH")
+	case cfg.PaymasterURL != "" && cfg.Gas == nil:
+		return nil, errors.New("coinbase: what CDP's paymaster pays comes out of each workspace's gas budget, which the adapter needs")
 	case cfg.RPCURL == "":
 		return nil, errors.New("coinbase: the adapter needs a Base node to check deposits against")
 	case cfg.WebhookSecret == "":
@@ -115,6 +137,9 @@ func New(cfg Config) (*money.Adapter, error) {
 		cfg.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
 	c := &client{cfg: cfg, apiKey: ed25519.PrivateKey(apiKey), walletKey: walletKey, base: base, usdc: usdcOn[cfg.Network]}
+	if cfg.PaymasterURL != "" { // CDP's paymaster URL is also its bundler's: it answers each operation's receipt
+		cfg.Gas.ServeGas(chainIDs[cfg.Network], cfg.RPCURL, cfg.PaymasterURL)
+	}
 	return &money.Adapter{Name: Name, Wallets: wallets{c}, Transfers: transfers{c}, Webhooks: webhooks{c}, Signers: signers{c}}, nil
 }
 
@@ -331,7 +356,10 @@ func status(s string) money.Status {
 }
 
 // send moves amount of USDC out of smart account from to address, once for key: a retry is the same request to CDP,
-// which answers the user operation it made, and the same key for another transfer is refused by CDP.
+// which answers the user operation it made, and the same key for another transfer is refused by CDP. With a
+// paymaster, the most its network fee can be is held from the workspace's gas budget first, under the request's
+// idempotency key: a budget that cannot cover it refuses the transfer before CDP is asked, a transfer CDP refuses
+// releases its hold, and one it sends is charged from its receipt (economy.SettleSponsoredGas).
 //
 // shortcut: CDP keeps an idempotency key for 24 hours; a retry later than that is a new transfer. Upgrade when B46.8
 // keeps each payment's partner reference and answers its retries before the adapter is asked.
@@ -342,8 +370,24 @@ func (c *client) send(ctx context.Context, kind, key, from, to string, amount mo
 	}
 	body := map[string]any{"network": c.cfg.Network, "calls": []map[string]string{{"to": c.usdc, "value": "0",
 		"data": "0xa9059cbb" + word(strings.TrimPrefix(to, "0x"))[2:] + word(strconv.FormatInt(amount.Minor, 16))[2:]}}}
-	if c.cfg.PaymasterURL != "" {
+	ws, chainID, gasRef := partners.WorkspaceOf(ctx), chainIDs[c.cfg.Network], idempotencyKey(kind, key)
+	sponsored := c.cfg.PaymasterURL != ""
+	if sponsored {
 		body["paymasterUrl"] = c.cfg.PaymasterURL
+		if ws == "" {
+			return money.Result{}, fmt.Errorf("%w: a sponsored transfer names the workspace whose gas budget pays for it", money.ErrInvalid)
+		}
+		if err := c.cfg.Gas.HoldGas(ctx, ws, chainID, gasRef); err != nil {
+			return money.Result{}, err
+		}
+	}
+	release := func(err error) error { // CDP sent nothing
+		if sponsored {
+			if rerr := c.cfg.Gas.ReleaseGas(ctx, ws, chainID, gasRef); rerr != nil {
+				return errors.Join(err, rerr)
+			}
+		}
+		return err
 	}
 	var op struct {
 		UserOpHash string `json:"userOpHash"`
@@ -353,16 +397,24 @@ func (c *client) send(ctx context.Context, kind, key, from, to string, amount mo
 	// transfer the account cannot make when it simulates it.
 	if _, err := c.do(ctx, http.MethodPost, "/v2/evm/smart-accounts/"+from+"/user-operations/prepare-and-send", idempotencyKey(kind, key), body, &op); err != nil {
 		if held < amount.Minor && errors.Is(err, money.ErrRefused) {
-			return money.Result{}, fmt.Errorf("%w: wallet %s holds %d, not %d", money.ErrInsufficientFunds, from, held, amount.Minor)
+			return money.Result{}, release(fmt.Errorf("%w: wallet %s holds %d, not %d", money.ErrInsufficientFunds, from, held, amount.Minor))
 		}
-		return money.Result{}, err
+		if errors.Is(err, money.ErrRefused) || errors.Is(err, money.ErrInvalid) || errors.Is(err, money.ErrKeyReused) || errors.Is(err, money.ErrNotFound) {
+			return money.Result{}, release(err)
+		}
+		return money.Result{}, err // it may have been sent: the hold stands until the retry, under the same key, says
 	}
 	if op.UserOpHash == "" {
 		return money.Result{}, fmt.Errorf("%w: CDP answered no user operation", money.ErrPartnerDown)
 	}
+	if sponsored {
+		if err := c.cfg.Gas.SentGas(ctx, ws, chainID, gasRef, op.UserOpHash); err != nil {
+			return money.Result{}, err // asked again under the same key, CDP answers the same operation
+		}
+	}
 	r := money.Result{Ref: op.UserOpHash, Status: status(op.Status)}
-	if r.Status == money.StatusFailed {
-		return money.Result{}, fmt.Errorf("%w: CDP answered %s", money.ErrRefused, op.Status)
+	if r.Status == money.StatusFailed { // released, yet charged from its receipt should it land after all
+		return money.Result{}, release(fmt.Errorf("%w: CDP answered %s", money.ErrRefused, op.Status))
 	}
 	return r, nil
 }

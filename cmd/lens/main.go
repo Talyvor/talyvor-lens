@@ -2002,6 +2002,7 @@ func run() error {
 		return err
 	}
 	dualToken.SetMoneyLayer(moneyLayer)
+	dualToken.SetGasBudgetDefault(cfg.GasBudgetWei) // B48.5: what a workspace's agents' paymaster may pay before its owner tops up
 	// B46.22 — a seller who saved payout details on the money layer is paid by the weekly run there, from Talyvor's accounts.
 	marketStore.SetMoneyPayouts(dualToken, economy.TalyvorWorkspace)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
@@ -2210,6 +2211,12 @@ func run() error {
 					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
 				} else if n > 0 {
 					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
+				}
+				// B48.5: network fees a paymaster paid for agents, charged to their workspaces' budgets from the receipts.
+				if n, err := dualToken.SettleSponsoredGas(ctx); err != nil {
+					slog.Warn("agents: sponsored network fees not settled", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: sponsored network fees charged", slog.Int("operations", n))
 				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
