@@ -219,6 +219,9 @@ func (c *Collectors) Status(ctx context.Context) []CollectorStatus {
 		}
 		if !st.On {
 			st.Note = "off: needs its API key in the server setting " + col.Setting()
+			if n, ok := col.(interface{ OffNote() string }); ok && n.OffNote() != "" {
+				st.Note = n.OffNote()
+			}
 		}
 		if at, ok := last[col.Source()]; ok {
 			st.LastRetrieved = &at

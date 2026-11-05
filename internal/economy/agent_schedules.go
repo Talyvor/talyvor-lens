@@ -50,15 +50,20 @@ type AgentSchedule struct {
 	NextRunAt   time.Time  `json:"next_run_at"`
 	EndAt       *time.Time `json:"end_at,omitempty"` // no tick after it
 	Active      bool       `json:"active"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// B45.13: a standing order of a recurring plan, paid as payment requests under the plan's mandate; it waits for
+	// the owner to sign that mandate before it runs. Its FromAgentID is "" when the person pays.
+	RecurringPlanID   string    `json:"recurring_plan_id,omitempty"`
+	AwaitingSignature bool      `json:"awaiting_signature,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // AgentScheduleRun is one tick of a schedule: paid (EntryID is the payment's entry, UseID the listing's billed use,
 // or PaymentID the payment out, whose status Detail then is), refused (Detail says why) or skipped by the owner.
 type AgentScheduleRun struct {
 	TickAt    time.Time `json:"tick_at"`
-	Outcome   string    `json:"outcome"` // paid | refused | skipped
+	Outcome   string    `json:"outcome"` // paid | refused | skipped | awaiting_approval (B45.13)
 	EntryID   string    `json:"entry_id,omitempty"`
+	RequestID string    `json:"request_id,omitempty"` // B45.13: the payment request a recurring plan's tick prepared
 	UseID     string    `json:"use_id,omitempty"`
 	PaymentID string    `json:"payment_id,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
@@ -91,13 +96,13 @@ func nextTick(t time.Time, every string) time.Time {
 	}
 }
 
-const agentScheduleColumns = `id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''), amount_ulxc,
-	amount_minor, currency, memo, every, next_run_at, end_at, active, created_at`
+const agentScheduleColumns = `id, COALESCE(from_agent_id, ''), COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''), amount_ulxc,
+	amount_minor, currency, memo, every, next_run_at, end_at, active, created_at, COALESCE(recurring_plan_id, ''), awaiting_signature`
 
 func scanAgentSchedule(row pgx.Row) (AgentSchedule, error) {
 	var sc AgentSchedule
 	err := row.Scan(&sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.ToPayeeID, &sc.AmountULXC, &sc.AmountMinor, &sc.Currency, &sc.Memo,
-		&sc.Every, &sc.NextRunAt, &sc.EndAt, &sc.Active, &sc.CreatedAt)
+		&sc.Every, &sc.NextRunAt, &sc.EndAt, &sc.Active, &sc.CreatedAt, &sc.RecurringPlanID, &sc.AwaitingSignature)
 	return sc, err
 }
 
@@ -303,7 +308,8 @@ func (s *DualTokenStore) ListAgentScheduleRuns(ctx context.Context, workspaceID,
 	if !exists {
 		return nil, ErrScheduleNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT tick_at, outcome, COALESCE(entry_id::text, ''), COALESCE(use_id, ''), COALESCE(payment_id, ''), detail, created_at
+	rows, err := s.pool.Query(ctx, `SELECT tick_at, outcome, COALESCE(entry_id::text, ''), COALESCE(use_id, ''), COALESCE(payment_id, ''), detail, created_at,
+		COALESCE(request_id, '')
 		FROM agent_schedule_runs WHERE schedule_id = $1 ORDER BY tick_at DESC LIMIT 500`, scheduleID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: schedule runs: %w", err)
@@ -312,7 +318,7 @@ func (s *DualTokenStore) ListAgentScheduleRuns(ctx context.Context, workspaceID,
 	out := []AgentScheduleRun{}
 	for rows.Next() {
 		var r AgentScheduleRun
-		if err := rows.Scan(&r.TickAt, &r.Outcome, &r.EntryID, &r.UseID, &r.PaymentID, &r.Detail, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.TickAt, &r.Outcome, &r.EntryID, &r.UseID, &r.PaymentID, &r.Detail, &r.CreatedAt, &r.RequestID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -322,7 +328,7 @@ func (s *DualTokenStore) ListAgentScheduleRuns(ctx context.Context, workspaceID,
 
 // CancelAgentSchedule stops a schedule; its runs are kept.
 func (s *DualTokenStore) CancelAgentSchedule(ctx context.Context, workspaceID, scheduleID string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_payment_schedules SET active = false WHERE id = $1 AND workspace_id = $2`, scheduleID, workspaceID)
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_payment_schedules SET active = false, awaiting_signature = false WHERE id = $1 AND workspace_id = $2`, scheduleID, workspaceID)
 	if err != nil {
 		return fmt.Errorf("economy: cancel schedule: %w", err)
 	}
@@ -438,16 +444,30 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 	defer func() { _ = tx.Rollback(ctx) }()
 	var workspaceID string
 	var sc AgentSchedule
-	err = tx.QueryRow(ctx, `SELECT workspace_id, id, from_agent_id, COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''),
-		amount_ulxc, amount_minor, currency, memo, every, next_run_at
+	err = tx.QueryRow(ctx, `SELECT workspace_id, id, COALESCE(from_agent_id, ''), COALESCE(to_agent_id, ''), COALESCE(to_listing_id, ''), COALESCE(to_payee_id, ''),
+		amount_ulxc, amount_minor, currency, memo, every, next_run_at, COALESCE(recurring_plan_id, '')
 		FROM agent_payment_schedules WHERE active AND next_run_at <= $1 ORDER BY next_run_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`, now).
 		Scan(&workspaceID, &sc.ID, &sc.FromAgentID, &sc.ToAgentID, &sc.ToListingID, &sc.ToPayeeID, &sc.AmountULXC, &sc.AmountMinor, &sc.Currency,
-			&sc.Memo, &sc.Every, &sc.NextRunAt)
+			&sc.Memo, &sc.Every, &sc.NextRunAt, &sc.RecurringPlanID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("economy: due schedule: %w", err)
+	}
+	if sc.RecurringPlanID != "" { // B45.13: a payment request judged by the plan's mandate
+		outcome, requestID, paymentID, detail, err := s.runRecurringTick(ctx, tx, workspaceID, sc)
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO agent_schedule_runs (schedule_id, tick_at, outcome, payment_id, request_id, detail)
+			VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)`, sc.ID, sc.NextRunAt, outcome, paymentID, requestID, detail); err != nil {
+			return "", fmt.Errorf("economy: record schedule run: %w", err)
+		}
+		if _, err := advanceSchedule(ctx, tx, sc); err != nil {
+			return "", err
+		}
+		return outcome, tx.Commit(ctx)
 	}
 	payee := Payee{Kind: "agent", ID: sc.ToAgentID} // the payer's payee lists judge a scheduled payment too (B28.303)
 	if sc.ToListingID != "" {

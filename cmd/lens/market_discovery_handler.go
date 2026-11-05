@@ -19,6 +19,7 @@ import (
 // B32.50 — discovery: trending by distinct buyers, search by capability and price, public collections.
 //
 //	GET    /v1/marketplace/search?q=&capability=&kind=&licence=&max_price_per_use=&min_eval=&verified_only=&sort=&page=&currency=
+//	GET    /v1/marketplace/ask?q=&volume=&currency=                       B41.171: up to three listings for a job, each with its estimate
 //	GET    /v1/marketplace/capabilities                                   the controlled list a listing declares from
 //	PUT    /v1/workspaces/{wsID}/marketplace/listings/{id}/capabilities   {capabilities: [...]}   what the listing can do
 //	GET    /v1/marketplace/collections                                    the public collections, the featured first
@@ -97,6 +98,26 @@ func mountMarketDiscoveryRoutes(r chi.Router, store *market.Store) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, page)
+	})
+	// B41.171: q is the job in words; volume is how many uses to price (absent: the first number in q, or one).
+	r.Get("/v1/marketplace/ask", func(w http.ResponseWriter, req *http.Request) {
+		v := req.URL.Query()
+		volume := 0
+		if s := v.Get("volume"); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n < 1 {
+				writeJSONErr(w, http.StatusBadRequest, "volume must be a whole number of uses, at least 1")
+				return
+			}
+			volume = n
+		}
+		viewer, _ := auth.WorkspaceIdentity(req.Context())
+		answer, err := store.Ask(req.Context(), viewer, v.Get("currency"), v.Get("q"), volume)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, answer)
 	})
 	r.Get("/v1/marketplace/capabilities", func(w http.ResponseWriter, req *http.Request) {
 		caps, err := store.Capabilities(req.Context())

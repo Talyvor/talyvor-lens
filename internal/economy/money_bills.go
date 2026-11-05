@@ -400,7 +400,7 @@ func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID
 		it.Flags = append(it.Flags, ItemFlag{FlagBankDetailsChanged, "the bank details on invoice " + it.Reference +
 			" differ from those saved for " + it.PayeeName + ": the saved ones are paid"})
 	}
-	return "", s.riskFlags(ctx, workspaceID, it, b.InvoiceNumber, p.NewPayee)
+	return "", s.riskFlags(ctx, workspaceID, it, b.InvoiceNumber, p.NewPayee, false)
 }
 
 // PrepareBillsPayment (B41.102) prepares paying workspaceID's bills as one payment request, for one approval: the

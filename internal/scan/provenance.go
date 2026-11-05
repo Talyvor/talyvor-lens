@@ -70,6 +70,7 @@ type Displayable struct {
 	Value       float64
 	Unit        string
 	Attribution []string
+	Licences    []string // each source behind it: its name and licence
 }
 
 type Store struct{ pool *pgxpool.Pool }
@@ -184,7 +185,7 @@ func (s *Store) ForDisplay(ctx context.Context, id int64) (Displayable, error) {
 	rows, err := s.pool.Query(ctx, `WITH RECURSIVE tree(id) AS (
 			SELECT $1::bigint
 			UNION SELECT i.input_id FROM scan_point_inputs i JOIN tree t ON i.point_id = t.id)
-		SELECT DISTINCT s.name, s.attribution, s.public_display, s.redistribute_derived
+		SELECT DISTINCT s.name, s.licence, s.attribution, s.public_display, s.redistribute_derived
 		FROM tree t JOIN scan_points p ON p.id = t.id JOIN scan_sources s ON s.id = p.source_id
 		ORDER BY s.name`, id)
 	if err != nil {
@@ -192,15 +193,16 @@ func (s *Store) ForDisplay(ctx context.Context, id int64) (Displayable, error) {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var name, attribution string
+		var name, licence, attribution string
 		var display, derived bool
-		if err := rows.Scan(&name, &attribution, &display, &derived); err != nil {
+		if err := rows.Scan(&name, &licence, &attribution, &display, &derived); err != nil {
 			return Displayable{}, err
 		}
 		if !display || (kind == "derived" && !derived) {
 			return Displayable{}, fmt.Errorf("%w: %s", ErrNotDisplayable, name)
 		}
 		out.Attribution = append(out.Attribution, attribution)
+		out.Licences = append(out.Licences, name+": "+licence)
 	}
 	return out, rows.Err()
 }
