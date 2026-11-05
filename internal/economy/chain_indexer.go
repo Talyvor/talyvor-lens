@@ -429,6 +429,9 @@ func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) 
 	_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4,
 		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
 		m.id, status, posted, e.ID, reverse)
+	if err == nil {
+		x.matchRequest(ctx, m, reverse) // B48.10
+	}
 	return err
 }
 
