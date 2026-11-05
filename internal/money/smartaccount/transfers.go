@@ -61,10 +61,10 @@ func (c Chain) Head(ctx context.Context) (int64, error) {
 	return n.Int64(), nil
 }
 
-// TransferTxs is every transaction with a Transfer of token into or out of one of accounts from block from to block to,
-// inclusive, each once.
-func (c Chain) TransferTxs(ctx context.Context, token string, accounts []string, from, to int64) ([]string, error) {
-	if len(accounts) == 0 || from > to {
+// TransferTxs is every transaction with a Transfer of one of tokens into or out of one of accounts from block from to
+// block to, inclusive, each once.
+func (c Chain) TransferTxs(ctx context.Context, tokens, accounts []string, from, to int64) ([]string, error) {
+	if len(tokens) == 0 || len(accounts) == 0 || from > to {
 		return nil, nil
 	}
 	topics := make([]string, 0, len(accounts))
@@ -80,7 +80,7 @@ func (c Chain) TransferTxs(ctx context.Context, token string, accounts []string,
 	// Two asks, as a node filters each topic by itself: the transfers into the accounts, then those out of them.
 	for _, filter := range [][]any{{TransferTopic, nil, topics}, {TransferTopic, topics}} {
 		var logs []rpcLog
-		if err := c.rpc(ctx, c.RPCURL, "eth_getLogs", []any{map[string]any{"address": token, "topics": filter,
+		if err := c.rpc(ctx, c.RPCURL, "eth_getLogs", []any{map[string]any{"address": tokens, "topics": filter,
 			"fromBlock": quantity(big.NewInt(from)), "toBlock": quantity(big.NewInt(to))}}, &logs); err != nil {
 			return nil, err
 		}
