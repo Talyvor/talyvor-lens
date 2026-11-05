@@ -312,6 +312,8 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 		reason = "the charge is more than the card's limit of " + minorString(c.PerPaymentLimitMinor, c.Currency) + " a payment"
 	case slices.Contains(c.BlockedMCCs, d.MCC) && slices.Contains(GamblingMCCs, d.MCC):
 		reason = "the card is blocked from gambling"
+	case len(c.BlockedMCCs) > 0 && d.MCC == money.Unknown: // a blocked category cannot be dodged by the issuer leaving it out
+		reason = "the card does not pay where the merchant category is unknown"
 	case slices.Contains(c.BlockedMCCs, d.MCC):
 		reason = "the card is blocked in merchant category " + d.MCC
 	case len(c.AllowedMCCs) > 0 && !slices.Contains(c.AllowedMCCs, d.MCC):

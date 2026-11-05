@@ -101,6 +101,7 @@ func TestB532_TheOwnersReusableCardPaysWithinItsLimitsAndCategoriesAndFreezes(t 
 		t.Fatalf("block gambling = %d %+v, want gambling blocked beside 5541", code, got)
 	}
 	charge(mine, "William Hill", 1000, false, "blocked from gambling")
+	charge(mine, "Unlabelled Casino", 1000, false, "merchant category is unknown") // a block cannot be dodged by leaving the category out
 
 	if code, got = call(http.MethodPatch, "/v1/money/reusable-cards/"+mine.ID, `{"frozen":true}`); code != http.StatusOK || got.Status != economy.ReusableCardFrozen {
 		t.Fatalf("freeze = %d %+v, want frozen", code, got)
