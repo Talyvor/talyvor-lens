@@ -163,15 +163,21 @@ func (s *DualTokenStore) orderPhysicalCard(ctx context.Context, workspaceID, nam
 		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
 	}
 	ctx = context.WithoutCancel(ctx) // a caller that goes away does not leave the card half ordered
-	card, err := issuer.Issue(ctx, money.IssueCard{Key: id, Wallet: from.partnerRef, FormFactor: money.CardPhysical})
-	if err != nil {
-		// Nothing was issued: the order is undone, and the card it replaces may be replaced again.
+	// undo takes the order back: the card it replaces may be replaced again.
+	undo := func() {
 		_, _ = s.pool.Exec(ctx, `UPDATE money_physical_cards SET replaced_by = '', replace_reason = '' WHERE replaced_by = $1`, id)
 		_, _ = s.pool.Exec(ctx, `DELETE FROM money_physical_cards WHERE id = $1`, id)
+	}
+	card, err := issuer.Issue(ctx, money.IssueCard{Key: id, Wallet: from.partnerRef, FormFactor: money.CardPhysical})
+	if err != nil {
+		undo()
 		return PhysicalCard{}, err
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE money_physical_cards SET state = $2, partner = $3, partner_ref = $4, last4 = $5, updated_at = now()
 		WHERE id = $1`, id, card.State, partner, card.Ref, card.Last4); err != nil {
+		// A card Lens cannot record (its ref already names another) is closed at the issuer, and the order undone.
+		_, _ = issuer.Close(ctx, "undo:"+id, card.Ref)
+		undo()
 		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
 	}
 	return s.physicalCard(ctx, workspaceID, id)
@@ -201,7 +207,14 @@ func (s *DualTokenStore) ActivatePhysicalCard(ctx context.Context, workspaceID, 
 	if s.moneyLayer == nil {
 		return PhysicalCard{}, ErrAgentWalletsOff
 	}
-	c, err := s.physicalCard(ctx, workspaceID, id)
+	// The card's row is locked until the issuer has answered and its answer is written, as a replace locks it, so a
+	// replace never lands between the two and leaves the row active while the issuer holds the card frozen.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	c, err := readPhysicalCard(ctx, tx, workspaceID, id, " FOR UPDATE")
 	switch {
 	case err != nil:
 		return c, err
@@ -218,11 +231,18 @@ func (s *DualTokenStore) ActivatePhysicalCard(ctx context.Context, workspaceID, 
 	if err != nil {
 		return c, err
 	}
-	card, err := issuer.Activate(context.WithoutCancel(ctx), id, c.partnerRef)
+	ctx = context.WithoutCancel(ctx)
+	card, err := issuer.Activate(ctx, id, c.partnerRef)
 	if err != nil {
 		return c, err
 	}
-	return s.setPhysicalCardState(ctx, workspaceID, id, card.State)
+	if err := setPhysicalCardState(ctx, tx, workspaceID, id, card.State); err != nil {
+		return c, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return c, fmt.Errorf("economy: physical card: %w", err)
+	}
+	return s.physicalCard(ctx, workspaceID, id)
 }
 
 // ReplacePhysicalCard freezes workspaceID's card id at the issuer, at once, and orders a new one to the same address:
@@ -234,7 +254,13 @@ func (s *DualTokenStore) ReplacePhysicalCard(ctx context.Context, workspaceID, i
 	if reason != "lost" && reason != "stolen" && reason != "damaged" {
 		return old, card, fmt.Errorf("%w: a card is replaced as lost, stolen or damaged, not %q", ErrPhysicalCard, reason)
 	}
-	if old, err = s.physicalCard(ctx, workspaceID, id); err != nil {
+	// The card's row is locked while it is frozen at the issuer and the freeze written, as an activation locks it.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return old, card, fmt.Errorf("economy: physical card: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if old, err = readPhysicalCard(ctx, tx, workspaceID, id, " FOR UPDATE"); err != nil {
 		return old, card, err
 	}
 	switch {
@@ -247,12 +273,16 @@ func (s *DualTokenStore) ReplacePhysicalCard(ctx context.Context, workspaceID, i
 	if err != nil {
 		return old, card, err
 	}
-	frozen, err := issuer.Freeze(context.WithoutCancel(ctx), "replace:"+id, old.partnerRef)
+	ctx = context.WithoutCancel(ctx)
+	frozen, err := issuer.Freeze(ctx, "replace:"+id, old.partnerRef)
 	if err != nil {
 		return old, card, err
 	}
-	if _, err = s.setPhysicalCardState(ctx, workspaceID, id, frozen.State); err != nil {
+	if err = setPhysicalCardState(ctx, tx, workspaceID, id, frozen.State); err != nil {
 		return old, card, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return old, card, fmt.Errorf("economy: physical card: %w", err)
 	}
 	if card, err = s.orderPhysicalCard(ctx, workspaceID, old.NameOnCard, old.Address, id, reason); err != nil {
 		return old, card, err
@@ -282,12 +312,12 @@ func (s *DualTokenStore) DeliverPhysicalCard(ctx context.Context, workspaceID, i
 	return s.physicalCard(ctx, workspaceID, id)
 }
 
-func (s *DualTokenStore) setPhysicalCardState(ctx context.Context, workspaceID, id, state string) (PhysicalCard, error) {
-	if _, err := s.pool.Exec(ctx, `UPDATE money_physical_cards SET state = $3, updated_at = now() WHERE id = $1 AND workspace_id = $2`,
+func setPhysicalCardState(ctx context.Context, tx pgx.Tx, workspaceID, id, state string) error {
+	if _, err := tx.Exec(ctx, `UPDATE money_physical_cards SET state = $3, updated_at = now() WHERE id = $1 AND workspace_id = $2`,
 		id, workspaceID, state); err != nil {
-		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
+		return fmt.Errorf("economy: physical card: %w", err)
 	}
-	return s.physicalCard(ctx, workspaceID, id)
+	return nil
 }
 
 const physicalCardCols = `id, last4, state, name_on_card, address, delivery_status, delivery_updated_at, replaces, replaced_by, created_at,
@@ -305,8 +335,13 @@ func (c PhysicalCard) shown() PhysicalCard {
 
 // physicalCard reads workspaceID's card id, unless it is still being ordered.
 func (s *DualTokenStore) physicalCard(ctx context.Context, workspaceID, id string) (PhysicalCard, error) {
+	return readPhysicalCard(ctx, s.pool, workspaceID, id, "")
+}
+
+// readPhysicalCard is physicalCard read through db, with lock (" FOR UPDATE", or "") appended to the query.
+func readPhysicalCard(ctx context.Context, db pgxDB, workspaceID, id, lock string) (PhysicalCard, error) {
 	var c PhysicalCard
-	err := s.pool.QueryRow(ctx, `SELECT `+physicalCardCols+` FROM money_physical_cards WHERE id = $1 AND workspace_id = $2 AND state <> $3`,
+	err := db.QueryRow(ctx, `SELECT `+physicalCardCols+` FROM money_physical_cards WHERE id = $1 AND workspace_id = $2 AND state <> $3`+lock,
 		id, workspaceID, physicalCardOrdering).Scan(c.fields()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrPhysicalCardNotFound
