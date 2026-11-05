@@ -306,7 +306,7 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO agent_spend_permission_uses (agent_id, workspace_id, permission_number, token, counterparty, amount, used_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, agentID, workspaceID, t.Number, token, to, pay.Amount.Int64(), now); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, agentID, workspaceID, t.Number, token, to, pay.Total().Int64(), now); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
 		return nil
