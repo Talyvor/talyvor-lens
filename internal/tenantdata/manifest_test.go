@@ -334,6 +334,7 @@ var w626PopulationDelta = []string{
 	"market_receipts",        // B32.40: keyed buyer_workspace_id, classified in the manifest
 	"market_refunds",         // B20.4: keyed seller_/buyer_workspace_id, classified in the manifest
 	"market_reviews",         // B32.49: keyed buyer_workspace_id, classified in the manifest
+	"market_use_outcomes",    // B41.173: keyed buyer_workspace_id, classified in the manifest
 	"market_uses",            // B20.2: keyed seller_/buyer_workspace_id, classified in the manifest
 	"node_latency_mints",
 	"pool_royalty_mints",
@@ -341,6 +342,7 @@ var w626PopulationDelta = []string{
 	"room_messages",      // B32.30: keyed author_workspace_id, classified in the manifest
 	"room_prizes",        // B32.35: keyed poster_workspace_id, classified in the manifest
 	"room_reports",       // B32.52: keyed reporter_workspace_id, classified in the manifest
+	"room_takeovers",     // B41.148: keyed owner_/noticed_by_/elected_workspace_id, classified in the manifest
 	"rooms",              // B32.28: keyed owner_workspace_id, classified in the manifest
 	"routing_prediction_mints", "royalty_detector_findings",
 	"test_crossing_reversals", // B26.15: keyed from_/to_workspace_id, classified in the manifest

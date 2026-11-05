@@ -1,0 +1,50 @@
+{
+ "links": null,
+ "num_pages": 1,
+ "flights": [
+  {
+   "ident": "EXA5",
+   "ident_icao": "EXA5",
+   "fa_flight_id": "EXA5-1730000000-0",
+   "registration": "N102EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KPBI",
+    "code_icao": "KPBI",
+    "code_iata": "PBI"
+   },
+   "actual_off": "2026-11-01T06:02:00Z",
+   "actual_on": "2026-11-01T16:02:00Z",
+   "aircraft_type": "GLF6"
+  },
+  {
+   "ident": "EXA6",
+   "ident_icao": "EXA6",
+   "fa_flight_id": "EXA6-1730000000-0",
+   "registration": "N102EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KSFO",
+    "code_icao": "KSFO",
+    "code_iata": "SFO"
+   },
+   "actual_off": "2026-11-02T03:30:00Z",
+   "actual_on": "2026-11-02T13:30:00Z",
+   "aircraft_type": "GLF6"
+  }
+ ]
+}

@@ -403,6 +403,31 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 	return out, nil
 }
 
+// CollectEarnings brings into workspaceID's own account, once per key, the test money a bill collected for earnings it
+// is about to pay out — the marketplace's sales, collected on its buyers' bills (B17.343) — opening the account at the
+// partner when it has none. Live money is not brought in here: it arrives at the account's details as any payment in.
+func (s *DualTokenStore) CollectEarnings(ctx context.Context, workspaceID, currency, funding, key string, amountMinor int64) error {
+	if funding != FundingTest || amountMinor <= 0 {
+		return nil
+	}
+	in := OutsidePayment{Currency: currency}
+	to, err := s.payingAccount(ctx, workspaceID, in)
+	if errors.Is(err, ErrMoneyAccountNotFound) && currency != CurrencyUSDC { // shortcut: no USDC account is opened here; upgrade when a USDC payout is due
+		if _, err = s.openCompanyCurrencyAccount(ctx, workspaceID, currency); err != nil && !errors.Is(err, ErrCurrencyAccountExists) {
+			return err
+		}
+		to, err = s.payingAccount(ctx, workspaceID, in)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.PostMoney(ctx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsIn, Kind: "earnings_collected",
+		IdempotencyKey: "earnings_collected:" + key, Funding: FundingTest, Counterparty: "Stripe", // the bills are collected at Stripe
+		Memo:     minorString(amountMinor, currency) + " collected for " + key,
+		Postings: []MoneyPosting{{AccountID: to.partnerID, AmountMinor: -amountMinor}, {AccountID: to.id, AmountMinor: amountMinor}}})
+	return err
+}
+
 // refuseLiveEarnings is why live money may not be paid out of workspaceID — payments_out not cleared for it — or nil.
 func refuseLiveEarnings(ctx context.Context, q pgxDB, workspaceID string) error {
 	c, _ := CapabilityByKey(CapabilityPaymentsOut)

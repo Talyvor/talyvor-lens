@@ -1,0 +1,28 @@
+{
+ "links": null,
+ "num_pages": 1,
+ "flights": [
+  {
+   "ident": "OEX1",
+   "ident_icao": "OEX1",
+   "fa_flight_id": "OEX1-1730000000-0",
+   "registration": "N109EX",
+   "blocked": false,
+   "diverted": false,
+   "cancelled": false,
+   "origin": {
+    "code": "KTEB",
+    "code_icao": "KTEB",
+    "code_iata": "TEB"
+   },
+   "destination": {
+    "code": "KDAL",
+    "code_icao": "KDAL",
+    "code_iata": "DAL"
+   },
+   "actual_off": "2026-11-02T00:00:00Z",
+   "actual_on": "2026-11-02T10:00:00Z",
+   "aircraft_type": "GLF6"
+  }
+ ]
+}

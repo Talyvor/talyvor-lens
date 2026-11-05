@@ -121,6 +121,7 @@ func newB504World(t *testing.T, model market.Runner) *b504World {
 	w.srv.SetMandates(bank)
 	w.srv.SetSearcher(bank)
 	w.srv.SetPaymentRequests(bank)
+	w.srv.SetRecurringPayments(bank)
 	w.srv.SetMarket(mkt, deps)
 	w.srv.SetRooms(rs, deps)
 	if len(w.srv.tools()) != len(toolAnnotations) {

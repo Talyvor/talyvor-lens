@@ -34,21 +34,7 @@ func TestB4625_TheSyntheticPayoutRunPaysATestSellerOnTheMoneyLayer(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	// The marketplace's dollar account holds $100.00 to pay sellers from.
-	acct, err := bank.OpenCurrencyAccount(ctx, marketplace, "", "USD", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var partnerAccount string
-	if err := pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND purpose = 'partner' AND currency = 'USD'`, marketplace).
-		Scan(&partnerAccount); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bank.PostMoney(ctx, economy.MoneyEntry{WorkspaceID: marketplace, Capability: economy.CapabilityPaymentsIn, Kind: "test_top_up",
-		IdempotencyKey: "top-up-USD", Funding: economy.FundingTest, Counterparty: "Test payer", Postings: []economy.MoneyPosting{
-			{AccountID: partnerAccount, AmountMinor: -10_000}, {AccountID: acct.ID, AmountMinor: 10_000}}}); err != nil {
-		t.Fatal(err)
-	}
+	// B17.343 — the marketplace starts with no dollar account: the run opens it and brings in what the bill collected.
 	if _, err := bank.SavePayoutDetails(ctx, seller, economy.PayoutDetails{Asset: "USD", Holder: "Sam Seller", IBAN: "GB82WEST12345698765432"}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +84,15 @@ func TestB4625_TheSyntheticPayoutRunPaysATestSellerOnTheMoneyLayer(t *testing.T)
 		got[seller+" sale"].Status != economy.PaymentCompleted || got[seller+" royalty"].Status != economy.PaymentCompleted {
 		t.Fatalf("the money layer paid %+v, want the seller's completed $30.00 sale and $10.00 royalty, once each", paid)
 	}
-	if b, err := bank.Balance(ctx, marketplace, acct.ID); err != nil || b.TestMinor != 10_000-4000 {
-		t.Errorf("the marketplace's USD account holds %+v (%v), want $60.00 left", b, err)
+	var acct string
+	var collected int64
+	if err := pool.QueryRow(ctx, `SELECT a.id, COALESCE((SELECT sum(p.amount_minor) FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
+		WHERE p.account_id = a.id AND e.kind = 'earnings_collected'), 0)::bigint FROM money_accounts a
+		WHERE a.workspace_id = $1 AND a.purpose = 'company' AND a.currency = 'USD'`, marketplace).Scan(&acct, &collected); err != nil {
+		t.Fatalf("the run opened no USD account for the marketplace: %v", err)
+	}
+	if b, err := bank.Balance(ctx, marketplace, acct); err != nil || collected != 4000 || b.TestMinor != 0 {
+		t.Errorf("the marketplace's USD account collected %d and holds %+v (%v), want $40.00 collected and all of it paid out", collected, b, err)
 	}
 
 	// A test seller without payout details is still paid by a synthetic Stripe transfer, never on the money layer.
