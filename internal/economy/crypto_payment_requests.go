@@ -21,11 +21,13 @@ import (
 // An agent, or its owner, asks for an amount of USDC on one network the chain indexer reads, with a memo and an expiry.
 // The request is a link to share, an EIP-681 URI for a wallet or a QR code, and an x402 payment requirement for an
 // agent. Nothing here moves money: when the indexer posts a deposit into the wallet (ChainIndexer.move), the deposit
-// is matched to the wallet's oldest open request it fits — one naming the sender first, then one it pays exactly — and
-// a reorg that takes the deposit back takes back its match. A request is then paid, partly paid (what is left is
-// shown), or overpaid (the owner says refund or keep); a payment seen after the expiry does not count and is shown as
-// late. A request naming a payer that is another Talyvor agent lands in that agent's owner's approvals, with the
-// trust Talyvor has in the requester.
+// is matched to the wallet's oldest open request it fits — one naming the sender, whatever it pays; otherwise one
+// naming no payer that it pays exactly, before its expiry — and never a deposit from the workspace's own wallets (an
+// owner's top-up pays no request). A reorg that takes the deposit back takes back its match. A request naming its
+// payer is then paid, partly paid (what is left is shown), or overpaid (the owner says refund or keep); a payment seen
+// after the expiry does not count and is shown as late. A request naming a payer that is another Talyvor agent lands
+// in that agent's owner's approvals, with the trust Talyvor has in the requester; the requester is answered the same
+// whether the address is a Talyvor agent's or not, and a workspace names at most PayerRequestsPerDay payers a day.
 
 var (
 	// ErrCryptoRequest: arguments a request cannot have.
@@ -34,10 +36,14 @@ var (
 	ErrCryptoRequestNotFound = errors.New("economy: no such request to be paid")
 	// ErrCryptoRequestConflict: the Idempotency-Key was used before for another request.
 	ErrCryptoRequestConflict = errors.New("economy: this Idempotency-Key was already used for a different request")
-	// ErrCryptoRequestWaiting: this agent's earlier request to the same Talyvor agent still waits in its owner's
-	// approvals — one at a time, so no agent can fill another owner's approvals.
-	ErrCryptoRequestWaiting = errors.New("economy: this agent's earlier request to that agent still waits for its owner")
+	// ErrCryptoRequestLimit: the workspace named PayerRequestsPerDay payers in the last day.
+	ErrCryptoRequestLimit = errors.New("economy: this workspace has asked named payers as many times as it may today")
+	// ErrCryptoRequestChain: the network's node did not say the token's EIP-712 domain.
+	ErrCryptoRequestChain = errors.New("economy: the network's node could not be read; try again")
 )
+
+// DefaultPayerRequestsPerDay is how many requests naming a payer a workspace may make a day — a proposal for Nicolai.
+const DefaultPayerRequestsPerDay = 20
 
 // CryptoRequestLinkBase is the app's page for a request: the link that is shared.
 const CryptoRequestLinkBase = "https://app.talyvor.com/request/"
@@ -54,7 +60,6 @@ type CryptoRequestIn struct {
 	PayerAddress   string    `json:"payer_address,omitempty"` // only this address's payments count; a Talyvor agent's is asked in its owner's approvals
 	IdempotencyKey string    `json:"-"`
 	CreatedBy      string    `json:"-"`
-	Trust          string    `json:"-"` // the requester's trust level as its approval card shows it (B45.24)
 }
 
 // CryptoRequestPayment is one deposit matched to a request.
@@ -74,6 +79,8 @@ type CryptoRequest struct {
 	Network        string                 `json:"network"`
 	ChainID        int64                  `json:"chain_id"`
 	Asset          string                 `json:"asset"` // the token's contract
+	AssetName      string                 `json:"-"`     // its EIP-712 domain, as the contract says
+	AssetVersion   string                 `json:"-"`
 	PayTo          string                 `json:"pay_to"`
 	AmountMinor    int64                  `json:"amount_minor"`
 	Memo           string                 `json:"memo"`
@@ -116,7 +123,7 @@ func (r *CryptoRequest) fill(now time.Time) {
 			"scheme": "exact", "network": r.Network, "maxAmountRequired": strconv.FormatInt(r.RemainingMinor, 10),
 			"resource": r.Link, "description": r.Memo, "mimeType": "application/json", "payTo": r.PayTo,
 			"maxTimeoutSeconds": int64(r.ExpiresAt.Sub(now).Seconds()), "asset": r.Asset,
-			"extra": map[string]any{"name": "USD Coin", "version": "2"}}}}
+			"extra": map[string]any{"name": r.AssetName, "version": r.AssetVersion}}}}
 	}
 }
 
@@ -151,8 +158,13 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		}
 	}
 	var payTo string
-	err := x.s.pool.QueryRow(ctx, `SELECT address FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
-		in.AgentID, in.WorkspaceID).Scan(&payTo)
+	var own, replay bool
+	var named int
+	err := x.s.pool.QueryRow(ctx, `SELECT address, `+ownWallet("$2", "$3")+`,
+		EXISTS (SELECT 1 FROM crypto_payment_requests WHERE workspace_id = $2 AND idempotency_key = $4),
+		(SELECT count(*) FROM crypto_payment_requests WHERE workspace_id = $2 AND payer_address <> '' AND created_at > now() - interval '1 day')
+		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+		in.AgentID, in.WorkspaceID, in.PayerAddress, in.IdempotencyKey).Scan(&payTo, &own, &replay, &named)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CryptoRequest{}, ErrSmartAccountNotFound
 	}
@@ -162,13 +174,16 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 	// A payer that is another Talyvor agent is asked in its owner's approvals.
 	var payerWS, payerAgent string
 	if in.PayerAddress != "" {
+		switch {
+		case own: // its deposits never pay a request
+			return CryptoRequest{}, fmt.Errorf("%w: payer_address is one of this workspace's own wallets", ErrCryptoRequest)
+		case !replay && named >= x.PayerRequestsPerDay:
+			return CryptoRequest{}, ErrCryptoRequestLimit
+		}
 		err := x.s.pool.QueryRow(ctx, `SELECT workspace_id, agent_id FROM agent_smart_accounts WHERE lower(address) = lower($1)`,
 			in.PayerAddress).Scan(&payerWS, &payerAgent)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
-		}
-		if payerAgent == in.AgentID {
-			return CryptoRequest{}, fmt.Errorf("%w: an agent does not ask itself to pay", ErrCryptoRequest)
 		}
 		if payerAgent != "" {
 			if _, err := x.s.expireApprovals(ctx, payerAgent, "crypto_request:"+in.AgentID); err != nil {
@@ -177,6 +192,11 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		}
 	}
 
+	assetName, assetVersion, err := n.Chain.TokenDomain(ctx, n.USDC)
+	if err != nil {
+		slog.Warn("request to be paid: the token's EIP-712 domain", "network", in.Network, "err", err)
+		return CryptoRequest{}, ErrCryptoRequestChain
+	}
 	id := "cpr_" + uuid.NewString()
 	tx, err := x.s.pool.Begin(ctx)
 	if err != nil {
@@ -184,10 +204,10 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `INSERT INTO crypto_payment_requests (id, workspace_id, agent_id, network, chain_id, token, asset, pay_to,
-		amount_minor, memo, expires_at, payer_address, created_by, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING`,
+		amount_minor, memo, expires_at, payer_address, created_by, idempotency_key, asset_name, asset_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING`,
 		id, in.WorkspaceID, in.AgentID, in.Network, n.Chain.ID, money.USDC, n.USDC, payTo, in.AmountMinor, in.Memo, in.ExpiresAt,
-		in.PayerAddress, in.CreatedBy, in.IdempotencyKey)
+		in.PayerAddress, in.CreatedBy, in.IdempotencyKey, assetName, assetVersion)
 	if err != nil {
 		return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
 	}
@@ -214,23 +234,28 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		if err := tx.QueryRow(ctx, `SELECT name FROM agent_accounts WHERE id = $1`, in.AgentID).Scan(&name); err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
 		}
+		trust, err := requesterTrust(ctx, tx, in.WorkspaceID)
+		if err != nil {
+			return CryptoRequest{}, err
+		}
 		approval = "apr_" + uuid.NewString()
 		// No payee: the requester is another workspace's agent, never one this workspace's rules can allow for good. One
-		// open approval per requester and payer (idx_agent_approvals_open on the requester in the fingerprint).
+		// open approval per requester and payer (idx_agent_approvals_open on the requester in the fingerprint): a
+		// request made while one waits is kept without another, and answered the same, so no agent fills another
+		// owner's approvals nor learns from the answer whose the address is.
 		tag, err := tx.Exec(ctx, `INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, memo,
 			expires_at, payment_request_id, currency, amount_minor, trust)
 			VALUES ($1, $2, $3, $4, 0, $5, $6, LEAST($7, now() + $8 * interval '1 microsecond'), $9, $10, $11, $12)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING`,
 			approval, payerWS, payerAgent, "crypto_request:"+in.AgentID,
 			fmt.Sprintf("%s asks to be paid %s USDC on %s", name, usdcString(in.AmountMinor), in.Network), in.Memo,
-			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, in.Trust)
+			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, trust)
 		if err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: the payer's approval: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
-			return CryptoRequest{}, ErrCryptoRequestWaiting
-		}
-		if _, err := tx.Exec(ctx, `UPDATE crypto_payment_requests SET approval_id = $2 WHERE id = $1`, id, approval); err != nil {
+			approval = ""
+		} else if _, err := tx.Exec(ctx, `UPDATE crypto_payment_requests SET approval_id = $2 WHERE id = $1`, id, approval); err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
 		}
 	}
@@ -243,8 +268,28 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 	return x.s.CryptoPaymentRequest(ctx, in.WorkspaceID, id)
 }
 
-const cryptoRequestColumns = `id, workspace_id, agent_id, network, chain_id, token, asset, pay_to, amount_minor, memo, expires_at,
-	payer_address, approval_id, overpayment, created_at`
+// ownWallet is SQL for: address is one of workspace's own wallets, or a key or recovery signer of one.
+func ownWallet(workspace, address string) string {
+	return `(` + address + ` <> '' AND EXISTS (SELECT 1 FROM agent_smart_accounts o WHERE o.workspace_id = ` + workspace + ` AND lower(` +
+		address + `) IN (lower(o.address), lower(o.agent_signer), lower(o.recovery_address))))`
+}
+
+// requesterTrust is how far Talyvor trusts an agent of workspaceID, in the words an approval card shows (B45.24): the
+// name its owner's verification confirmed — by a live check, as the payer is asked for money — or that it is not
+// verified.
+func requesterTrust(ctx context.Context, q pgxDB, workspaceID string) (string, error) {
+	o, err := kyaOwner(ctx, q, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if o.Name != "" && o.LiveLevel >= LevelIdentity {
+		return "Verified agent of " + o.Name, nil
+	}
+	return "Talyvor agent, owner not verified", nil
+}
+
+const cryptoRequestColumns = `id, workspace_id, agent_id, network, chain_id, token, asset, asset_name, asset_version, pay_to, amount_minor,
+	memo, expires_at, payer_address, approval_id, overpayment, created_at`
 
 // cryptoRequests reads the requests of workspaceID, of agentID and with id — each only when given — newest first,
 // with their payments.
@@ -264,7 +309,8 @@ func (s *DualTokenStore) cryptoRequests(ctx context.Context, workspaceID, agentI
 	for rows.Next() {
 		var r CryptoRequest
 		var ws string
-		if err := rows.Scan(&r.ID, &ws, &r.AgentID, &r.Network, &r.ChainID, &r.Token, &r.Asset, &r.PayTo, &r.AmountMinor, &r.Memo,
+		if err := rows.Scan(&r.ID, &ws, &r.AgentID, &r.Network, &r.ChainID, &r.Token, &r.Asset, &r.AssetName, &r.AssetVersion, &r.PayTo,
+			&r.AmountMinor, &r.Memo,
 			&r.ExpiresAt, &r.PayerAddress, &r.ApprovalID, &r.Overpayment, &r.CreatedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("economy: requests to be paid: %w", err)
@@ -377,8 +423,9 @@ func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, revers
 	if reverse {
 		_, err = x.s.pool.Exec(ctx, `DELETE FROM crypto_payment_request_payments WHERE movement_id = $1`, m.id)
 	} else {
-		// Unexpired requests first; among them one naming this sender, then one this pays exactly, then the oldest. An
-		// expired one takes the deposit only as late, and only if it names the sender or the deposit is what was due.
+		// A request naming this sender takes any amount (after its expiry, as late); one naming no payer takes only
+		// what is due, exactly, before it expires — so a deposit that merely lands in the wallet pays nothing it does
+		// not match. Unexpired first, naming the sender first, then the oldest. The workspace's own wallets pay none.
 		_, err = x.s.pool.Exec(ctx, `
 			WITH mv AS (SELECT seen_at FROM chain_movements WHERE id = $1),
 			due AS (
@@ -387,11 +434,11 @@ func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, revers
 						WHERE p.request_id = r.id AND NOT p.late), 0) AS remaining
 				FROM crypto_payment_requests r, mv
 				WHERE r.workspace_id = $2 AND r.agent_id = $3 AND r.network = $4 AND lower(r.asset) = lower($5)
-					AND (r.payer_address = '' OR lower(r.payer_address) = lower($6)))
+					AND (r.payer_address = '' OR lower(r.payer_address) = lower($6)) AND NOT `+ownWallet("$2", "$6")+`)
 			INSERT INTO crypto_payment_request_payments (movement_id, request_id, workspace_id, amount_minor, late)
 			SELECT $1, id, $2, $7::bigint, late FROM due
-			WHERE remaining > 0 AND (NOT late OR named OR remaining = $7::bigint)
-			ORDER BY late, named DESC, remaining = $7::bigint DESC, created_at, id LIMIT 1
+			WHERE remaining > 0 AND (named OR (NOT late AND remaining = $7::bigint))
+			ORDER BY late, named DESC, created_at, id LIMIT 1
 			ON CONFLICT (movement_id) DO NOTHING`,
 			m.id, m.workspaceID, m.agentID, m.network, m.token, m.counterparty, m.amount)
 	}

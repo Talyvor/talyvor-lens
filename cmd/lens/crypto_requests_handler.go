@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -22,7 +21,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-requests/{requestID}/overpayment {decision: refund | keep}; the owner or an admin
 //	GET  /v1/crypto-requests/{requestID}                                                PUBLIC: what the shared link shows
 //
-// Creating one needs the chain indexer (LENS_CHAIN_INDEX), which matches the deposits that pay it: 503 without.
+// Creating one needs the chain indexer (LENS_CHAIN_INDEX), which matches the deposits that pay it: 503 without. A
+// payer that is another Talyvor agent is asked in its owner's approvals with the trust Talyvor has in the requester's
+// workspace; a workspace names at most payer_requests_per_day payers a day (429 beyond).
 
 func writeCryptoRequest(w http.ResponseWriter, status int, out any, err error) {
 	switch {
@@ -30,8 +31,12 @@ func writeCryptoRequest(w http.ResponseWriter, status int, out any, err error) {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrCryptoRequestNotFound), errors.Is(err, economy.ErrSmartAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, economy.ErrCryptoRequestConflict), errors.Is(err, economy.ErrCryptoRequestWaiting):
+	case errors.Is(err, economy.ErrCryptoRequestConflict):
 		writeJSONErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, economy.ErrCryptoRequestLimit):
+		writeJSONErr(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, economy.ErrCryptoRequestChain):
+		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
 	case err != nil:
 		writeJSONErr(w, http.StatusInternalServerError, "the request to be paid could not be read or kept")
 	default:
@@ -72,10 +77,6 @@ func mountCryptoRequestRoutes(r chi.Router, bank *economy.DualTokenStore, c *cha
 			return
 		}
 		in.WorkspaceID, in.AgentID, in.IdempotencyKey = chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), key
-		in.Trust = "Unverified agent"
-		if res, ok := agentsig.FromContext(req.Context()); ok {
-			in.Trust = res.Label
-		}
 		if actx := auth.GetAuthContext(req.Context()); actx != nil {
 			in.CreatedBy = actx.UserID
 			if in.CreatedBy == "" {

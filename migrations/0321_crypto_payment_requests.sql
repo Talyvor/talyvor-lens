@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS crypto_payment_requests (
     chain_id        BIGINT NOT NULL,
     token           TEXT NOT NULL,
     asset           TEXT NOT NULL,                -- the token's contract, EIP-55
+    asset_name      TEXT NOT NULL,                -- its EIP-712 domain, read from the contract: x402 signs under it
+    asset_version   TEXT NOT NULL,
     pay_to          TEXT NOT NULL,                -- the agent's smart account, EIP-55
     amount_minor    BIGINT NOT NULL CHECK (amount_minor > 0),
     memo            TEXT NOT NULL DEFAULT '',
@@ -26,6 +28,8 @@ CREATE TABLE IF NOT EXISTS crypto_payment_requests (
     UNIQUE (workspace_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_crypto_payment_requests_agent ON crypto_payment_requests (workspace_id, agent_id, network);
+-- The requests naming a payer a workspace made in the last day, which are capped.
+CREATE INDEX IF NOT EXISTS idx_crypto_payment_requests_named ON crypto_payment_requests (workspace_id, created_at) WHERE payer_address <> '';
 
 CREATE TABLE IF NOT EXISTS crypto_payment_request_payments (
     movement_id  TEXT PRIMARY KEY,               -- chain_movements.id

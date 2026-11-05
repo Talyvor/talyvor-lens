@@ -2,7 +2,13 @@ package economy
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,18 +20,42 @@ import (
 	"github.com/talyvor/lens/internal/screening"
 )
 
+// tokenNode is a node that answers eth_call of name() and version() as a USDC contract does. (Against the devnet's
+// contract: TestB486_ in cmd/lens.)
+func tokenNode(t *testing.T, name, version string) string {
+	t.Helper()
+	abi := func(s string) string { // an ABI string: offset, length, the bytes padded to 32
+		return fmt.Sprintf("0x%064x%064x%s", 32, len(s), hex.EncodeToString([]byte(s))+strings.Repeat("00", 32-len(s)%32))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage   `json:"id"`
+			Params []json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var call struct{ Data string }
+		_ = json.Unmarshal(req.Params[0], &call)
+		out := map[string]string{"0x06fdde03": abi(name), "0x54fd4d50": abi(version)}[call.Data]
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": out})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 // B48.10 on the real schema: requests to be paid into an agent's wallet, and the deposits the indexer posts matched to
-// them through its own posting path (ChainIndexer.move). A request paid exactly is paid; a partial payment shows
-// what is left; an overpayment is flagged for the owner to refund or keep; a payment after the expiry is late and does
-// not count; a reorg takes back its match; a request to another Talyvor agent lands in its owner's approvals with the
-// requester's trust, and no approver agent may approve it.
+// them through its own posting path (ChainIndexer.move). A request naming no payer is paid only by exactly what it
+// asks, before it expires; one naming its payer counts that payer's deposits — partial shows what is left, an
+// overpayment is flagged for the owner to refund or keep, one after the expiry is late and does not count; the
+// workspace's own wallets pay none; a reorg takes back its match; a request to another Talyvor agent lands in its
+// owner's approvals with the requester's trust, is answered the same as one to an unknown address, and no approver
+// agent may approve it; a workspace names at most PayerRequestsPerDay payers a day.
 func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 	pool := supplyPool(t)
 	ctx := context.Background()
 	s := NewDualTokenStore(nil, pool, nil)
 	s.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
 	const usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-	x, err := s.NewChainIndexer([]ChainNetwork{{Name: "base", Chain: smartaccount.Chain{ID: 8453, RPCURL: "http://127.0.0.1:1"}, USDC: usdc,
+	x, err := s.NewChainIndexer([]ChainNetwork{{Name: "base", Chain: smartaccount.Chain{ID: 8453, RPCURL: tokenNode(t, "USDC", "2")}, USDC: usdc,
 		Confirmations: 1, Funding: FundingTest}})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +81,7 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 	}
 	seller := agent(wsA, "Seller", "0x00000000000000000000000000000000000b4810")
 	payer := agent(wsB, "Payer", "0x00000000000000000000000000000000000B481b")
+	treasury := agent(wsA, "Treasury", "0x00000000000000000000000000000000000b481A") // the seller's owner's other wallet
 	const stranger = "0x00000000000000000000000000000000000Ba5e5"
 
 	// deposit posts amount from `from` into the seller's wallet as the indexer does once it has its confirmations.
@@ -72,7 +103,7 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 		t.Helper()
 		r, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Token: "USDC", Network: "base", AmountMinor: amount,
 			Memo: "invoice " + key, ExpiresAt: time.Now().Add(time.Hour).Truncate(time.Second), PayerAddress: payerAddr, IdempotencyKey: key,
-			CreatedBy: "owner", Trust: "Verified agent of Seller Ltd"})
+			CreatedBy: "owner"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,27 +118,46 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 		return r
 	}
 
-	// Paid exactly: closed. The deposit itself is posted once, to the agent's chain account.
+	// Paid exactly: closed. The deposit itself is posted once, to the agent's chain account. Its x402 requirement
+	// signs under the EIP-712 domain the token's contract says.
 	exact := ask("exact", 25_000000, "")
 	if exact.Status != "open" || exact.URI != "ethereum:"+usdc+"@8453/transfer?address="+wallets[seller]+"&uint256=25000000" ||
 		exact.Link != CryptoRequestLinkBase+exact.ID || exact.X402 == nil {
 		t.Fatalf("a new request: %+v", exact)
 	}
+	if extra := exact.X402["accepts"].([]map[string]any)[0]["extra"].(map[string]any); extra["name"] != "USDC" || extra["version"] != "2" {
+		t.Fatalf("x402's EIP-712 domain: %v, want the contract's USDC / 2", extra)
+	}
 	if again := ask("exact", 25_000000, ""); again.ID != exact.ID {
 		t.Fatalf("the same Idempotency-Key made %s, want %s", again.ID, exact.ID)
+	}
+	deposit(stranger, 3_000000) // any other deposit landing in the wallet pays no request naming no payer
+	if r := read(exact.ID); r.Status != "open" || r.ReceivedMinor != 0 {
+		t.Fatalf("a request naming no payer, after a deposit of another amount: %+v", r)
 	}
 	paid := deposit(stranger, 25_000000)
 	if r := read(exact.ID); r.Status != "paid" || r.ReceivedMinor != 25_000000 || r.RemainingMinor != 0 || r.X402 != nil || len(r.Payments) != 1 {
 		t.Fatalf("paid exactly: %+v", r)
 	}
-	var posted int64
+	var posted int64 // both deposits, the one that paid no request too
 	if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(p.amount_minor), 0) FROM money_postings p JOIN money_accounts a ON a.id = p.account_id
-		WHERE a.workspace_id = $1 AND a.purpose = 'chain'`, wsA).Scan(&posted); err != nil || posted != 25_000000 {
-		t.Fatalf("the wallet's chain account holds %d, %v; want 25000000", posted, err)
+		WHERE a.workspace_id = $1 AND a.purpose = 'chain'`, wsA).Scan(&posted); err != nil || posted != 28_000000 {
+		t.Fatalf("the wallet's chain account holds %d, %v; want 28000000", posted, err)
 	}
 
-	// Partly paid: what is left is asked for, by the link, the URI and x402.
-	part := ask("part", 10_000000, "")
+	// The workspace's own wallets pay no request, not even exactly, and are not a payer one may name.
+	own := ask("own", 8_000000, "")
+	deposit(wallets[treasury], 8_000000)
+	if r := read(own.ID); r.Status != "open" {
+		t.Fatalf("a request after the owner's own wallet sent its amount: %+v", r)
+	}
+	if _, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1,
+		ExpiresAt: time.Now().Add(time.Hour), PayerAddress: wallets[treasury], IdempotencyKey: "own-payer"}); !errors.Is(err, ErrCryptoRequest) {
+		t.Fatalf("naming the workspace's own wallet as payer = %v, want ErrCryptoRequest", err)
+	}
+
+	// Partly paid by the payer it names: what is left is asked for, by the link, the URI and x402.
+	part := ask("part", 10_000000, stranger)
 	deposit(stranger, 4_000000)
 	r := read(part.ID)
 	if r.Status != "partial" || r.RemainingMinor != 6_000000 || r.URI != "ethereum:"+usdc+"@8453/transfer?address="+wallets[seller]+"&uint256=6000000" {
@@ -130,7 +180,7 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 	}
 
 	// Expired: a payment after the expiry is not matched to it — it is shown as late.
-	late := ask("late", 7_000000, "")
+	late := ask("late", 7_000000, stranger)
 	if _, err := pool.Exec(ctx, `UPDATE crypto_payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1`, late.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -150,20 +200,39 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 	// Talyvor to Talyvor: the request lands in the payer's owner's approvals with the requester's trust; only the
 	// named payer's payments count; no approver agent may approve it.
 	toAgent := ask("to-agent", 12_500000, wallets[payer])
-	deposit(stranger, 12_500000) // pays the open "exact" request, never the one naming the payer
+	deposit("0x00000000000000000000000000000000000Ba5e6", 12_500000) // never the request naming the payer
 	approvals, err := s.ListAgentApprovals(ctx, wsB)
 	if err != nil || len(approvals) != 1 {
 		t.Fatalf("the payer's approvals: %+v, %v", approvals, err)
 	}
 	a := approvals[0]
 	if a.AgentID != payer || a.PaymentRequestID != toAgent.ID || a.Currency != "USDC" || a.AmountMinor != 12_500000 || a.Status != "pending" ||
-		a.Trust != "Verified agent of Seller Ltd" || a.Reason != "Seller asks to be paid 12.5 USDC on base" || a.Payee != nil || toAgent.ApprovalID != a.ID {
+		a.Trust != "Talyvor agent, owner not verified" || a.Reason != "Seller asks to be paid 12.5 USDC on base" || a.Payee != nil || toAgent.ApprovalID != a.ID {
 		t.Fatalf("the payer's approval: %+v (request %+v)", a, toAgent)
 	}
-	if _, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1, ExpiresAt: time.Now().Add(time.Hour),
-		PayerAddress: wallets[payer], IdempotencyKey: "to-agent-again"}); !errors.Is(err, ErrCryptoRequestWaiting) {
-		t.Fatalf("a second request to the same agent while the first waits = %v, want ErrCryptoRequestWaiting", err)
+	// A second request to the same agent while the first waits files no second approval, and is answered as one to
+	// an address that is no Talyvor agent's is.
+	again, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1,
+		ExpiresAt: time.Now().Add(time.Hour), PayerAddress: wallets[payer], IdempotencyKey: "to-agent-again"})
+	unknown, err2 := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1,
+		ExpiresAt: time.Now().Add(time.Hour), PayerAddress: "0x00000000000000000000000000000000000Fa4e1", IdempotencyKey: "to-nobody"})
+	if err != nil || err2 != nil || again.Status != unknown.Status {
+		t.Fatalf("to a waiting Talyvor agent: %+v, %v; to an unknown address: %+v, %v", again, err, unknown, err2)
 	}
+	if approvals, err := s.ListAgentApprovals(ctx, wsB); err != nil || len(approvals) != 1 {
+		t.Fatalf("the payer's approvals after a second request: %d, %v; want 1", len(approvals), err)
+	}
+
+	// At most PayerRequestsPerDay requests naming a payer a day, Talyvor agent or not; a replay is still answered.
+	x.PayerRequestsPerDay = 5 // part, late, to-agent, to-agent-again, to-nobody
+	if _, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1,
+		ExpiresAt: time.Now().Add(time.Hour), PayerAddress: stranger, IdempotencyKey: "one-too-many"}); !errors.Is(err, ErrCryptoRequestLimit) {
+		t.Fatalf("a sixth request naming a payer today = %v, want ErrCryptoRequestLimit", err)
+	}
+	if r := ask("part", 10_000000, stranger); r.ID != part.ID {
+		t.Fatalf("a replay at the cap made %s, want %s", r.ID, part.ID)
+	}
+	x.PayerRequestsPerDay = DefaultPayerRequestsPerDay
 	if r := read(toAgent.ID); r.Status != "open" {
 		t.Fatalf("a request naming its payer, after a stranger's deposit: %+v", r)
 	}
