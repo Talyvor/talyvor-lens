@@ -37,3 +37,6 @@ CREATE TABLE IF NOT EXISTS crypto_address_proofs (
 
 ALTER TABLE money_payments ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT ''; -- the USDC address paid, lower case
 CREATE INDEX IF NOT EXISTS idx_money_payments_address ON money_payments (workspace_id, address) WHERE address <> '';
+-- Payments made before this column count too, by their payee's address now: the best that is known of them.
+UPDATE money_payments m SET address = y.address FROM money_payees y
+    WHERE y.id = m.payee_id AND y.workspace_id = m.workspace_id AND m.address = '' AND y.address <> '';
