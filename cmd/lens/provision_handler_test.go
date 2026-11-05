@@ -28,9 +28,9 @@ import (
 // This route is what turns an authenticated session into a tenant, so it is treated as a money
 // path. Two properties carry the weight and each has a dedicated test:
 //
-//  1. THE CALLER CANNOT NAME A WORKSPACE. The id is derived from the identity inside Lens
-//     (deriveWorkspaceID). A caller that cannot express "workspace X" cannot target another
-//     tenant even with a bug, so a body-supplied workspace_id must be inert.
+//  1. THE CALLER CANNOT NAME A WORKSPACE IT IS NOT IN. The id is derived from the identity inside
+//     Lens (deriveWorkspaceID). A body-supplied workspace_id that is not the identity's own is
+//     honoured only for a live member (B52.35); for anyone else it is 403 and nothing is created.
 //  2. CHECK-THEN-CREATE, NOT UPSERT. insertWorkspaceSQL's ON CONFLICT rewrites spend_limit_usd,
 //     both allowlists, max_tokens_* and logging_policy from the body — only the three CONSENT
 //     columns are preserved. So calling RegisterWorkspace on an EXISTING workspace silently
@@ -116,7 +116,7 @@ func provisionManager(t *testing.T) (*workspace.Manager, *pgxpool.Pool) {
 func provisionRouter(t *testing.T, secret string, p provisioner, key *ecdsaKeyFixture) chi.Router {
 	t.Helper()
 	r := chi.NewRouter()
-	mountProvisionRoute(r, secret, p, nil, key.mint)
+	mountProvisionRoute(r, secret, p, nil, key.mint, nil)
 	return r
 }
 
@@ -213,7 +213,7 @@ func TestProvision_GateRefusesBadSecret(t *testing.T) {
 // matches, and the endpoint silently becomes world-writable.
 func TestProvision_RouteNotMountedWhenSecretUnset(t *testing.T) {
 	r := chi.NewRouter()
-	mountProvisionRoute(r, "", stubProvisioner{}, nil, newKeyFixture(t).mint)
+	mountProvisionRoute(r, "", stubProvisioner{}, nil, newKeyFixture(t).mint, nil)
 
 	rec, _ := doProvision(t, r, "", `{"identity":"anyone"}`)
 	if rec.Code != http.StatusNotFound {
@@ -488,8 +488,8 @@ func TestProvision_TokenIsNotAdminAndCarriesMinimalScopes(t *testing.T) {
 
 // ─── 7. the caller cannot name a workspace ──────────────────────────────────
 
-// A body-supplied workspace_id must be inert. This is the property that makes a caller bug
-// non-catastrophic: if the BFF cannot express "workspace X", it cannot aim at another tenant.
+// A body-supplied workspace_id the identity is not a member of is refused, and creates and mints nothing (B52.35). This
+// is the property that makes a caller bug non-catastrophic: the BFF cannot aim at a tenant the person is not in.
 func TestProvision_CallerSuppliedWorkspaceIDIgnored(t *testing.T) {
 	mgr, pool := provisionManager(t)
 	r := provisionRouter(t, provisionSecret, mgr, newKeyFixture(t))
@@ -503,11 +503,14 @@ func TestProvision_CallerSuppliedWorkspaceIDIgnored(t *testing.T) {
 		}
 	}
 
-	_, out := doProvision(t, r, provisionSecret,
+	rec, out := doProvision(t, r, provisionSecret,
 		`{"identity":"`+identity+`","workspace_id":"`+victim+`","id":"`+victim+`"}`)
 
-	if out.WorkspaceID != want {
-		t.Errorf("workspace_id = %q, want the DERIVED %q — a caller-named workspace was honoured", out.WorkspaceID, want)
+	if rec.Code != http.StatusForbidden || out.Token != "" {
+		t.Errorf("provision naming %q = %d %s, want 403 and no token — a caller-named workspace was honoured", victim, rec.Code, rec.Body.String())
+	}
+	if n := workspaceRowCount(t, pool, want); n != 0 {
+		t.Errorf("the caller's own workspace was created (%d rows) on a refused call", n)
 	}
 	if n := workspaceRowCount(t, pool, victim); n != 0 {
 		t.Errorf("caller-named workspace %q was created (%d rows) — the caller can name a tenant", victim, n)
@@ -582,7 +585,7 @@ func TestProvision_NewWorkspaceStartsWithTestMoneyAndFirstAgent(t *testing.T) {
 	bank := economy.NewDualTokenStore(nil, pool, nil)
 	const money = int64(25_000_000)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, money), newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, money), newKeyFixture(t).mint, nil)
 	body := `{"identity":"b457-start-` + time.Now().Format("150405.000000") + `"}`
 
 	rec, out := doProvision(t, r, provisionSecret, body)

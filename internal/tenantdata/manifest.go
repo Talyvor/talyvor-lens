@@ -284,6 +284,8 @@ var Manifest = map[string]Entry{
 	"room_prizes":                  {Delete, "B32.35: keys `poster_workspace_id`: the prizes a workspace posted in its rooms; a room's own prizes cascade with it"},
 	"room_reports":                 {Delete, "B32.52: keys `reporter_workspace_id`: the reports a workspace made of rooms and their messages; a room's own reports cascade with it"},
 	"room_takeovers":               {Delete, "B41.148: keys `noticed_by_workspace_id`: the notices a workspace gave rooms' owners; a room's own notices cascade with it"},
+	"workspace_members":            {Delete, "B52.35: the people its owner let into the workspace by invite, and when; a person's own memberships elsewhere are keyed by their identity and end with their account (B52.37)"},
+	"workspace_member_invites":     {Delete, "B52.35: the workspace's invite links, each kept as its token's SHA-256, with its expiry and use count"},
 	"room_takeover_votes":          {Delete, "B41.148: the workspace's votes for a room's lead; a notice's votes cascade with it"},
 	"room_takeover_points":         {Delete, "B41.148: the workspace's points in a room as a notice to its owner found them; a notice's cascade with it"},
 	"market_ip_claims":             {Delete, "B32.47: keys `claimant_workspace_id`: the IP claims a workspace filed, with their evidence and decision; claims against its own listings cascade with them"},

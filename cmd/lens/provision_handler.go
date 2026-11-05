@@ -59,11 +59,20 @@ type tokenMinter func(workspaceID, userID string, scopes []string, ttl time.Dura
 // provisionScopes is what a provisioned session token may do.
 var provisionScopes = []string{auth.ScopeAnalytics, auth.ScopeKeys}
 
+// memberScopes is what a member's token for another person's workspace may do (B52.35): read it. What a member may do
+// beyond reading is Nick's decision.
+var memberScopes = []string{auth.ScopeAnalytics}
+
+// memberCheck reports whether identity is a live member of a workspace it does not own (B52.35).
+type memberCheck func(ctx context.Context, workspaceID, identity string) (bool, error)
+
 type provisionRequest struct {
 	Identity      string `json:"identity"`
 	DisplayName   string `json:"display_name"`
 	CachePoolable *bool  `json:"cache_poolable"`
 	TTLHours      int    `json:"ttl_hours"`
+	// WorkspaceID, when set and not the identity's own, asks for a member's token for that workspace (B52.35).
+	WorkspaceID string `json:"workspace_id"`
 }
 
 type provisionResponse struct {
@@ -84,14 +93,14 @@ func deriveWorkspaceID(identity string) string {
 	return "u" + strings.ToLower(enc)[:26]
 }
 
-func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter) {
+func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) {
 	if secret == "" {
 		return
 	}
-	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint))
+	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint, isMember))
 }
 
-func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter) http.HandlerFunc {
+func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(req.Header.Get(provisionSecretHeader)), []byte(secret)) != 1 {
 			writeJSONErr(w, http.StatusUnauthorized, "provisioning credentials required")
@@ -108,6 +117,10 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 		}
 
 		wsID := deriveWorkspaceID(in.Identity)
+		if in.WorkspaceID != "" && in.WorkspaceID != wsID {
+			provisionMember(w, req, p, mint, isMember, in, wsID)
+			return
+		}
 		name := in.DisplayName
 		if name == "" {
 			name = wsID
@@ -172,4 +185,34 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			FirstAgent:    first,
 		})
 	}
+}
+
+// provisionMember mints a read-only token for another person's workspace, only while identity is a live member of it:
+// otherwise 403 and nothing is minted. It never creates or changes a workspace.
+func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint tokenMinter, isMember memberCheck, in provisionRequest, ownWS string) {
+	ok := false
+	if isMember != nil {
+		var err error
+		if ok, err = isMember(req.Context(), in.WorkspaceID, in.Identity); err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if _, exists := p.GetWorkspace(in.WorkspaceID); !ok || !exists {
+		writeJSONErr(w, http.StatusForbidden, "you are not a member of that workspace")
+		return
+	}
+	poolable, _ := p.CachePoolableConsent(in.WorkspaceID)
+	ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
+	tok, err := mint(in.WorkspaceID, ownWS, memberScopes, ttl)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSONOK(w, http.StatusOK, provisionResponse{
+		WorkspaceID:   in.WorkspaceID,
+		CachePoolable: poolable,
+		Token:         tok,
+		ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
+	})
 }
