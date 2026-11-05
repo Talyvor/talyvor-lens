@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // published.go — B52.33: SCAN'S PUBLISHED REPORTS, FOR ANYONE TO READ.
@@ -60,14 +62,24 @@ func familyName(series string) string {
 // Published is every approved report, newest published first; only family's when family is one of ReportFamilies.
 func (w *Writer) Published(ctx context.Context, family string) ([]PublishedReport, error) {
 	// shortcut: the newest 200 in one reply, a few a week; page it when the library outgrows that.
-	return w.published(ctx, `status = 'approved' AND ($1::text[] IS NULL OR EXISTS (
-		SELECT 1 FROM unnest($1::text[]) p WHERE starts_with(series, p))) ORDER BY reviewed_at DESC, id DESC LIMIT 200`,
+	rows, err := w.store.pool.Query(ctx, `SELECT id, series, reviewed_at, draft FROM scan_reports
+		WHERE status = 'approved' AND ($1::text[] IS NULL OR EXISTS (
+			SELECT 1 FROM unnest($1::text[]) p WHERE starts_with(series, p))) ORDER BY reviewed_at DESC, id DESC LIMIT 200`,
 		ReportFamilies[family])
+	if err != nil {
+		return nil, err
+	}
+	return w.published(ctx, rows)
 }
 
 // PublishedReport is one approved report; ErrReportNotFound for any other, whatever its status.
 func (w *Writer) PublishedReport(ctx context.Context, id int64) (PublishedReport, error) {
-	out, err := w.published(ctx, `status = 'approved' AND id = $1`, id)
+	rows, err := w.store.pool.Query(ctx, `SELECT id, series, reviewed_at, draft FROM scan_reports
+		WHERE status = 'approved' AND id = $1`, id)
+	if err != nil {
+		return PublishedReport{}, err
+	}
+	out, err := w.published(ctx, rows)
 	if err != nil {
 		return PublishedReport{}, err
 	}
@@ -77,12 +89,8 @@ func (w *Writer) PublishedReport(ctx context.Context, id int64) (PublishedReport
 	return out[0], nil
 }
 
-// published reads the reports where says, with the stored point behind each figure.
-func (w *Writer) published(ctx context.Context, where string, arg any) ([]PublishedReport, error) {
-	rows, err := w.store.pool.Query(ctx, `SELECT id, series, reviewed_at, draft FROM scan_reports WHERE `+where, arg)
-	if err != nil {
-		return nil, err
-	}
+// published reads the rows of a query for id, series, reviewed_at and draft, with the stored point behind each figure.
+func (w *Writer) published(ctx context.Context, rows pgx.Rows) ([]PublishedReport, error) {
 	out := []PublishedReport{}
 	var drafts []Draft
 	var points []int64
