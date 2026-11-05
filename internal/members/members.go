@@ -158,7 +158,7 @@ func (s *Store) RemoveMember(ctx context.Context, ws, id string) error {
 
 // Accept makes identity a member of the invite link's workspace and uses the link once; created is false, and the
 // link is not used, when identity already was one. ownWS is the workspace identity owns, which it cannot join. A link
-// that is revoked, expired or used up is ErrNotFound and adds nobody.
+// that is revoked, expired or used up, or made before the owner removed identity, is ErrNotFound and adds nobody.
 func (s *Store) Accept(ctx context.Context, identity, ownWS, token string) (m Member, created bool, err error) {
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		inv, err := scanInvite(tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM workspace_member_invites WHERE token_sha256 = $1 FOR UPDATE`,
@@ -171,6 +171,15 @@ func (s *Store) Accept(ctx context.Context, identity, ownWS, token string) (m Me
 		}
 		if inv.WorkspaceID == ownWS {
 			return fmt.Errorf("%w: this is your own workspace", ErrConflict)
+		}
+		// Someone the owner removed does not come back through a link made before the removal.
+		var removed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND identity = $2
+			AND removed_at >= $3)`, inv.WorkspaceID, identity, inv.CreatedAt).Scan(&removed); err != nil {
+			return err
+		}
+		if removed {
+			return fmt.Errorf("%w: no such invite", ErrNotFound)
 		}
 		m, err = scanMember(tx.QueryRow(ctx, `INSERT INTO workspace_members (id, workspace_id, identity)
 			VALUES ($1, $2, $3) ON CONFLICT (workspace_id, identity) WHERE removed_at IS NULL DO NOTHING RETURNING `+memberCols,
@@ -193,13 +202,28 @@ func (s *Store) Accept(ctx context.Context, identity, ownWS, token string) (m Me
 	return m, created, err
 }
 
-// IsMember reports whether identity is a live member of ws.
-func (s *Store) IsMember(ctx context.Context, ws, identity string) (bool, error) {
-	var ok bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND identity = $2
-		AND removed_at IS NULL)`, ws, identity).Scan(&ok)
+// MemberID is identity's live membership of ws, or "" when it has none.
+func (s *Store) MemberID(ctx context.Context, ws, identity string) (string, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `SELECT id FROM workspace_members WHERE workspace_id = $1 AND identity = $2 AND removed_at IS NULL`,
+		ws, identity).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return false, fmt.Errorf("members: is member: %w", err)
+		return "", fmt.Errorf("members: member id: %w", err)
+	}
+	return id, nil
+}
+
+// LiveMember reports whether memberID is a live membership of ws: what a member's token is checked against on every
+// request.
+func (s *Store) LiveMember(ctx context.Context, ws, memberID string) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_members WHERE id = $1 AND workspace_id = $2
+		AND removed_at IS NULL)`, memberID, ws).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("members: live member: %w", err)
 	}
 	return ok, nil
 }

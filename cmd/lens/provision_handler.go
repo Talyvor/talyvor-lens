@@ -59,12 +59,12 @@ type tokenMinter func(workspaceID, userID string, scopes []string, ttl time.Dura
 // provisionScopes is what a provisioned session token may do.
 var provisionScopes = []string{auth.ScopeAnalytics, auth.ScopeKeys}
 
-// memberScopes is what a member's token for another person's workspace may do (B52.35): read it. What a member may do
-// beyond reading is Nick's decision.
-var memberScopes = []string{auth.ScopeAnalytics}
+// memberScopes is what a member's token for another person's workspace may do (B52.35): read it, and only while the
+// membership lasts (auth.ScopeMember). What a member may do beyond reading is Nick's decision.
+var memberScopes = []string{auth.ScopeAnalytics, auth.ScopeMember}
 
-// memberCheck reports whether identity is a live member of a workspace it does not own (B52.35).
-type memberCheck func(ctx context.Context, workspaceID, identity string) (bool, error)
+// memberCheck answers identity's live membership of a workspace it does not own, or "" (B52.35).
+type memberCheck func(ctx context.Context, workspaceID, identity string) (memberID string, err error)
 
 type provisionRequest struct {
 	Identity      string `json:"identity"`
@@ -118,7 +118,7 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 
 		wsID := deriveWorkspaceID(in.Identity)
 		if in.WorkspaceID != "" && in.WorkspaceID != wsID {
-			provisionMember(w, req, p, mint, isMember, in, wsID)
+			provisionMember(w, req, p, mint, isMember, in)
 			return
 		}
 		name := in.DisplayName
@@ -187,24 +187,24 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 	}
 }
 
-// provisionMember mints a read-only token for another person's workspace, only while identity is a live member of it:
-// otherwise 403 and nothing is minted. It never creates or changes a workspace.
-func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint tokenMinter, isMember memberCheck, in provisionRequest, ownWS string) {
-	ok := false
+// provisionMember mints a read-only token for another person's workspace, naming the membership, only while identity
+// is a live member of it: otherwise 403 and nothing is minted. It never creates or changes a workspace.
+func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint tokenMinter, isMember memberCheck, in provisionRequest) {
+	memberID := ""
 	if isMember != nil {
 		var err error
-		if ok, err = isMember(req.Context(), in.WorkspaceID, in.Identity); err != nil {
+		if memberID, err = isMember(req.Context(), in.WorkspaceID, in.Identity); err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	if _, exists := p.GetWorkspace(in.WorkspaceID); !ok || !exists {
+	if _, exists := p.GetWorkspace(in.WorkspaceID); memberID == "" || !exists {
 		writeJSONErr(w, http.StatusForbidden, "you are not a member of that workspace")
 		return
 	}
 	poolable, _ := p.CachePoolableConsent(in.WorkspaceID)
 	ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
-	tok, err := mint(in.WorkspaceID, ownWS, memberScopes, ttl)
+	tok, err := mint(in.WorkspaceID, memberID, memberScopes, ttl)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		return

@@ -2996,6 +2996,10 @@ func run() error {
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
 		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken}
 
+	// B52.35 — a person joins another workspace by invite; POST /v1/provision mints a member's read-only token for it.
+	workspaceMembers := members.New(pool)
+	authManager.WithMemberCheck(workspaceMembers.LiveMember)
+
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
 	// (LENS_PROVISION_SECRET) rather than an API key: its whole purpose is to serve a caller that
@@ -3035,13 +3039,11 @@ func run() error {
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
 		due: syntheticDue,
 	})
-	// B52.35 — a person joins another workspace by invite; provision mints a member's read-only token for it.
-	workspaceMembers := members.New(pool)
 	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
-		}, workspaceMembers.IsMember)
+		}, workspaceMembers.MemberID)
 	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
