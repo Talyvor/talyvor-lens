@@ -80,7 +80,7 @@ def setup():
     keys = []
     for i in range(WORKERS):
         ws = f'dbkill-{i}'
-        st, body = http('POST', '/v1/api/keys', ADMIN, {'workspace_id': ws, 'name': 'dbkill'})
+        st, body = http('POST', f'/v1/workspaces/{ws}/api-keys', ADMIN, {'name': 'dbkill', 'scopes': ['proxy']})
         assert st in (200, 201), (st, body)
         keys.append(json.loads(body)['key'])
         st, body = http('POST', '/v1/admin/lxc/grant', ADMIN, {'workspace_id': ws, 'amount_ulxc': 10**12})

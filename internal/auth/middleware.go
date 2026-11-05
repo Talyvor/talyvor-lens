@@ -64,6 +64,10 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 					writeAuthUnavailable(w)
 					return
 				}
+				if errors.Is(err, ErrConnectRoute) {
+					writeAuthError(w, http.StatusForbidden, "a Connect token may only pay from its own agent, inside the agent's rules")
+					return
+				}
 				if err == nil && actx.AuthMethod == MethodModeratorKey {
 					// B20.13: a moderator key reaches the marketplace review queue and nothing else.
 					writeAuthError(w, http.StatusForbidden, "a moderator key may only use the marketplace review queue")

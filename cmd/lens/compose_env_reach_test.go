@@ -221,6 +221,10 @@ var credentialExemptions = map[string]string{
 	"LENS_FCM_CREDENTIALS": "B40.15's FCM service-account key reaches the process through env_file: lens.env, " +
 		"with LENS_APNS_KEY and for the same reason.",
 
+	"LENS_CONNECT_MINT_KEY": "B52.4's credential for minting Connect tokens reaches the process through env_file: " +
+		"lens.env, like LENS_SYNTHETIC_KEY and for the same reason: an environment: entry would arrive as \"\" and " +
+		"override the lens.env value, leaving only the global key able to mint.",
+
 	"LENS_OPERATOR_STEP_UP_SECRET": "B30.8's step-up secret for the compliance case file reaches the process " +
 		"through env_file: lens.env, like LENS_SYNTHETIC_KEY and for the same reason: an environment: entry would " +
 		"arrive as \"\" and override the lens.env value, so every compliance action would answer 503.",

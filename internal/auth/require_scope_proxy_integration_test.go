@@ -67,10 +67,9 @@ func TestProxyScope_RealCredentials_EndToEnd(t *testing.T) {
 	//
 	// ⚠ IT CAN NO LONGER BE MINTED, and that is the point of the change this test now guards from
 	// the other side: tenant.ValidateScopes refuses an empty list, so no NEW scopeless key can be
-	// issued. What still exists in the wild is ROWS THAT PREDATE SCOPES, and RequireScope must keep
-	// grandfathering those or an upgrade breaks working keys. Writing the row directly is exactly
-	// that shape, and it keeps the grandfather covered instead of deleting the case along with the
-	// mint path.
+	// issued. What could still exist is a row that predates scopes; since B50.33 RequireScope passes
+	// it nothing (migration 0324 gave the real ones {proxy}). Writing the row directly is exactly
+	// that shape.
 	emptyKey := func() string {
 		raw, prefix, err := tenant.GenerateKey()
 		if err != nil {
@@ -118,7 +117,7 @@ func TestProxyScope_RealCredentials_EndToEnd(t *testing.T) {
 	}{
 		{"proxy-scoped workspace key passes", proxyKey, http.StatusOK},
 		{"analytics-only key forbidden (403 — authenticated, not 401)", analyticsKey, http.StatusForbidden},
-		{"empty-scope key grandfathered (200)", emptyKey, http.StatusOK},
+		{"empty-scope key passes nothing (403, B50.33)", emptyKey, http.StatusForbidden},
 		{"admin/global key unchanged (200)", adminKey, http.StatusOK},
 		{"no credential rejected (401)", "", http.StatusUnauthorized},
 	} {
