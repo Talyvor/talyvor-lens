@@ -420,7 +420,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, out)
 		}
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		var in struct {
 			Name string `json:"name"`
@@ -1636,6 +1636,20 @@ func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may manage its agents")
+			return
+		}
+		next(w, req)
+	}
+}
+
+// keyOwnerOnly admits only the workspace owner's signed-in session (a token carrying auth.ScopeKeys, which no workspace
+// key can be given) or the operator: no key, admin-scoped or not, creates, rotates or revokes a key (B50.33).
+func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		actx := auth.GetAuthContext(req.Context())
+		if actx == nil || actx.AuthMethod == auth.MethodWorkspaceKey || actx.AuthMethod == auth.MethodSessionKey ||
+			!actx.HasScope(auth.ScopeKeys) {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, signed in, may create, rotate or revoke its keys")
 			return
 		}
 		next(w, req)
