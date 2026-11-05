@@ -26,11 +26,13 @@ func TestB5319_ThePhysicalCardIsOrderedShippedActivatedAndReplacedOnlyWhileSwitc
 	ctx := context.Background()
 	const ws, syntheticKey = "ws-b5319", "b5319-synthetic-key"
 	var fake *issuerfake.Issuer
+	var issuer *money.Adapter
 	b := newB468Payer(t, pool, ws, "GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"},
 		func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry {
 			fake = issuerfake.New(store.AuthorizeCardCharge)
+			issuer = fake.Adapter()
 			layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, "whsec_b5319"), Clearances: b468Cleared{}, Limits: store.MoneyLimits(),
-				Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool), Issuer: fake.Adapter()})
+				Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool), Issuer: issuer})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,5 +140,44 @@ func TestB5319_ThePhysicalCardIsOrderedShippedActivatedAndReplacedOnlyWhileSwitc
 	}
 	if code, body := call(on, http.MethodGet, "/v1/money/physical-cards", ""); code != http.StatusOK || strings.Count(body, `"design":"standard"`) != 2 {
 		t.Fatalf("the list = %d %s, want both cards", code, body)
+	}
+
+	// Lens restarts: the fake issuer starts again empty, and the cards Lens keeps were issued by the old one. A new
+	// card orders, ships, activates and is replaced on the new issuer without touching an earlier card, here or there.
+	issuedBefore, newRef := fake.Issued(), replaced.Card.ID
+	if err := pool.QueryRow(ctx, `SELECT partner_ref FROM money_physical_cards WHERE id = $1`, newRef).Scan(&newRef); err != nil {
+		t.Fatal(err)
+	}
+	restarted := issuerfake.New(b.store.AuthorizeCardCharge)
+	issuer.Cards = restarted
+	code, body = call(on, http.MethodPost, "/v1/money/physical-cards", order)
+	var fresh economy.PhysicalCard
+	if err := json.Unmarshal([]byte(body), &fresh); code != http.StatusCreated || err != nil || fresh.State != "inactive" {
+		t.Fatalf("an order after a restart = %d %s, want 201 an inactive card", code, body)
+	}
+	fbase := "/v1/money/physical-cards/" + fresh.ID
+	if code, body := call(on, http.MethodPost, "/v1/synthetic/workspaces/"+ws+"/money/physical-cards/"+fresh.ID+"/delivery", `{"status": "shipped"}`); code != http.StatusOK {
+		t.Fatalf("shipping after a restart = %d %s, want 200", code, body)
+	}
+	if code, body := call(on, http.MethodPost, fbase+"/activate", `{"last4": "`+fresh.Last4+`"}`); code != http.StatusOK || !strings.Contains(body, `"state":"active"`) {
+		t.Fatalf("activating after a restart = %d %s, want 200 active", code, body)
+	}
+	if code, body := call(on, http.MethodPost, fbase+"/replace", `{"reason": "stolen"}`); code != http.StatusCreated {
+		t.Fatalf("replacing after a restart = %d %s, want 201", code, body)
+	}
+	for _, id := range []string{card.ID, replaced.Card.ID} {
+		var state, replacedBy string
+		if err := pool.QueryRow(ctx, `SELECT state, replaced_by FROM money_physical_cards WHERE id = $1`, id).Scan(&state, &replacedBy); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]string{card.ID: "frozen " + replaced.Card.ID, replaced.Card.ID: "inactive "}[id]; state+" "+replacedBy != want {
+			t.Fatalf("after a restart the earlier card %s is %q, want %q", id, state+" "+replacedBy, want)
+		}
+	}
+	if c, _ := fake.Card(ref); fake.Issued() != issuedBefore || c.State != money.CardFrozen {
+		t.Fatalf("the old issuer holds %d cards, the lost one %s; want %d and frozen", fake.Issued(), c.State, issuedBefore)
+	}
+	if c, ok := restarted.Card(newRef); ok || restarted.Issued() != 2 {
+		t.Fatalf("the restarted issuer holds %d cards, the earlier replacement %+v; want two of its own and none of the earlier", restarted.Issued(), c)
 	}
 }

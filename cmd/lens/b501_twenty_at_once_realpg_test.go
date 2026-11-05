@@ -87,7 +87,7 @@ func TestB501_TwentyIdenticalRequestsAtOnceMoveMoneyOnce(t *testing.T) {
 		if got != want {
 			t.Fatalf("20 approvals at once posted %q, want %q: a second approval released the cards the first issued", got, want)
 		}
-		if _, ok := issuer.Card("ic_0003"); ok {
+		if issuer.Issued() > 2 {
 			t.Fatal("20 approvals at once issued a third card")
 		}
 		b.balance(t, 50000-25000)
