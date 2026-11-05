@@ -94,6 +94,9 @@ func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID s
 // is refused (ErrAgentPotsHeld): a pot may be locked, and its owner moves it back first.
 func (s *DualTokenStore) ArchiveAgent(ctx context.Context, workspaceID, agentID string) (AgentArchive, error) {
 	out := AgentArchive{AgentID: agentID, RevokedKeys: []string{}}
+	if err := s.requireSwept(ctx, workspaceID, agentID); err != nil { // B48.15: closing an agent sweeps it first
+		return out, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -137,7 +140,7 @@ func (s *DualTokenStore) ArchiveAgent(ctx context.Context, workspaceID, agentID 
 	if _, err := tx.Exec(ctx, `DELETE FROM agent_topups WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID); err != nil {
 		return out, fmt.Errorf("economy: stop agent top-up: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_payment_schedules SET active = false
+	if _, err := tx.Exec(ctx, `UPDATE agent_payment_schedules SET active = false, awaiting_signature = false
 		WHERE workspace_id = $2 AND (from_agent_id = $1 OR to_agent_id = $1)`, agentID, workspaceID); err != nil {
 		return out, fmt.Errorf("economy: stop agent schedules: %w", err)
 	}

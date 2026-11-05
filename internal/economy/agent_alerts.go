@@ -2,6 +2,7 @@ package economy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -118,6 +119,25 @@ func watchAgentSpend(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		return revokeAgentKYA(ctx, tx, agentID, KYARevokedFrozen) // B30.5
 	}
 	return nil
+}
+
+// AgentMayRun refuses, with the rule's sentence, an agent that is archived or paused, on its own or with every agent
+// in its workspace: what an agent's own work (a Scan watch, B52.27) asks before it runs, even when it costs nothing.
+func (s *DualTokenStore) AgentMayRun(ctx context.Context, workspaceID, agentID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("economy: agent may run: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var ws string
+	err = tx.QueryRow(ctx, `SELECT workspace_id FROM agent_accounts WHERE id = $1`, agentID).Scan(&ws)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && ws != workspaceID) {
+		return ErrAgentNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("economy: agent may run: %w", err)
+	}
+	return refuseIfPaused(ctx, tx, agentID)
 }
 
 // PauseAgent pauses an agent: every movement it makes is refused until ResumeAgent, and its Know Your Agent

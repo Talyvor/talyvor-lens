@@ -18,6 +18,7 @@ func everyToolServer() *Server {
 	s.SetMandates(bank)
 	s.SetSearcher(bank)
 	s.SetPaymentRequests(bank)
+	s.SetRecurringPayments(bank)
 	s.SetMarket(&market.Store{}, nil)
 	s.SetRooms(&rooms.Store{}, nil)
 	return s

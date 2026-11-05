@@ -214,11 +214,7 @@ func (c Chain) SignPaymentAsAgent(ctx context.Context, s Signer, a Account, agen
 	return c.SignAsAgent(ctx, s, a, agentKey, op)
 }
 
-// FreezeCall is the account's call that takes the agent's key out of its owners: once the person's passkey has signed
-// it in a user operation on a chain, the key signs nothing the account accepts there.
-func FreezeCall(a Account) ([]byte, error) {
-	if len(a.Owners) <= OwnerAgent {
-		return nil, fmt.Errorf("%w: the account has no agent key", ErrInvalid)
-	}
-	return Execute(a.Address, nil, call("removeOwnerAtIndex(uint256,bytes)", uintW(OwnerAgent), bytesV(a.Owners[OwnerAgent])))
-}
+// FreezeCall is the account's call that takes the agent's key out of its owners: once the person's passkey, or the key
+// itself (SignRetirementAsAgent), has signed it in a user operation on a chain, the key signs nothing the account
+// accepts there.
+func FreezeCall(a Account) ([]byte, error) { return RetireCall(a, "") }

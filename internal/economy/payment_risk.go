@@ -57,10 +57,14 @@ func (s *DualTokenStore) SetUnusualAmount(timesUsual, fromPayments, historyDays 
 }
 
 // riskFlags adds the checks' flags to it, an item paying a saved payee: invoice is the invoice number it pays ("" for
-// none), newPayee whether the payee was never paid before.
-func (s *DualTokenStore) riskFlags(ctx context.Context, workspaceID string, it *PaymentRequestItem, invoice string, newPayee bool) error {
+// none), newPayee whether the payee was never paid before, standing whether it is a standing order's run (B45.13),
+// which repeats its payee, amount and reference by design and is paid once per tick by the tick's own key.
+func (s *DualTokenStore) riskFlags(ctx context.Context, workspaceID string, it *PaymentRequestItem, invoice string, newPayee, standing bool) error {
 	if newPayee {
 		it.Flags = append(it.Flags, ItemFlag{FlagFirstPayment, "the first payment to " + it.PayeeName})
+	}
+	if standing {
+		return s.unusualFlag(ctx, workspaceID, it, newPayee)
 	}
 	// A payment that failed or came back did not pay the invoice.
 	var ref, currency, on string
@@ -82,7 +86,11 @@ func (s *DualTokenStore) riskFlags(ctx context.Context, workspaceID string, it *
 	case !errors.Is(err, pgx.ErrNoRows):
 		return fmt.Errorf("economy: duplicate check: %w", err)
 	}
+	return s.unusualFlag(ctx, workspaceID, it, newPayee)
+}
 
+// unusualFlag flags it when its amount is far above its payee's usual.
+func (s *DualTokenStore) unusualFlag(ctx context.Context, workspaceID string, it *PaymentRequestItem, newPayee bool) error {
 	u := s.unusual
 	if u.timesUsual <= 0 || newPayee {
 		return nil

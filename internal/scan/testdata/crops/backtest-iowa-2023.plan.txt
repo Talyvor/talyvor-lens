@@ -1,0 +1,15 @@
+Scan crop-health backtest, written down before the index was computed (B52.22, 4 Nov 2026).
+
+Season:   2023, chosen from NASS alone before any image was read: of 2023-2026 it is the season in which
+          Iowa corn rated good or excellent moved most (77% on 28 May to 46% on 10 Sep).
+Region:   iowa-central (Sentinel-2 tile 15TVG, central 30 km square).
+Index:    the weekly NDVI anomaly: the week's reading (weeklyNDVI) minus its five-year normal over 2018-2022
+          (ndviNormal), from every Level-2A scene of the tile, April to October 2018-2023.
+Rating:   NASS Crop Progress, Iowa corn condition, percent good + excellent, weeks ending 28 May to 15 Oct 2023.
+Pairing:  a rating for the week ending Sunday D is paired with the reading of the ISO week D-6 .. D; a week
+          with no reading (not enough clear sky) or no normal is left out, never filled in.
+Passes if: Pearson's r between the paired anomaly and rating is above 0, over at least 8 pairs.
+Otherwise: the result is recorded as it is and the index is not described as tracking crop condition.
+
+Result (recorded 4 Nov 2026, after the plan above): 692 scenes read; 17 weeks paired, 4 left out for not enough
+clear sky; Pearson r = 0.546. Passes. The anomaly turns negative from late August as the rating falls from 60% to 46%.

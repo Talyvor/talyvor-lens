@@ -238,6 +238,23 @@ func (s *DualTokenStore) SpendLXCForAgent(ctx context.Context, scopedKeyID, work
 	})
 }
 
+// ErrAgentHasNoKey: the agent has no live key, so nothing can be charged to its wallet.
+var ErrAgentHasNoKey = errors.New("economy: the agent has no live key to pay with")
+
+// ChargeAgent charges agentID's wallet ulxc of credits for Talyvor's own work done for it (a Scan watch's alert,
+// B52.27), exactly once per requestID, through its own key: SpendLXCForAgent, so its balance, its limits and its
+// rules judge it and a paused agent is refused.
+func (s *DualTokenStore) ChargeAgent(ctx context.Context, workspaceID, agentID, requestID string, ulxc int64, description string) error {
+	key, err := s.AgentKey(ctx, workspaceID, agentID)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		return ErrAgentHasNoKey
+	}
+	return s.SpendLXCForAgent(ctx, key, workspaceID, requestID, ulxc, description, AgentDebitMeta{RequestID: requestID})
+}
+
 // spendLXCForAgent is one attempt of SpendLXCForAgent, in one transaction.
 func (s *DualTokenStore) spendLXCForAgent(ctx context.Context, scopedKeyID, workspaceID, requestID string, lxcAmount int64, description string, meta AgentDebitMeta) error {
 	if lxcAmount <= 0 {

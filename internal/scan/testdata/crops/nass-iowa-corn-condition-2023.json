@@ -1,0 +1,194 @@
+{
+ "source": "USDA NASS Crop Progress, \"Corn Condition - Selected States\", row Iowa (US government public domain)",
+ "ratings": [
+  {
+   "week_ending": "2023-05-28",
+   "very_poor": 0,
+   "poor": 2,
+   "fair": 21,
+   "good": 65,
+   "excellent": 12,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/tx31s021v/d217s394g/prog2123.txt"
+  },
+  {
+   "week_ending": "2023-06-04",
+   "very_poor": 0,
+   "poor": 3,
+   "fair": 25,
+   "good": 60,
+   "excellent": 12,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/db78vt694/nk323v42m/prog2223.txt"
+  },
+  {
+   "week_ending": "2023-06-11",
+   "very_poor": 1,
+   "poor": 3,
+   "fair": 26,
+   "good": 58,
+   "excellent": 12,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/dj52xk84h/rx915514x/prog2323.txt"
+  },
+  {
+   "week_ending": "2023-06-18",
+   "very_poor": 1,
+   "poor": 7,
+   "fair": 33,
+   "good": 50,
+   "excellent": 9,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/zs25zr12m/7h14c533d/prog2423.txt"
+  },
+  {
+   "week_ending": "2023-06-25",
+   "very_poor": 2,
+   "poor": 10,
+   "fair": 32,
+   "good": 48,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/vt152075q/4q77h6224/prog2523.txt"
+  },
+  {
+   "week_ending": "2023-07-02",
+   "very_poor": 2,
+   "poor": 7,
+   "fair": 30,
+   "good": 53,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/cc08jx67z/d217s4771/prog2623.txt"
+  },
+  {
+   "week_ending": "2023-07-09",
+   "very_poor": 2,
+   "poor": 7,
+   "fair": 30,
+   "good": 53,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/qr46sf95p/zw130n562/prog2723.txt"
+  },
+  {
+   "week_ending": "2023-07-16",
+   "very_poor": 2,
+   "poor": 6,
+   "fair": 28,
+   "good": 53,
+   "excellent": 11,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/3j334j814/f1883266g/prog2823.txt"
+  },
+  {
+   "week_ending": "2023-07-23",
+   "very_poor": 2,
+   "poor": 7,
+   "fair": 28,
+   "good": 53,
+   "excellent": 10,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/g445dx26n/9880x713v/prog2923.txt"
+  },
+  {
+   "week_ending": "2023-07-30",
+   "very_poor": 3,
+   "poor": 8,
+   "fair": 30,
+   "good": 51,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/hd76tg15j/cn69nk409/prog3023.txt"
+  },
+  {
+   "week_ending": "2023-08-06",
+   "very_poor": 2,
+   "poor": 7,
+   "fair": 32,
+   "good": 51,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/f7624v982/gb19gp070/prog3123.txt"
+  },
+  {
+   "week_ending": "2023-08-13",
+   "very_poor": 3,
+   "poor": 7,
+   "fair": 32,
+   "good": 49,
+   "excellent": 9,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/gb19gp25x/69700h69k/prog3223.txt"
+  },
+  {
+   "week_ending": "2023-08-20",
+   "very_poor": 3,
+   "poor": 7,
+   "fair": 30,
+   "good": 51,
+   "excellent": 9,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/0r968m29b/9s162p280/prog3323.txt"
+  },
+  {
+   "week_ending": "2023-08-27",
+   "very_poor": 5,
+   "poor": 10,
+   "fair": 31,
+   "good": 47,
+   "excellent": 7,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/hx11zz54j/7h14c6818/prog3423.txt"
+  },
+  {
+   "week_ending": "2023-09-03",
+   "very_poor": 5,
+   "poor": 11,
+   "fair": 35,
+   "good": 43,
+   "excellent": 6,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/rf560r376/n009xj86f/prog3523.txt"
+  },
+  {
+   "week_ending": "2023-09-10",
+   "very_poor": 5,
+   "poor": 11,
+   "fair": 38,
+   "good": 41,
+   "excellent": 5,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/1257cb32w/s7527v216/prog3623.txt"
+  },
+  {
+   "week_ending": "2023-09-17",
+   "very_poor": 5,
+   "poor": 10,
+   "fair": 37,
+   "good": 43,
+   "excellent": 5,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/qz20v964k/c534h539d/prog3723.txt"
+  },
+  {
+   "week_ending": "2023-09-24",
+   "very_poor": 4,
+   "poor": 10,
+   "fair": 36,
+   "good": 44,
+   "excellent": 6,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/h702rq94p/1g05gw82z/prog3823.txt"
+  },
+  {
+   "week_ending": "2023-10-01",
+   "very_poor": 5,
+   "poor": 10,
+   "fair": 34,
+   "good": 45,
+   "excellent": 6,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/k930df51r/5h73rd26r/prog3923.txt"
+  },
+  {
+   "week_ending": "2023-10-08",
+   "very_poor": 5,
+   "poor": 11,
+   "fair": 36,
+   "good": 42,
+   "excellent": 6,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/3j334m76p/mk61t2712/prog4023.txt"
+  },
+  {
+   "week_ending": "2023-10-15",
+   "very_poor": 4,
+   "poor": 10,
+   "fair": 35,
+   "good": 43,
+   "excellent": 8,
+   "report": "https://esmis.nal.usda.gov/sites/default/release-files/8336h188j/np194v04b/zg64w510v/prog4123.txt"
+  }
+ ]
+}

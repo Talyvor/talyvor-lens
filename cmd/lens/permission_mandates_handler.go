@@ -18,8 +18,10 @@ import (
 // passkey (economy/permission_mandates.go).
 //
 //	POST /v1/money/permission-mandates/prepare  {principal, agent_id, clients, scope, limits, requires_approval_above,
-//	                                             new_payee, valid_from, expires_at} — the canonical JSON to sign, its
-//	                                             challenge (SHA-256, base64url) and the passkeys that may sign it
+//	                                             new_payee, valid_from, expires_at, counterparty} — the canonical JSON
+//	                                             to sign, its challenge (SHA-256, base64url) and the passkeys that may
+//	                                             sign it. counterparty (B45.30) is the "who": {"min_trust": "signed" |
+//	                                             "verified", "operators": [signing domains]}, judged before the limits
 //	POST /v1/money/permission-mandates          {"canonical", "assertion"} — keeps the signed mandate (201)
 //	GET  /v1/money/permission-mandates          — the workspace's mandates; an agent's key sees its own and general ones
 //	POST /v1/money/permission-mandates/{id}/revoke   — revoked at once
