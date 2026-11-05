@@ -62,9 +62,10 @@ func newAuthTokenMintHandler(authManager *auth.Manager) http.HandlerFunc {
 					"this credential may not choose token scopes; omit \"scopes\"")
 				return
 			}
-			// {proxy} is what a content service needs: the /v1/proxy/* completion routes. It is
-			// also strictly NARROWER than the empty set today's minted tokens carry, because
-			// RequireScope grandfathers an empty scope list through every gate.
+		}
+		if len(scopes) == 0 {
+			// {proxy} is what a content service needs: the /v1/proxy/* completion routes. A token
+			// with no scopes passes no scope gate at all (B50.33), so it is the default.
 			scopes = []string{auth.ScopeProxy}
 		}
 		ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)

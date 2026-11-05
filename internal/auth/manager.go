@@ -633,31 +633,22 @@ func WorkspaceIdentity(ctx context.Context) (workspaceID string, isAdmin bool) {
 
 // RequireScope produces a middleware that enforces a single scope. Place it
 // AFTER AuthMiddleware — it reads the identity that middleware stamped and 403s
-// a credential that presents scopes but not this one.
+// a credential that does not carry this scope.
 //
-// Two back-compat carve-outs keep existing keys working (they must, or a retrofit
-// silently revokes access):
-//
-//   - An AuthContext with an EMPTY scope set is grandfathered as all-scopes.
-//     Every workspace key/JWT minted before enforcement carries an empty set
-//     (tenant.ValidateScopes has always accepted empty), so treating empty as
-//     "deny" would break every one of them. A key opts into least privilege by
-//     being created with an explicit, non-empty scope set.
-//   - A request with no AuthContext but a validated fast-path api_keys
-//     credential (auth.KeyStore — the APIKey struct has no scope field at all)
-//     is grandfathered too. It authenticated; there is nothing to check it
-//     against.
+// A credential with NO scopes passes nothing (B50.33): neither an AuthContext with an
+// empty scope set nor a fast-path api_keys credential (auth.KeyStore, which has no scope
+// field at all). Both used to be grandfathered as all-scopes, so any key that could mint
+// a scopeless one — the legacy POST /v1/api/keys had no gate — handed out proxy. Migration
+// 0325 gives the workspace keys minted before scopes existed the {proxy} they reached.
 //
 // Admin is unchanged: the global key sets IsAdmin, which short-circuits HasScope.
-// Only a request that reached here with NO credential (i.e. not behind
-// AuthMiddleware) is rejected — 401.
+// A request that reached here with NO credential (i.e. not behind AuthMiddleware) is
+// rejected — 401.
 func RequireScope(scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if ctx := GetAuthContext(r.Context()); ctx != nil {
-				// Grandfather empty scopes; HasScope covers admin + an
-				// explicit match. A non-empty set missing the scope is denied.
-				if len(ctx.Scopes) == 0 || ctx.HasScope(scope) {
+				if ctx.HasScope(scope) {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -666,10 +657,11 @@ func RequireScope(scope string) func(http.Handler) http.Handler {
 				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json; scope is a route constant, never request input
 				return
 			}
-			// No AuthContext ⇒ a fast-path api_keys credential (no scope field);
-			// grandfather it. A request with no credential at all still 401s.
+			// No AuthContext ⇒ a fast-path api_keys credential (no scope field): it carries no scope, so it passes none.
 			if GetAPIKey(r.Context()) != nil {
-				next.ServeHTTP(w, r)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json; scope is a route constant, never request input
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

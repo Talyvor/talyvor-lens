@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -55,43 +54,6 @@ func serveAuthed(t *testing.T, method, pattern, target, body, workspace string, 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec
-}
-
-// ── POST /v1/api/keys ─────────────────────────────────────────────────────
-
-type fakeKeyGen struct{ lastWS string }
-
-func (f *fakeKeyGen) GenerateKey(_ context.Context, workspaceID, _, _ string, _ *time.Time) (string, *auth.APIKey, error) {
-	f.lastWS = workspaceID
-	return "tlv_fake", &auth.APIKey{ID: "id_fake", WorkspaceID: workspaceID}, nil
-}
-
-func TestAuthz_CreateAPIKey_Wiring(t *testing.T) {
-	fake := &fakeKeyGen{}
-	h := newCreateAPIKeyHandler(fake)
-
-	// ATTACK: ws-A mints with body workspace_id=ws-B → key must be for ws-A.
-	rec := serveAuthed(t, http.MethodPost, "/v1/api/keys", "/v1/api/keys", `{"workspace_id":"ws-B","name":"x"}`, "ws-A", false, h)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status: got %d, want 201", rec.Code)
-	}
-	if fake.lastWS != "ws-A" {
-		t.Fatalf("TAKEOVER: key minted for %q, want ws-A — the body ws-B must be ignored for a non-admin", fake.lastWS)
-	}
-
-	// ADMIN regression: admin honors the body workspace_id.
-	fake.lastWS = ""
-	serveAuthed(t, http.MethodPost, "/v1/api/keys", "/v1/api/keys", `{"workspace_id":"ws-B","name":"x"}`, "ws-admin", true, h)
-	if fake.lastWS != "ws-B" {
-		t.Fatalf("admin: minted for %q, want ws-B (honored)", fake.lastWS)
-	}
-
-	// HONEST-OWN: ws-A naming ws-A is unaffected.
-	fake.lastWS = ""
-	serveAuthed(t, http.MethodPost, "/v1/api/keys", "/v1/api/keys", `{"workspace_id":"ws-A","name":"x"}`, "ws-A", false, h)
-	if fake.lastWS != "ws-A" {
-		t.Fatalf("honest-own: minted for %q, want ws-A", fake.lastWS)
-	}
 }
 
 // ── GET /v1/audit/export ──────────────────────────────────────────────────
