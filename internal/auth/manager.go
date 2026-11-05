@@ -155,6 +155,9 @@ type TokenClaims struct {
 	WorkspaceID string   `json:"workspace_id"`
 	UserID      string   `json:"user_id"`
 	Scopes      []string `json:"scopes"`
+	// AgentID and ClientID are a Connect token's agent and assistant (B52.4); empty on every other JWT.
+	AgentID  string `json:"agent_id,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -185,6 +188,10 @@ type AuthContext struct {
 	// ModeratorKeyID is the moderator key's ID (B20.13); ZERO for every other method. Every use of
 	// the key is recorded against it.
 	ModeratorKeyID int64 `json:"moderator_key_id,omitempty"`
+	// ConnectAgentID and ConnectClientID are the agent a Connect token pays from and the assistant it was minted
+	// for (B52.4); EMPTY for every other method.
+	ConnectAgentID  string `json:"connect_agent_id,omitempty"`
+	ConnectClientID string `json:"connect_client_id,omitempty"`
 }
 
 // HasScope reports whether the resolved identity carries `scope`.
@@ -388,6 +395,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		claims, err := m.validateJWTCached(raw)
 		if err != nil {
 			return nil, ErrInvalidAuth
+		}
+		if len(claims.Audience) > 0 {
+			if len(claims.Audience) == 1 && claims.Audience[0] == ConnectAudience {
+				return connectContext(r, claims)
+			}
+			return nil, ErrInvalidAuth // Lens mints no other audience
 		}
 		actx := &AuthContext{
 			WorkspaceID: claims.WorkspaceID,

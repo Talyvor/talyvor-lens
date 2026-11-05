@@ -3122,6 +3122,7 @@ func run() error {
 		// Extracted to newAuthTokenMintHandler (auth_token_mint_handler.go) so the
 		// admin-scoping invariant is provable over HTTP; behavior is unchanged.
 		authed.Post("/v1/auth/token", newAuthTokenMintHandler(authManager))
+		authed.Post("/v1/auth/connect-token", newConnectTokenMintHandler(authManager, dualToken)) // B52.4
 
 		// W4.6.1 step 4 — session-scoped keys. Registered ONLY when configured, so an
 		// unconfigured deployment 404s these paths rather than serving a route that refuses.
