@@ -258,6 +258,7 @@ type agentBank interface {
 	AgentKey(ctx context.Context, workspaceID, agentID string) (string, error)
 	ListPromptSchedules(ctx context.Context, workspaceID string) ([]economy.PromptSchedule, error)
 	StopPromptSchedule(ctx context.Context, workspaceID, scheduleID string) error
+	AgentMayRun(ctx context.Context, workspaceID, agentID string) error
 	SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (economy.AgentTopUp, error)
 	GetAgentTopUp(ctx context.Context, workspaceID, agentID string) (economy.AgentTopUp, bool, error)
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
