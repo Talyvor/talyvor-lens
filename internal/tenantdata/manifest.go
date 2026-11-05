@@ -156,6 +156,8 @@ var Manifest = map[string]Entry{
 	"money_cards":               {Retain, "B46.10: each single-use card — the merchant it was locked to, its cap, the issuer's reference and what it spent; it explains money_entries; financial-record retention"},
 	"money_card_authorizations": {Retain, "B46.10: each charge an issuer asked about on a card and Lens's answer, append-only; financial-record retention"},
 	"money_payout_details":      {Delete, "B46.11: where the workspace is paid — an IBAN or a USDC address and its holder — and the partner's verification reference; nothing to keep once the workspace is gone"},
+	"chain_movements":           {Retain, "B48.6: each USDC transfer into or out of an agent's crypto wallet as the chain shows it — transaction, counterparty address, amount, confirmations — and the money_entries that posted or reversed it; it explains money_entries; financial-record retention"},
+	"chain_reconciliations":     {Retain, "B48.6: each night's comparison of an agent's crypto wallet on the chain with the ledger — the balances and any difference; financial-record retention"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
@@ -297,6 +299,8 @@ var Manifest = map[string]Entry{
 	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
 	"spend_notice_settings":        {Delete, "B53.7: the owner's quiet hours, time zone and the kinds of notice switched off"},
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
+	"scan_watches":                 {Delete, "B52.27: each Scan agent's watch — the series its owner picked and what counts as unusual"},
+	"scan_watch_alerts":            {Delete, "B52.27: each alert a Scan agent's watch sent, with its report and what the agent paid for it"},
 	"spend_plan_income":            {Delete, "B53.15: the owner's expected income — payday, amount, currency and payer — for the month plan"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},

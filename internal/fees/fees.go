@@ -34,6 +34,8 @@ type Settings struct {
 	IntlPaymentFeeMinor map[string]int64 `json:"intl_payment_fee_minor"`
 	MerchantFeeBPS      int64            `json:"merchant_fee_bps"`     // accepting a card payment, plus card processing
 	MerchantA2AFeeBPS   int64            `json:"merchant_a2a_fee_bps"` // accepting a payment from an account
+	// What a Scan agent's wallet pays, in µLXC of credits, for each alert its watch sends (B52.27).
+	ScanAlertULXC int64 `json:"scan_alert_ulxc"`
 }
 
 // Defaults are Nicolai's values.
@@ -93,6 +95,13 @@ func Load(getenv func(string) string) (Settings, error) {
 			}
 		}
 		*f.into = m
+	}
+	if v := strings.TrimSpace(getenv("LENS_SCAN_ALERT_ULXC")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return s, fmt.Errorf("fees: LENS_SCAN_ALERT_ULXC=%q must be whole µLXC, 0 or more", v)
+		}
+		s.ScanAlertULXC = n
 	}
 	return s, nil
 }
