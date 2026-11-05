@@ -4886,6 +4886,7 @@ func run() error {
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
+		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16
 		mountMarketReceiptRoutes(authed, marketStore)                                   // B32.40
 		mountMarketPayoutRoutes(authed, marketStore, stripeKinds.connectFor, dualToken, // B20.5
 			marketPayoutURLs{refresh: cfg.MarketPayoutRefreshURL, ret: cfg.MarketPayoutReturnURL})
