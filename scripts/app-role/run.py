@@ -66,7 +66,7 @@ def main():
     compose('up', '-d', '--wait', *(['--build'] if '--build' in sys.argv else []), 'lens', 'mockvllm')
     try:
         ok = []
-        st, body = http('POST', '/v1/api/keys', ADMIN, {'workspace_id': WS, 'name': 'approle'})
+        st, body = http('POST', f'/v1/workspaces/{WS}/api-keys', ADMIN, {'name': 'approle', 'scopes': ['proxy']})
         assert st in (200, 201), (st, body)
         key = json.loads(body)['key']
         st, body = http('POST', '/v1/admin/lxc/grant', ADMIN, {'workspace_id': WS, 'amount_ulxc': 10**12})

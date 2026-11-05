@@ -253,7 +253,7 @@ func (p *pdfPage) rect(x, y, w, h float64, colour string) {
 // winAnsi is s in the PDF's WinAnsiEncoding: Latin-1 as it is, the few typographic marks a receipt prints, and ? for
 // anything else.
 func winAnsi(s string) []byte {
-	special := map[rune]byte{'€': 0x80, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '–': 0x96, '—': 0x97}
+	special := map[rune]byte{'€': 0x80, '…': 0x85, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '–': 0x96, '—': 0x97}
 	var out []byte
 	for _, r := range s {
 		switch b, ok := special[r]; {

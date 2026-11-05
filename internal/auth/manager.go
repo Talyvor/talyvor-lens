@@ -155,6 +155,9 @@ type TokenClaims struct {
 	WorkspaceID string   `json:"workspace_id"`
 	UserID      string   `json:"user_id"`
 	Scopes      []string `json:"scopes"`
+	// AgentID and ClientID are a Connect token's agent and assistant (B52.4); empty on every other JWT.
+	AgentID  string `json:"agent_id,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -185,6 +188,10 @@ type AuthContext struct {
 	// ModeratorKeyID is the moderator key's ID (B20.13); ZERO for every other method. Every use of
 	// the key is recorded against it.
 	ModeratorKeyID int64 `json:"moderator_key_id,omitempty"`
+	// ConnectAgentID and ConnectClientID are the agent a Connect token pays from and the assistant it was minted
+	// for (B52.4); EMPTY for every other method.
+	ConnectAgentID  string `json:"connect_agent_id,omitempty"`
+	ConnectClientID string `json:"connect_client_id,omitempty"`
 }
 
 // HasScope reports whether the resolved identity carries `scope`.
@@ -277,6 +284,7 @@ func ValidateToken(tokenString string, key *ecdsa.PublicKey) (*TokenClaims, erro
 type Manager struct {
 	globalKey       string
 	mintKey         string
+	connectMintKey  string
 	operatorReadKey string
 	privateKey      *ecdsa.PrivateKey
 	publicKey       *ecdsa.PublicKey
@@ -298,6 +306,10 @@ type jwtCacheEntry struct {
 // credential exists and the only way to mint stays the global key, i.e. today's behaviour exactly.
 // A deployment that never sets it is unchanged by this feature.
 func (m *Manager) WithMintKey(k string) *Manager { m.mintKey = k; return m }
+
+// WithConnectMintKey attaches LENS_CONNECT_MINT_KEY, the BFF's credential for minting Connect tokens (B52.4).
+// Unset ⇒ no such credential, and only the global key mints them.
+func (m *Manager) WithConnectMintKey(k string) *Manager { m.connectMintKey = k; return m }
 
 // WithOperatorReadKey attaches the narrow operator READ credential (LENS_OPERATOR_READ_KEY).
 // Optional: unset ⇒ the credential does not exist, every admin read stays reachable only by the
@@ -388,6 +400,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		claims, err := m.validateJWTCached(raw)
 		if err != nil {
 			return nil, ErrInvalidAuth
+		}
+		if len(claims.Audience) > 0 {
+			if len(claims.Audience) == 1 && claims.Audience[0] == ConnectAudience {
+				return connectContext(r, claims)
+			}
+			return nil, ErrInvalidAuth // Lens mints no other audience
 		}
 		actx := &AuthContext{
 			WorkspaceID: claims.WorkspaceID,
@@ -498,6 +516,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 			AuthMethod:  MethodMintKey,
 			IsAdmin:     false,
 		}, nil
+	}
+
+	// Connect mint credential (B52.4): exactly {connect_mint}. Ordered after the mint key, so a deployment that sets
+	// both to one value gets the mint key and Connect minting refuses it, loudly.
+	if m.connectMintKey != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(m.connectMintKey)) == 1 {
+		return &AuthContext{Scopes: []string{ScopeConnectMint}, AuthMethod: MethodConnectMintKey}, nil
 	}
 
 	// Narrow operator READ credential. IsAdmin is FALSE and the scope set is exactly
@@ -633,31 +657,22 @@ func WorkspaceIdentity(ctx context.Context) (workspaceID string, isAdmin bool) {
 
 // RequireScope produces a middleware that enforces a single scope. Place it
 // AFTER AuthMiddleware — it reads the identity that middleware stamped and 403s
-// a credential that presents scopes but not this one.
+// a credential that does not carry this scope.
 //
-// Two back-compat carve-outs keep existing keys working (they must, or a retrofit
-// silently revokes access):
-//
-//   - An AuthContext with an EMPTY scope set is grandfathered as all-scopes.
-//     Every workspace key/JWT minted before enforcement carries an empty set
-//     (tenant.ValidateScopes has always accepted empty), so treating empty as
-//     "deny" would break every one of them. A key opts into least privilege by
-//     being created with an explicit, non-empty scope set.
-//   - A request with no AuthContext but a validated fast-path api_keys
-//     credential (auth.KeyStore — the APIKey struct has no scope field at all)
-//     is grandfathered too. It authenticated; there is nothing to check it
-//     against.
+// A credential with NO scopes passes nothing (B50.33): neither an AuthContext with an
+// empty scope set nor a fast-path api_keys credential (auth.KeyStore, which has no scope
+// field at all). Both used to be grandfathered as all-scopes, so any key that could mint
+// a scopeless one — the legacy POST /v1/api/keys had no gate — handed out proxy. Migration
+// 0325 gives the workspace keys minted before scopes existed the {proxy} they reached.
 //
 // Admin is unchanged: the global key sets IsAdmin, which short-circuits HasScope.
-// Only a request that reached here with NO credential (i.e. not behind
-// AuthMiddleware) is rejected — 401.
+// A request that reached here with NO credential (i.e. not behind AuthMiddleware) is
+// rejected — 401.
 func RequireScope(scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if ctx := GetAuthContext(r.Context()); ctx != nil {
-				// Grandfather empty scopes; HasScope covers admin + an
-				// explicit match. A non-empty set missing the scope is denied.
-				if len(ctx.Scopes) == 0 || ctx.HasScope(scope) {
+				if ctx.HasScope(scope) {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -666,10 +681,11 @@ func RequireScope(scope string) func(http.Handler) http.Handler {
 				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json; scope is a route constant, never request input
 				return
 			}
-			// No AuthContext ⇒ a fast-path api_keys credential (no scope field);
-			// grandfather it. A request with no credential at all still 401s.
+			// No AuthContext ⇒ a fast-path api_keys credential (no scope field): it carries no scope, so it passes none.
 			if GetAPIKey(r.Context()) != nil {
-				next.ServeHTTP(w, r)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"forbidden: missing scope ` + scope + `"}`)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/json; scope is a route constant, never request input
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
