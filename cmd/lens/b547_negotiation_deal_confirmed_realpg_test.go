@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/talyvor/lens/internal/agentsig"
 	"github.com/talyvor/lens/internal/auth"
@@ -50,6 +51,7 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	lensURL, _ := url.Parse("https://lens.example")
 	r := chi.NewRouter()
 	mountNegotiationRoutes(r, store)
+	mountNegotiationOutreachRoutes(r, store, nil, "")
 	mountNegotiationAgentRoutes(r, &agentsig.Verifier{PublicURL: lensURL, Keys: dir, Nonces: sigs, Businesses: sigs, Now: time.Now}, store)
 
 	as := func(ws string) func(method, path, body string) (int, string) {
@@ -136,6 +138,23 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The rival's Counter may reach Acme's verified agent: the rival has a verified name, Acme's agent a live credential.
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref, verified_name)
+		VALUES ($1, 1, 'contact', 'test', 'completed', 'ref-b547-1', ''), ($1, 2, 'person', 'kyc-partner', 'completed', 'ref-b547-2', 'Rival Ltd')`, wsB); err != nil {
+		t.Fatal(err)
+	}
+	acmeAgent, err := store.CreateAgent(ctx, wsD, "Acme sales", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.IssueKYACredential(ctx, wsD, acmeAgent.ID, func(economy.AgentKYAFacts) (economy.KYACredentialRecord, error) {
+		return economy.KYACredentialRecord{ID: uuid.NewString(), Kid: "k1", PublicKey: "pk", ClaimsDigest: "d", Token: "t",
+			IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	askAcme := `{"counterparty":"acme.example","channel":"agent","to":"` + acmeAgent.ID + `"}`
+
 	// Unconfirmed, the reference blocks no one: the squatter typed it first, and the buyer, a rival and Acme are kept.
 	_, _, squat := side(wsC, `"bot.example"`, "buy")
 	_, _, squat2 := side(wsC, `"alias.example","buyer.example"`, "sell")
@@ -159,6 +178,10 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	sellOffer := `{"counterparty":"buyer.example","party":"ours","channel":"agent","terms":{"price_minor":700000}}`
 	if code, msg := as(wsD)(http.MethodPost, "/v1/negotiations/"+d.ID+"/terms", sellOffer); code != http.StatusCreated {
 		t.Errorf("Acme's offer on a reference only a stranger holds = %d %s, want 201", code, msg)
+	}
+
+	if code, msg := as(wsB)(http.MethodPost, "/v1/negotiations/"+b.ID+"/outreach", askAcme); code != http.StatusOK || !strings.Contains(msg, `"action":"ask_for_quote"`) {
+		t.Fatalf("the rival asking Acme for a quote in an unconfirmed deal = %d %s, want 200", code, msg)
 	}
 
 	// A workspace that proved no domain is confirmed to no one; nor does an agent that is not the mandate's
@@ -221,6 +244,17 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	offer := `{"counterparty":"acme.example","party":"ours","channel":"agent","terms":{"price_minor":600000}}`
 	if code, msg := as(wsB)(http.MethodPost, "/v1/negotiations/"+b.ID+"/terms", offer); code != http.StatusBadRequest || strings.Contains(msg, wsA) {
 		t.Errorf("the rival's offer in a deal confirmed to another = %d %s, want 400 naming nobody", code, msg)
+	}
+	// Asking Acme for a quote is acting in the deal too: refused naming nobody, and nothing is sent.
+	var sentBefore, sentAfter int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM negotiation_messages WHERE mandate_id = $1`, b.ID).Scan(&sentBefore); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := as(wsB)(http.MethodPost, "/v1/negotiations/"+b.ID+"/outreach", askAcme); code != http.StatusBadRequest || strings.Contains(msg, wsA) {
+		t.Errorf("the rival asking Acme for a quote in a deal confirmed to another = %d %s, want 400 naming nobody", code, msg)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM negotiation_messages WHERE mandate_id = $1`, b.ID).Scan(&sentAfter); err != nil || sentAfter != sentBefore {
+		t.Errorf("the rival's refused outreach left a message: %d before, %d after, %v", sentBefore, sentAfter, err)
 	}
 	codeHeld, msgHeld, _ := side(wsB, `"acme.example"`, "buy")
 	body := `{"task":{"kind":"purchase","what":"GPU hours"},"side":"buy","currency":"GBP","target_minor":500000,"walk_away_minor":800000,
