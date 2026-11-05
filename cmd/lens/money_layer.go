@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // B46.3 — the money layer's wiring: a verified partner webhook's money is posted as a payment in, through the one path
@@ -22,6 +25,9 @@ func (l moneyLedger) PostCredit(ctx context.Context, partner string, e money.Eve
 	}
 	entry, err := l.store.ReceivePayment(ctx, economy.InboundPayment{PartnerAccountRef: e.To, PartnerRef: e.PartnerRef, Payer: e.Payer,
 		Reference: e.Reference, AmountMinor: e.Amount.Minor, Currency: e.Amount.Asset, Funding: funding, Partner: partner})
+	if errors.Is(err, economy.ErrDepositQuarantined) { // B48.7: kept for its case, so the notification is taken
+		return entry.WorkspaceID, nil
+	}
 	return entry.WorkspaceID, err
 }
 
@@ -33,4 +39,22 @@ func (l moneyLedger) SettleTransfer(ctx context.Context, partner string, e money
 		return po.WorkspaceID, po.ID, err
 	}
 	return p.WorkspaceID, p.ID, err
+}
+
+// newTravelRule is LENS_TRAVEL_RULE's adapter (B48.7): nil when it is unset, the step off.
+func newTravelRule(raw string) (partners.TravelRuleProvider, error) {
+	kind, list, _ := strings.Cut(strings.TrimSpace(raw), ":")
+	switch kind {
+	case "":
+		return nil, nil
+	case "test":
+		vasps := map[string]string{}
+		for _, pair := range strings.Split(list, ",") {
+			if addr, name, ok := strings.Cut(pair, "="); ok {
+				vasps[strings.ToLower(strings.TrimSpace(addr))] = strings.TrimSpace(name)
+			}
+		}
+		return &partners.TestTravelRuleProvider{VASPs: vasps}, nil
+	}
+	return nil, fmt.Errorf("LENS_TRAVEL_RULE is \"test\" or \"test:<address>=<provider>,…\", not %q", raw)
 }
