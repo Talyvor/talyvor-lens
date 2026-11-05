@@ -14,6 +14,7 @@ import (
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // crypto_payment_requests.go — B48.10: ASKING TO BE PAID INTO AN AGENT'S CRYPTO WALLET.
@@ -158,13 +159,9 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		}
 	}
 	var payTo string
-	var own, replay bool
-	var named int
-	err := x.s.pool.QueryRow(ctx, `SELECT address, `+ownWallet("$2", "$3")+`,
-		EXISTS (SELECT 1 FROM crypto_payment_requests WHERE workspace_id = $2 AND idempotency_key = $4),
-		(SELECT count(*) FROM crypto_payment_requests WHERE workspace_id = $2 AND payer_address <> '' AND created_at > now() - interval '1 day')
-		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
-		in.AgentID, in.WorkspaceID, in.PayerAddress, in.IdempotencyKey).Scan(&payTo, &own, &replay, &named)
+	var own bool
+	err := x.s.pool.QueryRow(ctx, `SELECT address, `+ownWallet("$2", "$3")+` FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+		in.AgentID, in.WorkspaceID, in.PayerAddress).Scan(&payTo, &own)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CryptoRequest{}, ErrSmartAccountNotFound
 	}
@@ -174,11 +171,8 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 	// A payer that is another Talyvor agent is asked in its owner's approvals.
 	var payerWS, payerAgent string
 	if in.PayerAddress != "" {
-		switch {
-		case own: // its deposits never pay a request
+		if own { // its deposits never pay a request
 			return CryptoRequest{}, fmt.Errorf("%w: payer_address is one of this workspace's own wallets", ErrCryptoRequest)
-		case !replay && named >= x.PayerRequestsPerDay:
-			return CryptoRequest{}, ErrCryptoRequestLimit
 		}
 		err := x.s.pool.QueryRow(ctx, `SELECT workspace_id, agent_id FROM agent_smart_accounts WHERE lower(address) = lower($1)`,
 			in.PayerAddress).Scan(&payerWS, &payerAgent)
@@ -203,6 +197,22 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if in.PayerAddress != "" {
+		// Counted under the workspace's lock, held to the commit, so requests made at once cannot pass the cap together.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('crypto_payment_requests:' || $1))`, in.WorkspaceID); err != nil {
+			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
+		}
+		var replay bool
+		var named int
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM crypto_payment_requests WHERE workspace_id = $1 AND idempotency_key = $2),
+			(SELECT count(*) FROM crypto_payment_requests WHERE workspace_id = $1 AND payer_address <> '' AND created_at > now() - interval '1 day')`,
+			in.WorkspaceID, in.IdempotencyKey).Scan(&replay, &named); err != nil {
+			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
+		}
+		if !replay && named >= x.PayerRequestsPerDay {
+			return CryptoRequest{}, ErrCryptoRequestLimit
+		}
+	}
 	tag, err := tx.Exec(ctx, `INSERT INTO crypto_payment_requests (id, workspace_id, agent_id, network, chain_id, token, asset, pay_to,
 		amount_minor, memo, expires_at, payer_address, created_by, idempotency_key, asset_name, asset_version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING`,
@@ -275,15 +285,22 @@ func ownWallet(workspace, address string) string {
 }
 
 // requesterTrust is how far Talyvor trusts an agent of workspaceID, in the words an approval card shows (B45.24): the
-// name its owner's verification confirmed — by a live check, as the payer is asked for money — or that it is not
-// verified.
+// name the highest live identity or company check of its owner confirmed — never a Test provider's, as the payer is
+// asked for money — or that it is not verified.
 func requesterTrust(ctx context.Context, q pgxDB, workspaceID string) (string, error) {
-	o, err := kyaOwner(ctx, q, workspaceID)
+	checks, err := readVerificationChecks(ctx, q, workspaceID)
 	if err != nil {
 		return "", err
 	}
-	if o.Name != "" && o.LiveLevel >= LevelIdentity {
-		return "Verified agent of " + o.Name, nil
+	_, live := reachedLevels(checks)
+	name, at := "", VerificationLevel(0)
+	for _, c := range checks {
+		if c.Status == string(partners.StatusCompleted) && !c.Test && c.VerifiedName != "" && c.Level >= LevelIdentity && c.Level <= live && c.Level > at {
+			name, at = c.VerifiedName, c.Level
+		}
+	}
+	if name != "" {
+		return "Verified agent of " + name, nil
 	}
 	return "Talyvor agent, owner not verified", nil
 }
