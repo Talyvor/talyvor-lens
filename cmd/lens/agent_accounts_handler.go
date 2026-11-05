@@ -185,7 +185,7 @@ import (
 //	                                                     in the lost one's place, and its challenge
 //	POST /v1/workspaces/{wsID}/agents/{id}/recover       {"credential_id" | "device_id", "challenge", "signature"}
 //	POST /v1/workspaces/{wsID}/agents/{id}/rotate-signer the provider's next key signs for the agent from now on
-//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs
+//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs; 207 names any it could not
 //	POST /v1/workspaces/{wsID}/agents/{id}/sweep         {"network", "to"}  the call that pays everything the account
 //	                                                     holds there to the person's own wallet, for their passkey
 //
@@ -226,7 +226,7 @@ type agentBank interface {
 	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, string, error)
 	RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r economy.SmartAccountOwnerRequest, challenge, signature string) (economy.OwnerChange, error)
 	RotateAgentSigner(ctx context.Context, workspaceID, agentID, by string) (economy.OwnerChange, error)
-	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
+	LockdownAgents(ctx context.Context, workspaceID, by string) (economy.Lockdown, error)
 	AgentSweepCall(ctx context.Context, workspaceID, agentID, network, to string) (economy.AgentSweep, error)
 	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
 	WalletStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.WalletStatement, error)
@@ -734,7 +734,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		writeOwners(w, map[string]any{"frozen": out}, err)
+		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+			writeJSONOK(w, http.StatusMultiStatus, out)
+			return
+		}
+		writeOwners(w, out, err)
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct{ Network, To string }

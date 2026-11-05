@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -279,24 +280,40 @@ func (s *DualTokenStore) RotateAgentSigner(ctx context.Context, workspaceID, age
 	return out, err
 }
 
+// Lockdown is a lockdown's answer: each agent it froze, and each it could not, by agent.
+type Lockdown struct {
+	Frozen []AgentFreeze     `json:"frozen"`
+	Failed []LockdownFailure `json:"failed"`
+}
+
+// LockdownFailure is an agent a lockdown could not freeze; it is still open, and a retry freezes it.
+type LockdownFailure struct {
+	AgentID string `json:"agent_id"`
+	Error   string `json:"error"`
+}
+
 // LockdownAgents freezes every agent of the workspace that has a smart account at once (FreezeAgent), and answers
-// each freeze with its call, which the agent's own key signs on chain (smartaccount.SignRetirementAsAgent).
-func (s *DualTokenStore) LockdownAgents(ctx context.Context, workspaceID, by string) ([]AgentFreeze, error) {
+// each freeze with its call, which the agent's own key signs on chain (smartaccount.SignRetirementAsAgent). It is the
+// emergency button, so one agent's failed freeze never stops the others': each failure is answered by agent, and a
+// retry freezes only those still open (FreezeAgent answers an agent already frozen with the same freeze).
+func (s *DualTokenStore) LockdownAgents(ctx context.Context, workspaceID, by string) (Lockdown, error) {
+	out := Lockdown{Frozen: []AgentFreeze{}, Failed: []LockdownFailure{}}
 	rows, err := s.pool.Query(ctx, `SELECT agent_id FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("economy: lockdown: %w", err)
+		return out, fmt.Errorf("economy: lockdown: %w", err)
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("economy: lockdown: %w", err)
+		return out, fmt.Errorf("economy: lockdown: %w", err)
 	}
-	out := []AgentFreeze{}
 	for _, id := range ids {
 		f, err := s.FreezeAgent(ctx, workspaceID, id, by)
 		if err != nil {
-			return out, err
+			slog.Error("economy: lockdown: an agent was not frozen", slog.String("agent_id", id), slog.String("err", err.Error()))
+			out.Failed = append(out.Failed, LockdownFailure{AgentID: id, Error: "this agent could not be frozen: try the lockdown again"})
+			continue
 		}
-		out = append(out, f)
+		out.Frozen = append(out.Frozen, f)
 	}
 	return out, nil
 }
