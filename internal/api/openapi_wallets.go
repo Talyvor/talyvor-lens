@@ -122,7 +122,7 @@ func openAPIWalletSchemas() map[string]any {
 			"properties": map[string]any{
 				"id": str, "agent_id": str, "token": str, "network": str, "chain_id": map[string]any{"type": "integer", "format": "int64"},
 				"asset": str, "pay_to": str, "amount_minor": map[string]any{"type": "integer", "format": "int64"}, "memo": str,
-				"expires_at": map[string]any{"type": "string", "format": "date-time"}, "payer_address": str, "approval_id": str,
+				"expires_at": map[string]any{"type": "string", "format": "date-time"}, "payer_address": str,
 				"status":          map[string]any{"type": "string", "enum": []string{"open", "partial", "paid", "overpaid", "expired"}},
 				"received_minor":  map[string]any{"type": "integer", "format": "int64"},
 				"remaining_minor": map[string]any{"type": "integer", "format": "int64"},
@@ -410,11 +410,11 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/crypto-requests": map[string]any{
 			"post": withBody(op("Ask to be paid into the agent's crypto wallet",
-				"The agent's own key, the owner or an admin, with an Idempotency-Key (the same key and arguments answer the same request). USDC on a network the chain indexer reads. The answer is a link to share, an EIP-681 uri for a wallet or a QR code, and an x402 payment requirement. Deposits into the wallet are matched to it once confirmed: paid, partial (remaining_minor is what is left), overpaid (the owner decides refund or keep) or expired (a payment after expires_at is late and does not count). With payer_address, only that address's payments count; when it is another Talyvor agent's wallet, the request lands in its owner's approvals with the requester's trust.",
+				"The agent's own key, the owner or an admin, with an Idempotency-Key (the same key and arguments answer the same request). USDC on a network the chain indexer reads. The answer is a link to share, an EIP-681 uri for a wallet or a QR code, and an x402 payment requirement. Deposits into the wallet are matched to it once confirmed: paid, partial (remaining_minor is what is left), overpaid (the owner decides refund or keep) or expired (a payment after expires_at is late and does not count). With payer_address, only that address's payments count; when it is another Talyvor agent's wallet, the request lands in its owner's approvals with the requester's trust — one at a time from each agent.",
 				[]map[string]any{ws, agent, idempotency},
 				map[string]any{"201": ok("the request", ref("CryptoRequest")), "400": map[string]any{"description": "an unknown network or token, an amount not above 0, a memo over 140 characters, an expiry not in the future, or no Idempotency-Key"},
 					"403": map[string]any{"description": "not the agent's own key, the owner or an admin"}, "404": map[string]any{"description": "no such agent, or it has no smart account"},
-					"409": map[string]any{"description": "the Idempotency-Key was used for another request"}, "503": map[string]any{"description": "the chain indexer is not switched on"}}),
+					"409": map[string]any{"description": "the Idempotency-Key was used for another request, or this agent's earlier request to the same Talyvor agent still waits for its owner"}, "503": map[string]any{"description": "the chain indexer is not switched on"}}),
 				body(obj([]string{"network", "amount_minor", "expires_at"}, map[string]any{"token": map[string]any{"type": "string", "enum": []string{"USDC"}},
 					"network": str, "amount_minor": map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "micro-USDC"},
 					"memo": map[string]any{"type": "string", "maxLength": 140}, "expires_at": map[string]any{"type": "string", "format": "date-time"},

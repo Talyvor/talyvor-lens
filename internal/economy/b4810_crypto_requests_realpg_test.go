@@ -160,6 +160,10 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 		a.Trust != "Verified agent of Seller Ltd" || a.Reason != "Seller asks to be paid 12.5 USDC on base" || a.Payee != nil || toAgent.ApprovalID != a.ID {
 		t.Fatalf("the payer's approval: %+v (request %+v)", a, toAgent)
 	}
+	if _, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Network: "base", AmountMinor: 1, ExpiresAt: time.Now().Add(time.Hour),
+		PayerAddress: wallets[payer], IdempotencyKey: "to-agent-again"}); !errors.Is(err, ErrCryptoRequestWaiting) {
+		t.Fatalf("a second request to the same agent while the first waits = %v, want ErrCryptoRequestWaiting", err)
+	}
 	if r := read(toAgent.ID); r.Status != "open" {
 		t.Fatalf("a request naming its payer, after a stranger's deposit: %+v", r)
 	}
@@ -179,7 +183,7 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 
 	// The shared link shows what to pay, never whose it is.
 	pub, err := s.PublicCryptoPaymentRequest(ctx, toAgent.ID)
-	if err != nil || pub.AgentID != "" || pub.PayerAddress != "" || pub.ApprovalID != "" || pub.Payments != nil || pub.PayTo != wallets[seller] {
+	if err != nil || pub.AgentID != "" || pub.PayerAddress != "" || pub.Payments != nil || pub.PayTo != wallets[seller] {
 		t.Fatalf("public view: %+v, %v", pub, err)
 	}
 }

@@ -30,7 +30,7 @@ func writeCryptoRequest(w http.ResponseWriter, status int, out any, err error) {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrCryptoRequestNotFound), errors.Is(err, economy.ErrSmartAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, economy.ErrCryptoRequestConflict):
+	case errors.Is(err, economy.ErrCryptoRequestConflict), errors.Is(err, economy.ErrCryptoRequestWaiting):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case err != nil:
 		writeJSONErr(w, http.StatusInternalServerError, "the request to be paid could not be read or kept")

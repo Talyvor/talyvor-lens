@@ -34,6 +34,9 @@ var (
 	ErrCryptoRequestNotFound = errors.New("economy: no such request to be paid")
 	// ErrCryptoRequestConflict: the Idempotency-Key was used before for another request.
 	ErrCryptoRequestConflict = errors.New("economy: this Idempotency-Key was already used for a different request")
+	// ErrCryptoRequestWaiting: this agent's earlier request to the same Talyvor agent still waits in its owner's
+	// approvals — one at a time, so no agent can fill another owner's approvals.
+	ErrCryptoRequestWaiting = errors.New("economy: this agent's earlier request to that agent still waits for its owner")
 )
 
 // CryptoRequestLinkBase is the app's page for a request: the link that is shared.
@@ -76,8 +79,8 @@ type CryptoRequest struct {
 	Memo           string                 `json:"memo"`
 	ExpiresAt      time.Time              `json:"expires_at"`
 	PayerAddress   string                 `json:"payer_address,omitempty"`
-	ApprovalID     string                 `json:"approval_id,omitempty"` // in the payer's workspace
-	Status         string                 `json:"status"`                // open | partial | paid | overpaid | expired
+	ApprovalID     string                 `json:"-"`      // in the payer's workspace: never shown to the requester
+	Status         string                 `json:"status"` // open | partial | paid | overpaid | expired
 	ReceivedMinor  int64                  `json:"received_minor"`
 	RemainingMinor int64                  `json:"remaining_minor"`
 	OverpaidMinor  int64                  `json:"overpaid_minor"`
@@ -167,6 +170,11 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		if payerAgent == in.AgentID {
 			return CryptoRequest{}, fmt.Errorf("%w: an agent does not ask itself to pay", ErrCryptoRequest)
 		}
+		if payerAgent != "" {
+			if _, err := x.s.expireApprovals(ctx, payerAgent, "crypto_request:"+in.AgentID); err != nil {
+				return CryptoRequest{}, err
+			}
+		}
 	}
 
 	id := "cpr_" + uuid.NewString()
@@ -207,14 +215,20 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
 		}
 		approval = "apr_" + uuid.NewString()
-		// No payee: the requester is another workspace's agent, never one this workspace's rules can allow for good.
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, memo,
+		// No payee: the requester is another workspace's agent, never one this workspace's rules can allow for good. One
+		// open approval per requester and payer (idx_agent_approvals_open on the requester in the fingerprint).
+		tag, err := tx.Exec(ctx, `INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, memo,
 			expires_at, payment_request_id, currency, amount_minor, trust)
-			VALUES ($1, $2, $3, $4, 0, $5, $6, LEAST($7, now() + $8 * interval '1 microsecond'), $9, $10, $11, $12)`,
-			approval, payerWS, payerAgent, "crypto_request:"+id,
+			VALUES ($1, $2, $3, $4, 0, $5, $6, LEAST($7, now() + $8 * interval '1 microsecond'), $9, $10, $11, $12)
+			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING`,
+			approval, payerWS, payerAgent, "crypto_request:"+in.AgentID,
 			fmt.Sprintf("%s asks to be paid %s USDC on %s", name, usdcString(in.AmountMinor), in.Network), in.Memo,
-			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, in.Trust); err != nil {
+			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, in.Trust)
+		if err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: the payer's approval: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return CryptoRequest{}, ErrCryptoRequestWaiting
 		}
 		if _, err := tx.Exec(ctx, `UPDATE crypto_payment_requests SET approval_id = $2 WHERE id = $1`, id, approval); err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
@@ -326,7 +340,7 @@ func (s *DualTokenStore) PublicCryptoPaymentRequest(ctx context.Context, id stri
 		return CryptoRequest{}, ErrCryptoRequestNotFound
 	}
 	r := rs[0]
-	r.AgentID, r.PayerAddress, r.ApprovalID, r.Overpayment, r.Payments = "", "", "", "", nil
+	r.AgentID, r.PayerAddress, r.Overpayment, r.Payments = "", "", "", nil
 	return r, nil
 }
 
