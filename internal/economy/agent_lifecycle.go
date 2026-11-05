@@ -137,7 +137,7 @@ func (s *DualTokenStore) ArchiveAgent(ctx context.Context, workspaceID, agentID 
 	if _, err := tx.Exec(ctx, `DELETE FROM agent_topups WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID); err != nil {
 		return out, fmt.Errorf("economy: stop agent top-up: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_payment_schedules SET active = false
+	if _, err := tx.Exec(ctx, `UPDATE agent_payment_schedules SET active = false, awaiting_signature = false
 		WHERE workspace_id = $2 AND (from_agent_id = $1 OR to_agent_id = $1)`, agentID, workspaceID); err != nil {
 		return out, fmt.Errorf("economy: stop agent schedules: %w", err)
 	}
