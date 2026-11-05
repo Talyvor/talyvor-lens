@@ -2656,6 +2656,8 @@ func run() error {
 		mountAgentSignatureRoutes(pub, agentSigs)
 		// B45.29: an outside agent asks to be paid; it lands in the owner's approvals with its trust level.
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
+		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
+		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
