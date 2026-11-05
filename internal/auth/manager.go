@@ -284,6 +284,7 @@ func ValidateToken(tokenString string, key *ecdsa.PublicKey) (*TokenClaims, erro
 type Manager struct {
 	globalKey       string
 	mintKey         string
+	connectMintKey  string
 	operatorReadKey string
 	privateKey      *ecdsa.PrivateKey
 	publicKey       *ecdsa.PublicKey
@@ -305,6 +306,10 @@ type jwtCacheEntry struct {
 // credential exists and the only way to mint stays the global key, i.e. today's behaviour exactly.
 // A deployment that never sets it is unchanged by this feature.
 func (m *Manager) WithMintKey(k string) *Manager { m.mintKey = k; return m }
+
+// WithConnectMintKey attaches LENS_CONNECT_MINT_KEY, the BFF's credential for minting Connect tokens (B52.4).
+// Unset ⇒ no such credential, and only the global key mints them.
+func (m *Manager) WithConnectMintKey(k string) *Manager { m.connectMintKey = k; return m }
 
 // WithOperatorReadKey attaches the narrow operator READ credential (LENS_OPERATOR_READ_KEY).
 // Optional: unset ⇒ the credential does not exist, every admin read stays reachable only by the
@@ -511,6 +516,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 			AuthMethod:  MethodMintKey,
 			IsAdmin:     false,
 		}, nil
+	}
+
+	// Connect mint credential (B52.4): exactly {connect_mint}. Ordered after the mint key, so a deployment that sets
+	// both to one value gets the mint key and Connect minting refuses it, loudly.
+	if m.connectMintKey != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(m.connectMintKey)) == 1 {
+		return &AuthContext{Scopes: []string{ScopeConnectMint}, AuthMethod: MethodConnectMintKey}, nil
 	}
 
 	// Narrow operator READ credential. IsAdmin is FALSE and the scope set is exactly

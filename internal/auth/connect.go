@@ -23,6 +23,10 @@ const (
 	ScopePaymentsSend = "payments:send"
 	// ConnectTokenTTL is how long a Connect token lives; the BFF mints a fresh one as it needs.
 	ConnectTokenTTL = 15 * time.Minute
+	// ScopeConnectMint is LENS_CONNECT_MINT_KEY's one power: POST /v1/auth/connect-token. It is not ScopeMint,
+	// which Docs and Track hold too and which must never reach a credential that pays.
+	ScopeConnectMint     = "connect_mint"
+	MethodConnectMintKey = "connect_mint_key"
 )
 
 // ConnectScopes are the only scopes a Connect token may carry.

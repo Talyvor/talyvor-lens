@@ -965,6 +965,7 @@ func run() error {
 	// mint LXC, approve a conversion rate or revoke a payout.
 	authManager := auth.NewManager(os.Getenv("LENS_API_KEY"), jwtKey, keyStore, tenantStore).
 		WithMintKey(os.Getenv("LENS_MINT_KEY")).
+		WithConnectMintKey(os.Getenv("LENS_CONNECT_MINT_KEY")).
 		WithOperatorReadKey(os.Getenv("LENS_OPERATOR_READ_KEY"))
 
 	// B20.13 — the marketplace moderator key: the web app's credential for the review queue and

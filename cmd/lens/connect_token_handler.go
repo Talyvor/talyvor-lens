@@ -16,7 +16,7 @@ type connectAgents interface {
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
 }
 
-// newConnectTokenMintHandler is POST /v1/auth/connect-token (B52.4): the BFF, holding the mint credential, mints the
+// newConnectTokenMintHandler is POST /v1/auth/connect-token (B52.4): the BFF, holding LENS_CONNECT_MINT_KEY, mints the
 // token an assistant connected through Claude or ChatGPT calls Lens with — one agent, the scopes the person granted
 // (auth.ConnectScopes at most), fifteen minutes, and only for an agent of that workspace the person owns. What the
 // token may then do is decided in auth, not here.
@@ -27,8 +27,8 @@ func newConnectTokenMintHandler(authManager *auth.Manager, agents connectAgents)
 			return
 		}
 		actx, err := authManager.Authenticate(req)
-		if err != nil || actx == nil || (!actx.IsAdmin && !actx.HasScope(auth.ScopeMint)) {
-			writeJSONErr(w, http.StatusForbidden, "admin or mint credentials required")
+		if err != nil || actx == nil || !actx.HasScope(auth.ScopeConnectMint) { // the global key passes HasScope too
+			writeJSONErr(w, http.StatusForbidden, "admin or Connect mint credentials required")
 			return
 		}
 		var in struct {

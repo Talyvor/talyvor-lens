@@ -20,7 +20,7 @@ import (
 func TestConnectToken_PaysInsideTheAgentsRulesAndNothingElse(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
-	const ws, mintKey = "ws-connect", "test-mint-key-long-enough-for-connect"
+	const ws, mintKey, plainMintKey = "ws-connect", "test-connect-mint-key-long-enough", "test-mint-key-long-enough-for-docs"
 	if _, err := pool.Exec(ctx, `INSERT INTO lxc_balances (workspace_id, balance, cash_backed_ulxc) VALUES ($1, 20000000, 20000000)`, ws); err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestConnectToken_PaysInsideTheAgentsRulesAndNothingElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	am := auth.NewManager(mintTestGlobalKey, jwtKey, auth.New(pool), nil).WithMintKey(mintKey)
+	am := auth.NewManager(mintTestGlobalKey, jwtKey, auth.New(pool), nil).WithMintKey(plainMintKey).WithConnectMintKey(mintKey)
 	r := chi.NewRouter()
 	r.Use(auth.AuthMiddleware(auth.New(pool), am))
 	r.Post("/v1/auth/connect-token", newConnectTokenMintHandler(am, store))
@@ -67,6 +67,9 @@ func TestConnectToken_PaysInsideTheAgentsRulesAndNothingElse(t *testing.T) {
 	mint := `{"workspace_id":"` + ws + `","user_id":"user-owner","client_id":"https://claude.ai","agent_id":"` + buyer + `","scopes":["payments:send"]}`
 	if code, body := call(mintKey, http.MethodPost, "/v1/auth/connect-token", strings.Replace(mint, `"payments:send"`, `"admin"`, 1), ""); code != http.StatusBadRequest {
 		t.Errorf("a Connect token asking for admin was minted: %d %s, want 400", code, body)
+	}
+	if code, body := call(plainMintKey, http.MethodPost, "/v1/auth/connect-token", mint, ""); code != http.StatusForbidden {
+		t.Errorf("the Docs and Track mint key minted a Connect token: %d %s, want 403", code, body)
 	}
 	if code, body := call(mintKey, http.MethodPost, "/v1/auth/connect-token", strings.Replace(mint, "user-owner", "user-other", 1), ""); code != http.StatusForbidden {
 		t.Errorf("a Connect token for someone else's agent was minted: %d %s, want 403", code, body)
