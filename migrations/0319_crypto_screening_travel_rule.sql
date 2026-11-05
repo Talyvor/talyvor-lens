@@ -4,7 +4,8 @@
 -- chain, but posted to nothing until an operator releases its compliance case. A payment to an address a regulated
 -- provider holds keeps the identity data that travelled with it (travel_rule_transfers), one row per payment. An address
 -- the owner proved they hold the key of, by signing a message with it, is kept once (crypto_address_proofs): a payment
--- of more than the EU's threshold to a self-hosted address waits for one.
+-- that takes what is paid to a self-hosted address over the EU's threshold waits for one; what is paid is counted by
+-- each payment's own address (money_payments.address), as it was paid, never by its payee's, which can change.
 ALTER TABLE chain_movements DROP CONSTRAINT IF EXISTS chain_movements_status_check;
 ALTER TABLE chain_movements ADD CONSTRAINT chain_movements_status_check
     CHECK (status IN ('seen', 'confirmed', 'reversed', 'final', 'quarantined'));
@@ -33,3 +34,6 @@ CREATE TABLE IF NOT EXISTS crypto_address_proofs (
     proved_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, network, address)
 );
+
+ALTER TABLE money_payments ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT ''; -- the USDC address paid, lower case
+CREATE INDEX IF NOT EXISTS idx_money_payments_address ON money_payments (workspace_id, address) WHERE address <> '';

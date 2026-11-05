@@ -74,9 +74,9 @@ func (s *DualTokenStore) screenAddress(ctx context.Context, p OutsidePayment, pa
 func addressProofTx(ctx context.Context, tx pgx.Tx, p OutsidePayment, payee OutsidePayee) error {
 	var paid int64
 	var proved bool
-	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT sum(m.amount_minor) FROM money_payments m
-			JOIN money_payees y ON y.id = m.payee_id AND y.workspace_id = m.workspace_id
-			WHERE m.workspace_id = $1 AND y.network = $2 AND y.address = $3 AND m.currency = $4 AND m.status NOT IN ('failed', 'returned')), 0)::bigint,
+	// Each payment's own address, as it was paid: a payee's address can change (B41.112), what was paid to it cannot.
+	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT sum(amount_minor) FROM money_payments
+			WHERE workspace_id = $1 AND address = $3 AND currency = $4 AND status NOT IN ('failed', 'returned')), 0)::bigint,
 		EXISTS (SELECT 1 FROM crypto_address_proofs WHERE workspace_id = $1 AND network = $2 AND address = $3)`,
 		p.WorkspaceID, payee.Network, payee.Address, p.Currency).Scan(&paid, &proved); err != nil {
 		return fmt.Errorf("economy: payment: %w", err)

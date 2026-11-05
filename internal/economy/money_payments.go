@@ -293,11 +293,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if p, err = scanOutsidePayment(tx.QueryRow(ctx, `INSERT INTO money_payments (id, workspace_id, idempotency_key, account_id, hold_account_id,
 		agent_id, payee_id, payee_name, amount_minor, currency, funding, reference, value_ulxc, status, partner,
-		quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING `+outsidePaymentCols,
+		quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate, address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING `+outsidePaymentCols,
 		p.ID, workspaceID, p.IdempotencyKey, p.AccountID, p.holdAccountID, p.AgentID, p.PayeeID, p.PayeeName, p.AmountMinor, p.Currency,
 		p.Funding, p.Reference, p.ValueULXC, p.Status, p.Partner, p.QuoteID, p.quoteRef, p.PartnerCostMinor, p.FeeMinor, p.ArrivesMinor,
-		p.ArrivesCurrency, p.Rate)); err != nil {
+		p.ArrivesCurrency, p.Rate, payee.Address)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the same key, paid at the same moment: answer as that one did
 			_ = tx.Rollback(ctx)
