@@ -4867,6 +4867,8 @@ func run() error {
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
 		mountNegotiationMoveRoutes(authed, dualToken, routingInferer, cfg.CounterModel) // B52.11
+		// B52.12
+		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
