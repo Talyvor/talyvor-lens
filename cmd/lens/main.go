@@ -192,6 +192,14 @@ func main() {
 		}
 		return
 	}
+	// `lens admin-key-sweep` (B50.33): list, and with --revoke revoke, the admin-scoped workspace keys.
+	if len(os.Args) > 1 && os.Args[1] == "admin-key-sweep" {
+		if err := runAdminKeySweep(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `lens moderator-keys` (B20.13): create, list and revoke the marketplace moderator keys.
 	if len(os.Args) > 1 && os.Args[1] == "moderator-keys" {
 		if err := runModeratorKeys(os.Args[2:]); err != nil {
@@ -2002,6 +2010,7 @@ func run() error {
 		return err
 	}
 	dualToken.SetMoneyLayer(moneyLayer)
+	dualToken.SetGasBudgetDefault(cfg.GasBudgetWei) // B48.5: what a workspace's agents' paymaster may pay before its owner tops up
 	// B46.22 — a seller who saved payout details on the money layer is paid by the weekly run there, from Talyvor's accounts.
 	marketStore.SetMoneyPayouts(dualToken, economy.TalyvorWorkspace)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
@@ -2035,6 +2044,16 @@ func run() error {
 	go haComps.leader.Run(ctx, "sanctions-lists", 30*time.Second, func(lctx context.Context) {
 		refreshSanctionsLists(lctx, screeningLists, sanctionsAlert)
 	})
+	// B48.6 — agents' crypto wallets mirrored in the ledger: each movement seen, confirmed and reconciled nightly.
+	chainIdx, err := newChainIndex(dualToken, cfg.ChainIndex)
+	if err != nil {
+		return err
+	}
+	if chainIdx != nil {
+		go haComps.leader.Run(ctx, "chain-indexer", 30*time.Second, func(lctx context.Context) {
+			chainIdx.indexChains(lctx, sanctionsAlert.sink)
+		})
+	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
 	if cfg.BillingEnabled {
 		taxProfiles.SetStripe(taxStripeByKind{isTest: wsManager.GetSynthetic, mainKeyLive: billing.LiveKey(cfg.StripeSecretKey),
@@ -2201,6 +2220,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
 				}
+				// B48.5: network fees a paymaster paid for agents, charged to their workspaces' budgets from the receipts.
+				if n, err := dualToken.SettleSponsoredGas(ctx); err != nil {
+					slog.Warn("agents: sponsored network fees not settled", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: sponsored network fees charged", slog.Int("operations", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))
@@ -2282,6 +2307,12 @@ func run() error {
 	scanWriter := scan.NewWriter(scan.NewStore(pool), routingInferer, cfg.ScanWriterModel, cfg.ScanCheckModel, cfg.ScanConflicts)
 	go haComps.leader.Run(ctx, "scan-reports", 30*time.Second, func(lctx context.Context) {
 		scanWriter.Every(lctx, time.Hour)
+	})
+	// B52.27 — Scan agents' watches run every hour: a series the owner picked that crosses into what they called
+	// unusual sends one alert, paid for by the agent's wallet (fees' LENS_SCAN_ALERT_ULXC); a paused agent sends nothing.
+	scanWatcher := scan.NewWatcher(scan.NewStore(pool), dualToken, func() int64 { return fees.Current().ScanAlertULXC })
+	go haComps.leader.Run(ctx, "scan-watches", 30*time.Second, func(lctx context.Context) {
+		scanWatcher.Every(lctx, time.Hour)
 	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
@@ -2899,6 +2930,10 @@ func run() error {
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
 
+		// B52.33 — Scan's published reports, for the app's report library: approved only, never the review.
+		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
+		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -2935,6 +2970,8 @@ func run() error {
 	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing
 	// webhook; the partner's adapter verifies the signature and a replayed id is refused.
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
+	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
+	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
@@ -3083,11 +3120,11 @@ func run() error {
 		authed.With(proxyScope).Post("/oai/*", listingOpenAI(p.HandleOpenAI))
 		authed.With(proxyScope).Post("/anthropic/*", listingAnthropic(p.HandleAnthropic))
 
-		authed.Post("/v1/api/keys", newCreateAPIKeyHandler(keyStore))
+		authed.Post("/v1/api/keys", apiKeysRetired)
 
 		authed.Post("/v1/api/injection/patterns", requireAdmin(authManager, http.HandlerFunc(newInjectionPatternAddHandler(injectionDetector))))
 
-		authed.Delete("/v1/api/keys/{keyID}", newRevokeAPIKeyHandler(keyStore))
+		authed.Delete("/v1/api/keys/{keyID}", keyOwnerOnly(newRevokeAPIKeyHandler(keyStore)))
 
 		// ─── JWT auth endpoints ────────────────────────
 		// /v1/auth/token mints a JWT — admin-only because issuing
@@ -3330,7 +3367,7 @@ func run() error {
 		})
 
 		// ─── Key rotation + usage ──────────────────────
-		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			// RotateAPIKey is a single atomic transaction: SELECT FOR UPDATE on the
@@ -3358,7 +3395,7 @@ func run() error {
 				"prefix":  fresh.KeyPrefix,
 				"warning": "Old key revoked. Store this new key securely — it will not be shown again.",
 			})
-		})
+		}))
 
 		// ─── W1.9.1: rotation for a key a RUNNING SERVICE holds ──────────
 		//
@@ -3372,7 +3409,7 @@ func run() error {
 		// BOTH VALID → the holder switches → the new key authenticates a real request → only then
 		// is the old one revoked. Completion is REFUSED until that request has happened, which is
 		// the one thing CreateAPIKey + RevokeAPIKey cannot enforce on their own.
-		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate/begin", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate/begin", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			raw, fresh, rot, err := tenantStore.BeginRotation(req.Context(), wsID, keyID)
@@ -3406,7 +3443,7 @@ func run() error {
 				"next_step": "put this key in front of the holder and let it make one real request, then POST " +
 					"/v1/workspaces/" + wsID + "/key-rotations/" + rot.ID + "/complete. The old key keeps working until you do.",
 			})
-		})
+		}))
 
 		authed.Get("/v1/workspaces/{wsID}/key-rotations/{rotationID}", func(w http.ResponseWriter, req *http.Request) {
 			st, err := tenantStore.RotationStatus(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "rotationID"))
@@ -3421,7 +3458,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, st)
 		})
 
-		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/complete", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/complete", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			rotID := chi.URLParam(req, "rotationID")
 			err := tenantStore.CompleteRotation(req.Context(), wsID, rotID)
@@ -3452,9 +3489,9 @@ func run() error {
 				"outcome":     "completed",
 				"detail":      "the old key is revoked; the new key has already proven it authenticates",
 			})
-		})
+		}))
 
-		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/abandon", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/abandon", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			rotID := chi.URLParam(req, "rotationID")
 			err := tenantStore.AbandonRotation(req.Context(), wsID, rotID)
@@ -3476,7 +3513,7 @@ func run() error {
 				"outcome":     "abandoned",
 				"detail":      "the NEW key is revoked; the key the holder is using is untouched",
 			})
-		})
+		}))
 
 		authed.Get("/v1/workspaces/{wsID}/api-keys/{keyID}/usage", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -3579,31 +3616,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, in)
 		})
 
-		authed.Post("/v1/workspaces/{wsID}/api-keys", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			var in struct {
-				Name      string     `json:"name"`
-				Scopes    []string   `json:"scopes"`
-				ExpiresAt *time.Time `json:"expires_at,omitempty"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			raw, key, err := tenantStore.CreateAPIKey(req.Context(), wsID, in.Name, in.Scopes, in.ExpiresAt)
-			if err != nil {
-				writeJSONErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusCreated, map[string]any{
-				"key":     raw,
-				"id":      key.ID,
-				"prefix":  key.KeyPrefix,
-				"name":    key.Name,
-				"scopes":  key.Scopes,
-				"warning": "Store this key securely. It will not be shown again.",
-			})
-		})
+		authed.Post("/v1/workspaces/{wsID}/api-keys", keyOwnerOnly(apiKeyCreateHandler(tenantStore)))
 
 		authed.Get("/v1/workspaces/{wsID}/api-keys", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -3615,7 +3628,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, keys)
 		})
 
-		authed.Delete("/v1/workspaces/{wsID}/api-keys/{keyID}", func(w http.ResponseWriter, req *http.Request) {
+		authed.Delete("/v1/workspaces/{wsID}/api-keys/{keyID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			// workspaceIsolationMiddleware has already proven the caller owns
@@ -3644,7 +3657,7 @@ func run() error {
 				return
 			}
 			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
-		})
+		}))
 
 		// ─── per-team / per-sprint budgets (Upgrade 19) ───
 		// CRUD + a live status endpoint. Every mutation reloads the budget
@@ -4813,6 +4826,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
@@ -4835,12 +4849,17 @@ func run() error {
 		mountMoneyPlanRoutes(authed, dualToken)                                         // B53.15
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
+		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
+		mountNegotiationMoveRoutes(authed, dualToken, routingInferer, cfg.CounterModel) // B52.11
+		// B52.12
+		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
+		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50

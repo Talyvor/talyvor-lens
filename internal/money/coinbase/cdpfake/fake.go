@@ -47,6 +47,8 @@ const (
 	Payer         = "0x00000000000000000000000000000000000a11ce"
 	transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" // Transfer(address,address,uint256)
 	ethAddress    = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+	GasPrice      = 1_000_000          // wei per unit of gas, as the fake's node quotes it
+	GasCharged    = 150_000 * GasPrice // wei the fake's paymaster pays for each user operation it sends
 )
 
 // Fake is a running fake CDP.
@@ -67,6 +69,7 @@ type Fake struct {
 	usdc     map[string]int64    // USDC base units by lower-case address
 	spoof    map[string]int64
 	receipts map[string]receipt // by transaction hash, and by user operation hash
+	ops      map[string]bool    // the user operations sent, by hash
 	idem     map[string]reply
 	sent     int
 	signed   int
@@ -119,7 +122,7 @@ func New(t *testing.T) *Fake {
 	f := &Fake{APIKeyID: "organizations/fake/apiKeys/" + hex.EncodeToString(pub[:4]), APIKeySecret: base64.StdEncoding.EncodeToString(priv),
 		WalletSecret: base64.StdEncoding.EncodeToString(der), WebhookSecret: "whsec_" + hex.EncodeToString(pub[4:12]),
 		apiKey: pub, walletKey: &wk.PublicKey, accounts: map[string]*account{}, names: map[string]string{},
-		usdc: map[string]int64{}, spoof: map[string]int64{}, receipts: map[string]receipt{}, idem: map[string]reply{}}
+		usdc: map[string]int64{}, spoof: map[string]int64{}, receipts: map[string]receipt{}, ops: map[string]bool{}, idem: map[string]reply{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.URL, f.RPCURL = srv.URL, srv.URL+"/rpc/fake-client-key"
@@ -451,6 +454,7 @@ func (f *Fake) send(w http.ResponseWriter, from string, body []byte) {
 	sum := sha256.Sum256(append([]byte(from+to), body...))
 	hash := "0x" + hex.EncodeToString(sum[:])
 	f.receipts[hash] = transferReceipt(hash, USDCAddress, from, to, n.Int64())
+	f.ops[hash] = true
 	writeJSON(w, http.StatusOK, map[string]any{"network": Network, "userOpHash": hash, "calls": req.Calls, "status": "broadcast"})
 }
 
@@ -470,7 +474,25 @@ func (f *Fake) rpc(w http.ResponseWriter, body []byte) {
 		Method string   `json:"method"`
 		Params []string `json:"params"`
 	}
-	if json.Unmarshal(body, &req) != nil || req.Method != "eth_getTransactionReceipt" || len(req.Params) != 1 {
+	_ = json.Unmarshal(body, &req)
+	switch { // CDP's node is also its paymaster's bundler (B48.5)
+	case req.Method == "eth_gasPrice":
+		writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": "0x" + strconv.FormatInt(GasPrice, 16)})
+		return
+	case req.Method == "eth_getUserOperationReceipt" && len(req.Params) == 1:
+		f.mu.Lock()
+		rc, ok := f.receipts[req.Params[0]]
+		sent := f.ops[req.Params[0]]
+		f.mu.Unlock()
+		var result any
+		if ok && sent {
+			result = map[string]any{"success": true, "actualGasCost": "0x" + strconv.FormatInt(GasCharged, 16),
+				"receipt": map[string]string{"transactionHash": rc.TransactionHash}}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		return
+	}
+	if req.Method != "eth_getTransactionReceipt" || len(req.Params) != 1 {
 		writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 		return
 	}

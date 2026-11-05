@@ -62,6 +62,11 @@ func appendAudit(ctx context.Context, tx pgx.Tx, workspaceID, subject, kind stri
 	return nil
 }
 
+// AppendAuditTx is appendAudit for a caller outside this package, so its change and the entry commit together or not at all.
+func AppendAuditTx(ctx context.Context, tx pgx.Tx, workspaceID, subject, kind string, body map[string]any) error {
+	return appendAudit(ctx, tx, workspaceID, subject, kind, body)
+}
+
 // redactAudit returns v with redact.Secrets applied to every string in it.
 func redactAudit(v any) any {
 	switch t := v.(type) {

@@ -113,6 +113,8 @@ import (
 //	POST   /v1/workspaces/{wsID}/agents/passkeys   {credential_id, name, public_key (SPKI), client_data_json, authenticator_data}
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
+//	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
+//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion}   decides them all, or none
 //	GET    /v1/workspaces/{wsID}/agents/push/public-key              the VAPID key a browser subscribes with
 //	POST   /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint, keys: {p256dh, auth}}   a device to tell
 //	DELETE /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint}
@@ -183,9 +185,19 @@ import (
 //	                                                     in the lost one's place, and its challenge
 //	POST /v1/workspaces/{wsID}/agents/{id}/recover       {"credential_id" | "device_id", "challenge", "signature"}
 //	POST /v1/workspaces/{wsID}/agents/{id}/rotate-signer the provider's next key signs for the agent from now on
-//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs
+//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs; 207 names any it could not
 //	POST /v1/workspaces/{wsID}/agents/{id}/sweep         {"network", "to"}  the call that pays everything the account
 //	                                                     holds there to the person's own wallet, for their passkey
+//
+// B48.5 — agents never need the network's coin: a paymaster pays their network fees within the workspace's budget
+// for them on each chain (internal/economy/gas_budgets.go):
+//
+//	GET  /v1/workspaces/{wsID}/agents/gas-budget?chain_id=8453   the budget, what is held and charged, what is left,
+//	                                                     and whether the owner was asked to top it up; a chain no
+//	                                                     paymaster serves is 400
+//	POST /v1/workspaces/{wsID}/agents/gas-budget/top-up  {"chain_id", "wei"}   Talyvor's admin adds to it: Talyvor
+//	                                                     pays what it sponsors, so an owner cannot until a top-up
+//	                                                     is paid for (403)
 //
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
@@ -214,9 +226,14 @@ type agentBank interface {
 	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, string, error)
 	RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r economy.SmartAccountOwnerRequest, challenge, signature string) (economy.OwnerChange, error)
 	RotateAgentSigner(ctx context.Context, workspaceID, agentID, by string) (economy.OwnerChange, error)
-	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
+	LockdownAgents(ctx context.Context, workspaceID, by string) (economy.Lockdown, error)
 	AgentSweepCall(ctx context.Context, workspaceID, agentID, network, to string) (economy.AgentSweep, error)
 	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
+	WalletStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.WalletStatement, error)
+	WalletActivity(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.WalletLine, error)
+	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
+	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
+	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -256,6 +273,7 @@ type agentBank interface {
 	AgentKey(ctx context.Context, workspaceID, agentID string) (string, error)
 	ListPromptSchedules(ctx context.Context, workspaceID string) ([]economy.PromptSchedule, error)
 	StopPromptSchedule(ctx context.Context, workspaceID, scheduleID string) error
+	AgentMayRun(ctx context.Context, workspaceID, agentID string) error
 	SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (economy.AgentTopUp, error)
 	GetAgentTopUp(ctx context.Context, workspaceID, agentID string) (economy.AgentTopUp, bool, error)
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
@@ -264,6 +282,8 @@ type agentBank interface {
 	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error)
+	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
+	DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]economy.AgentApproval, error)
 	PushPublicKey() (string, bool)
 	SavePushSubscription(ctx context.Context, workspaceID, endpoint, p256dh, auth string) error
 	DeletePushSubscription(ctx context.Context, workspaceID, endpoint string) error
@@ -281,6 +301,7 @@ type agentKeyIssuer interface {
 }
 
 func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) {
+	mountWalletStatementRoutes(r, bank)
 	r.Get("/v1/workspaces/{wsID}/agents", func(w http.ResponseWriter, req *http.Request) {
 		book, err := bank.AgentBook(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
@@ -403,7 +424,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, out)
 		}
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		var in struct {
 			Name string `json:"name"`
@@ -713,7 +734,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		writeOwners(w, map[string]any{"frozen": out}, err)
+		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+			writeJSONOK(w, http.StatusMultiStatus, out)
+			return
+		}
+		writeOwners(w, out, err)
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct{ Network, To string }
@@ -735,6 +760,42 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		writeJSONOK(w, http.StatusOK, out)
+	}))
+	writeGasBudget := func(w http.ResponseWriter, b economy.GasBudget, err error) {
+		switch {
+		case errors.Is(err, economy.ErrGasTopUp), errors.Is(err, economy.ErrGasChain):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, b)
+		}
+	}
+	r.Get("/v1/workspaces/{wsID}/agents/gas-budget", func(w http.ResponseWriter, req *http.Request) {
+		chainID, err := strconv.ParseInt(req.URL.Query().Get("chain_id"), 10, 64)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "chain_id must be the chain's id, such as 8453 for Base")
+			return
+		}
+		b, err := bank.WorkspaceGasBudget(req.Context(), chi.URLParam(req, "wsID"), chainID)
+		writeGasBudget(w, b, err)
+	})
+	r.Post("/v1/workspaces/{wsID}/agents/gas-budget/top-up", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			ChainID int64 `json:"chain_id"`
+			Wei     int64 `json:"wei"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"chain_id": 8453, "wei": <amount>}`)
+			return
+		}
+		actx := auth.GetAuthContext(req.Context())
+		if actx == nil || !actx.IsAdmin {
+			writeJSONErr(w, http.StatusForbidden, "Talyvor tops up the budget for network fees: ask us to")
+			return
+		}
+		b, err := bank.TopUpGasBudget(req.Context(), chi.URLParam(req, "wsID"), in.ChainID, in.Wei, actx.UserID)
+		writeGasBudget(w, b, err)
 	}))
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.AgentRules
@@ -1318,7 +1379,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": chi.URLParam(req, "agentID"), "topup": nil})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		c, rpID, err := bank.PasskeyRegistrationChallenge(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -1336,7 +1397,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none", "credential_ids": creds})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			CredentialID      string             `json:"credential_id"`
 			Name              string             `json:"name"`
@@ -1383,6 +1444,52 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}))
+	// B41.204: one passkey assertion decides several approvals — "approve" or "deny", over the set of ids.
+	type batchDecision struct {
+		IDs       []string           `json:"approval_ids"`
+		Decision  string             `json:"decision"`
+		Assertion *passkey.Assertion `json:"assertion"`
+	}
+	readBatch := func(w http.ResponseWriter, req *http.Request) (batchDecision, bool) {
+		var in batchDecision
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || len(in.IDs) == 0 || (in.Decision != "approve" && in.Decision != "deny") {
+			writeJSONErr(w, http.StatusBadRequest, `send {"approval_ids": [..], "decision": "approve" | "deny"}`)
+			return in, false
+		}
+		return in, true
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := readBatch(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.BatchApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve")
+		switch {
+		case errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/decide", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := readBatch(w, req)
+		if !ok {
+			return
+		}
+		list, err := bank.DecideAgentApprovals(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrApprovalsChanged), errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 		}
 	}))
 	r.Get("/v1/workspaces/{wsID}/agents/push/public-key", func(w http.ResponseWriter, req *http.Request) {
@@ -1537,6 +1644,20 @@ func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may manage its agents")
+			return
+		}
+		next(w, req)
+	}
+}
+
+// keyOwnerOnly admits only the workspace owner's signed-in session (a token carrying auth.ScopeKeys, which no workspace
+// key can be given) or the operator: no key, admin-scoped or not, creates, rotates or revokes a key (B50.33).
+func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		actx := auth.GetAuthContext(req.Context())
+		if actx == nil || actx.AuthMethod == auth.MethodWorkspaceKey || actx.AuthMethod == auth.MethodSessionKey ||
+			!actx.HasScope(auth.ScopeKeys) {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, signed in, may create, rotate or revoke its keys")
 			return
 		}
 		next(w, req)

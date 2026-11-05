@@ -221,10 +221,54 @@ type Cards interface {
 
 // IssueCard asks for a card on a wallet, locked to a merchant and capped.
 type IssueCard struct {
-	Key      string `json:"key"`
-	Wallet   string `json:"wallet"`
-	Merchant string `json:"merchant,omitempty"` // "" is any merchant
-	Cap      Amount `json:"cap"`
+	Key        string `json:"key"`
+	Wallet     string `json:"wallet"`
+	Merchant   string `json:"merchant,omitempty"` // "" is any merchant
+	Cap        Amount `json:"cap"`
+	FormFactor string `json:"form_factor,omitempty"` // "" or CardVirtual is virtual; a CardIssuer sends CardPhysical by post
+}
+
+// CardIssuer is a card partner's whole card life (B53.10): Cards, plus a reusable card frozen and unfrozen, a physical
+// card activated when it arrives, and the phone-wallet tokens on a card. A card number never passes through Lens: a
+// card is its partner_ref and last four digits, and the partner's own screens show the rest. A charge through a token
+// that is not active is declined by the partner before Lens is asked, as the card network's token service does.
+type CardIssuer interface {
+	Cards
+	Unfreeze(ctx context.Context, key, ref string) (Card, error)
+	Activate(ctx context.Context, key, ref string) (Card, error) // a physical card, on arrival
+	Tokens(ctx context.Context, ref string) ([]WalletToken, error)
+	SuspendToken(ctx context.Context, key, token string) (WalletToken, error)
+	ResumeToken(ctx context.Context, key, token string) (WalletToken, error)
+	DeleteToken(ctx context.Context, key, token string) (WalletToken, error) // for good: a deleted token never resumes
+}
+
+// The states of a phone-wallet token, and the kinds of the events a CardIssuer sends Lens as one changes.
+const (
+	TokenRequested = "requested" // the person added the card in their phone's wallet; the partner has not yet approved it
+	TokenActive    = "active"
+	TokenSuspended = "suspended"
+	TokenDeleted   = "deleted"
+
+	TokenEventRequested = "token.requested"
+	TokenEventActivated = "token.activated"
+	TokenEventSuspended = "token.suspended"
+	TokenEventDeleted   = "token.deleted"
+)
+
+// WalletToken is a card in a phone's wallet, as its partner reports it: its own reference, never the device's card
+// number.
+type WalletToken struct {
+	Ref    string `json:"token_ref"`
+	Card   string `json:"partner_ref"`
+	Wallet string `json:"wallet_type"` // WalletApplePay, WalletGooglePay or WalletSamsungPay
+	State  string `json:"state"`
+}
+
+// TokenEvent is a CardIssuer telling Lens a token changed: ID is the partner's id for the event, taken once.
+type TokenEvent struct {
+	ID    string      `json:"id"`
+	Kind  string      `json:"kind"`
+	Token WalletToken `json:"token"`
 }
 
 // LockCard locks a card to a merchant and a cap.
@@ -237,9 +281,10 @@ type LockCard struct {
 
 // The states of a card.
 const (
-	CardActive = "active"
-	CardFrozen = "frozen"
-	CardClosed = "closed"
+	CardInactive = "inactive" // a physical card on its way, until Activate
+	CardActive   = "active"
+	CardFrozen   = "frozen"
+	CardClosed   = "closed"
 )
 
 // Card is a card at a partner.
@@ -305,17 +350,19 @@ func (d CardDetails) Normal() CardDetails {
 // testMerchants is how a real issuer would report a charge at each of these merchants (B53.1): its category code, country,
 // channel and phone wallet. Any other merchant reads as an online charge in GB under 5999, miscellaneous retail.
 var testMerchants = map[string]CardDetails{
-	"pret a manger":   {MCC: "5814", Country: "GB", Channel: ChannelContactless, Wallet: WalletApplePay},
-	"tesco":           {MCC: "5411", Country: "GB", Channel: ChannelContactless, Wallet: WalletGooglePay},
-	"shell":           {MCC: "5541", Country: "GB", Channel: ChannelInPerson, Wallet: WalletNone},
-	"tfl travel":      {MCC: "4111", Country: "GB", Channel: ChannelContactless, Wallet: WalletSamsungPay},
-	"british airways": {MCC: "3009", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
-	"marriott lisbon": {MCC: "3509", Country: "PT", Channel: ChannelInPerson, Wallet: WalletApplePay},
-	"hertz":           {MCC: "3357", Country: "PT", Channel: ChannelOnline, Wallet: WalletNone},
-	"openai":          {MCC: "5734", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
-	"aws":             {MCC: "7372", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
-	"bet365":          {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
-	"netflix":         {MCC: "4899", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"pret a manger":     {MCC: "5814", Country: "GB", Channel: ChannelContactless, Wallet: WalletApplePay},
+	"tesco":             {MCC: "5411", Country: "GB", Channel: ChannelContactless, Wallet: WalletGooglePay},
+	"shell":             {MCC: "5541", Country: "GB", Channel: ChannelInPerson, Wallet: WalletNone},
+	"tfl travel":        {MCC: "4111", Country: "GB", Channel: ChannelContactless, Wallet: WalletSamsungPay},
+	"british airways":   {MCC: "3009", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
+	"marriott lisbon":   {MCC: "3509", Country: "PT", Channel: ChannelInPerson, Wallet: WalletApplePay},
+	"hertz":             {MCC: "3357", Country: "PT", Channel: ChannelOnline, Wallet: WalletNone},
+	"openai":            {MCC: "5734", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"aws":               {MCC: "7372", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"bet365":            {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
+	"netflix":           {MCC: "4899", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"william hill":      {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone}, // gambling (B53.2)
+	"unlabelled casino": {Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},              // no category reported (B53.2)
 }
 
 // TestMerchantDetails is what a test issuer (issuerfake, and the synthetic charge of B53.18) reports about a charge at merchant.
@@ -337,8 +384,9 @@ func KnownFormFactor(f string) string {
 // Authorization is a card issuer asking, as a charge is made on a card, whether it may go. Lens answers; the issuer
 // approves or declines the charge as told. Asked again under the same ID, the answer is the same.
 type Authorization struct {
-	ID       string `json:"id"`          // the issuer's
-	Card     string `json:"partner_ref"` // the card's
+	ID       string `json:"id"`                  // the issuer's
+	Card     string `json:"partner_ref"`         // the card's
+	Token    string `json:"token_ref,omitempty"` // the phone-wallet token it was paid through, "" for the card itself
 	Merchant string `json:"merchant"`
 	Amount   Amount `json:"amount"`
 	CardDetails

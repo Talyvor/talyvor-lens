@@ -54,6 +54,12 @@ func WithWorkspace(ctx context.Context, workspaceID string) context.Context {
 	return context.WithValue(ctx, workspaceKey{}, workspaceID)
 }
 
+// WorkspaceOf is the workspace ctx names (WithWorkspace): "" when it names none.
+func WorkspaceOf(ctx context.Context) string {
+	ws, _ := ctx.Value(workspaceKey{}).(string)
+	return ws
+}
+
 // CallStore keeps each call in partner_calls (0238).
 type CallStore struct{ pool *pgxpool.Pool }
 
