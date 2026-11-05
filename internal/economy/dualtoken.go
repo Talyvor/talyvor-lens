@@ -353,6 +353,8 @@ type DualTokenStore struct {
 	// screener screens who money in or out through a partner is from or to before it moves (B30.6); nil, no such
 	// money moves.
 	screener PaymentScreener
+	// travelRule is the Travel Rule adapter (B48.7); nil, the Test one.
+	travelRule partners.TravelRuleProvider
 	// monitor runs transaction monitoring on each payment in or out through a partner once it has moved (B30.7);
 	// nil, the nightly run is the only one.
 	monitor MoneyMonitor

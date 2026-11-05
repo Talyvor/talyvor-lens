@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -74,6 +75,12 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 	t, err := s.moneyLayer.Transfers(ctx, outsideRoute(p, payee))
 	if err != nil {
 		return partners.Result{}, false
+	}
+	if payee.Address != "" { // B48.7: the identity data travels before the money
+		if err := s.sendTravelRule(ctx, p, from, payee); err != nil {
+			slog.Warn("economy: the Travel Rule data was not sent; the payment waits and is sent again", "payment_id", p.ID, "err", err)
+			return partners.Result{}, false
+		}
 	}
 	r, err := t.Outbound(partners.WithWorkspace(ctx, p.WorkspaceID), money.Outbound{Key: p.ID, From: from.partnerRef, Reference: p.Reference,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, Payee: money.Payee{Name: payee.Name, IBAN: payee.IBAN, BIC: payee.BIC,

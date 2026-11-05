@@ -239,6 +239,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
 		return OutsidePayment{}, err
 	}
+	if payee.Address != "" { // B48.7: and the address it goes to
+		if err := s.screenAddress(ctx, p, payee); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	if payer != "" { // B30.22: an international payment screens its payer too
 		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.key("payer"), Capability: CapabilityPaymentsOut,
 			Direction: "out", Counterparty: payer, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
