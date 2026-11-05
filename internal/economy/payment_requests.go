@@ -367,13 +367,21 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		}
 		rules = &r
 	}
+	// B45.40: an outside agent's agent_trust is who a mandate's counterparty rules judge; none is an unverified agent.
+	var who *Counterparty
+	if in.AgentTrust != nil {
+		who = &Counterparty{}
+		if err := json.Unmarshal(in.AgentTrust, who); err != nil {
+			return nil, fmt.Errorf("economy: agent_trust: %w", err)
+		}
+	}
 	batchTotal := map[string]int64{}
 	out := make([]PaymentRequestItem, len(in.Items))
 	resolved := make([]PreparedPayment, len(in.Items))
 	for i, x := range in.Items {
 		it := PaymentRequestItem{Position: i + 1, PayeeID: x.PayeeID, ListingID: x.ListingID, Currency: x.Currency, AmountMinor: x.AmountMinor,
 			Reference: x.Reference, BillID: x.BillID, Flags: []ItemFlag{}}
-		p := PreparedPayment{Client: in.Client, AgentID: in.AgentID}
+		p := PreparedPayment{Client: in.Client, AgentID: in.AgentID, Counterparty: who}
 		var blocked string
 		if x.BillID != "" {
 			blocked, err = s.resolveBill(ctx, tx, workspaceID, &it, &p)

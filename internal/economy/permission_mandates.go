@@ -239,13 +239,14 @@ func (t PermissionMandateTerms) validate() error {
 		return bad("principal needs an id and a name")
 	}
 	if len(t.Clients) == 0 {
-		return bad(`name at least one client: "chat", "voice", "mcp:<client id>" or "key:<api key id>"`)
+		return bad(`name at least one client: "chat", "voice", "mcp:<client id>", "key:<api key id>" or "a2a:<signing domain>"`)
 	}
 	for _, c := range t.Clients {
-		named := (strings.HasPrefix(c, "mcp:") || strings.HasPrefix(c, "key:")) && len(c) > 4 ||
+		// a2a:<signing domain> is an outside agent asking to be paid (B45.29); it never pays without the owner.
+		named := (strings.HasPrefix(c, "mcp:") || strings.HasPrefix(c, "key:") || strings.HasPrefix(c, "a2a:")) && len(c) > 4 ||
 			strings.HasPrefix(c, ClientSchedulePrefix) && len(c) > len(ClientSchedulePrefix) // B45.13: a recurring plan's standing orders
 		if c != ClientChat && c != ClientVoice && !named {
-			return bad("%q is not a client: use \"chat\", \"voice\", \"mcp:<client id>\" or \"key:<api key id>\"", c)
+			return bad("%q is not a client: use \"chat\", \"voice\", \"mcp:<client id>\", \"key:<api key id>\" or \"a2a:<signing domain>\"", c)
 		}
 	}
 	s := t.Scope
