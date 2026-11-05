@@ -2930,6 +2930,10 @@ func run() error {
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
 
+		// B52.33 — Scan's published reports, for the app's report library: approved only, never the review.
+		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
+		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -4846,6 +4850,9 @@ func run() error {
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
+		mountNegotiationMoveRoutes(authed, dualToken, routingInferer, cfg.CounterModel) // B52.11
+		// B52.12
+		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
