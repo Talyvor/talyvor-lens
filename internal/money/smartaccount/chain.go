@@ -110,7 +110,7 @@ type Chain struct {
 	ID           int64
 	RPCURL       string
 	BundlerURL   string
-	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base
+	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base; B48.25: or takes them in USDC
 	HTTP         *http.Client
 }
 
@@ -229,6 +229,14 @@ var executeSelector = selector("execute(address,uint256,bytes)")
 // call out of the account: an operation that would deploy another account, call the account itself (its owners, an
 // upgrade) or be replayed on other chains is refused before anything is signed.
 func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
+	if bytes.HasPrefix(op.CallData, executeBatchSelector) {
+		// B48.25: a token payment and its network fee, approved only to the operation's own paymaster.
+		pay, err := PaymentOf(op.CallData)
+		if err != nil || len(op.PaymasterAndData) < 20 || pay.Paymaster != checksum(op.PaymasterAndData[:20]) || strings.EqualFold(pay.Token, a.Address) {
+			return fmt.Errorf("%w: the agent's key signs a fee's approval only to the operation's paymaster", ErrInvalid)
+		}
+		return c.signAsAgent(ctx, s, a, agentKey, op)
+	}
 	if len(op.CallData) < 4+32 || !bytes.Equal(op.CallData[:4], executeSelector) {
 		return fmt.Errorf("%w: the agent's key signs only a call out of the account", ErrInvalid)
 	}

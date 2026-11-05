@@ -62,11 +62,11 @@ func TestPermissionGate(t *testing.T) {
 		at    time.Time
 		says  string
 	}{
-		{"after expiry", Payment{usdc, payee, big.NewInt(1)}, 0, now.Add(24 * time.Hour), "ended"},
-		{"a blocked counterparty", Payment{usdc, strings.ToLower(banned), big.NewInt(1)}, 0, now, "blocked"},
-		{"a disallowed token", Payment{Native, payee, big.NewInt(1)}, 0, now, "does not allow paying in"},
-		{"over the per-payment cap", Payment{usdc, payee, big.NewInt(25_000_001)}, 0, now, "cap"},
-		{"over the period allowance", Payment{usdc, payee, big.NewInt(20_000_000)}, 80_000_001, now, "allowance"},
+		{"after expiry", Payment{Token: usdc, To: payee, Amount: big.NewInt(1)}, 0, now.Add(24 * time.Hour), "ended"},
+		{"a blocked counterparty", Payment{Token: usdc, To: strings.ToLower(banned), Amount: big.NewInt(1)}, 0, now, "blocked"},
+		{"a disallowed token", Payment{Token: Native, To: payee, Amount: big.NewInt(1)}, 0, now, "does not allow paying in"},
+		{"over the per-payment cap", Payment{Token: usdc, To: payee, Amount: big.NewInt(25_000_001)}, 0, now, "cap"},
+		{"over the period allowance", Payment{Token: usdc, To: payee, Amount: big.NewInt(20_000_000)}, 80_000_001, now, "allowance"},
 	} {
 		if err := p.Check(c.pay, c.spent, c.at); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: %v, want refused for %q", c.name, err, c.says)
@@ -84,6 +84,55 @@ func TestPermissionGate(t *testing.T) {
 	for period, want := range map[string]string{PeriodDay: "2026-11-04", PeriodWeek: "2026-11-02", PeriodMonth: "2026-11-01"} {
 		if got := PeriodStart(period, now).Format(time.DateOnly); got != want {
 			t.Errorf("PeriodStart(%s) = %s, want %s", period, got, want)
+		}
+	}
+}
+
+// B48.25 — a payment whose network fee an ERC-20 paymaster takes in the same token approves the paymaster that fee in
+// the same operation: the gate reads both, and counts the fee with the payment against the cap and the allowance.
+func TestPermissionGateCountsTheTokenFee(t *testing.T) {
+	now := time.Date(2026, 11, 4, 15, 0, 0, 0, time.UTC)
+	const paymaster = "0x000000000000000000000000000000000000FEE0"
+	tw, _ := addressW(payee)
+	pmw, _ := addressW(paymaster)
+	batch := func(items ...batchItem) []byte {
+		data, err := executeBatch(items...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	pay := batchItem{usdc, nil, call("transfer(address,uint256)", tw, uintW(10_000_000))}
+	fee := batchItem{usdc, nil, call("approve(address,uint256)", pmw, uintW(40_000))}
+
+	got, err := PaymentOf(batch(pay, fee))
+	if err != nil || got.Token != usdc || got.To != payee || got.Amount.Int64() != 10_000_000 || got.Fee.Int64() != 40_000 || got.Paymaster != paymaster {
+		t.Fatalf("PaymentOf(transfer, approve) = %+v, %v", got, err)
+	}
+	p := Permission{Tokens: []TokenLimit{{Token: usdc, Allowance: 10_040_000, Period: PeriodDay, PerPayment: 10_040_000}}, Expires: now.Add(time.Hour)}
+	if err := p.Check(got, 0, now); err != nil {
+		t.Fatalf("a payment and its fee inside the permission: %v", err)
+	}
+	if err := p.Check(got, 1, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "allowance") {
+		t.Errorf("the fee over the period's allowance: %v", err)
+	}
+	p.Tokens[0].PerPayment = 10_039_999
+	if err := p.Check(got, 0, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "cap") {
+		t.Errorf("the fee over the cap on one payment: %v", err)
+	}
+
+	other := batchItem{"0x000000000000000000000000000000000000E0C0", nil, fee.data}
+	for name, data := range map[string][]byte{
+		"the approval first":         batch(fee, pay),
+		"a fee in another token":     batch(pay, other),
+		"two payments":               batch(pay, pay),
+		"a third call":               batch(pay, fee, fee),
+		"the approval alone":         batch(fee),
+		"bytes after the batch":      append(batch(pay, fee), 0),
+		"a value sent with the call": batch(batchItem{usdc, big.NewInt(1), pay.data}, fee),
+	} {
+		if _, err := PaymentOf(data); !errors.Is(err, ErrPermission) {
+			t.Errorf("%s read as a payment: %v", name, err)
 		}
 	}
 }

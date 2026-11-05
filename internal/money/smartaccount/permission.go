@@ -43,11 +43,22 @@ type Permission struct {
 	Expires time.Time    `json:"expires"`
 }
 
-// Payment is what one operation would pay: Amount of Token to To.
+// Payment is what one operation would pay: Amount of Token to To, and — B48.25, when an ERC-20 paymaster takes the
+// operation's network fee in the same token — at most Fee more to Paymaster, which the operation approves it.
 type Payment struct {
-	Token  string
-	To     string
-	Amount *big.Int
+	Token     string
+	To        string
+	Amount    *big.Int
+	Fee       *big.Int // nil: the network fee is not paid in the token
+	Paymaster string
+}
+
+// Total is the most the operation can take from the account in Token: its amount, and its most possible fee.
+func (p Payment) Total() *big.Int {
+	if p.Fee == nil {
+		return p.Amount
+	}
+	return new(big.Int).Add(p.Amount, p.Fee)
 }
 
 var (
@@ -163,20 +174,31 @@ func (p Permission) Check(pay Payment, spent int64, now time.Time) error {
 		return refuse("it does not allow paying in %s", pay.Token)
 	case pay.Amount == nil || pay.Amount.Sign() <= 0:
 		return refuse("a payment pays something")
-	case pay.Amount.Cmp(big.NewInt(l.PerPayment)) > 0:
-		return refuse("%s is over the cap of %d on one payment", pay.Amount, l.PerPayment)
-	case new(big.Int).Add(pay.Amount, big.NewInt(spent)).Cmp(big.NewInt(l.Allowance)) > 0:
-		return refuse("%s with %d already paid this %s is over the allowance of %d", pay.Amount, spent, l.Period, l.Allowance)
+	case pay.Fee != nil && pay.Fee.Sign() < 0:
+		return refuse("a fee is not negative")
+	case pay.Total().Cmp(big.NewInt(l.PerPayment)) > 0:
+		return refuse("%s is over the cap of %d on one payment", pay.Total(), l.PerPayment)
+	case new(big.Int).Add(pay.Total(), big.NewInt(spent)).Cmp(big.NewInt(l.Allowance)) > 0:
+		return refuse("%s with %d already paid this %s is over the allowance of %d", pay.Total(), spent, l.Period, l.Allowance)
 	}
 	return nil
 }
 
-var transferSelector = selector("transfer(address,uint256)")
+var (
+	transferSelector     = selector("transfer(address,uint256)")
+	approveSelector      = selector("approve(address,uint256)")
+	executeBatchSelector = selector("executeBatch((address,uint256,bytes)[])")
+)
 
-// PaymentOf reads what an account's call pays: execute(to, value, "") pays value of the chain's coin to to, and
-// execute(token, 0, transfer(to, amount)) pays amount of token to to. Any other call is not a payment.
+// PaymentOf reads what an account's call pays: execute(to, value, "") pays value of the chain's coin to to,
+// execute(token, 0, transfer(to, amount)) pays amount of token to to, and — B48.25 — executeBatch of that transfer then
+// token's approve(paymaster, fee) pays it with at most fee more for its network fee (SponsorInToken). Any other call is
+// not a payment.
 func PaymentOf(callData []byte) (Payment, error) {
 	notPayment := fmt.Errorf("%w: the agent's key signs only a payment: a coin, or a token's transfer", ErrPermission)
+	if bytes.HasPrefix(callData, executeBatchSelector) {
+		return tokenFeePaymentOf(callData, notPayment)
+	}
 	if len(callData) < 4+3*32+32 || !bytes.Equal(callData[:4], executeSelector) {
 		return Payment{}, notPayment
 	}
@@ -199,6 +221,29 @@ func PaymentOf(callData []byte) (Payment, error) {
 		return Payment{Token: target, To: checksum(data[16:36]), Amount: new(big.Int).SetBytes(data[36:68])}, nil
 	}
 	return Payment{}, notPayment
+}
+
+// tokenFeePaymentOf reads executeBatch([token.transfer(to, amount), token.approve(paymaster, fee)]), in its one exact
+// encoding: two calls of 4+64 bytes each, at their canonical places.
+func tokenFeePaymentOf(callData []byte, notPayment error) (Payment, error) {
+	const item = 32*4 + 96 // target, value, the data's offset and length, the data padded to 96 bytes
+	if len(callData) != 4+32*4+2*item {
+		return Payment{}, notPayment
+	}
+	first, second := callData[4+32*4:], callData[4+32*4+item:]
+	token, approved := checksum(first[12:32]), checksum(second[12:32])
+	transfer, approve := first[128:128+68], second[128:128+68]
+	canonical, err := executeBatch(batchItem{token, nil, transfer}, batchItem{approved, nil, approve})
+	switch {
+	case err != nil || !bytes.Equal(canonical, callData) || token != approved:
+		return Payment{}, notPayment
+	case !bytes.Equal(transfer[:4], transferSelector) || !bytes.Equal(transfer[4:16], make([]byte, 12)):
+		return Payment{}, notPayment
+	case !bytes.Equal(approve[:4], approveSelector) || !bytes.Equal(approve[4:16], make([]byte, 12)):
+		return Payment{}, notPayment
+	}
+	return Payment{Token: token, To: checksum(transfer[16:36]), Amount: new(big.Int).SetBytes(transfer[36:68]),
+		Fee: new(big.Int).SetBytes(approve[36:68]), Paymaster: checksum(approve[16:36])}, nil
 }
 
 // SignPaymentAsAgent is the only way Talyvor has the agent's key sign: op must be one payment out of a, and
