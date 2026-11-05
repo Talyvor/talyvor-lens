@@ -329,7 +329,8 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 				// block (eth_getBlockByNumber "finalized") once every network's node serves it.
 				status = "final"
 				res.Final++
-			case !posted && status != "quarantined":
+			case status == "quarantined": // B48.7: it stays so until its case is released
+			case !posted:
 				status = "seen"
 			}
 			if err == nil {
@@ -474,15 +475,19 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 		}
 		r := ChainReconciliation{ID: "crec_" + uuid.NewString(), WorkspaceID: w.workspaceID, AgentID: w.agentID, Network: network,
 			Wallet: w.address, Asset: money.USDC, BlockNumber: block, ChainMinor: on.Int64()}
+		var quarantined int64
 		if err := x.s.pool.QueryRow(ctx, `SELECT
 			COALESCE((SELECT sum(b.balance_minor) FROM money_accounts a JOIN money_account_balances b ON b.account_id = a.id
 				WHERE a.workspace_id = $1 AND a.purpose = 'chain' AND a.partner_account_ref = $2), 0)::bigint,
 			COALESCE((SELECT sum(CASE direction WHEN 'in' THEN amount_minor ELSE -amount_minor END) FROM chain_movements
-				WHERE workspace_id = $1 AND agent_id = $3 AND network = $4 AND status IN ('seen', 'reversed', 'quarantined')
-				AND block_number IS NOT NULL AND block_number <= $5), 0)::bigint`,
-			w.workspaceID, chainRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor); err != nil {
+				WHERE workspace_id = $1 AND agent_id = $3 AND network = $4 AND status IN ('seen', 'reversed')
+				AND block_number IS NOT NULL AND block_number <= $5), 0)::bigint,
+			COALESCE((SELECT sum(amount_minor) FROM chain_movements WHERE workspace_id = $1 AND agent_id = $3 AND network = $4
+				AND status = 'quarantined' AND block_number IS NOT NULL AND block_number <= $5), 0)::bigint`,
+			w.workspaceID, chainRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor, &quarantined); err != nil {
 			return out, fmt.Errorf("economy: reconcile: %w", err)
 		}
+		r.PendingMinor += quarantined // B48.7: a quarantined deposit is in the wallet, and posts only once released
 		r.DifferenceMinor = r.ChainMinor - r.LedgerMinor - r.PendingMinor
 		if _, err := x.s.pool.Exec(ctx, `INSERT INTO chain_reconciliations (id, workspace_id, agent_id, network, wallet, asset, block_number,
 			chain_minor, ledger_minor, pending_minor, difference_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
