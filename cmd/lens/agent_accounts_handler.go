@@ -1552,7 +1552,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pay", func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
-		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
+		connect := auth.GetAuthContext(req.Context())
+		if connect != nil && connect.AuthMethod == auth.MethodConnect { // B52.4: an assistant pays from its own agent only
+			if connect.WorkspaceID != wsID || connect.ConnectAgentID != agentID || !connect.HasScope(auth.ScopePaymentsSend) {
+				writeJSONErr(w, http.StatusForbidden, "this connection may not pay from this agent")
+				return
+			}
+		} else if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
 			keyAgent := ""
 			if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
 				keyAgent, _, _ = bank.AgentOfKey(req.Context(), actx.APIKeyID)
@@ -1578,7 +1584,12 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		pay, err := bank.PayAgent(economy.WithMoveKey(req.Context(), key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
+		var need *economy.ApprovalNeededError
 		switch {
+		case connect != nil && connect.AuthMethod == auth.MethodConnect && errors.As(err, &need):
+			// The assistant is told it waits for the owner's passkey in Talyvor, and which approval it is.
+			writeJSONOK(w, http.StatusAccepted, map[string]any{"status": "pending_approval", "approval_id": need.ApprovalID,
+				"amount_ulxc": need.AmountULXC, "message": err.Error()})
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, errNoCompanyBill): // B17.15

@@ -973,6 +973,7 @@ func run() error {
 	// mint LXC, approve a conversion rate or revoke a payout.
 	authManager := auth.NewManager(os.Getenv("LENS_API_KEY"), jwtKey, keyStore, tenantStore).
 		WithMintKey(os.Getenv("LENS_MINT_KEY")).
+		WithConnectMintKey(os.Getenv("LENS_CONNECT_MINT_KEY")).
 		WithOperatorReadKey(os.Getenv("LENS_OPERATOR_READ_KEY"))
 
 	// B20.13 — the marketplace moderator key: the web app's credential for the review queue and
@@ -3134,6 +3135,7 @@ func run() error {
 		// Extracted to newAuthTokenMintHandler (auth_token_mint_handler.go) so the
 		// admin-scoping invariant is provable over HTTP; behavior is unchanged.
 		authed.Post("/v1/auth/token", newAuthTokenMintHandler(authManager))
+		authed.Post("/v1/auth/connect-token", newConnectTokenMintHandler(authManager, dualToken)) // B52.4
 
 		// W4.6.1 step 4 — session-scoped keys. Registered ONLY when configured, so an
 		// unconfigured deployment 404s these paths rather than serving a route that refuses.
