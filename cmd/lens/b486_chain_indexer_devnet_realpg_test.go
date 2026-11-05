@@ -246,6 +246,31 @@ func TestB486_EveryMovementSeenConfirmedAndReconciled(t *testing.T) {
 	if err := idx.reconcileOnce(ctx, alerts); err != nil || len(alerts.sent) != 0 {
 		t.Fatalf("reconciliation once the transfer out was posted: %v, alerts %v; want none", err, alerts.sent)
 	}
+
+	// B48.14: the month's statement of the agent's wallets closes, on the chain, at what the chain itself holds —
+	// every deposit, the reversal and the transfer out each a line of it.
+	head, err := chain.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onChain, err := chain.BalanceOf(ctx, token, wallet, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	st, err := store.WalletStatement(ctx, ws, agent.ID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC), now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closing int64 = -1
+	for _, a := range st.Accounts {
+		if a.Purpose == economy.MoneyChain {
+			closing = a.ClosingMinor
+		}
+	}
+	if closing != onChain.Int64() || closing != 2027_000000 || len(st.Lines) != 6 {
+		t.Fatalf("the statement's chain account closes at %d with %d lines; the chain holds %s; want 2027000000 by 6 lines", closing, len(st.Lines), onChain)
+	}
 }
 
 type recordingAlerter struct{ sent []string }

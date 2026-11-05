@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/talyvor/lens/internal/audit"
-	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/guardrails"
 )
@@ -22,52 +21,11 @@ import (
 // over HTTP against the real handler (see authz_routes_test.go). run() registers
 // these exact constructors; behavior is unchanged from the prior inline closures.
 
-// apiKeyGenerator is the slice of *auth.KeyStore the create-key handler needs.
-type apiKeyGenerator interface {
-	GenerateKey(ctx context.Context, workspaceID, team, name string, expiresAt *time.Time) (string, *auth.APIKey, error)
-}
-
-// newCreateAPIKeyHandler mints an API key. Authz (#146): a non-admin may mint
-// ONLY for its own workspace; the body workspace_id can never name another
-// tenant. Admin honors the body (empty → the historical "default").
-func newCreateAPIKeyHandler(keys apiKeyGenerator) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		var in struct {
-			WorkspaceID string     `json:"workspace_id"`
-			Team        string     `json:"team"`
-			Name        string     `json:"name"`
-			ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON: " + err.Error()})
-			return
-		}
-		eff, _, ok := effectiveWorkspaceID(req, in.WorkspaceID)
-		if !ok {
-			writeJSONErr(w, http.StatusForbidden, "forbidden: no workspace identity")
-			return
-		}
-		in.WorkspaceID = eff
-		if in.WorkspaceID == "" {
-			in.WorkspaceID = "default"
-		}
-		raw, apiKey, err := keys.GenerateKey(req.Context(), in.WorkspaceID, in.Team, in.Name, in.ExpiresAt)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"key":     raw,
-			"id":      apiKey.ID,
-			"warning": "Store this key securely. It will not be shown again.",
-		})
-	}
+// apiKeysRetired answers POST /v1/api/keys (B50.33). It minted keys with no scopes, which pass no scope gate any more;
+// the owner mints a key with explicit scopes on the workspace route instead.
+func apiKeysRetired(w http.ResponseWriter, _ *http.Request) {
+	writeJSONErr(w, http.StatusGone, "POST /v1/api/keys is retired: the workspace's owner mints a key with explicit scopes "+
+		"with POST /v1/workspaces/{wsID}/api-keys")
 }
 
 // auditReportExporter is the slice of *audit.Exporter the export handler needs.

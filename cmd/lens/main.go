@@ -192,6 +192,14 @@ func main() {
 		}
 		return
 	}
+	// `lens admin-key-sweep` (B50.33): list, and with --revoke revoke, the admin-scoped workspace keys.
+	if len(os.Args) > 1 && os.Args[1] == "admin-key-sweep" {
+		if err := runAdminKeySweep(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `lens moderator-keys` (B20.13): create, list and revoke the marketplace moderator keys.
 	if len(os.Args) > 1 && os.Args[1] == "moderator-keys" {
 		if err := runModeratorKeys(os.Args[2:]); err != nil {
@@ -2923,6 +2931,10 @@ func run() error {
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
 
+		// B52.33 — Scan's published reports, for the app's report library: approved only, never the review.
+		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
+		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -3109,11 +3121,11 @@ func run() error {
 		authed.With(proxyScope).Post("/oai/*", listingOpenAI(p.HandleOpenAI))
 		authed.With(proxyScope).Post("/anthropic/*", listingAnthropic(p.HandleAnthropic))
 
-		authed.Post("/v1/api/keys", newCreateAPIKeyHandler(keyStore))
+		authed.Post("/v1/api/keys", apiKeysRetired)
 
 		authed.Post("/v1/api/injection/patterns", requireAdmin(authManager, http.HandlerFunc(newInjectionPatternAddHandler(injectionDetector))))
 
-		authed.Delete("/v1/api/keys/{keyID}", newRevokeAPIKeyHandler(keyStore))
+		authed.Delete("/v1/api/keys/{keyID}", keyOwnerOnly(newRevokeAPIKeyHandler(keyStore)))
 
 		// ─── JWT auth endpoints ────────────────────────
 		// /v1/auth/token mints a JWT — admin-only because issuing
@@ -3357,7 +3369,7 @@ func run() error {
 		})
 
 		// ─── Key rotation + usage ──────────────────────
-		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			// RotateAPIKey is a single atomic transaction: SELECT FOR UPDATE on the
@@ -3385,7 +3397,7 @@ func run() error {
 				"prefix":  fresh.KeyPrefix,
 				"warning": "Old key revoked. Store this new key securely — it will not be shown again.",
 			})
-		})
+		}))
 
 		// ─── W1.9.1: rotation for a key a RUNNING SERVICE holds ──────────
 		//
@@ -3399,7 +3411,7 @@ func run() error {
 		// BOTH VALID → the holder switches → the new key authenticates a real request → only then
 		// is the old one revoked. Completion is REFUSED until that request has happened, which is
 		// the one thing CreateAPIKey + RevokeAPIKey cannot enforce on their own.
-		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate/begin", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/api-keys/{keyID}/rotate/begin", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			raw, fresh, rot, err := tenantStore.BeginRotation(req.Context(), wsID, keyID)
@@ -3433,7 +3445,7 @@ func run() error {
 				"next_step": "put this key in front of the holder and let it make one real request, then POST " +
 					"/v1/workspaces/" + wsID + "/key-rotations/" + rot.ID + "/complete. The old key keeps working until you do.",
 			})
-		})
+		}))
 
 		authed.Get("/v1/workspaces/{wsID}/key-rotations/{rotationID}", func(w http.ResponseWriter, req *http.Request) {
 			st, err := tenantStore.RotationStatus(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "rotationID"))
@@ -3448,7 +3460,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, st)
 		})
 
-		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/complete", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/complete", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			rotID := chi.URLParam(req, "rotationID")
 			err := tenantStore.CompleteRotation(req.Context(), wsID, rotID)
@@ -3479,9 +3491,9 @@ func run() error {
 				"outcome":     "completed",
 				"detail":      "the old key is revoked; the new key has already proven it authenticates",
 			})
-		})
+		}))
 
-		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/abandon", func(w http.ResponseWriter, req *http.Request) {
+		authed.Post("/v1/workspaces/{wsID}/key-rotations/{rotationID}/abandon", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			rotID := chi.URLParam(req, "rotationID")
 			err := tenantStore.AbandonRotation(req.Context(), wsID, rotID)
@@ -3503,7 +3515,7 @@ func run() error {
 				"outcome":     "abandoned",
 				"detail":      "the NEW key is revoked; the key the holder is using is untouched",
 			})
-		})
+		}))
 
 		authed.Get("/v1/workspaces/{wsID}/api-keys/{keyID}/usage", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -3606,31 +3618,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, in)
 		})
 
-		authed.Post("/v1/workspaces/{wsID}/api-keys", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			var in struct {
-				Name      string     `json:"name"`
-				Scopes    []string   `json:"scopes"`
-				ExpiresAt *time.Time `json:"expires_at,omitempty"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			raw, key, err := tenantStore.CreateAPIKey(req.Context(), wsID, in.Name, in.Scopes, in.ExpiresAt)
-			if err != nil {
-				writeJSONErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusCreated, map[string]any{
-				"key":     raw,
-				"id":      key.ID,
-				"prefix":  key.KeyPrefix,
-				"name":    key.Name,
-				"scopes":  key.Scopes,
-				"warning": "Store this key securely. It will not be shown again.",
-			})
-		})
+		authed.Post("/v1/workspaces/{wsID}/api-keys", keyOwnerOnly(apiKeyCreateHandler(tenantStore)))
 
 		authed.Get("/v1/workspaces/{wsID}/api-keys", func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
@@ -3642,7 +3630,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, keys)
 		})
 
-		authed.Delete("/v1/workspaces/{wsID}/api-keys/{keyID}", func(w http.ResponseWriter, req *http.Request) {
+		authed.Delete("/v1/workspaces/{wsID}/api-keys/{keyID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID := chi.URLParam(req, "wsID")
 			keyID := chi.URLParam(req, "keyID")
 			// workspaceIsolationMiddleware has already proven the caller owns
@@ -3671,7 +3659,7 @@ func run() error {
 				return
 			}
 			writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
-		})
+		}))
 
 		// ─── per-team / per-sprint budgets (Upgrade 19) ───
 		// CRUD + a live status endpoint. Every mutation reloads the budget
@@ -4864,6 +4852,9 @@ func run() error {
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
 		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
+		mountNegotiationMoveRoutes(authed, dualToken, routingInferer, cfg.CounterModel) // B52.11
+		// B52.12
+		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115

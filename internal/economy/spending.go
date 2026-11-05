@@ -201,8 +201,10 @@ func (s *DualTokenStore) Spending(ctx context.Context, workspaceID string, from,
 			COALESCE((SELECT array_agg(t.tag ORDER BY t.tag) FROM money_entry_tags t WHERE t.workspace_id = e.workspace_id AND t.entry_id = e.id), '{}')
 		FROM money_entries e
 		LEFT JOIN money_cards c ON e.kind = 'card_charge' AND c.workspace_id = e.workspace_id AND e.idempotency_key = 'card_charge:' || c.id
+		LEFT JOIN money_card_authorizations ca ON e.kind = 'card_charge' AND ca.id = e.partner_ref AND e.idempotency_key = 'card_charge:' || ca.partner || ':' || ca.id
+		LEFT JOIN money_reusable_cards rc ON rc.workspace_id = e.workspace_id AND rc.id = ca.card_id
 		LEFT JOIN money_payments p ON e.kind = 'payment_out' AND p.workspace_id = e.workspace_id AND e.idempotency_key = 'payment_out:' || p.idempotency_key
-		JOIN money_accounts w ON w.id = COALESCE(c.account_id, p.account_id)
+		JOIN money_accounts w ON w.id = COALESCE(c.account_id, rc.account_id, p.account_id)
 		JOIN LATERAL (SELECT po.currency, SUM(po.amount_minor)::bigint AS amount FROM money_postings po JOIN money_accounts a ON a.id = po.account_id
 			WHERE po.entry_id = e.id AND a.purpose IN ('partner', 'revenue') AND po.amount_minor > 0 GROUP BY po.currency) o ON true
 		LEFT JOIN spend_category_corrections cc ON cc.workspace_id = e.workspace_id AND cc.merchant_key = lower(btrim(e.counterparty))
