@@ -91,3 +91,47 @@ func newScanTrackRecordHandler(tr interface {
 		writeJSONOK(w, http.StatusOK, rec)
 	})
 }
+
+// scanPublishedReports is what the public library reads: *scan.Writer.
+type scanPublishedReports interface {
+	Published(ctx context.Context, family string) ([]scan.PublishedReport, error)
+	PublishedReport(ctx context.Context, id int64) (scan.PublishedReport, error)
+}
+
+// GET /v1/public/scan/reports?family= — B52.33: every published (approved) report, newest first, for the app's
+// report library; energy, oil, crops or filings only when family is set. Public, like the track record.
+func newScanPublishedReportsHandler(p scanPublishedReports) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		family := req.URL.Query().Get("family")
+		if _, ok := scan.ReportFamilies[family]; family != "" && !ok {
+			writeJSONErr(w, http.StatusBadRequest, "family is energy, oil, crops or filings")
+			return
+		}
+		reports, err := p.Published(req.Context(), family)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, "the reports could not be read")
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"reports": reports})
+	})
+}
+
+// GET /v1/public/scan/reports/{id} — B52.33: one published report; 404 for any report not approved.
+func newScanPublishedReportHandler(p scanPublishedReports) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+		if err != nil {
+			writeJSONErr(w, http.StatusNotFound, scan.ErrReportNotFound.Error())
+			return
+		}
+		r, err := p.PublishedReport(req.Context(), id)
+		switch {
+		case errors.Is(err, scan.ErrReportNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, "the report could not be read")
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"report": r})
+		}
+	})
+}

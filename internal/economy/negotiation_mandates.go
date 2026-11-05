@@ -211,6 +211,7 @@ type NegotiationMandate struct {
 	CreatedAt    time.Time                     `json:"created_at"`
 	EndedAt      *time.Time                    `json:"ended_at,omitempty"`
 	TermSheets   map[string][]NegotiationOffer `json:"term_sheets"`
+	Messages     []NegotiationMessage          `json:"messages"` // the deal's timeline: what Counter sent and the replies
 }
 
 // PrepareNegotiationMandate checks t for workspaceID, gives it a new id, and answers the canonical JSON to sign, its
@@ -363,7 +364,11 @@ func (s *DualTokenStore) NegotiationMandate(ctx context.Context, workspaceID, id
 		}
 		m.TermSheets[o.Counterparty] = append(m.TermSheets[o.Counterparty], o)
 	}
-	return m, rows.Err()
+	if err := rows.Err(); err != nil {
+		return m, err
+	}
+	m.Messages, err = s.negotiationTimeline(ctx, workspaceID, id)
+	return m, err
 }
 
 // RevokeNegotiationMandate ends a mandate at once and gives up its deal.

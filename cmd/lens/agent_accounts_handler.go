@@ -185,7 +185,7 @@ import (
 //	                                                     in the lost one's place, and its challenge
 //	POST /v1/workspaces/{wsID}/agents/{id}/recover       {"credential_id" | "device_id", "challenge", "signature"}
 //	POST /v1/workspaces/{wsID}/agents/{id}/rotate-signer the provider's next key signs for the agent from now on
-//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs
+//	POST /v1/workspaces/{wsID}/agents/lockdown           freeze every agent at once; the calls each agent's key signs; 207 names any it could not
 //	POST /v1/workspaces/{wsID}/agents/{id}/sweep         {"network", "to"}  the call that pays everything the account
 //	                                                     holds there to the person's own wallet, for their passkey
 //
@@ -226,9 +226,12 @@ type agentBank interface {
 	RecoveryChallenge(ctx context.Context, workspaceID, agentID string, r economy.SmartAccountOwnerRequest) (string, string, error)
 	RecoverAgentOwner(ctx context.Context, workspaceID, agentID, by string, r economy.SmartAccountOwnerRequest, challenge, signature string) (economy.OwnerChange, error)
 	RotateAgentSigner(ctx context.Context, workspaceID, agentID, by string) (economy.OwnerChange, error)
-	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
+	LockdownAgents(ctx context.Context, workspaceID, by string) (economy.Lockdown, error)
 	AgentSweepCall(ctx context.Context, workspaceID, agentID, network, to string) (economy.AgentSweep, error)
 	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
+	WalletStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.WalletStatement, error)
+	WalletActivity(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.WalletLine, error)
+	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
@@ -298,6 +301,7 @@ type agentKeyIssuer interface {
 }
 
 func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) {
+	mountWalletStatementRoutes(r, bank)
 	r.Get("/v1/workspaces/{wsID}/agents", func(w http.ResponseWriter, req *http.Request) {
 		book, err := bank.AgentBook(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
@@ -420,7 +424,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, out)
 		}
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/keys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		var in struct {
 			Name string `json:"name"`
@@ -730,7 +734,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		writeOwners(w, map[string]any{"frozen": out}, err)
+		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+			writeJSONOK(w, http.StatusMultiStatus, out)
+			return
+		}
+		writeOwners(w, out, err)
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct{ Network, To string }
@@ -1371,7 +1379,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": chi.URLParam(req, "agentID"), "topup": nil})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys/challenge", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		c, rpID, err := bank.PasskeyRegistrationChallenge(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -1389,7 +1397,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "rp_id": rpID, "alg": -7, "attestation": "none", "credential_ids": creds})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/passkeys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/passkeys", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			CredentialID      string             `json:"credential_id"`
 			Name              string             `json:"name"`
@@ -1636,6 +1644,20 @@ func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may manage its agents")
+			return
+		}
+		next(w, req)
+	}
+}
+
+// keyOwnerOnly admits only the workspace owner's signed-in session (a token carrying auth.ScopeKeys, which no workspace
+// key can be given) or the operator: no key, admin-scoped or not, creates, rotates or revokes a key (B50.33).
+func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		actx := auth.GetAuthContext(req.Context())
+		if actx == nil || actx.AuthMethod == auth.MethodWorkspaceKey || actx.AuthMethod == auth.MethodSessionKey ||
+			!actx.HasScope(auth.ScopeKeys) {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, signed in, may create, rotate or revoke its keys")
 			return
 		}
 		next(w, req)

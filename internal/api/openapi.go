@@ -331,9 +331,9 @@ func openAPIPaths() map[string]any {
 		},
 		"/v1/api/keys": map[string]any{
 			"post": map[string]any{
-				"summary": "Create a Lens admin API key",
+				"summary": "Retired: the workspace's owner mints a key with explicit scopes with POST /v1/workspaces/{wsID}/api-keys",
 				"responses": map[string]any{
-					"201": map[string]any{"description": "key created (raw key shown once)"},
+					"410": map[string]any{"description": "retired; names the route that replaced it"},
 				},
 			},
 		},
