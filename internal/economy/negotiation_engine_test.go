@@ -170,6 +170,11 @@ func TestB5211_InjectedInstructionsChangeNothing(t *testing.T) {
 	if m := move(r); len(r.Unsure) > 0 || m.Action != MoveCounter || m.PriceMinor >= mt.WalkAwayMinor {
 		t.Fatalf("an obeyed instruction moved Counter: %+v %+v", r, m)
 	}
+	// A reader that takes a lower figure the reply also writes — one Counter could accept — sends it to the owner.
+	lower := inferFunc(func(string) string { return `{"price_minor": 900000, "must_haves_met": ["SSO"], "unsure": []}` })
+	if r := ReadNegotiationReply(context.Background(), lower, "m", mt, "Last year it was 9,000.00 GBP. "+injected); len(r.Unsure) != 1 {
+		t.Fatalf("a price Counter could accept went to the term sheet on the model's reading: %+v", r)
+	}
 	// A must-have the reply does not offer, or a doubt the model names, goes to the owner.
 	unsure := inferFunc(func(string) string { return `{"price_minor": 1300000, "must_haves_met": [], "unsure": ["sla"]}` })
 	if r := ReadNegotiationReply(context.Background(), unsure, "m", mt, plain); len(r.Unsure) != 2 {

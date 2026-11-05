@@ -18,9 +18,9 @@ import (
 // and the term sheets. The model only words a move around the figures the engine chose — it is never told the
 // walk-away, the target or what a counterparty wrote — and a draft that writes any other number, a number in words, or
 // a rival offer the owner did not allow falls back to the fixed template. Replies are read by the model as data into
-// structured terms; a price the reply does not itself write, a field the model is unsure of, or a must-have the
-// reply does not offer sends the reply to the owner instead of the term sheet, so nothing unsure reaches an
-// acceptance. Counterparty text never decides a move: only the terms recorded do, and every offer of ours is
+// structured terms; a price the reply does not itself write or one Counter could accept, a field the model is unsure
+// of, or a must-have the reply does not name sends the reply to the owner instead of the term sheet, so no acceptance
+// rests on a model's reading. Counterparty text never decides a move: only the terms recorded do, and every offer of ours is
 // recorded through RecordNegotiationTerms, which checks the signed mandate again. Nothing here moves money.
 
 // NegotiationInferer writes a reply to a prompt; inference.ProviderInferer is one.
@@ -331,12 +331,19 @@ func ReadNegotiationReply(ctx context.Context, ai NegotiationInferer, model stri
 			r.Unsure = append(r.Unsure, f)
 		}
 	}
-	// A price the reply does not itself write is the model's guess.
-	if r.Terms.PriceMinor <= 0 || !MentionsAmount(text, r.Terms.PriceMinor, MoneyCurrencies[t.Currency]) {
+	// A price the reply does not itself write is the model's guess. One inside the walk-away could be accepted, and
+	// Counter never accepts on a model's reading of a counterparty's text: the owner confirms it.
+	price := r.Terms.PriceMinor
+	switch {
+	case price <= 0 || !MentionsAmount(text, price, MoneyCurrencies[t.Currency]):
 		r.Unsure = append(r.Unsure, "price_minor")
+	case t.Side == NegotiationBuy && price < t.WalkAwayMinor || t.Side == NegotiationSell && price > t.WalkAwayMinor:
+		r.Unsure = append(r.Unsure, "price_minor: inside the walk-away, so Counter could accept it; the owner confirms the terms first")
 	}
+	// A must-have counts only when the model finds it and the reply itself names it.
 	for _, mh := range t.MustHaves {
-		if slices.ContainsFunc(out.MustHavesMet, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), mh) }) {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(mh)) &&
+			slices.ContainsFunc(out.MustHavesMet, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), mh) }) {
 			r.MustHavesMet = append(r.MustHavesMet, mh)
 		} else {
 			r.Unsure = append(r.Unsure, "must-have: "+mh)
