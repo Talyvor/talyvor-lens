@@ -110,6 +110,12 @@ func TestB5212_CounterReachesTheOtherSideHonestly(t *testing.T) {
 		t.Fatalf("web form = %d %s", code, msg)
 	}
 
+	// The same counterparty reached at a new address is told again.
+	if code, msg, moved := send(a, "shop.example", "agent", verified.ID); code != http.StatusOK || moved.Sent == nil ||
+		!strings.HasPrefix(moved.Sent.Body, disclosure) {
+		t.Fatalf("a new address = %d %s", code, msg)
+	}
+
 	// A refused site, though the mandate names it; an agent without a credential; and email: none is contacted.
 	for _, c := range []struct{ channel, to string }{{"web_form", "https://www.ebay.co.uk/contact"},
 		{"agent", unverified.ID}, {"email", "sales@shop.example"}} {
@@ -129,7 +135,7 @@ func TestB5212_CounterReachesTheOtherSideHonestly(t *testing.T) {
 		Messages []economy.NegotiationInboxMessage
 	}
 	if code, msg := call(as(seller), http.MethodGet, "/v1/negotiations/inbox", "", &inbox); code != http.StatusOK ||
-		len(inbox.Messages) != 3 || inbox.Messages[0].ID != toB.Sent.ID || strings.Contains(msg, a.ID) || strings.Contains(msg, b.ID) {
+		len(inbox.Messages) != 4 || inbox.Messages[0].ID != toB.Sent.ID || strings.Contains(msg, a.ID) || strings.Contains(msg, b.ID) {
 		t.Fatalf("seller's inbox = %d %s", code, msg)
 	}
 	replyPath := fmt.Sprintf("/v1/negotiations/inbox/%d/reply", toB.Sent.ID)

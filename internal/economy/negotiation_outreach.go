@@ -15,9 +15,9 @@ import (
 // negotiation_outreach.go — B52.12: COUNTER REACHING THE OTHER SIDE, HONESTLY.
 //
 // SendNegotiationOutreach sends the engine's next move (B52.11) to a counterparty on a channel the signed mandate
-// allows. The first message to each counterparty says it is from an AI agent acting for the owner, by the name the
-// owner's verification confirmed (EU AI Act Art. 50, California's BOT Act), and every message says the owner reads
-// every reply and can be dealt with directly. Every message goes on the deal's timeline.
+// allows. The first message to each counterparty at each address says it is from an AI agent acting for the owner,
+// by the name the owner's verification confirmed (EU AI Act Art. 50, California's BOT Act), and every message says the
+// owner reads every reply and can be dealt with directly. Every message goes on the deal's timeline.
 //
 //   - agent: to a Talyvor agent with a live Know Your Agent credential, in another workspace. It lands in that
 //     workspace's negotiation inbox, and its reply threads into the deal of the message it answers.
@@ -124,9 +124,10 @@ func (s *DualTokenStore) SendNegotiationOutreach(ctx context.Context, workspaceI
 	if owner.Name == "" {
 		return refuse("Counter tells every counterparty whom it acts for, and this workspace has no verified name yet: complete a verification first")
 	}
+	// First contact is per address: a counterparty reached somewhere new is told again.
 	var contacted bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM negotiation_messages WHERE mandate_id = $1 AND counterparty = $2
-		AND direction = 'out')`, id, counterparty).Scan(&contacted); err != nil {
+		AND address = $3 AND direction = 'out')`, id, counterparty, to).Scan(&contacted); err != nil {
 		return NegotiationOutreach{}, fmt.Errorf("economy: negotiation outreach: %w", err)
 	}
 	// shortcut: a counter is on the term sheet before its message is stored, so a failed insert leaves it unsent and
