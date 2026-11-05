@@ -94,6 +94,9 @@ func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID s
 // is refused (ErrAgentPotsHeld): a pot may be locked, and its owner moves it back first.
 func (s *DualTokenStore) ArchiveAgent(ctx context.Context, workspaceID, agentID string) (AgentArchive, error) {
 	out := AgentArchive{AgentID: agentID, RevokedKeys: []string{}}
+	if err := s.requireSwept(ctx, workspaceID, agentID); err != nil { // B48.15: closing an agent sweeps it first
+		return out, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return out, err

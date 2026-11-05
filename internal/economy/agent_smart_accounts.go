@@ -235,9 +235,10 @@ func (s *DualTokenStore) AgentSmartAccount(ctx context.Context, workspaceID, age
 	var person, agent, recovery SmartAccountOwner
 	var pub []byte
 	err := s.pool.QueryRow(ctx, `SELECT address, factory, implementation, owner_credential_id, owner_device_id, owner_public_key,
-		agent_signer, provider, recovery_address, solana_address, created_at FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+		agent_signer, provider, recovery_address, solana_address, created_at, owner_index, agent_index, recovery_index
+		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
 		agentID, workspaceID).Scan(&a.Address, &a.Factory, &a.Implementation, &person.CredentialID, &person.DeviceID, &pub,
-		&agent.Address, &agent.Provider, &recovery.Address, &a.SolanaAddress, &a.CreatedAt)
+		&agent.Address, &agent.Provider, &recovery.Address, &a.SolanaAddress, &a.CreatedAt, &person.Index, &agent.Index, &recovery.Index)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, _, kerr := s.agentWalletKind(ctx, workspaceID, agentID); kerr != nil {
 			return AgentSmartAccount{}, kerr
@@ -247,11 +248,10 @@ func (s *DualTokenStore) AgentSmartAccount(ctx context.Context, workspaceID, age
 	if err != nil {
 		return AgentSmartAccount{}, fmt.Errorf("economy: smart account: %w", err)
 	}
-	person.Index, person.Role, person.PublicKey = smartaccount.OwnerPasskey, "person", fmt.Sprintf("0x%x", pub)
-	agent.Index, agent.Role = smartaccount.OwnerAgent, "agent"
+	person.Role, person.PublicKey, agent.Role = "person", fmt.Sprintf("0x%x", pub), "agent"
 	a.Owners = []SmartAccountOwner{person, agent}
 	if recovery.Address != "" {
-		recovery.Index, recovery.Role = smartaccount.OwnerRecovery, "recovery"
+		recovery.Role = "recovery"
 		a.Owners = append(a.Owners, recovery)
 	}
 	return a, nil
