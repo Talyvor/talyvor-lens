@@ -1099,6 +1099,9 @@ type Config struct {
 	// ScanWriterModel words Scan's reports around the engine's figures (B52.25). Env: LENS_SCAN_WRITER_MODEL, default
 	// empty: every report is its fixed template.
 	ScanWriterModel string
+	// CounterModel words Counter's moves around the deal engine's figures and reads counterparties' replies into terms
+	// (B52.11). Env: LENS_COUNTER_MODEL, default empty: every move is its fixed template and every reply goes to the owner.
+	CounterModel string
 	// ScanCheckModel is the second model of Scan's compliance check (B52.25). Env: LENS_SCAN_CHECK_MODEL, default
 	// empty: the code rules alone, then the person reviewing.
 	ScanCheckModel string
@@ -2450,6 +2453,7 @@ func Load() (*Config, error) {
 	}
 	c.CoachModel = strings.TrimSpace(os.Getenv("LENS_COACH_MODEL"))            // B53.6
 	c.ScanWriterModel = strings.TrimSpace(os.Getenv("LENS_SCAN_WRITER_MODEL")) // B52.25
+	c.CounterModel = strings.TrimSpace(os.Getenv("LENS_COUNTER_MODEL"))        // B52.11
 	c.ScanCheckModel = strings.TrimSpace(os.Getenv("LENS_SCAN_CHECK_MODEL"))
 	c.ScanConflicts = strings.TrimSpace(os.Getenv("LENS_SCAN_CONFLICTS"))
 	// B53.13 — the open-banking consent reminder. A malformed value is refused.
