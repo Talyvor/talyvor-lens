@@ -2,6 +2,7 @@ package economy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -150,8 +151,12 @@ func (s *DualTokenStore) orderPhysicalCard(ctx context.Context, workspaceID, nam
 			return PhysicalCard{}, fmt.Errorf("%w: the card has already been replaced", ErrPhysicalCardState)
 		}
 	}
+	addr, err := json.Marshal(address)
+	if err != nil {
+		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO money_physical_cards (id, workspace_id, account_id, wallet_ref, state, name_on_card, address, replaces)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, workspaceID, from.id, from.partnerRef, physicalCardOrdering, nameOnCard, address, replaces); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`, id, workspaceID, from.id, from.partnerRef, physicalCardOrdering, nameOnCard, string(addr), replaces); err != nil {
 		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
