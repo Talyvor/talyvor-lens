@@ -237,9 +237,12 @@ func (s *DualTokenStore) payDeal(ctx context.Context, workspaceID, by string, t 
 
 // negotiationDeal reads mandate id's deal that is not declined.
 func (s *DualTokenStore) negotiationDeal(ctx context.Context, workspaceID, id string) (NegotiationDeal, error) {
-	return scanNegotiationDeal(s.pool.QueryRow(ctx, `SELECT `+dealCols+` FROM negotiation_deals d JOIN negotiation_mandates m ON m.id = d.mandate_id
-		WHERE d.mandate_id = $1 AND d.workspace_id = $2 AND d.status <> 'declined'`, id, workspaceID))
+	return scanNegotiationDeal(s.pool.QueryRow(ctx, dealOfNegotiation, id, workspaceID))
 }
+
+// dealOfNegotiation reads a negotiation's deal that is not declined.
+const dealOfNegotiation = `SELECT ` + dealCols + ` FROM negotiation_deals d JOIN negotiation_mandates m ON m.id = d.mandate_id
+	WHERE d.mandate_id = $1 AND d.workspace_id = $2 AND d.status <> 'declined'`
 
 const dealCols = `d.id, d.mandate_id, d.counterparty, m.canonical::jsonb->>'currency', d.terms, d.outside, d.agent_id, d.payee_id, d.status,
 	d.request_id, d.created_by, d.decided_by, d.created_at, d.decided_at`
@@ -271,9 +274,14 @@ func dealStatement(workspaceID string, t NegotiationMandateTerms, d NegotiationD
 // awaitingDeal is mandate id's deal while the owner may still sign it, with the signed mandate it is under.
 func (s *DualTokenStore) awaitingDeal(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, workspaceID, id, lock string) (NegotiationMandateTerms, NegotiationDeal, error) {
-	d, err := scanNegotiationDeal(q.QueryRow(ctx, `SELECT `+dealCols+` FROM negotiation_deals d JOIN negotiation_mandates m ON m.id = d.mandate_id
-		WHERE d.mandate_id = $1 AND d.workspace_id = $2 AND d.status <> 'declined'`+lock, id, workspaceID))
+}, workspaceID, id string, forUpdate bool) (NegotiationMandateTerms, NegotiationDeal, error) {
+	var row pgx.Row
+	if forUpdate {
+		row = q.QueryRow(ctx, dealOfNegotiation+` FOR UPDATE OF d`, id, workspaceID)
+	} else {
+		row = q.QueryRow(ctx, dealOfNegotiation, id, workspaceID)
+	}
+	d, err := scanNegotiationDeal(row)
 	switch {
 	case err != nil:
 		return NegotiationMandateTerms{}, d, err
@@ -289,7 +297,7 @@ func (s *DualTokenStore) awaitingDeal(ctx context.Context, q interface {
 // PrepareDealApproval writes the statement approving mandate id's waiting deal, the challenge it is signed over, and
 // the passkeys that may sign it.
 func (s *DualTokenStore) PrepareDealApproval(ctx context.Context, workspaceID, id string) (statement, challenge string, credentialIDs []string, err error) {
-	t, d, err := s.awaitingDeal(ctx, s.pool, workspaceID, id, "")
+	t, d, err := s.awaitingDeal(ctx, s.pool, workspaceID, id, false)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -329,7 +337,7 @@ func (s *DualTokenStore) ApproveNegotiationDeal(ctx context.Context, workspaceID
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		// The deal's row is held until the approval is kept: two approvals at once are one, then a replay.
-		if t, d, err = s.awaitingDeal(ctx, tx, workspaceID, id, " FOR UPDATE OF d"); err != nil {
+		if t, d, err = s.awaitingDeal(ctx, tx, workspaceID, id, true); err != nil {
 			return err
 		}
 		if dealStatement(workspaceID, t, d, st.ExpiresAt) != statement {
