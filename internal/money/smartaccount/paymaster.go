@@ -97,8 +97,8 @@ var wei = big.NewInt(1e18)
 // What the paymaster does not take stays approved to it until the next such payment replaces it: the permission counted
 // it already.
 func (c Chain) SponsorInToken(ctx context.Context, op *UserOp, token string) (*big.Int, error) {
-	if c.PaymasterURL == "" {
-		return nil, fmt.Errorf("%w: chain %d has no paymaster", ErrInvalid, c.ID)
+	if c.PaymasterURL == "" || c.TokenPaymaster == "" {
+		return nil, fmt.Errorf("%w: chain %d has no ERC-20 paymaster", ErrInvalid, c.ID)
 	}
 	pay, err := PaymentOf(op.CallData)
 	if err != nil || pay.Fee != nil || !strings.EqualFold(pay.Token, token) || Checksum(token) == Checksum(Native) {
@@ -113,6 +113,9 @@ func (c Chain) SponsorInToken(ctx context.Context, op *UserOp, token string) (*b
 	paymaster, price, err := tokenPrice(stub, token)
 	if err != nil {
 		return nil, err
+	}
+	if paymaster != Checksum(c.TokenPaymaster) {
+		return nil, fmt.Errorf("smartaccount: the paymaster service answered for %s, not chain %d's paymaster", paymaster, c.ID)
 	}
 	if strings.EqualFold(pay.To, paymaster) {
 		return nil, fmt.Errorf("%w: a payment to the paymaster itself", ErrInvalid)

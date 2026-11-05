@@ -165,6 +165,8 @@ func (p Permission) Check(pay Payment, spent int64, now time.Time) error {
 		return refuse("it ended at %s", p.Expires.Format(time.RFC3339))
 	case slices.ContainsFunc(p.Blocked, same):
 		return refuse("%s is blocked", pay.To)
+	case pay.Fee != nil && slices.ContainsFunc(p.Blocked, func(a string) bool { return strings.EqualFold(a, pay.Paymaster) }):
+		return refuse("the paymaster %s is blocked", pay.Paymaster)
 	case len(p.Allowed) > 0 && !slices.ContainsFunc(p.Allowed, same):
 		return refuse("%s is not one of the counterparties allowed", pay.To)
 	}

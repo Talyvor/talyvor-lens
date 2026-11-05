@@ -111,7 +111,9 @@ type Chain struct {
 	RPCURL       string
 	BundlerURL   string
 	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base; B48.25: or takes them in USDC
-	HTTP         *http.Client
+	// B48.25: the ERC-20 paymaster contract PaymasterURL's service fronts: the only spender the agent's key approves a fee to.
+	TokenPaymaster string
+	HTTP           *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {
@@ -230,10 +232,11 @@ var executeSelector = selector("execute(address,uint256,bytes)")
 // upgrade) or be replayed on other chains is refused before anything is signed.
 func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
 	if bytes.HasPrefix(op.CallData, executeBatchSelector) {
-		// B48.25: a token payment and its network fee, approved only to the operation's own paymaster.
+		// B48.25: a token payment and its network fee, approved only to the chain's paymaster, which pays this operation.
 		pay, err := PaymentOf(op.CallData)
-		if err != nil || len(op.PaymasterAndData) < 20 || pay.Paymaster != checksum(op.PaymasterAndData[:20]) || strings.EqualFold(pay.Token, a.Address) {
-			return fmt.Errorf("%w: the agent's key signs a fee's approval only to the operation's paymaster", ErrInvalid)
+		if err != nil || c.TokenPaymaster == "" || pay.Paymaster != Checksum(c.TokenPaymaster) || len(op.PaymasterAndData) < 20 ||
+			pay.Paymaster != checksum(op.PaymasterAndData[:20]) || strings.EqualFold(pay.Token, a.Address) {
+			return fmt.Errorf("%w: the agent's key signs a fee's approval only to the chain's own paymaster, paying the operation", ErrInvalid)
 		}
 		return c.signAsAgent(ctx, s, a, agentKey, op)
 	}

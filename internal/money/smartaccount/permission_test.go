@@ -1,6 +1,7 @@
 package smartaccount
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"strings"
@@ -119,6 +120,31 @@ func TestPermissionGateCountsTheTokenFee(t *testing.T) {
 	p.Tokens[0].PerPayment = 10_039_999
 	if err := p.Check(got, 0, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "cap") {
 		t.Errorf("the fee over the cap on one payment: %v", err)
+	}
+
+	p.Blocked = []string{paymaster}
+	p.Tokens[0].PerPayment = 10_040_000
+	if err := p.Check(got, 0, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("a fee to a blocked paymaster: %v", err)
+	}
+
+	// The agent's key approves a fee only to the chain's own paymaster, the one paying the operation: refused before
+	// anything is signed, so no signer is needed.
+	c := Chain{ID: 8453, TokenPaymaster: paymaster}
+	rogue, _ := addressW("0x000000000000000000000000000000000000BAD1")
+	toRogue := batch(pay, batchItem{usdc, nil, call("approve(address,uint256)", rogue, uintW(40_000))})
+	for name, op := range map[string]UserOp{
+		"a fee approved to another spender": {CallData: toRogue, PaymasterAndData: rogue[12:]},
+		"another paymaster paying":          {CallData: batch(pay, fee), PaymasterAndData: rogue[12:]},
+		"a chain with no ERC-20 paymaster":  {CallData: batch(pay, fee), PaymasterAndData: pmw[12:]},
+	} {
+		chain := c
+		if name == "a chain with no ERC-20 paymaster" {
+			chain.TokenPaymaster = ""
+		}
+		if err := chain.SignAsAgent(context.Background(), nil, Account{}, "", &op); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "paymaster") {
+			t.Errorf("%s: %v, want refused before signing", name, err)
+		}
 	}
 
 	other := batchItem{"0x000000000000000000000000000000000000E0C0", nil, fee.data}

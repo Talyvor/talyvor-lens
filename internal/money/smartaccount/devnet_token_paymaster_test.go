@@ -79,7 +79,7 @@ func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
 	signer, _ := addressW(keyAddress(pmKey))
 	paymaster := Checksum(transact(t, c, "", append(creationCode(t, dir, "TokenPaymaster"), tuple{ep, signer}.enc()...))["contractAddress"].(string))
 	transactValue(t, c, paymaster, big.NewInt(1e18), call("deposit()"))
-	c.PaymasterURL = tokenSponsorer(t, c, paymaster, usdc, pmKey)
+	c.PaymasterURL, c.TokenPaymaster = tokenSponsorer(t, c, paymaster, usdc, pmKey), paymaster
 
 	cdp := cdpfake.New(t)
 	signers := cdp.Signers(t)
