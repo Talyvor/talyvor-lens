@@ -512,9 +512,11 @@ func (w *Writer) Decide(ctx context.Context, id int64, approve bool, by, note st
 	if approve {
 		status = ReportApproved
 	}
-	q, err := scanQueued(w.store.pool.QueryRow(ctx, `UPDATE scan_reports SET status = $2, reviewed_by = $3,
-		reviewed_at = NOW(), review_note = $4 WHERE id = $1 AND status = 'pending' RETURNING `+queuedColumns,
-		id, status, by, strings.TrimSpace(note)))
+	// An approval records the report in the track record in the same statement (B52.26).
+	q, err := scanQueued(w.store.pool.QueryRow(ctx, `WITH d AS (UPDATE scan_reports SET status = $2, reviewed_by = $3,
+		reviewed_at = NOW(), review_note = $4 WHERE id = $1 AND status = 'pending' RETURNING *),
+		rec AS (`+recordPublished+`)
+		SELECT `+queuedColumns+` FROM d`, id, status, by, strings.TrimSpace(note)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := w.store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scan_reports WHERE id = $1)`, id).
@@ -529,12 +531,13 @@ func (w *Writer) Decide(ctx context.Context, id int64, approve bool, by, note st
 	return q, err
 }
 
-// Every writes reports now and then once every interval until ctx ends.
+// Every writes reports and scores the track record now and then once every interval until ctx ends.
 func (w *Writer) Every(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		w.Run(ctx)
+		w.score(ctx)
 		select {
 		case <-ctx.Done():
 			return

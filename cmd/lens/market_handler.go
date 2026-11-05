@@ -82,9 +82,9 @@ import (
 // B32.49: the trust panel (internal/market/trust.go) is one read of what a buyer weighs: whether the publisher is
 // verified (payouts enabled, no IP claim upheld against its listings in 12 months), the reviews of buyers who paid for a
 // use or a licence and are not linked to the seller, the eval score of the latest version, the claims against the
-// listing, and the originals and remixes the lineage read gives. Only such a buyer may review a listing (403 otherwise),
-// once, rewriting it as often as it likes; the seller may reply to each review. Both take the workspace's owner or an
-// admin.
+// listing, the originals and remixes the lineage read gives, and (B41.173) the last 30 days' success rate, median latency
+// and cost per use. Only such a buyer may review a listing (403 otherwise), once, rewriting it as often as it likes; the
+// seller may reply to each review. Both take the workspace's owner or an admin.
 
 // showPrices shows the listings' offers in the reader's currency (B32.51): ?currency=, or the buyer's own.
 func showPrices(store *market.Store, req *http.Request, buyer string, listings ...*market.Listing) error {

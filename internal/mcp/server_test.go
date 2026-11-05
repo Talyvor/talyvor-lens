@@ -457,7 +457,7 @@ func TestMCP_StatelessRevision(t *testing.T) {
 // B40.1: every tool has a title and annotations, and a name of at most 64 characters.
 func TestMCP_EveryToolIsAnnotated(t *testing.T) {
 	var all []map[string]any
-	for _, defs := range [][]map[string]any{toolDefinitions(), agentToolDefinitions(), walletToolDefinitions(), marketToolDefinitions(), roomToolDefinitions(), mandateToolDefinitions(), paymentRequestToolDefinitions(), searchToolDefinitions()} {
+	for _, defs := range [][]map[string]any{toolDefinitions(), agentToolDefinitions(), walletToolDefinitions(), marketToolDefinitions(), roomToolDefinitions(), mandateToolDefinitions(), paymentRequestToolDefinitions(), searchToolDefinitions(), recurringToolDefinitions()} {
 		all = append(all, annotate(defs)...)
 	}
 	for _, tool := range all {

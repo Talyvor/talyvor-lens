@@ -2783,11 +2783,12 @@ func run() error {
 	// financials by naming it. Gate it with the same AuthMiddleware as the authed group; the tools
 	// additionally force the acted-on workspace to the verified caller (effectiveWorkspace).
 	mcpServer := mcp.New(pool, l, alertManager, wsManager, sessionTracker, lensVersion)
-	mcpServer.SetAgentBank(dualToken)       // B19.9: agents use their wallets with their own keys
-	mcpServer.SetCredentials(kyaSvc)        // B30.5: and show their Know Your Agent credential
-	mcpServer.SetMandates(dualToken)        // B40.2: get_mandates
-	mcpServer.SetSearcher(dualToken)        // B41.107: search_workspace
-	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
+	mcpServer.SetAgentBank(dualToken)         // B19.9: agents use their wallets with their own keys
+	mcpServer.SetCredentials(kyaSvc)          // B30.5: and show their Know Your Agent credential
+	mcpServer.SetMandates(dualToken)          // B40.2: get_mandates
+	mcpServer.SetSearcher(dualToken)          // B41.107: search_workspace
+	mcpServer.SetPaymentRequests(dualToken)   // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
+	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -2901,6 +2902,9 @@ func run() error {
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
 
+		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
+		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -2940,7 +2944,7 @@ func run() error {
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
-		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)}
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4838,6 +4842,7 @@ func run() error {
 		mountMoneyPlanRoutes(authed, dualToken)                                         // B53.15
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
+		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
@@ -4876,6 +4881,7 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
+		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()

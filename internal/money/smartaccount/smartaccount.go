@@ -71,8 +71,15 @@ func AddressOwner(addr string) ([]byte, error) {
 // Account is an agent's smart account.
 type Account struct {
 	Factory Factory
-	Owners  [][]byte // PasskeyOwner, then AddressOwner of the agent's key, then of the recovery signer if any
+	Owners  [][]byte // as made: PasskeyOwner, then AddressOwner of the agent's key, then of the recovery signer if any
 	Address string   // EIP-55
+
+	// Once the owners change (owners.go): the person's passkey and the agent's key now, at their places. Zero values are
+	// the ones New made, at OwnerPasskey and OwnerAgent; Owners stays as made, since the address and InitCode come from it.
+	Passkey      []byte
+	PasskeyIndex uint64
+	AgentKey     string
+	AgentIndex   uint64
 }
 
 // New is the account factory f makes for passkey, the agent's key and, unless "", the recovery signer: its address is

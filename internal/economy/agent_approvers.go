@@ -343,7 +343,17 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, a); err != nil {
 		return AgentApproval{}, err
 	}
-	if !approve || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
+	ap, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, &a)
+	if err != nil {
+		return ap, err
+	}
+	return ap, tx.Commit(ctx)
+}
+
+// decideInTx decides pending approvalID inside tx; an approval signed by the owner's assertion a keeps the owner's AP2
+// v0.2 closed Payment Mandate. ErrApprovalNotFound when it is not pending.
+func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (AgentApproval, error) {
+	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
 		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
 			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
 			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds()))
@@ -353,7 +363,7 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 		if err != nil {
 			return ap, fmt.Errorf("economy: decide approval: %w", err)
 		}
-		return ap, tx.Commit(ctx)
+		return ap, nil
 	}
 	ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = 'approved', decided_at = now(), expires_at = now() + $3 * interval '1 microsecond'
 		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
@@ -371,7 +381,7 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 		"payee":              payeeClaim(ap),
 		"payment_amount":     lxcAmount(ap.AmountULXC),
 		"payment_instrument": map[string]any{"type": "talyvor_agent_wallet", "id": ap.AgentID},
-		"trusted_surface":    trustedSurface(a),
+		"trusted_surface":    trustedSurface(*a),
 	})
 	if err != nil {
 		return ap, fmt.Errorf("economy: closed mandate: %w", err)
@@ -379,7 +389,7 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 	if _, err := tx.Exec(ctx, `UPDATE agent_approvals SET owner_mandate = $2 WHERE id = $1`, ap.ID, mandate); err != nil {
 		return ap, fmt.Errorf("economy: closed mandate: %w", err)
 	}
-	return ap, tx.Commit(ctx)
+	return ap, nil
 }
 
 // ApprovalEvidence is what proves approvalID was approved, by the owner or an approver agent.
