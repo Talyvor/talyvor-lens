@@ -1,0 +1,38 @@
+Scan tank pilot: how full Cushing's floating-roof tanks are, from Sentinel-1 radar. Written down before any radar
+image was read or compared with EIA's figures (B52.29, 4 Nov 2026).
+
+Hubs:      Cushing, Oklahoma only. EIA publishes a weekly stock figure for Cushing alone among storage hubs, so no
+           other hub can be checked against an official number; a second hub would be a series nobody can score.
+Tanks:     every OpenStreetMap way tagged man_made=storage_tank between 35.90-36.05 N and 96.65-96.85 W whose outline
+           is at least 40 m across (the large crude tanks, which have floating roofs); the outlines' centres and
+           diameters are recorded once in cushing-tanks.json (© OpenStreetMap contributors, ODbL).
+Images:    every Sentinel-1 IW GRD scene of relative orbit 34 (ascending; one fixed viewing geometry) over Cushing from
+           1 Jan 2023 to 30 Jun 2025, VV polarisation, full resolution (10 m pixels), read from Microsoft Planetary
+           Computer's sentinel-1-grd collection by HTTP range (Copernicus licence: use with credit).
+Reading:   radar looks across the tank; the floating roof and the far inner wall make a bright corner whose return is
+           strongest when the roof is low (more wall above it). Each tank's centre is placed in the image by a
+           least-squares affine fit to the scene's six nearest ground-control points. Over the tank's rows within
+           0.6 of its radius of the centre, and its columns from one radius plus 30 m before to one radius plus 30 m
+           after it, the summed VV power (DN squared) of the far half is divided by that of the near half; the tank's
+           reading is the natural log of that ratio. A scene's index is the mean over its readable tanks; a tank whose
+           window leaves the image or holds no-data pixels is not readable, and a scene with fewer than 90% of the
+           tanks readable is left out, never filled in. Calibration cancels in the ratio.
+Expected:  the index falls as Cushing fills (a higher roof hides the far wall).
+Stocks:    EIA weekly Cushing, OK ending stocks excluding SPR (W_EPC0_SAX_YCUOK_MBBL), thousand barrels, at each
+           scene's time by straight-line interpolation between the two week-ending Fridays either side of it.
+Model:     stocks = a + b x index, fitted by least squares on the scenes of 2023 (training); tested on every scene
+           from 1 Jan 2024 to 30 Jun 2025 (18 months the fit never saw).
+Baseline:  the training scenes' mean stock, used as the guess for every test scene.
+PUBLISH THRESHOLD (written first): the mean absolute error of the model on the test scenes is at most 2,500 thousand
+           barrels (2.5 million; Cushing ranged about 19 to 43 million barrels in 2023-2026 with a spread of 5.9, so
+           this is under half the spread), AND smaller than the baseline's, over at least 20 test scenes.
+Passes:    Scan may publish the tank reading in reports.
+Otherwise: the pilot stays internal; the result is recorded here as it came out and stored as a failed backtest, and
+           nothing derived from the tanks reaches a report.
+
+Result (recorded 4 Nov 2026, after the plan above): 72 scenes read (70 Sentinel-1A, 2 Sentinel-1C), every one with all
+305 tanks readable; 27 fitted (2023), 45 tested. The fit slopes as expected (-17,056 thousand barrels per unit of
+index: the index falls as Cushing fills), and it put the stocks on the right side of the 2023 mean in 67% of test
+scenes, but its error is 5,689 thousand barrels against the training mean's 6,116. FAILED: outside the 2,500 written
+down first. The pilot stays internal; TankFillPublishable answers false and nothing derived from the tanks reaches a
+report.

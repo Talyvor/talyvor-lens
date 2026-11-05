@@ -1,0 +1,510 @@
+{
+ "source": "Microsoft Planetary Computer sentinel-1-grd, relative orbit 34, VV, 1 Jan 2023 to 30 Jun 2025, read by TestRecordTankPilot. Contains modified Copernicus Sentinel data.",
+ "tanks": 305,
+ "scenes": [
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230106T002854_20230106T002919_046656_059791",
+   "at": "2023-01-06T00:29:07.460156Z",
+   "tanks_read": 305,
+   "index": 0.93877,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230118T002854_20230118T002919_046831_059D7D",
+   "at": "2023-01-18T00:29:06.526766Z",
+   "tanks_read": 305,
+   "index": 0.91816,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230130T002854_20230130T002919_047006_05A364",
+   "at": "2023-01-30T00:29:06.832112Z",
+   "tanks_read": 305,
+   "index": 0.93877,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230211T002853_20230211T002918_047181_05A936",
+   "at": "2023-02-11T00:29:06.117836Z",
+   "tanks_read": 305,
+   "index": 1.0012,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230223T002852_20230223T002917_047356_05AF2D",
+   "at": "2023-02-23T00:29:05.439843Z",
+   "tanks_read": 305,
+   "index": 0.96749,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230307T002853_20230307T002918_047531_05B518",
+   "at": "2023-03-07T00:29:05.971917Z",
+   "tanks_read": 305,
+   "index": 0.9367,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230319T002853_20230319T002918_047706_05BB04",
+   "at": "2023-03-19T00:29:05.968231Z",
+   "tanks_read": 305,
+   "index": 0.95132,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230412T002854_20230412T002919_048056_05C6D2",
+   "at": "2023-04-12T00:29:06.858767Z",
+   "tanks_read": 305,
+   "index": 0.94361,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230424T002854_20230424T002919_048231_05CCAB",
+   "at": "2023-04-24T00:29:07.141328Z",
+   "tanks_read": 305,
+   "index": 0.87968,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230506T002855_20230506T002920_048406_05D28A",
+   "at": "2023-05-06T00:29:07.79517Z",
+   "tanks_read": 305,
+   "index": 1.09941,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230518T002855_20230518T002920_048581_05D7D9",
+   "at": "2023-05-18T00:29:08.444534Z",
+   "tanks_read": 305,
+   "index": 0.97931,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230530T002856_20230530T002921_048756_05DD0F",
+   "at": "2023-05-30T00:29:09.067736Z",
+   "tanks_read": 305,
+   "index": 0.88464,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230611T002856_20230611T002921_048931_05E256",
+   "at": "2023-06-11T00:29:09.486127Z",
+   "tanks_read": 305,
+   "index": 1.06032,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230623T002857_20230623T002922_049106_05E7A8",
+   "at": "2023-06-23T00:29:10.019455Z",
+   "tanks_read": 305,
+   "index": 0.96611,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230717T002859_20230717T002924_049456_05F26E",
+   "at": "2023-07-17T00:29:11.879022Z",
+   "tanks_read": 305,
+   "index": 1.01151,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230729T002859_20230729T002924_049631_05F7D2",
+   "at": "2023-07-29T00:29:12.460746Z",
+   "tanks_read": 305,
+   "index": 0.96446,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230810T002859_20230810T002924_049806_05FD5D",
+   "at": "2023-08-10T00:29:12.219791Z",
+   "tanks_read": 305,
+   "index": 0.97675,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230822T002901_20230822T002926_049981_060357",
+   "at": "2023-08-22T00:29:13.56912Z",
+   "tanks_read": 305,
+   "index": 0.92665,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230903T002902_20230903T002927_050156_060958",
+   "at": "2023-09-03T00:29:14.562773Z",
+   "tanks_read": 305,
+   "index": 1.04116,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20230915T002902_20230915T002927_050331_060F45",
+   "at": "2023-09-15T00:29:14.890924Z",
+   "tanks_read": 305,
+   "index": 1.06208,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231009T002902_20231009T002927_050681_061B45",
+   "at": "2023-10-09T00:29:15.233176Z",
+   "tanks_read": 305,
+   "index": 0.99945,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231021T002902_20231021T002927_050856_062137",
+   "at": "2023-10-21T00:29:15.477362Z",
+   "tanks_read": 305,
+   "index": 0.94396,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231102T002902_20231102T002927_051031_06273D",
+   "at": "2023-11-02T00:29:14.651724Z",
+   "tanks_read": 305,
+   "index": 1.00067,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231114T002902_20231114T002927_051206_062D43",
+   "at": "2023-11-14T00:29:14.862483Z",
+   "tanks_read": 305,
+   "index": 0.93708,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231126T002901_20231126T002926_051381_06334B",
+   "at": "2023-11-26T00:29:14.083179Z",
+   "tanks_read": 305,
+   "index": 1.07323,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231208T002901_20231208T002926_051556_063950",
+   "at": "2023-12-08T00:29:13.92799Z",
+   "tanks_read": 305,
+   "index": 1.05144,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20231220T002900_20231220T002925_051731_063F70",
+   "at": "2023-12-20T00:29:12.915633Z",
+   "tanks_read": 305,
+   "index": 1.05564,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240113T002859_20240113T002924_052081_064B6A",
+   "at": "2024-01-13T00:29:11.911916Z",
+   "tanks_read": 305,
+   "index": 1.00987,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240125T002859_20240125T002924_052256_065148",
+   "at": "2024-01-25T00:29:11.574255Z",
+   "tanks_read": 305,
+   "index": 1.11673,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240218T002858_20240218T002923_052606_065D1A",
+   "at": "2024-02-18T00:29:11.072545Z",
+   "tanks_read": 305,
+   "index": 0.98127,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240301T002858_20240301T002923_052781_06631D",
+   "at": "2024-03-01T00:29:11.085401Z",
+   "tanks_read": 305,
+   "index": 1.0962,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240313T002858_20240313T002923_052956_06690F",
+   "at": "2024-03-13T00:29:11.134519Z",
+   "tanks_read": 305,
+   "index": 0.95173,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240325T002858_20240325T002923_053131_066FAB",
+   "at": "2024-03-25T00:29:11.358857Z",
+   "tanks_read": 305,
+   "index": 1.07882,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240406T002859_20240406T002924_053306_067659",
+   "at": "2024-04-06T00:29:11.907994Z",
+   "tanks_read": 305,
+   "index": 0.89764,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240418T002859_20240418T002924_053481_067D4D",
+   "at": "2024-04-18T00:29:12.294443Z",
+   "tanks_read": 305,
+   "index": 0.96814,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240430T002900_20240430T002925_053656_068428",
+   "at": "2024-04-30T00:29:12.610477Z",
+   "tanks_read": 305,
+   "index": 1.00192,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240512T002900_20240512T002925_053831_068AC4",
+   "at": "2024-05-12T00:29:12.633476Z",
+   "tanks_read": 305,
+   "index": 0.95142,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240524T002859_20240524T002924_054006_0690C8",
+   "at": "2024-05-24T00:29:12.368891Z",
+   "tanks_read": 305,
+   "index": 0.95437,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240605T002859_20240605T002924_054181_0696D2",
+   "at": "2024-06-05T00:29:11.884943Z",
+   "tanks_read": 305,
+   "index": 1.06988,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240617T002859_20240617T002924_054356_069CDF",
+   "at": "2024-06-17T00:29:11.604951Z",
+   "tanks_read": 305,
+   "index": 0.91751,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240629T002858_20240629T002923_054531_06A2F0",
+   "at": "2024-06-29T00:29:10.78188Z",
+   "tanks_read": 305,
+   "index": 0.9357,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240711T002857_20240711T002922_054706_06A90A",
+   "at": "2024-07-11T00:29:10.467509Z",
+   "tanks_read": 305,
+   "index": 0.8809,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240723T002857_20240723T002922_054881_06AF1E",
+   "at": "2024-07-23T00:29:10.098191Z",
+   "tanks_read": 305,
+   "index": 1.01102,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240804T002857_20240804T002922_055056_06B523",
+   "at": "2024-08-04T00:29:10.190849Z",
+   "tanks_read": 305,
+   "index": 0.9249,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240816T002857_20240816T002922_055231_06BB84",
+   "at": "2024-08-16T00:29:09.910851Z",
+   "tanks_read": 305,
+   "index": 0.95788,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240828T002857_20240828T002922_055406_06C201",
+   "at": "2024-08-28T00:29:10.297884Z",
+   "tanks_read": 305,
+   "index": 0.9013,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240909T002858_20240909T002923_055581_06C8BE",
+   "at": "2024-09-09T00:29:10.617882Z",
+   "tanks_read": 305,
+   "index": 0.94375,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20240921T002858_20240921T002923_055756_06CFA0",
+   "at": "2024-09-21T00:29:10.904593Z",
+   "tanks_read": 305,
+   "index": 1.05401,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241003T002858_20241003T002923_055931_06D696",
+   "at": "2024-10-03T00:29:11.240635Z",
+   "tanks_read": 305,
+   "index": 1.00503,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241015T002859_20241015T002924_056106_06DD72",
+   "at": "2024-10-15T00:29:11.58611Z",
+   "tanks_read": 305,
+   "index": 1.01573,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241027T002858_20241027T002923_056281_06E468",
+   "at": "2024-10-27T00:29:11.422421Z",
+   "tanks_read": 305,
+   "index": 1.0173,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241108T002858_20241108T002923_056456_06EB52",
+   "at": "2024-11-08T00:29:11.144078Z",
+   "tanks_read": 305,
+   "index": 1.06849,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241120T002858_20241120T002923_056631_06F25B",
+   "at": "2024-11-20T00:29:10.547944Z",
+   "tanks_read": 305,
+   "index": 1.13297,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241202T002857_20241202T002922_056806_06F94C",
+   "at": "2024-12-02T00:29:09.93301Z",
+   "tanks_read": 305,
+   "index": 0.98664,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20241214T002856_20241214T002921_056981_070029",
+   "at": "2024-12-14T00:29:09.044846Z",
+   "tanks_read": 305,
+   "index": 1.05175,
+   "platform": "SENTINEL-1A"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250107T002854_20250107T002919_057331_070E0F",
+   "at": "2025-01-07T00:29:06.587849Z",
+   "tanks_read": 305,
+   "index": 1.00644,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250119T002852_20250119T002917_057506_0714FA",
+   "at": "2025-01-19T00:29:05.464708Z",
+   "tanks_read": 305,
+   "index": 0.99345,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250131T002852_20250131T002917_057681_071BEE",
+   "at": "2025-01-31T00:29:04.686065Z",
+   "tanks_read": 305,
+   "index": 1.11953,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250212T002851_20250212T002916_057856_0722E6",
+   "at": "2025-02-12T00:29:04.299673Z",
+   "tanks_read": 305,
+   "index": 1.09276,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250224T002851_20250224T002916_058031_072A0A",
+   "at": "2025-02-24T00:29:04.147383Z",
+   "tanks_read": 305,
+   "index": 1.02145,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250308T002851_20250308T002916_058206_07312D",
+   "at": "2025-03-08T00:29:04.286893Z",
+   "tanks_read": 305,
+   "index": 0.98631,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250320T002852_20250320T002917_058381_073815",
+   "at": "2025-03-20T00:29:04.522939Z",
+   "tanks_read": 305,
+   "index": 1.07244,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250401T002852_20250401T002917_058556_073F16",
+   "at": "2025-04-01T00:29:04.908826Z",
+   "tanks_read": 305,
+   "index": 1.03024,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1C_IW_GRDH_1SDV_20250407T002737_20250407T002810_001780_00331C",
+   "at": "2025-04-07T00:27:53.919043Z",
+   "tanks_read": 305,
+   "index": 1.11127,
+   "platform": "sentinel-1c"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250413T002852_20250413T002917_058731_074646",
+   "at": "2025-04-13T00:29:04.556379Z",
+   "tanks_read": 305,
+   "index": 1.00551,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1C_IW_GRDH_1SDV_20250419T002737_20250419T002811_001955_003E12",
+   "at": "2025-04-19T00:27:54.342524Z",
+   "tanks_read": 305,
+   "index": 0.90664,
+   "platform": "sentinel-1c"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250425T002852_20250425T002917_058906_074D68",
+   "at": "2025-04-25T00:29:04.822434Z",
+   "tanks_read": 305,
+   "index": 1.05534,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250507T002852_20250507T002917_059081_075463",
+   "at": "2025-05-07T00:29:04.784963Z",
+   "tanks_read": 305,
+   "index": 1.19729,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250519T002851_20250519T002916_059256_075A73",
+   "at": "2025-05-19T00:29:04.482203Z",
+   "tanks_read": 305,
+   "index": 0.97778,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250531T002851_20250531T002916_059431",
+   "at": "2025-05-31T00:29:04.072889Z",
+   "tanks_read": 305,
+   "index": 0.97825,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250612T002850_20250612T002915_059606_07667E",
+   "at": "2025-06-12T00:29:03.394782Z",
+   "tanks_read": 305,
+   "index": 1.04111,
+   "platform": "sentinel-1a"
+  },
+  {
+   "item": "S1A_IW_GRDH_1SDV_20250624T002850_20250624T002915_059781_076C8C",
+   "at": "2025-06-24T00:29:02.793194Z",
+   "tanks_read": 305,
+   "index": 0.97755,
+   "platform": "sentinel-1a"
+  }
+ ]
+}

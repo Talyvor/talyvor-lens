@@ -68,6 +68,9 @@ func marketToolDefinitions() []map[string]any {
 			map[string]any{"text": str("words in its title or description"), "kind": str("prompt, skill, agent, evaluation or pipeline"),
 				"capability": str("what it should do: one of GET /v1/marketplace/capabilities, e.g. summarize or extract"), "licence": str("sold under this licence: personal, commercial or enterprise"),
 				"max_price_usd_micros": num("one use costs at most this, in µUSD (1 USD = 1,000,000)")}),
+		tool("market_ask", "Describe a job in words, such as \"translate 500 product descriptions into German\", and get up to three listings "+
+			"that fit it, each with what that many uses would cost and why it fits.",
+			map[string]any{"text": str("the job, in words"), "volume": num("how many uses to price; absent: the first number in text, or one")}, "text"),
 		tool("market_listing", "One listing: what each version needs (input, variables, model), every offer with its licence terms, and its trust "+
 			"summary: whether the publisher is verified, reviews from paying buyers, eval score, IP claims, the originals it credits and its remixes.",
 			map[string]any{"listing_id": listing}, "listing_id"),
@@ -92,6 +95,7 @@ func marketToolDefinitions() []map[string]any {
 
 type marketArgs struct {
 	Text              string            `json:"text"`
+	Volume            int               `json:"volume"`
 	Kind              string            `json:"kind"`
 	Capability        string            `json:"capability"`
 	Licence           string            `json:"licence"`
@@ -149,6 +153,8 @@ func (s *Server) marketTool(ctx context.Context, name, ws, agent string, a marke
 			err = s.market.ShowPrices(ctx, ws, "", refs...)
 		}
 		return map[string]any{"listings": found}, err
+	case "market_ask":
+		return s.market.Ask(ctx, ws, "", a.Text, a.Volume)
 	case "market_listing":
 		l, err := s.market.Get(ctx, ws, a.ListingID)
 		if err == nil {
