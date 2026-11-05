@@ -229,6 +229,9 @@ type agentBank interface {
 	LockdownAgents(ctx context.Context, workspaceID, by string) ([]economy.AgentFreeze, error)
 	AgentSweepCall(ctx context.Context, workspaceID, agentID, network, to string) (economy.AgentSweep, error)
 	AgentCryptoBalances(ctx context.Context, workspaceID, agentID, currency string) (holdings.Statement, error)
+	WalletStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.WalletStatement, error)
+	WalletActivity(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.WalletLine, error)
+	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
@@ -298,6 +301,7 @@ type agentKeyIssuer interface {
 }
 
 func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) {
+	mountWalletStatementRoutes(r, bank)
 	r.Get("/v1/workspaces/{wsID}/agents", func(w http.ResponseWriter, req *http.Request) {
 		book, err := bank.AgentBook(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
