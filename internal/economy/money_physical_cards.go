@@ -214,7 +214,7 @@ func (s *DualTokenStore) ActivatePhysicalCard(ctx context.Context, workspaceID, 
 		return PhysicalCard{}, fmt.Errorf("economy: physical card: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	c, err := readPhysicalCard(ctx, tx, workspaceID, id, " FOR UPDATE")
+	c, err := readPhysicalCard(ctx, tx, workspaceID, id, true)
 	switch {
 	case err != nil:
 		return c, err
@@ -260,7 +260,7 @@ func (s *DualTokenStore) ReplacePhysicalCard(ctx context.Context, workspaceID, i
 		return old, card, fmt.Errorf("economy: physical card: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if old, err = readPhysicalCard(ctx, tx, workspaceID, id, " FOR UPDATE"); err != nil {
+	if old, err = readPhysicalCard(ctx, tx, workspaceID, id, true); err != nil {
 		return old, card, err
 	}
 	switch {
@@ -335,14 +335,21 @@ func (c PhysicalCard) shown() PhysicalCard {
 
 // physicalCard reads workspaceID's card id, unless it is still being ordered.
 func (s *DualTokenStore) physicalCard(ctx context.Context, workspaceID, id string) (PhysicalCard, error) {
-	return readPhysicalCard(ctx, s.pool, workspaceID, id, "")
+	return readPhysicalCard(ctx, s.pool, workspaceID, id, false)
 }
 
-// readPhysicalCard is physicalCard read through db, with lock (" FOR UPDATE", or "") appended to the query.
-func readPhysicalCard(ctx context.Context, db pgxDB, workspaceID, id, lock string) (PhysicalCard, error) {
+const physicalCardByID = `SELECT ` + physicalCardCols + ` FROM money_physical_cards WHERE id = $1 AND workspace_id = $2 AND state <> $3`
+
+// readPhysicalCard is physicalCard read through db, its row locked until db's transaction ends when forUpdate.
+func readPhysicalCard(ctx context.Context, db pgxDB, workspaceID, id string, forUpdate bool) (PhysicalCard, error) {
 	var c PhysicalCard
-	err := db.QueryRow(ctx, `SELECT `+physicalCardCols+` FROM money_physical_cards WHERE id = $1 AND workspace_id = $2 AND state <> $3`+lock,
-		id, workspaceID, physicalCardOrdering).Scan(c.fields()...)
+	var row pgx.Row
+	if forUpdate {
+		row = db.QueryRow(ctx, physicalCardByID+` FOR UPDATE`, id, workspaceID, physicalCardOrdering)
+	} else {
+		row = db.QueryRow(ctx, physicalCardByID, id, workspaceID, physicalCardOrdering)
+	}
+	err := row.Scan(c.fields()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrPhysicalCardNotFound
 	}

@@ -7,8 +7,8 @@ package issuerfake
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 	"strconv"
 	"sync"
@@ -119,8 +119,9 @@ func once[T any](i *Issuer, key string, fn func() (T, error)) (T, error) {
 func (i *Issuer) Issue(_ context.Context, req money.IssueCard) (money.Card, error) {
 	return once(i, "issue:"+req.Key, func() (money.Card, error) {
 		// A ref never repeats, even across restarts, as a real issuer's never do: Lens keeps the refs it was given.
-		ref := "ic_" + uuid.NewString()
-		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: fmt.Sprintf("%04d", rand.IntN(10000)), Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive,
+		u := uuid.New()
+		ref := "ic_" + u.String()
+		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: fmt.Sprintf("%04d", binary.BigEndian.Uint32(u[:4])%10000), Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive,
 			FormFactor: money.CardVirtual}
 		if req.FormFactor == money.CardPhysical {
 			c.State, c.FormFactor = money.CardInactive, money.CardPhysical
