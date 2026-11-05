@@ -2002,6 +2002,7 @@ func run() error {
 		return err
 	}
 	dualToken.SetMoneyLayer(moneyLayer)
+	dualToken.SetGasBudgetDefault(cfg.GasBudgetWei) // B48.5: what a workspace's agents' paymaster may pay before its owner tops up
 	// B46.22 — a seller who saved payout details on the money layer is paid by the weekly run there, from Talyvor's accounts.
 	marketStore.SetMoneyPayouts(dualToken, economy.TalyvorWorkspace)
 	// B37.2 — every rail answers a read-only probe every 5 minutes, and its last answers are kept in partner_rails, so
@@ -2035,6 +2036,16 @@ func run() error {
 	go haComps.leader.Run(ctx, "sanctions-lists", 30*time.Second, func(lctx context.Context) {
 		refreshSanctionsLists(lctx, screeningLists, sanctionsAlert)
 	})
+	// B48.6 — agents' crypto wallets mirrored in the ledger: each movement seen, confirmed and reconciled nightly.
+	chainIdx, err := newChainIndex(dualToken, cfg.ChainIndex)
+	if err != nil {
+		return err
+	}
+	if chainIdx != nil {
+		go haComps.leader.Run(ctx, "chain-indexer", 30*time.Second, func(lctx context.Context) {
+			chainIdx.indexChains(lctx, sanctionsAlert.sink)
+		})
+	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
 	if cfg.BillingEnabled {
 		taxProfiles.SetStripe(taxStripeByKind{isTest: wsManager.GetSynthetic, mainKeyLive: billing.LiveKey(cfg.StripeSecretKey),
@@ -2201,6 +2212,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("agents: briefing pushed", slog.Int("workspaces", n))
 				}
+				// B48.5: network fees a paymaster paid for agents, charged to their workspaces' budgets from the receipts.
+				if n, err := dualToken.SettleSponsoredGas(ctx); err != nil {
+					slog.Warn("agents: sponsored network fees not settled", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: sponsored network fees charged", slog.Int("operations", n))
+				}
 				// B22.9: cash-outs handed to the partner, and its answers recorded.
 				if res, err := dualToken.RunCashOuts(ctx); err != nil {
 					slog.Warn("agents: cash-outs failed", slog.String("err", err.Error()))
@@ -2282,6 +2299,12 @@ func run() error {
 	scanWriter := scan.NewWriter(scan.NewStore(pool), routingInferer, cfg.ScanWriterModel, cfg.ScanCheckModel, cfg.ScanConflicts)
 	go haComps.leader.Run(ctx, "scan-reports", 30*time.Second, func(lctx context.Context) {
 		scanWriter.Every(lctx, time.Hour)
+	})
+	// B52.27 — Scan agents' watches run every hour: a series the owner picked that crosses into what they called
+	// unusual sends one alert, paid for by the agent's wallet (fees' LENS_SCAN_ALERT_ULXC); a paused agent sends nothing.
+	scanWatcher := scan.NewWatcher(scan.NewStore(pool), dualToken, func() int64 { return fees.Current().ScanAlertULXC })
+	go haComps.leader.Run(ctx, "scan-watches", 30*time.Second, func(lctx context.Context) {
+		scanWatcher.Every(lctx, time.Hour)
 	})
 	// B19.12: agent card purchases are priced at the day's ECB reference rate, and B22.8's simulated trading
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
@@ -2777,11 +2800,12 @@ func run() error {
 	// financials by naming it. Gate it with the same AuthMiddleware as the authed group; the tools
 	// additionally force the acted-on workspace to the verified caller (effectiveWorkspace).
 	mcpServer := mcp.New(pool, l, alertManager, wsManager, sessionTracker, lensVersion)
-	mcpServer.SetAgentBank(dualToken)       // B19.9: agents use their wallets with their own keys
-	mcpServer.SetCredentials(kyaSvc)        // B30.5: and show their Know Your Agent credential
-	mcpServer.SetMandates(dualToken)        // B40.2: get_mandates
-	mcpServer.SetSearcher(dualToken)        // B41.107: search_workspace
-	mcpServer.SetPaymentRequests(dualToken) // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
+	mcpServer.SetAgentBank(dualToken)         // B19.9: agents use their wallets with their own keys
+	mcpServer.SetCredentials(kyaSvc)          // B30.5: and show their Know Your Agent credential
+	mcpServer.SetMandates(dualToken)          // B40.2: get_mandates
+	mcpServer.SetSearcher(dualToken)          // B41.107: search_workspace
+	mcpServer.SetPaymentRequests(dualToken)   // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
+	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -2934,10 +2958,12 @@ func run() error {
 	// B46.3 — each money partner's webhooks — PUBLIC (signed by the partner, no auth), on the bare router like the billing
 	// webhook; the partner's adapter verifies the signature and a replayed id is refused.
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
+	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
+	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
-		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates)}
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4812,6 +4838,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
@@ -4834,6 +4861,7 @@ func run() error {
 		mountMoneyPlanRoutes(authed, dualToken)                                         // B53.15
 		mountMandateRoutes(authed, dualToken)                                           // B30.19
 		mountPermissionMandateRoutes(authed, dualToken)                                 // B40.2
+		mountNegotiationRoutes(authed, dualToken)                                       // B52.10
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
@@ -4872,6 +4900,7 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
+		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()

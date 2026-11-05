@@ -28,6 +28,7 @@ func TestPublicFees_EveryFeeWithNicolaisValues(t *testing.T) {
 		"intl_payment_fee_minor": map[string]any{"GBP": 500.0, "EUR": 600.0, "USD": 700.0},
 		"merchant_fee_bps":       75.0,
 		"merchant_a2a_fee_bps":   100.0,
+		"scan_alert_ulxc":        0.0,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("GET /v1/public/fees = %v\nwant %v", got, want)

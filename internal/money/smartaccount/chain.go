@@ -107,10 +107,11 @@ var ErrRefused = errors.New("smartaccount: refused")
 
 // Chain is one EVM chain: its id, a node, and an ERC-4337 bundler (the provider's, or a local one in tests).
 type Chain struct {
-	ID         int64
-	RPCURL     string
-	BundlerURL string
-	HTTP       *http.Client
+	ID           int64
+	RPCURL       string
+	BundlerURL   string
+	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base
+	HTTP         *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {
@@ -185,8 +186,9 @@ func (c Chain) Nonce(ctx context.Context, addr string) (*big.Int, error) {
 // Gas an operation is given.
 //
 // shortcut: fixed limits, ample for a call with a deployment and a passkey checked without the P-256 precompile; the
-// EntryPoint charges only the gas used, but the account must hold the limits' worth. Upgrade with
-// eth_estimateUserOperationGas when B48.5 brings the paymaster.
+// EntryPoint charges only the gas used, but the account, or its paymaster, must hold the limits' worth, and the fee an
+// owner is quoted (MaxFee) is those limits' worth. Upgrade with eth_estimateUserOperationGas once the provider's bundler
+// serves the chain.
 var (
 	callGas         = big.NewInt(500_000)
 	verificationGas = big.NewInt(2_000_000)
@@ -227,21 +229,27 @@ var executeSelector = selector("execute(address,uint256,bytes)")
 // call out of the account: an operation that would deploy another account, call the account itself (its owners, an
 // upgrade) or be replayed on other chains is refused before anything is signed.
 func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
-	if len(a.Owners) <= OwnerAgent {
-		return fmt.Errorf("%w: the account has no agent key", ErrInvalid)
+	if len(op.CallData) < 4+32 || !bytes.Equal(op.CallData[:4], executeSelector) {
+		return fmt.Errorf("%w: the agent's key signs only a call out of the account", ErrInvalid)
 	}
-	if owner, err := AddressOwner(agentKey); err != nil || !bytes.Equal(owner, a.Owners[OwnerAgent]) {
+	self, err := addressW(a.Address)
+	if err != nil || bytes.Equal(op.CallData[4:36], self[:]) {
+		return fmt.Errorf("%w: the account's owners and code are the person's to change", ErrInvalid)
+	}
+	return c.signAsAgent(ctx, s, a, agentKey, op)
+}
+
+// signAsAgent has agentKey, which must be a's agent key now, sign op, which must be a's, at the key's place.
+func (c Chain) signAsAgent(ctx context.Context, s Signer, a Account, agentKey string, op *UserOp) error {
+	agent, index, err := a.agent()
+	if err != nil {
+		return err
+	}
+	if owner, err := AddressOwner(agentKey); err != nil || !bytes.Equal(owner, agent) {
 		return fmt.Errorf("%w: %s is not the agent's key of %s", ErrInvalid, agentKey, a.Address)
 	}
 	if !strings.EqualFold(op.Sender, a.Address) || (len(op.InitCode) > 0 && !bytes.Equal(op.InitCode, a.InitCode())) {
 		return fmt.Errorf("%w: the operation is not %s's", ErrInvalid, a.Address)
-	}
-	if len(op.CallData) < 4+32 || !bytes.Equal(op.CallData[:4], executeSelector) {
-		return fmt.Errorf("%w: the agent's key signs only a call out of the account", ErrInvalid)
-	}
-	self, _ := addressW(a.Address)
-	if bytes.Equal(op.CallData[4:36], self[:]) {
-		return fmt.Errorf("%w: the account's owners and code are the person's to change", ErrInvalid)
 	}
 	h, err := op.Hash(c.ID)
 	if err != nil {
@@ -251,7 +259,7 @@ func (c Chain) SignAsAgent(ctx context.Context, s Signer, a Account, agentKey st
 	if err != nil {
 		return err
 	}
-	op.Signature, err = KeySignature(OwnerAgent, sig)
+	op.Signature, err = KeySignature(index, sig)
 	return err
 }
 
@@ -277,8 +285,9 @@ func (c Chain) Send(ctx context.Context, op UserOp) (string, error) {
 
 // Receipt is how operation hash ended: nil while it is not yet on the chain.
 type Receipt struct {
-	Success bool `json:"success"`
-	Receipt struct {
+	Success       bool   `json:"success"`
+	ActualGasCost string `json:"actualGasCost"` // wei the EntryPoint took for the operation's network fee
+	Receipt       struct {
 		TransactionHash string `json:"transactionHash"`
 	} `json:"receipt"`
 }

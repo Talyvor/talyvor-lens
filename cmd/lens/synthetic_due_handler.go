@@ -16,6 +16,7 @@ import (
 
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/sellertax"
 )
 
@@ -40,6 +41,12 @@ import (
 //	                                                                   {"amount_minor":2000,"currency":"gbp","merchant":"…"}
 //	                                                                   a purchase on the test agent's card, decided
 //	                                                                   as Stripe Issuing's authorisation request is
+//	POST /v1/synthetic/workspaces/{wsID}/money/cards/{cardID}/charge
+//	                                                                   B53.18: {"merchant":"Tesco","amount_minor":3120}
+//	                                                                   that merchant charges the test workspace's
+//	                                                                   single-use card, as its issuer asks Lens:
+//	                                                                   {"authorization_id","approved","reason","mcc",
+//	                                                                   "country","channel","wallet"}
 //	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
 //	                                                                   the two linked as though both paid with one
 //	                                                                   card, so a trust panel's linked buyer is testable
@@ -80,6 +87,11 @@ type syntheticCardAuthorizer interface {
 	Authorize(ctx context.Context, a economy.CardAuthorization) (economy.CardDecision, error)
 }
 
+// syntheticMoneyCards is *economy.DualTokenStore: B53.18's synthetic charge asks it as a money card's issuer would.
+type syntheticMoneyCards interface {
+	AuthorizeCardCharge(ctx context.Context, partner string, a money.Authorization) (bool, string, error)
+}
+
 type syntheticDueDeps struct {
 	db         syntheticQuerier
 	loans      syntheticLoans
@@ -88,6 +100,7 @@ type syntheticDueDeps struct {
 	sellerTax  syntheticSellerTax
 	cards      syntheticCards
 	authorizer syntheticCardAuthorizer
+	moneyCards syntheticMoneyCards
 }
 
 func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
@@ -105,6 +118,10 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/agents/{agentID}/card/authorizations",
 		syntheticGuard(key, "card-authorization", limit, d, due.testOnly(due.cardPurchase)))
+	if due.moneyCards != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/money/cards/{cardID}/charge",
+			syntheticGuard(key, "money-card-charge", limit, d, due.testOnly(due.moneyCardCharge)))
+	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
 }
 
@@ -260,5 +277,46 @@ func (d syntheticDueDeps) cardPurchase(w http.ResponseWriter, r *http.Request, w
 	}
 	writeJSONOK(w, http.StatusOK, map[string]any{"authorization_id": a.AuthorizationID, "approved": dec.Approved, "reason": dec.Reason,
 		"amount_ulxc": dec.AmountULXC, "approval_id": dec.ApprovalID})
+	return 1, "ok"
+}
+
+// moneyCardCharge is B53.18: merchant charging one of the test workspace's single-use money cards, asked of Lens as its
+// issuer asks it — the card's own partner and ref, a fresh authorisation id, and the merchant's details as a test issuer
+// reports them. Lens's own decision (merchant, cap, once, expiry) is the only thing that approves it.
+func (d syntheticDueDeps) moneyCardCharge(w http.ResponseWriter, r *http.Request, ws string) (int, string) {
+	var in struct {
+		Merchant    string `json:"merchant"`
+		AmountMinor int64  `json:"amount_minor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return 0, "error: bad request"
+	}
+	if strings.TrimSpace(in.Merchant) == "" || in.AmountMinor <= 0 {
+		writeJSONErr(w, http.StatusBadRequest, "merchant must be named and amount_minor positive, in the card's own currency")
+		return 0, "error: bad request"
+	}
+	var partner, ref, currency string
+	err := d.db.QueryRow(r.Context(), `SELECT partner, partner_ref, currency FROM money_cards
+		WHERE id = $1 AND workspace_id = $2 AND partner IS NOT NULL AND partner_ref IS NOT NULL`, chi.URLParam(r, "cardID"), ws).
+		Scan(&partner, &ref, &currency)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeJSONErr(w, http.StatusNotFound, "no issued money card of this workspace has that id")
+		return 0, "refused: no card"
+	case err != nil:
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	details := money.TestMerchantDetails(in.Merchant)
+	a := money.Authorization{ID: "iauth_synthetic_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Card: ref, Merchant: in.Merchant,
+		Amount: money.Amount{Minor: in.AmountMinor, Asset: currency}, CardDetails: details}
+	approved, reason, err := d.moneyCards.AuthorizeCardCharge(r.Context(), partner, a)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return 0, "error: " + err.Error()
+	}
+	writeJSONOK(w, http.StatusOK, map[string]any{"authorization_id": a.ID, "approved": approved, "reason": reason, "mcc": details.MCC,
+		"country": details.Country, "channel": details.Channel, "wallet": details.Wallet})
 	return 1, "ok"
 }
