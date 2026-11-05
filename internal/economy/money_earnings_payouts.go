@@ -493,6 +493,10 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	var refusal *screening.Refusal
 	err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID, Capability: CapabilityPaymentsOut,
 		Direction: "out", Counterparty: d.Holder, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
+	if err == nil && d.Address != "" { // B48.7: and the address it goes to
+		err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID + ":address",
+			Capability: CapabilityPaymentsOut, Direction: "out", Counterparty: d.Address, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
+	}
 	switch {
 	case errors.As(err, &refusal):
 		return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed, Detail: err.Error()})
@@ -515,6 +519,15 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	if err := s.pool.QueryRow(ctx, `SELECT c.partner_account_ref FROM money_accounts a JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
 		WHERE a.id = $1`, p.accountID).Scan(&from); err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	if d.Address != "" && s.travelRule != nil { // B48.7: the Travel Rule, as an agent's send takes it
+		held, err := s.earningsTravelRule(ctx, p, d, from)
+		switch {
+		case err != nil: // its identity data did not go: the payout is not made
+			return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed, Detail: "the identity data the Travel Rule needs was not sent: " + err.Error()})
+		case held != "":
+			return s.setEarningsPayout(ctx, p, PayoutHeld, "", "", held)
+		}
 	}
 	recipient := money.PayoutSeller
 	if p.Kind == EarningsRoomSplit {

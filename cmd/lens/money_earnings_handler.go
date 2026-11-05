@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -20,6 +22,9 @@ import (
 //	                                 country: where the workspace is paid in that asset; its holder is verified by the
 //	                                 money layer's partner, and payouts held for want of verified details are paid
 //	GET  /v1/money/payout-details    the workspace's payout details, each asset's, and whether they are verified
+//	POST /v1/money/payout-details/address-proof {"signature": "0x…"} — B48.7: the workspace proves, once, that it holds
+//	                                 the key of its self-hosted USDC payout address, with its personal_sign of the message
+//	                                 a payout held for it names; earnings held for it are paid. A wrong signature is 403
 //	GET  /v1/money/earnings-payouts  the payouts the workspace made or was paid, newest first: a sale, a Room's split
 //	                                 or a royalty, its agreement, and held, pending, completed, failed or returned
 //	POST /v1/rooms/{roomID}/payouts  {amount_minor, currency, shares}, with an Idempotency-Key: the room's owner pays
@@ -34,6 +39,7 @@ type moneyEarningsBank interface {
 	PayoutDetailsOf(ctx context.Context, workspaceID string) ([]economy.PayoutDetails, error)
 	EarningsPayouts(ctx context.Context, workspaceID string) ([]economy.EarningsPayout, error)
 	PayEarnings(ctx context.Context, workspaceID string, e economy.Earnings) ([]economy.EarningsPayout, error)
+	ProvePayoutAddress(ctx context.Context, workspaceID string, sig []byte) error
 }
 
 type roomSplitter interface {
@@ -94,6 +100,25 @@ func mountMoneyEarningsRoutes(r chi.Router, bank moneyEarningsBank, roomsStore r
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"payout_details": list})
+	})
+	r.Post("/v1/money/payout-details/address-proof", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Signature string `json:"signature"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, req.Body, 8<<10)).Decode(&in)
+		sig, _ := hex.DecodeString(strings.TrimPrefix(in.Signature, "0x"))
+		switch err := bank.ProvePayoutAddress(req.Context(), ws, sig); {
+		case errors.Is(err, economy.ErrAddressProof):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil:
+			writeEarningsErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"proved": true})
+		}
 	})
 	r.Get("/v1/money/earnings-payouts", func(w http.ResponseWriter, req *http.Request) {
 		ws, ok := owner(w, req)

@@ -163,6 +163,9 @@ var Manifest = map[string]Entry{
 	"crypto_address_proofs":     {Delete, "B48.7: each self-hosted address the owner proved they hold the key of, with the signed message; nothing to keep once the workspace is gone"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
+	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
+	"money_quarantined_deposits": {Retain, "B48.7: each payment in from a flagged payer held for an operator — who it was from, how much, its partner's reference and case — and when it posted once released; it explains money_entries; financial-record retention"},
+
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
 

@@ -122,6 +122,7 @@ type MoneyEntry struct {
 	Postings       []MoneyPosting     `json:"postings"`
 
 	payeeWorkspaceID string // a mandate pull's payee company (B30.19), or an invoice's issuer (B30.20): its account may be credited too
+	quarantine       bool   // B48.7: money already at the partner, which nothing can refuse: a hit on who it is from is held for an operator
 }
 
 // PaymentScreener screens an outside payment before its money moves: *screening.Screener.
@@ -463,7 +464,8 @@ func screenOutside(ctx context.Context, e MoneyEntry, postings []MoneyPosting, p
 	}
 	for _, l := range legs {
 		if err := screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: e.WorkspaceID, ID: e.IdempotencyKey, Capability: e.Capability,
-			Direction: l.direction, Counterparty: e.Counterparty, AmountMinor: through[l], Currency: l.currency, Funding: e.Funding}); err != nil {
+			Direction: l.direction, Counterparty: e.Counterparty, AmountMinor: through[l], Currency: l.currency, Funding: e.Funding,
+			Quarantine: e.quarantine && l.direction == "in"}); err != nil {
 			return err
 		}
 	}

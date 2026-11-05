@@ -12,6 +12,7 @@ import (
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 )
 
 // account_details.go — B30.14: ACCOUNT DETAILS OTHERS CAN PAY INTO.
@@ -172,10 +173,14 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 			return MoneyEntry{}, fmt.Errorf("economy: receive payment: %w", err)
 		}
 	}
-	return s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsIn, Kind: "payment_in",
+	e, err := s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsIn, Kind: "payment_in",
 		IdempotencyKey: "payment_in:" + in.PartnerRef, Funding: in.Funding, Memo: in.Reference, Counterparty: in.Payer, PartnerRef: in.PartnerRef,
 		Postings: []MoneyPosting{
 			{AccountID: partnerID, AmountMinor: -in.AmountMinor, Currency: in.Currency},
 			{AccountID: to, AmountMinor: in.AmountMinor, Currency: in.Currency},
-		}})
+		}, quarantine: true})
+	if r := (*screening.Refusal)(nil); errors.As(err, &r) && r.Case.Status == screening.CaseHeld { // B48.7
+		return MoneyEntry{WorkspaceID: ws}, s.quarantineDeposit(ctx, ws, r, in)
+	}
+	return e, err
 }

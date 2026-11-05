@@ -40,3 +40,25 @@ CREATE INDEX IF NOT EXISTS idx_money_payments_address ON money_payments (workspa
 -- Payments made before this column count too, by their payee's address now: the best that is known of them.
 UPDATE money_payments m SET address = y.address FROM money_payees y
     WHERE y.id = m.payee_id AND y.workspace_id = m.workspace_id AND m.address = '' AND y.address <> '';
+
+-- A Travel Rule send that keeps failing ends its payment as failed after a bounded number of tries (B48.7).
+ALTER TABLE money_payments ADD COLUMN IF NOT EXISTS travel_rule_attempts INT NOT NULL DEFAULT 0;
+
+-- A payment in from a flagged payer, on any rail, is quarantined: the money is at the partner, but nothing posts until
+-- an operator releases its compliance case, and then it posts once under the same key (payment_in:<partner_ref>).
+CREATE TABLE IF NOT EXISTS money_quarantined_deposits (
+    workspace_id        TEXT NOT NULL,
+    partner_ref         TEXT NOT NULL,             -- the partner's reference for the payment
+    case_id             TEXT NOT NULL,             -- compliance_cases.id
+    partner             TEXT NOT NULL,
+    partner_account_ref TEXT NOT NULL,
+    payer               TEXT NOT NULL,
+    reference           TEXT NOT NULL,
+    amount_minor        BIGINT NOT NULL,
+    currency            TEXT NOT NULL,
+    funding             TEXT NOT NULL,
+    quarantined_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    posted_at           TIMESTAMPTZ,
+    PRIMARY KEY (workspace_id, partner_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_money_quarantined_deposits_open ON money_quarantined_deposits (case_id) WHERE posted_at IS NULL;
