@@ -266,7 +266,8 @@ func (s *DualTokenStore) SetReusableCardControls(ctx context.Context, workspaceI
 
 // authorizeReusableCharge decides a's charge if it is on a reusable card, in tx: done is false for a card that is
 // not one. Approved only while the card is active, its agent not paused, in its currency, within its limit per payment
-// and what is left of its daily limit, in a category it pays, and while its account holds the charge.
+// and what is left of its daily limit, in a category it pays, while its account holds the charge, and — on an agent's
+// card — within the agent's own rules (B54.6).
 func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx, partner string, a money.Authorization) (done, approved bool, reason string, err error) {
 	var c ReusableCard
 	err = tx.QueryRow(ctx, `SELECT `+reusableCardCols+` FROM money_reusable_cards WHERE partner = $1 AND partner_ref = $2 FOR UPDATE`, partner, a.Card).
@@ -280,6 +281,10 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 	d := a.Normal()
 	var paused error
 	if c.AgentID != "" {
+		// As money leaving the agent does: its row first, then the accounts (PayOutside's order).
+		if err := lockAgent(ctx, tx, c.WorkspaceID, c.AgentID); err != nil {
+			return true, false, "", fmt.Errorf("economy: card charge: %w", err)
+		}
 		paused = refuseIfPaused(ctx, tx, c.AgentID)
 	}
 	var spent, held int64
@@ -325,14 +330,23 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 	default:
 		approved = true
 	}
+	key := "card_charge:" + partner + ":" + a.ID
+	var value int64
+	if approved && c.AgentID != "" { // B54.6: the agent's own rules judge it too, so the stricter of theirs and the card's wins
+		if value, reason, err = s.agentCardCharge(ctx, tx, c, key, a); err != nil {
+			return true, false, "", err
+		}
+		approved = reason == ""
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO money_card_authorizations (partner, id, card_id, workspace_id, merchant, amount_minor, currency, approved, reason,
-		mcc, merchant_country, channel, wallet) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, partner, a.ID, c.ID, c.WorkspaceID,
-		a.Merchant, a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet); err != nil {
+		mcc, merchant_country, channel, wallet, agent_id, value_ulxc) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		partner, a.ID, c.ID, c.WorkspaceID, a.Merchant, a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet,
+		c.AgentID, value); err != nil {
 		return true, false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	if approved {
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: c.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_charge",
-			IdempotencyKey: "card_charge:" + partner + ":" + a.ID, Funding: c.Funding, Memo: a.Merchant, Counterparty: a.Merchant, PartnerRef: a.ID,
+			IdempotencyKey: key, Funding: c.Funding, Memo: a.Merchant, Counterparty: a.Merchant, PartnerRef: a.ID,
 			Card: &d, Postings: []MoneyPosting{{AccountID: c.accountID, AmountMinor: -a.Amount.Minor}, {AccountID: from.partnerID, AmountMinor: a.Amount.Minor}}},
 			s.screener); err != nil {
 			return true, false, "", err
@@ -342,6 +356,30 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 		return true, false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	return true, approved, reason, nil
+}
+
+// agentCardCharge judges a charge the controls of agent card c let through by the agent's own rules, in tx with the
+// agent's row locked, as any money leaving the agent is (moneyLimits.Allow): its limits per payment and per hour, day,
+// week and month, its payee lists and caps, its hours and its approval amount. It answers the charge's value in µLXC,
+// which counts toward the agent's spend, or why the rules decline it. A charge cannot wait for the owner, so one above
+// the approval amount is declined and files no approval.
+func (s *DualTokenStore) agentCardCharge(ctx context.Context, tx pgx.Tx, c ReusableCard, key string, a money.Authorization) (int64, string, error) {
+	value, err := s.moneyValue(ctx, money.Op{Route: money.Route{Workspace: c.WorkspaceID}, Amount: a.Amount, Key: key})
+	if err != nil {
+		return 0, "the charge cannot be valued against the agent's limits", nil
+	}
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: a.Merchant, Name: a.Merchant},
+		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant})
+	var need *ApprovalNeededError
+	switch err = enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
+	case err == nil:
+		return value, "", nil
+	case errors.As(err, &need):
+		return 0, "needs your approval", nil
+	case errors.Is(err, ErrAgentRule):
+		return 0, strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": "), nil
+	}
+	return 0, "", err
 }
 
 // issuingReusableCard is whether op is the money layer issuing a reusable card the owner asked for: the card issuing
