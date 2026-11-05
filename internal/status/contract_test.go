@@ -29,6 +29,8 @@ var documentedKeys = []string{
 	"rails[].lists_age_hours",
 	"rails_summary", "rails_summary.up", "rails_summary.down", "rails_summary.idle", "rails_summary.down_names",
 	"card_payments",
+	"collectors", "collectors[].source", "collectors[].name", "collectors[].on", "collectors[].note",
+	"collectors[].last_retrieved", "collectors[].failing",
 }
 
 // plantedError is what a failing dependency says: a database user, a host name, an address, a reference id and a key.
@@ -52,13 +54,24 @@ func (halfDown) Rails() []partners.Rail {
 	return out
 }
 
-// statusJSON is /status.json from a page whose PostgreSQL fails with plantedError, whose rails are halfDown, and whose
-// sanctions lists are 52 hours old.
+// twoCollectors is Scan's data collectors, one off with its note and one collecting, so every collector field carries a
+// value.
+var twoCollectors = fakeCollectors{
+	{Source: "eia", Name: "US EIA open data (weekly petroleum stocks)", Note: "off: needs its API key in the server setting LENS_SCAN_EIA_KEY"},
+	{Source: "entsog", Name: "ENTSOG transparency platform (gas flows)", On: true, LastRetrieved: func() *time.Time {
+		at := time.Date(2026, 11, 4, 6, 0, 0, 0, time.UTC)
+		return &at
+	}()},
+}
+
+// statusJSON is /status.json from a page whose PostgreSQL fails with plantedError, whose rails are halfDown, whose
+// sanctions lists are 52 hours old, and which shows twoCollectors.
 func statusJSON(t *testing.T) map[string]any {
 	t.Helper()
 	page := newTestPage(t, &fakePinger{err: errors.New(plantedError)})
 	page.UseMoneyRails(halfDown{}, fxCleared{})
 	page.UseScreeningLists(fakeLists{age: 52 * time.Hour, stale: true})
+	page.UseCollectors(twoCollectors)
 	page.UpdateCache(page.Check(context.Background()))
 	rec := httptest.NewRecorder()
 	page.ServeJSON(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
@@ -156,9 +169,17 @@ func TestStatusJSON_NoValueCarriesASecret(t *testing.T) {
 		"rails[].mode":               set("test", "live"),
 		"rails[].capabilities[].key": capabilities,
 		"card_payments":              set("live", "test", "off"),
+		// shortcut: a collector's source, name and note come from Scan's source registry and its fixed phrases; this
+		// allows the fake's own, so a collector's text is checked against a real registry only on the running server.
+		"collectors[].source": set(), "collectors[].name": set(), "collectors[].note": set(),
+	}
+	for _, c := range twoCollectors {
+		allowed["collectors[].source"][c.Source] = true
+		allowed["collectors[].name"][c.Name] = true
+		allowed["collectors[].note"][c.Note] = true
 	}
 	times := set("updated_at", "components[].checked_at", "providers[].checked_at", "rails[].last_success",
-		"rails[].last_failure")
+		"rails[].last_failure", "collectors[].last_retrieved")
 
 	for path, vs := range strs {
 		for _, v := range vs {

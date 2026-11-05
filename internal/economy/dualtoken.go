@@ -30,6 +30,7 @@ import (
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 )
@@ -365,6 +366,10 @@ type DualTokenStore struct {
 	smartAccounts *smartAccounts
 	// cryptoHoldings reads what agents' smart accounts hold on each network (B48.4); nil, nothing is read.
 	cryptoHoldings *cryptoHoldings
+	// gasBudgetWei is each workspace's budget for sponsored network fees on each chain before any top-up (B48.5).
+	gasBudgetWei int64
+	// gasSponsors answers, per chain, what each sponsored operation was charged (B48.5); a chain not in it is not served.
+	gasSponsors map[int64]smartaccount.Chain
 	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.

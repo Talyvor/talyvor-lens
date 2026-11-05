@@ -324,6 +324,8 @@ exactly these fields, and no secret, reference id, error text, host name or work
 - `rails_summary`: `up`, `down`, `idle`, `down_names`
 - `card_payments`: whether a card can be charged — `live` (billing on with a live Stripe key), `test` (billing on with a
   test-mode key: a real workspace's card payment is refused) or `off` (billing off); `GET /v1/pricing` answers the same
+- `collectors[]`, when Scan runs: `source`, `name`, `on`, `note` (why it is off, when there is a reason),
+  `last_retrieved` (when its source last gave a figure) and `failing` (its last run failed); a collector never moves `status`
 
 A new field is added here and to `documentedKeys` in `internal/status/contract_test.go` together.
 

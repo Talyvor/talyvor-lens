@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -157,6 +159,79 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 	}
 	c, err := s.newChallenge(ctx, workspaceID, "approval:"+approvalID)
 	return c, credentialIDs, err
+}
+
+// ErrApprovalsChanged: one of the approvals a batch decision names is no longer pending, so none is decided.
+var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending — none was decided")
+
+// batchApprovalPurpose (B41.204) is the purpose one challenge over several approvals is issued for: the decision and
+// the set of ids, sorted, so the signature covers exactly that decision on exactly those approvals.
+func batchApprovalPurpose(approve bool, ids []string) string {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	return "approvals:" + map[bool]string{true: "approve", false: "deny"}[approve] + ":" + strings.Join(ids, ",")
+}
+
+// BatchApprovalChallenge (B41.204) issues one challenge approving or denying every one of ids is signed over, and the
+// workspace's passkeys that may sign it. ErrApprovalNotFound unless every id is pending in workspaceID.
+func (s *DualTokenStore) BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	var pending int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM agent_approvals WHERE id = ANY($1) AND workspace_id = $2 AND status = 'pending' AND expires_at > now()`,
+		ids, workspaceID).Scan(&pending); err != nil {
+		return "", nil, fmt.Errorf("economy: approval: %w", err)
+	}
+	if len(ids) == 0 || pending != len(ids) {
+		return "", nil, ErrApprovalNotFound
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, batchApprovalPurpose(approve, ids))
+	return c, credentialIDs, err
+}
+
+// DecideAgentApprovals (B41.204) decides every one of ids with one assertion a over BatchApprovalChallenge's challenge
+// for exactly that decision and set, which it spends; a workspace with no passkey or device key needs none. All in one
+// transaction: if any is no longer pending, ErrApprovalsChanged and none is decided.
+func (s *DualTokenStore) DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]AgentApproval, error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	if len(ids) == 0 {
+		return nil, ErrApprovalNotFound
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var keys int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&keys); err != nil {
+		return nil, fmt.Errorf("economy: passkeys: %w", err)
+	}
+	if keys == 0 {
+		a = nil // unsigned, as AuthorizeApprovalDecision lets a workspace with no key decide
+	} else if a == nil {
+		return nil, ErrPasskeyRequired
+	} else if err := s.spendAssertion(ctx, tx, workspaceID, batchApprovalPurpose(approve, ids), *a); err != nil {
+		return nil, err
+	}
+	out := make([]AgentApproval, 0, len(ids))
+	for _, id := range ids {
+		ap, err := s.decideInTx(ctx, tx, workspaceID, id, approve, a)
+		if errors.Is(err, ErrApprovalNotFound) {
+			return nil, ErrApprovalsChanged
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ap)
+	}
+	return out, tx.Commit(ctx)
 }
 
 // AuthorizeApprovalDecision lets a decision on approvalID through: at once for a workspace with no

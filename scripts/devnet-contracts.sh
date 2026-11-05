@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # B48.2 — builds the audited contracts an agent's smart account runs on, from their pinned sources, for the local devnet
 # test (internal/money/smartaccount): Coinbase Smart Wallet v1.1.0 (its factory and implementation) and ERC-4337's
-# EntryPoint v0.6.0 (the copy smart-wallet pins, with OpenZeppelin 4.9.6, which it was written for); and, for B48.4's
-# balances, a mock token on OpenZeppelin's ERC20 that the test mints (a test fixture, never deployed anywhere else).
-# Writes each contract's creation bytecode as hex into OUTDIR. Needs git and forge (Foundry).
+# EntryPoint v0.6.0 (the copy smart-wallet pins, with OpenZeppelin 4.9.6, which it was written for); for B48.4's
+# balances, a mock token on OpenZeppelin's ERC20 that the test mints (a test fixture, never deployed anywhere else); and
+# for B48.5 the same copy's VerifyingPaymaster (a local paymaster) and OpenZeppelin's ERC20PresetMinterPauser (a local
+# USDC). Writes each contract's creation bytecode as hex into OUTDIR. Needs git and forge (Foundry).
 #
 #   scripts/devnet-contracts.sh OUTDIR
 #   LENS_TEST_DEVNET_CONTRACTS=OUTDIR go test ./internal/money/smartaccount/
@@ -38,7 +39,9 @@ optimizer = true
 optimizer_runs = 1000000
 allow_paths = ["$work"]
 EOF
-(cd "$work/ep" && forge build -q "$work/sw/lib/account-abstraction/contracts/core/EntryPoint.sol")
+(cd "$work/ep" && forge build -q "$work/sw/lib/account-abstraction/contracts/core/EntryPoint.sol" \
+	"$work/sw/lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol" \
+	"$work/oz/contracts/token/ERC20/presets/ERC20PresetMinterPauser.sol")
 
 mkdir -p "$work/tok/src"
 cat >"$work/tok/src/MockToken.sol" <<'EOF'
@@ -68,4 +71,6 @@ bytecode "$work/sw/out/CoinbaseSmartWallet.sol/CoinbaseSmartWallet.json" >"$out/
 bytecode "$work/sw/out/CoinbaseSmartWalletFactory.sol/CoinbaseSmartWalletFactory.json" >"$out/CoinbaseSmartWalletFactory.hex"
 bytecode "$work/ep/out/EntryPoint.sol/EntryPoint.json" >"$out/EntryPoint.hex"
 bytecode "$work/tok/out/MockToken.sol/MockToken.json" >"$out/MockToken.hex"
+bytecode "$work/ep/out/VerifyingPaymaster.sol/VerifyingPaymaster.json" >"$out/VerifyingPaymaster.hex"
+bytecode "$work/ep/out/ERC20PresetMinterPauser.sol/ERC20PresetMinterPauser.json" >"$out/ERC20.hex"
 ls -l "$out"
