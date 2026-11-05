@@ -361,6 +361,7 @@ var testMerchants = map[string]CardDetails{
 	"aws":             {MCC: "7372", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
 	"bet365":          {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
 	"netflix":         {MCC: "4899", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"william hill":    {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone}, // gambling (B53.2)
 }
 
 // TestMerchantDetails is what a test issuer (issuerfake, and the synthetic charge of B53.18) reports about a charge at merchant.
