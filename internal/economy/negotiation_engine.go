@@ -337,7 +337,7 @@ func ReadNegotiationReply(ctx context.Context, ai NegotiationInferer, model stri
 	switch {
 	case price <= 0 || !MentionsAmount(text, price, MoneyCurrencies[t.Currency]):
 		r.Unsure = append(r.Unsure, "price_minor")
-	case t.Side == NegotiationBuy && price < t.WalkAwayMinor || t.Side == NegotiationSell && price > t.WalkAwayMinor:
+	case t.Side == NegotiationBuy && price <= t.WalkAwayMinor || t.Side == NegotiationSell && price >= t.WalkAwayMinor: // at it too: a target may equal it
 		r.Unsure = append(r.Unsure, "price_minor: inside the walk-away, so Counter could accept it; the owner confirms the terms first")
 	}
 	// A must-have counts only when the model finds it and the reply itself names it.
