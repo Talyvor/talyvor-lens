@@ -362,13 +362,14 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 // agent's row locked, as any money leaving the agent is (moneyLimits.Allow): its limits per payment and per hour, day,
 // week and month, its payee lists and caps, its hours and its approval amount. It answers the charge's value in µLXC,
 // which counts toward the agent's spend, or why the rules decline it. A charge cannot wait for the owner, so one above
-// the approval amount is declined and files no approval.
+// the approval amount is declined and files no approval. The merchant is named "merchant:<name>" in the payee lists, so
+// a merchant's own name can never pass for an agent's or a company's id.
 func (s *DualTokenStore) agentCardCharge(ctx context.Context, tx pgx.Tx, c ReusableCard, key string, a money.Authorization) (int64, string, error) {
 	value, err := s.moneyValue(ctx, money.Op{Route: money.Route{Workspace: c.WorkspaceID}, Amount: a.Amount, Key: key})
 	if err != nil {
 		return 0, "the charge cannot be valued against the agent's limits", nil
 	}
-	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: a.Merchant, Name: a.Merchant},
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: "merchant:" + a.Merchant, Name: a.Merchant},
 		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant})
 	var need *ApprovalNeededError
 	switch err = enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {

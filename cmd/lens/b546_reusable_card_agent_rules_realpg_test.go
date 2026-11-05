@@ -55,7 +55,7 @@ func TestB546_AnAgentsReusableCardFollowsTheAgentsRules(t *testing.T) {
 	// GBP 10.00 is USD 12.50 at the Test partner's rate.
 	v := int64(1250*10_000) * economy.ULXCPerUSDMicro
 
-	if _, err := b.store.SetAgentRules(ctx, ws, agent, economy.AgentRules{DailyLimitULXC: v*5/2, Timezone: "UTC"}); err != nil {
+	if _, err := b.store.SetAgentRules(ctx, ws, agent, economy.AgentRules{DailyLimitULXC: v * 5 / 2, Timezone: "UTC"}); err != nil {
 		t.Fatal(err)
 	}
 	charge(1000, true, "")
