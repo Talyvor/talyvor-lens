@@ -41,6 +41,10 @@ import (
 //	                                     mandate's, which only then holds it; 409 when it already confirmed another
 //	POST /v1/a2a/negotiations/domains    {"workspace_id"} signed the same way — verifies that workspace's claim to
 //	                                     the agent's own (registrable) domain; 404 when it made none
+//
+// On both, an agent speaks for its registrable domain only when it signs as that domain itself, or the domain's own
+// key directory also publishes its key: that is how a domain's owner lists a subdomain's agent. Any other subdomain's
+// agent (user content, a dangling record) is refused with 403 (B54.16).
 
 type negotiationBank interface {
 	PrepareNegotiationMandate(ctx context.Context, workspaceID string, t economy.NegotiationMandateTerms) (canonical, challenge string, credentialIDs []string, err error)
@@ -48,9 +52,9 @@ type negotiationBank interface {
 	NegotiationMandate(ctx context.Context, workspaceID, id string) (economy.NegotiationMandate, error)
 	RevokeNegotiationMandate(ctx context.Context, workspaceID, id, by string) (economy.NegotiationMandate, error)
 	RecordNegotiationTerms(ctx context.Context, workspaceID, id string, o economy.NegotiationOffer) (economy.NegotiationOffer, error)
-	ConfirmNegotiationDeal(ctx context.Context, id, domain, deal string) error
+	ConfirmNegotiationDeal(ctx context.Context, id, domain, keyID, deal string) error
 	ClaimNegotiationDomain(ctx context.Context, workspaceID, domain, by string) (economy.NegotiationDomain, error)
-	VerifyNegotiationDomain(ctx context.Context, workspaceID, domain string) error
+	VerifyNegotiationDomain(ctx context.Context, workspaceID, domain, keyID string) error
 }
 
 func mountNegotiationRoutes(r chi.Router, bank negotiationBank) {
@@ -162,7 +166,22 @@ func mountNegotiationRoutes(r chi.Router, bank negotiationBank) {
 	})
 }
 
+// speaksForDomain reports whether trust's agent speaks for its registrable domain: it signs as that domain, or that
+// domain's own directory publishes the key it signed with. A directory that cannot be read lists no one.
+func speaksForDomain(ctx context.Context, v *agentsig.Verifier, trust agentsig.Result) bool {
+	reg := economy.RegistrableDomain(trust.Domain)
+	if reg == trust.Domain {
+		return true
+	}
+	_, err := v.Keys.Key(ctx, "https://"+reg, trust.KeyID)
+	return err == nil
+}
+
 func mountNegotiationAgentRoutes(r chi.Router, v *agentsig.Verifier, bank negotiationBank) {
+	notListed := func(w http.ResponseWriter, trust agentsig.Result) {
+		reg := economy.RegistrableDomain(trust.Domain)
+		writeJSONErr(w, http.StatusForbidden, trust.Domain+" does not speak for "+reg+": sign as "+reg+", or publish this agent's key in "+reg+"'s own key directory (docs/agent-signatures.md)")
+	}
 	r.With(v.Middleware(agentsig.Money)).Post("/v1/a2a/negotiations/{id}/deal", func(w http.ResponseWriter, req *http.Request) {
 		trust, _ := agentsig.FromContext(req.Context())
 		if trust.Domain == "" {
@@ -176,7 +195,11 @@ func mountNegotiationAgentRoutes(r chi.Router, v *agentsig.Verifier, bank negoti
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"deal": "<the RFQ, auction or quote reference>"}`)
 			return
 		}
-		switch err := bank.ConfirmNegotiationDeal(req.Context(), chi.URLParam(req, "id"), trust.Domain, in.Deal); {
+		if !speaksForDomain(req.Context(), v, trust) {
+			notListed(w, trust)
+			return
+		}
+		switch err := bank.ConfirmNegotiationDeal(req.Context(), chi.URLParam(req, "id"), trust.Domain, trust.KeyID, in.Deal); {
 		case errors.Is(err, economy.ErrNegotiationNotFound):
 			writeJSONErr(w, http.StatusNotFound, "no such negotiation")
 		case errors.Is(err, economy.ErrNegotiationOneSide):
@@ -202,7 +225,11 @@ func mountNegotiationAgentRoutes(r chi.Router, v *agentsig.Verifier, bank negoti
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"workspace_id": "<the workspace that claimed this domain>"}`)
 			return
 		}
-		switch err := bank.VerifyNegotiationDomain(req.Context(), in.WorkspaceID, trust.Domain); {
+		if !speaksForDomain(req.Context(), v, trust) {
+			notListed(w, trust)
+			return
+		}
+		switch err := bank.VerifyNegotiationDomain(req.Context(), in.WorkspaceID, trust.Domain, trust.KeyID); {
 		case errors.Is(err, economy.ErrNegotiationNotFound):
 			writeJSONErr(w, http.StatusNotFound, "no such claim")
 		case err != nil:
