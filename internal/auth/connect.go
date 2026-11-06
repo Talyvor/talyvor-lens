@@ -88,5 +88,8 @@ func connectContext(r *http.Request, c *TokenClaims) (*AuthContext, error) {
 	if c.ExpiresAt != nil {
 		actx.ExpiresAt = c.ExpiresAt.Time
 	}
+	if c.IssuedAt != nil {
+		actx.ConnectIssuedAt = c.IssuedAt.Time
+	}
 	return actx, nil
 }

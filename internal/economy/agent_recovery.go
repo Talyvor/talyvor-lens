@@ -295,8 +295,10 @@ type LockdownFailure struct {
 // LockdownAgents freezes every agent of the workspace that has a smart account at once (FreezeAgent), and answers
 // each freeze with its call, which the agent's own key signs on chain (smartaccount.SignRetirementAsAgent). It is the
 // emergency button, so one agent's failed freeze never stops the others': each failure is answered by agent, and a
-// retry freezes only those still open (FreezeAgent answers an agent already frozen with the same freeze).
+// retry freezes only those still open (FreezeAgent answers an agent already frozen with the same freeze). It runs to the
+// end even when the person's app hangs up mid-way (B54.9).
 func (s *DualTokenStore) LockdownAgents(ctx context.Context, workspaceID, by string) (Lockdown, error) {
+	ctx = context.WithoutCancel(ctx)
 	out := Lockdown{Frozen: []AgentFreeze{}, Failed: []LockdownFailure{}}
 	rows, err := s.pool.Query(ctx, `SELECT agent_id FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
 	if err != nil {
