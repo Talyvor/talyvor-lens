@@ -280,7 +280,7 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 	defer func() { _ = tx.Rollback(ctx) }()
 	// One payer of a request at a time: a second waits, then finds each item already paid.
 	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 AND ($3 = '' OR agent_id = $3) FOR UPDATE`,
+	err = tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL)) FOR UPDATE`,
 		id, workspaceID, agentID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PaymentRequest{}, ErrPaymentRequestNotFound
@@ -351,8 +351,17 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		}
 		if payStatus == "" {
 			key := paymentRequestItemKey(id, it.Position)
-			p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
-				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key})
+			out := OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
+				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key}
+			p, err := s.PayOutside(ctx, workspaceID, out)
+			if errors.Is(err, ErrMoneyAccountNotFound) && r.AgentTrust != nil && r.AgentID != "" {
+				// B54.10: an outside agent's request pays from the agent's own account in the currency, else the
+				// company's as before B54.10 — but not while the agent is paused.
+				if err = refuseIfPaused(ctx, tx, r.AgentID); err == nil {
+					out.AgentID = ""
+					p, err = s.PayOutside(ctx, workspaceID, out)
+				}
+			}
 			call = map[string]any{"position": it.Position, "authority": authority, "idempotency_key": key}
 			switch {
 			case errors.Is(err, ErrPayeeCoolingOff):

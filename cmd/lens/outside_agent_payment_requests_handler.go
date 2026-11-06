@@ -28,7 +28,8 @@ import (
 // Idempotency-Keys are its own; unsigned agents share one space. Mounted in the public, rate-limited group.
 //
 // B54.10: {agentID} is the agent's id or @handle, and the request is that agent's: its mandates and its own rules
-// judge it, and while it is paused the request is refused and recorded nowhere.
+// judge it, and while it is paused the request is refused and recorded nowhere. Only the owner reads, approves, cancels
+// or pays it, never the agent's own key; once approved it pays from the agent's account in the currency, else the company's.
 
 type outsidePaymentBank interface {
 	ResolveWallet(ctx context.Context, address string) (economy.WalletAddress, error)
