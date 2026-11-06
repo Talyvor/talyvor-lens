@@ -491,11 +491,16 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	if s.screener == nil {
 		return p, fmt.Errorf("%w: no screener is set, so no money moves out", partners.ErrScreeningUnavailable)
 	}
-	// B54.17: once p was handed to its partner it may have gone, so a resend is not screened or Travel-Ruled again and
-	// never fails before the partner is asked under the same key.
-	var started bool
-	if err := s.pool.QueryRow(ctx, `SELECT send_started_at IS NOT NULL FROM money_earnings_payouts WHERE id = $1`, p.ID).Scan(&started); err != nil {
+	// B54.17: once p was handed to its partner it may have gone, so a resend to the same details is not screened or
+	// Travel-Ruled again and never fails before the partner is asked under the same key; never sent to other details.
+	to := strings.Join([]string{d.Holder, d.IBAN, d.BIC, d.Network, strings.ToLower(d.Address)}, "|")
+	var sentTo *string
+	if err := s.pool.QueryRow(ctx, `SELECT sent_to FROM money_earnings_payouts WHERE id = $1`, p.ID).Scan(&sentTo); err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	started := sentTo != nil
+	if started && *sentTo != to {
+		return s.setEarningsPayout(ctx, p, PaymentPending, "", "", "the payout details changed after it was sent: it waits for the partner's answer to that send")
 	}
 	if !started {
 		var refusal *screening.Refusal
@@ -548,7 +553,7 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 			return s.setEarningsPayout(ctx, p, PayoutHeld, "", "", held)
 		}
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE money_earnings_payouts SET send_started_at = COALESCE(send_started_at, now()) WHERE id = $1`, p.ID); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE money_earnings_payouts SET sent_to = COALESCE(sent_to, $2) WHERE id = $1`, p.ID, to); err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
 	}
 	recipient := money.PayoutSeller

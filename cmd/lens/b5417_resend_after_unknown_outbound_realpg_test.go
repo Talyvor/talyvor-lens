@@ -118,16 +118,19 @@ func TestB5417_AnUnknownOutboundThenATravelRuleOutageKeepsThePaymentHeldAndSends
 	}
 }
 
-// b5417Payouts is a payout partner's fake whose answer can be lost after it took the payout.
+// b5417Payouts is a payout partner's fake whose answer can be lost after it took the payout. to is the last address
+// each payout was asked to go to.
 type b5417Payouts struct {
 	lose atomic.Bool
 	mu   sync.Mutex
 	paid map[string]int
+	to   map[string]string
 }
 
 func (f *b5417Payouts) Pay(_ context.Context, req money.Payout) (money.Result, error) {
 	f.mu.Lock()
 	f.paid[req.Key]++
+	f.to[req.Key] = req.To.Address
 	f.mu.Unlock()
 	if f.lose.Load() {
 		return money.Result{}, money.ErrPartnerDown
@@ -151,7 +154,7 @@ func TestB5417_AnEarningsPayoutRetriesTheTravelRuleAndNeverFailsOnceItMayHaveGon
 	const exchange = "0x00000000000000000000000000000000000b5418"
 	flagged := b487Screening{}
 	travel := &b5417TravelRule{TestTravelRuleProvider: &partners.TestTravelRuleProvider{VASPs: map[string]string{exchange: "Example Exchange Ltd"}}}
-	f := &b5417Payouts{paid: map[string]int{}}
+	f := &b5417Payouts{paid: map[string]int{}, to: map[string]string{}}
 	b := newB487PayerWith(t, pool, ws, flagged, travel, nil, f)
 	if d, err := b.store.SavePayoutDetails(ctx, seller, economy.PayoutDetails{Asset: money.USDC, Holder: "Sam Seller", Network: "base",
 		Address: exchange}); err != nil || d.Status != economy.PayoutDetailsVerified {
@@ -204,5 +207,20 @@ func TestB5417_AnEarningsPayoutRetriesTheTravelRuleAndNeverFailsOnceItMayHaveGon
 	}
 	if len(travel.Sent()) != 1 {
 		t.Fatalf("the Travel Rule was sent %d times, want once", len(travel.Sent()))
+	}
+
+	// Its details changed after a send whose answer was lost: a resend never pays the new details, unscreened.
+	travel.down.Store(false)
+	delete(flagged, exchange)
+	f.lose.Store(true)
+	p = sale("sale:b5417-moved")
+	const moved = "0x00000000000000000000000000000000000b5419"
+	if d, err := b.store.SavePayoutDetails(ctx, seller, economy.PayoutDetails{Asset: money.USDC, Holder: "Sam Seller", Network: "base",
+		Address: moved}); err != nil || d.Status != economy.PayoutDetailsVerified {
+		t.Fatalf("the seller changes its USDC payout details = %+v, %v; want verified", d, err)
+	}
+	if p = sale("sale:b5417-moved"); p.Status != economy.PaymentPending || f.times(p.ID) != 1 || f.to[p.ID] != exchange {
+		t.Fatalf("resend after the details changed = %+v, the partner asked %d times, last to %s; want it waiting, asked once, to %s",
+			p, f.times(p.ID), f.to[p.ID], exchange)
 	}
 }
