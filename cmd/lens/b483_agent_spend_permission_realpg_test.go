@@ -168,6 +168,21 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	if n, sum := uses(); n != 4 || sum != 85_000_000 {
 		t.Fatalf("the gate kept %d payments of %d in all, want the 4 it allowed, 85000000", n, sum)
 	}
+	// B48.25: the most an ERC-20 paymaster may take for the network fee counts with the payment, in the check and in
+	// the use kept.
+	feeGate := func(amount, fee int64) error {
+		return store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(amount),
+			Fee: big.NewInt(fee), Paymaster: "0x000000000000000000000000000000000000FEE0"})
+	}
+	if err := feeGate(24_000_000, 1_000_001); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "cap") {
+		t.Fatalf("a payment whose fee goes over the cap on one payment: %v, want refused", err)
+	}
+	if err := feeGate(4_000_000, 1_000_000); err != nil {
+		t.Fatalf("a payment and its fee inside the permission: %v", err)
+	}
+	if n, sum := uses(); n != 5 || sum != 90_000_000 {
+		t.Fatalf("the gate kept %d payments of %d in all, want 5 of 90000000, the fee counted", n, sum)
+	}
 
 	// Changing it is signing the next one; this one ends in a second.
 	canonical, challenge = prepare(time.Now().Add(time.Second))
@@ -207,7 +222,7 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	if code := call(http.MethodPost, base+"/spend-permission/prepare", `{"tokens":[],"expires":"`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"}`, nil); code != http.StatusBadRequest {
 		t.Fatalf("a new permission for a frozen agent = %d, want 400", code)
 	}
-	if n, _ := uses(); n != 5 {
-		t.Fatalf("the gate kept %d payments, want 5", n)
+	if n, _ := uses(); n != 6 {
+		t.Fatalf("the gate kept %d payments, want 6", n)
 	}
 }

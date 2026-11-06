@@ -31,7 +31,7 @@ require (
 	golang.org/x/text v0.43.0
 )
 
-require github.com/klauspost/compress v1.18.7
+require github.com/klauspost/compress v1.20.2
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op // indirect

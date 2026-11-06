@@ -239,6 +239,12 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		Direction: "out", Counterparty: payee.Name, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
 		return OutsidePayment{}, err
 	}
+	var selfHosted bool
+	if payee.Address != "" { // B48.7: and the address it goes to
+		if selfHosted, err = s.screenAddress(ctx, p, payee); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	if payer != "" { // B30.22: an international payment screens its payer too
 		if err := s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: workspaceID, ID: p.key("payer"), Capability: CapabilityPaymentsOut,
 			Direction: "out", Counterparty: payer, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding}); err != nil {
@@ -263,6 +269,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if err := s.coolingOffTx(ctx, tx, payee, p.Currency, p.AmountMinor); err != nil { // B50.21
 		return OutsidePayment{}, err
 	}
+	if selfHosted {
+		if err := addressProofTx(ctx, tx, p, payee); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	var held int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(balance_minor), 0)::bigint FROM money_account_balances WHERE account_id = $1 AND funding = $2`,
 		from.id, p.Funding).Scan(&held); err != nil {
@@ -282,11 +293,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if p, err = scanOutsidePayment(tx.QueryRow(ctx, `INSERT INTO money_payments (id, workspace_id, idempotency_key, account_id, hold_account_id,
 		agent_id, payee_id, payee_name, amount_minor, currency, funding, reference, value_ulxc, status, partner,
-		quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING `+outsidePaymentCols,
+		quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate, address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING `+outsidePaymentCols,
 		p.ID, workspaceID, p.IdempotencyKey, p.AccountID, p.holdAccountID, p.AgentID, p.PayeeID, p.PayeeName, p.AmountMinor, p.Currency,
 		p.Funding, p.Reference, p.ValueULXC, p.Status, p.Partner, p.QuoteID, p.quoteRef, p.PartnerCostMinor, p.FeeMinor, p.ArrivesMinor,
-		p.ArrivesCurrency, p.Rate)); err != nil {
+		p.ArrivesCurrency, p.Rate, payee.Address)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the same key, paid at the same moment: answer as that one did
 			_ = tx.Rollback(ctx)

@@ -144,6 +144,7 @@ var Manifest = map[string]Entry{
 	"money_mandates":            {Retain, "B30.19: keys `workspace_id`+`payee_workspace_id`: each mandate an agent's account granted a payee — the limits, the expiry, the revocation, and an outside business's key only as its SHA-256; its money_mandate_pulls name the money_entries each pull posted; financial-record retention"},
 	"permission_mandates":       {Retain, "B40.2: each permission mandate the person signed — what an assistant or an agent may prepare and pay, as the signed JSON with its passkey assertion, and its revocation; evidence of what the person allowed"},
 	"negotiation_mandates":      {Retain, "B52.10: each negotiation mandate the owner signed for Counter — the task, target, walk-away, counterparties, channels and authority, as the signed JSON with its passkey assertion; evidence of what the owner allowed"},
+	"negotiation_domains":       {Delete, "B54.7: the domains a workspace trades as in Counter's negotiations, who claimed each and when its own agent verified it"},
 	"negotiation_terms":         {Delete, "B52.10: the term sheet per counterparty — each offer and counter-offer's price, term, renewal, payment terms, SLA and extras, and the message sent with ours"},
 	"negotiation_messages":      {Delete, "B52.12: the deal's timeline — each message Counter sent a counterparty (to a verified agent or for a web form) and each reply, with the agent's id or form URL it went to"},
 	"negotiation_playbook_runs": {Delete, "B52.16: the marketplace playbook each negotiation runs, the use that billed it and the playbook's settings"},
@@ -161,7 +162,12 @@ var Manifest = map[string]Entry{
 	"money_payout_details":      {Delete, "B46.11: where the workspace is paid — an IBAN or a USDC address and its holder — and the partner's verification reference; nothing to keep once the workspace is gone"},
 	"chain_movements":           {Retain, "B48.6: each USDC transfer into or out of an agent's crypto wallet as the chain shows it — transaction, counterparty address, amount, confirmations — and the money_entries that posted or reversed it; it explains money_entries; financial-record retention"},
 	"chain_reconciliations":     {Retain, "B48.6: each night's comparison of an agent's crypto wallet on the chain with the ledger — the balances and any difference; financial-record retention"},
+	"travel_rule_transfers":     {Retain, "B48.7: the identity data — the payer's and the payee's names, wallets and addresses, and the payee's provider — that travelled with each payment to an address at another regulated provider; the Travel Rule's record (Regulation 2023/1113 Art. 26)"},
+	"crypto_address_proofs":     {Delete, "B48.7: each self-hosted address the owner proved they hold the key of, with the signed message; nothing to keep once the workspace is gone"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
+
+	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
+	"money_quarantined_deposits": {Retain, "B48.7: each payment in from a flagged payer held for an operator — who it was from, how much, its partner's reference and case — and when it posted once released; it explains money_entries; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
@@ -288,6 +294,7 @@ var Manifest = map[string]Entry{
 	"market_listing_reports":       {Delete, "B20.4: keys `reporter_workspace_id`: the reports a workspace made of listings; reports of its own listings cascade with them"},
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
 	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},
+	"key_enrolments":               {Delete, "B55.1: the keys waiting to join the workspace from another device — their public keys, attestations and codes"},
 	"gas_budgets":                  {Delete, ""},
 	"gas_budget_top_ups":           {Delete, ""},
 	"gas_sponsorships":             {Delete, ""},

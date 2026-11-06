@@ -28,7 +28,7 @@ import (
 //	                                       approvals are then pushed to it, beside web push, until the key is revoked
 //
 // A device key then signs wherever an "assertion" is taken for an approval or a mandate:
-// {"device_id", "challenge", "signature"}. Every route is the owner's or an admin's. Mounted in the authed group.
+// {"device_id", "challenge", "signature"}. Registering a key is the owner's signed-in session's alone (B50.33); every other route is the owner's or an admin's. Mounted in the authed group.
 
 type deviceKeyBank interface {
 	DeviceRegistrationChallenge(ctx context.Context, workspaceID string) (string, error)
@@ -48,7 +48,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		}
 		return ws, who, true
 	}
-	r.Post("/v1/money/devices/challenge", func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/money/devices/challenge", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := owner(w, req)
 		if !ok {
 			return
@@ -59,8 +59,8 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c})
-	})
-	r.Post("/v1/money/devices", func(w http.ResponseWriter, req *http.Request) {
+	}))
+	r.Post("/v1/money/devices", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		ws, who, ok := owner(w, req)
 		if !ok {
 			return
@@ -84,6 +84,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		d, err := bank.RegisterDeviceKey(req.Context(), ws, who, in.Name, devicekey.Registration{Platform: in.Platform,
 			PublicKey: pk, Challenge: in.Challenge, Signature: in.Signature, Attestation: att}, in.Assertion)
 		switch {
+		case writeEnrolmentWaiting(w, err): // B55.1
 		case errors.Is(err, economy.ErrPasskeyRequired):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, devicekey.ErrInvalid), errors.Is(err, passkey.ErrInvalid):
@@ -93,7 +94,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		default:
 			writeJSONOK(w, http.StatusCreated, d)
 		}
-	})
+	}))
 	r.Get("/v1/money/devices", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := owner(w, req)
 		if !ok {
