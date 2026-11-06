@@ -241,6 +241,7 @@ type agentBank interface {
 	FundAgent(ctx context.Context, workspaceID, agentID string, amount int64) (int64, error)
 	WithdrawAgent(ctx context.Context, workspaceID, agentID string, amount int64) (int64, error)
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
+	ConnectLive(ctx context.Context, workspaceID, agentID, userID, clientID string, issuedAt time.Time) error
 	SetAgentRules(ctx context.Context, workspaceID, agentID string, r economy.AgentRules) (economy.AgentRules, error)
 	GetAgentRules(ctx context.Context, workspaceID, agentID string) (economy.AgentRules, error)
 	AgentWallet(ctx context.Context, workspaceID, agentID string) (economy.AgentWallet, error)
@@ -1558,6 +1559,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusForbidden, "this connection may not pay from this agent")
 				return
 			}
+			// B54.13: and only while the person still owns the agent and has not ended the connection.
+			if err := bank.ConnectLive(req.Context(), wsID, agentID, connect.UserID, connect.ConnectClientID, connect.ConnectIssuedAt); errors.Is(err, economy.ErrConnectEnded) {
+				writeJSONErr(w, http.StatusForbidden, err.Error())
+				return
+			} else if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		} else if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
 			keyAgent := ""
 			if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
@@ -1583,9 +1592,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
 			return
 		}
-		pay, err := bank.PayAgent(economy.WithMoveKey(req.Context(), key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
+		ctx := economy.WithMoveKey(req.Context(), key)
+		if connect != nil && connect.AuthMethod == auth.MethodConnect {
+			if key == "" { // B54.13: an assistant that retries without one would pay twice
+				writeJSONErr(w, http.StatusBadRequest, "a payment through a connected assistant needs an Idempotency-Key, so a retry pays once")
+				return
+			}
+			ctx = economy.WithConnectClient(ctx, connect.ConnectClientID)
+		}
+		pay, err := bank.PayAgent(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
 		var need *economy.ApprovalNeededError
 		switch {
+		case errors.Is(err, economy.ErrConnectApprovalsWaiting):
+			writeJSONErr(w, http.StatusTooManyRequests, err.Error())
 		case connect != nil && connect.AuthMethod == auth.MethodConnect && errors.As(err, &need):
 			// The assistant is told it waits for the owner's passkey in Talyvor, and which approval it is.
 			writeJSONOK(w, http.StatusAccepted, map[string]any{"status": "pending_approval", "approval_id": need.ApprovalID,
