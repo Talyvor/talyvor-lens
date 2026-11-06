@@ -1520,7 +1520,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		case errors.Is(err, economy.ErrPasskeyNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrLastKey):
-			writeJSONErr(w, http.StatusConflict, err.Error())
+			writeJSONErr(w, http.StatusConflict, economy.LastKeySentence)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

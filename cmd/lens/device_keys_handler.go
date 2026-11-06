@@ -118,7 +118,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		case errors.Is(err, economy.ErrDeviceKeyNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrLastKey):
-			writeJSONErr(w, http.StatusConflict, err.Error())
+			writeJSONErr(w, http.StatusConflict, economy.LastKeySentence)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

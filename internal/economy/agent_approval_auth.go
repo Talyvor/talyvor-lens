@@ -145,7 +145,10 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 }
 
 // ErrLastKey (B55.15): removing this key would leave the workspace with none that can approve.
-var ErrLastKey = errors.New("This is your last key. With none, nobody could approve, so add another first.")
+var ErrLastKey = errors.New("economy: this is the workspace's last key")
+
+// LastKeySentence is what the owner is told when a removal is refused with ErrLastKey.
+const LastKeySentence = "This is your last key. With none, nobody could approve, so add another first."
 
 // ErrPasskeyNotFound: no such passkey in the workspace.
 var ErrPasskeyNotFound = errors.New("economy: no such passkey in this workspace")
