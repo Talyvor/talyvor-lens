@@ -113,7 +113,14 @@ type Chain struct {
 	PaymasterURL string // B48.5: an ERC-7677 paymaster that pays the chain's network fees, such as CDP's on Base; B48.25: or takes them in USDC
 	// B48.25: the ERC-20 paymaster contract PaymasterURL's service fronts: the only spender the agent's key approves a fee to.
 	TokenPaymaster string
-	HTTP           *http.Client
+	// B54.12: how TokenPaymaster's paymasterAndData carries its price (LayoutSignedPrice is the only one Lens reads), an
+	// independent price of the chain's coin in a token — the token's base units per 1e18 wei — and how far above it, in
+	// basis points, the paymaster's price may be. The spread is Nick's setting; at 0 no price above the independent one
+	// is taken.
+	TokenPaymasterLayout string
+	CoinPrice            func(ctx context.Context, token string) (*big.Rat, error)
+	TokenPriceSpreadBps  int64
+	HTTP                 *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {
