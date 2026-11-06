@@ -31,7 +31,9 @@ func TestPhonePayment_PaysOnlyWithTheDeviceSignatureOverThatPayment(t *testing.T
 	ctx := context.Background()
 	const ws = "ws-b5433-signed-pay"
 	b := newB468Payer(t, pool, ws, "GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"},
-		func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry { return sandboxMoneyLayer(t, pool, store, reg) })
+		func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry {
+			return sandboxMoneyLayer(t, pool, store, reg)
+		})
 	b64 := base64.RawURLEncoding.EncodeToString
 	phone, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
