@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
@@ -21,7 +23,8 @@ import (
 // nor takes a transfer.
 type b5417TravelRule struct {
 	*partners.TestTravelRuleProvider
-	down atomic.Bool
+	down   atomic.Bool
+	onSend func() // runs as each transfer's identity data is sent, when set
 }
 
 func (r *b5417TravelRule) Provider(ctx context.Context, network, address string) (string, error) {
@@ -35,13 +38,17 @@ func (r *b5417TravelRule) Send(ctx context.Context, t partners.TravelRuleTransfe
 	if r.down.Load() {
 		return "", errors.New("the Travel Rule provider did not answer")
 	}
+	if r.onSend != nil {
+		r.onSend()
+	}
 	return r.TestTravelRuleProvider.Send(ctx, t)
 }
 
 // b5417Rail stands in front of Circle's fake: while lose is set, a transfer reaches Circle but its answer is lost;
-// while down is set, a transfer never reaches it. Either way Lens hears a 502 and cannot know whether money went.
+// while down is set, a transfer never reaches it, nor a question about one. Either way Lens hears a 502 and cannot know whether money went.
+// While screenDown is set, Circle's screening of an address does not answer.
 type b5417Rail struct {
-	lose, down atomic.Bool
+	lose, down, screenDown atomic.Bool
 }
 
 func (r *b5417Rail) via(t *testing.T) func(string) string {
@@ -52,6 +59,14 @@ func (r *b5417Rail) via(t *testing.T) func(string) string {
 		}
 		proxy := httputil.NewSingleHostReverseProxy(u)
 		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Method == http.MethodPost && req.URL.Path == "/v1/w3s/compliance/screening/addresses" && r.screenDown.Load() {
+				http.Error(w, "bad gateway", http.StatusBadGateway)
+				return
+			}
+			if req.Method == http.MethodGet && req.URL.Path == "/v1/w3s/transactions" && r.down.Load() {
+				http.Error(w, "bad gateway", http.StatusBadGateway)
+				return
+			}
 			if req.Method == http.MethodPost && req.URL.Path == "/v1/w3s/developer/transactions/transfer" {
 				switch {
 				case r.down.Load():
@@ -121,10 +136,10 @@ func TestB5417_AnUnknownOutboundThenATravelRuleOutageKeepsThePaymentHeldAndSends
 // b5417Payouts is a payout partner's fake whose answer can be lost after it took the payout. to is the last address
 // each payout was asked to go to.
 type b5417Payouts struct {
-	lose atomic.Bool
-	mu   sync.Mutex
-	paid map[string]int
-	to   map[string]string
+	lose, refuse atomic.Bool
+	mu           sync.Mutex
+	paid         map[string]int
+	to           map[string]string
 }
 
 func (f *b5417Payouts) Pay(_ context.Context, req money.Payout) (money.Result, error) {
@@ -134,6 +149,9 @@ func (f *b5417Payouts) Pay(_ context.Context, req money.Payout) (money.Result, e
 	f.mu.Unlock()
 	if f.lose.Load() {
 		return money.Result{}, money.ErrPartnerDown
+	}
+	if f.refuse.Load() {
+		return money.Result{}, money.ErrRefused
 	}
 	return money.Result{Ref: "fp_" + req.Key, Status: money.StatusPending}, nil
 }
@@ -222,5 +240,126 @@ func TestB5417_AnEarningsPayoutRetriesTheTravelRuleAndNeverFailsOnceItMayHaveGon
 	if p = sale("sale:b5417-moved"); p.Status != economy.PaymentPending || f.times(p.ID) != 1 || f.to[p.ID] != exchange {
 		t.Fatalf("resend after the details changed = %+v, the partner asked %d times, last to %s; want it waiting, asked once, to %s",
 			p, f.times(p.ID), f.to[p.ID], exchange)
+	}
+}
+
+// b5417Started is a payment to a fresh address whose transfer Circle made but whose answer was lost: it may have paid.
+func b5417Started(t *testing.T, pool *pgxpool.Pool, ws, address string) (b487Payer, *b5417Rail, economy.OutsidePayment) {
+	t.Helper()
+	rail := &b5417Rail{}
+	b := newB487PayerWith(t, pool, ws, b487Screening{}, nil, rail.via(t), nil)
+	rail.lose.Store(true)
+	p, err := b.pay(ws, b.save(t, pool, ws, "Ada Lovelace", address), "unknown", 25_000000)
+	if err != nil || p.Status != economy.PaymentPending || b.circle.Outbound() != 1 {
+		t.Fatalf("pay while Circle's answer is lost = %+v, %v with %d transfers; want it pending, sent once", p, err, b.circle.Outbound())
+	}
+	rail.lose.Store(false)
+	return b, rail, p
+}
+
+// b5417StillHeld refreshes p twice and fails unless it stays pending with its money held and nothing more sent.
+func b5417StillHeld(t *testing.T, pool *pgxpool.Pool, b b487Payer, ws string, p economy.OutsidePayment, why string) {
+	t.Helper()
+	for i := 0; i < 2; i++ {
+		q, err := b.store.RefreshOutsidePayment(context.Background(), ws, "", p.ID)
+		if err != nil || q.Status != economy.PaymentPending {
+			t.Fatalf("resend %d %s = %+v, %v; want it still pending: the first transfer may have paid", i+1, why, q, err)
+		}
+	}
+	if got, want := b468Postings(t, pool, ws, "unknown"), "payment_out_hold agent -25000000; payment_out_hold hold 25000000"; got != want {
+		t.Fatalf("%s the payment posted %q, want %q: still held, nothing given back", why, got, want)
+	}
+	if b.circle.Outbound() != 1 {
+		t.Fatalf("%s Circle made %d transfers, want one", why, b.circle.Outbound())
+	}
+}
+
+// B54.17 — the agent paused by the time its payment is resent: the limits gate refusing never fails a payment that
+// may have paid. Resumed, the rail is asked under the same key and it is sent once.
+func TestB5417_APausedAgentNeverFailsAPaymentThatMayHavePaid(t *testing.T) {
+	pool := agentRoutesDB(t)
+	const ws = "ws-b5417-paused"
+	b, _, p := b5417Started(t, pool, ws, "0x00000000000000000000000000000000000B5420")
+	if err := b.store.PauseAgent(context.Background(), ws, b.agentID, "b5417"); err != nil {
+		t.Fatal(err)
+	}
+	b5417StillHeld(t, pool, b, ws, p, "while the agent is paused")
+	if err := b.store.ResumeAgent(context.Background(), ws, b.agentID); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := b.store.RefreshOutsidePayment(context.Background(), ws, "", p.ID); err != nil || p.Status != economy.PaymentSent || b.circle.Outbound() != 1 {
+		t.Fatalf("resend once resumed = %+v, %v with %d transfers; want it sent, once", p, err, b.circle.Outbound())
+	}
+}
+
+// B54.17 — Circle's screening down when a payment is resent: Circle answers the transfer it made under the key, with
+// no screening before it, so the payment is sent once and never failed.
+func TestB5417_ACircleScreeningOutageNeverFailsAPaymentThatMayHavePaid(t *testing.T) {
+	pool := agentRoutesDB(t)
+	const ws = "ws-b5417-screen"
+	b, rail, p := b5417Started(t, pool, ws, "0x00000000000000000000000000000000000B5421")
+	rail.screenDown.Store(true)
+	if p, err := b.store.RefreshOutsidePayment(context.Background(), ws, "", p.ID); err != nil || p.Status != economy.PaymentSent || b.circle.Outbound() != 1 {
+		t.Fatalf("resend while Circle's screening is down = %+v, %v with %d transfers; want it sent, once", p, err, b.circle.Outbound())
+	}
+}
+
+// B54.17 — the payee's details edited after a send whose answer was lost: the payment is never sent to the new
+// details, and never failed with its money back either: it waits.
+func TestB5417_APayeeEditAfterAnUnknownSendKeepsThePaymentHeld(t *testing.T) {
+	pool := agentRoutesDB(t)
+	const ws = "ws-b5417-edit"
+	b, _, p := b5417Started(t, pool, ws, "0x00000000000000000000000000000000000B5422")
+	if _, err := pool.Exec(context.Background(), `UPDATE money_payees SET address = '0x00000000000000000000000000000000000B5423',
+		details_changed_at = now() WHERE id = $1`, p.PayeeID); err != nil {
+		t.Fatal(err)
+	}
+	b5417StillHeld(t, pool, b, ws, p, "after the payee's details changed")
+}
+
+// B54.17 — an earnings payout that may have gone: a refusal from the partner on a resend never fails it, and a send
+// racing another one to other details never pays them.
+func TestB5417_AStartedEarningsPayoutIsNeverFailedOrSentToOtherDetails(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws, seller = "ws-b5417-payout-race", "ws-b5417-payout-seller"
+	const exchange = "0x00000000000000000000000000000000000b5424"
+	travel := &b5417TravelRule{TestTravelRuleProvider: &partners.TestTravelRuleProvider{VASPs: map[string]string{exchange: "Example Exchange Ltd"}}}
+	f := &b5417Payouts{paid: map[string]int{}, to: map[string]string{}}
+	b := newB487PayerWith(t, pool, ws, b487Screening{}, travel, nil, f)
+	if d, err := b.store.SavePayoutDetails(ctx, seller, economy.PayoutDetails{Asset: money.USDC, Holder: "Sam Seller", Network: "base",
+		Address: exchange}); err != nil || d.Status != economy.PayoutDetailsVerified {
+		t.Fatalf("the seller saves its USDC payout details = %+v, %v; want verified", d, err)
+	}
+	sale := func(source string) economy.EarningsPayout {
+		t.Helper()
+		return b4611Pay(t, b.store, ws, economy.Earnings{Kind: economy.EarningsSale, Source: source, AgentID: b.agentID, Currency: money.USDC,
+			Shares: []economy.EarningsShare{{WorkspaceID: seller, AmountMinor: 30_000000}}})[0]
+	}
+	const held = "earnings_payout_hold agent -30000000; earnings_payout_hold hold 30000000"
+
+	f.lose.Store(true)
+	p := sale("sale:b5417-refused")
+	f.lose.Store(false)
+	f.refuse.Store(true)
+	for i := 0; i < 2; i++ {
+		if p = sale("sale:b5417-refused"); p.Status != economy.PaymentPending {
+			t.Fatalf("resend %d refused by the partner = %+v; want it still pending: the first payout may have gone", i+1, p)
+		}
+	}
+	if got := b4611Postings(t, pool, p.ID); got != held {
+		t.Fatalf("the refused resend posted %q, want %q: still held, nothing given back", got, held)
+	}
+	f.refuse.Store(false)
+
+	// Another send of the same payout, to other details, got to the partner first, as this one sent its Travel Rule data.
+	travel.onSend = func() {
+		if _, err := pool.Exec(ctx, `UPDATE money_earnings_payouts SET sent_to = 'Sam Seller||||base|0x00000000000000000000000000000000000b5425'
+			WHERE recipient_workspace_id = $1 AND source = 'sale:b5417-race'`, seller); err != nil {
+			t.Error(err)
+		}
+	}
+	if p = sale("sale:b5417-race"); p.Status != economy.PaymentPending || f.times(p.ID) != 0 {
+		t.Fatalf("a send racing one to other details = %+v, the partner asked %d times; want it waiting, never paid to these details", p, f.times(p.ID))
 	}
 }

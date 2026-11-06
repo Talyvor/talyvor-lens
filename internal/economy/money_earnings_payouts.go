@@ -553,8 +553,15 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 			return s.setEarningsPayout(ctx, p, PayoutHeld, "", "", held)
 		}
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE money_earnings_payouts SET sent_to = COALESCE(sent_to, $2) WHERE id = $1`, p.ID, to); err != nil {
+	var was *string
+	var sent string
+	if err := s.pool.QueryRow(ctx, `WITH was AS (SELECT sent_to FROM money_earnings_payouts WHERE id = $1 FOR UPDATE)
+		UPDATE money_earnings_payouts m SET sent_to = COALESCE(was.sent_to, $2) FROM was WHERE m.id = $1 RETURNING was.sent_to, m.sent_to`,
+		p.ID, to).Scan(&was, &sent); err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	if sent != to { // another send of p, to other details, got to the partner first
+		return s.setEarningsPayout(ctx, p, PaymentPending, "", "", "the payout details changed after it was sent: it waits for the partner's answer to that send")
 	}
 	recipient := money.PayoutSeller
 	if p.Kind == EarningsRoomSplit {
@@ -563,6 +570,11 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	res, err := payouts.Pay(partners.WithWorkspace(ctx, p.WorkspaceID), money.Payout{Key: p.ID, From: from, Recipient: recipient,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, To: money.Payee{Name: d.Holder, IBAN: d.IBAN, BIC: d.BIC,
 			Network: d.Network, Address: d.Address}})
+	if err != nil && was != nil { // B54.17: it may have gone, so only the partner's answer under the same key may fail it
+		slog.Error("economy: an earnings payout that may have gone was not answered on its resend; its money stays held and it is asked again",
+			slog.String("payout_id", p.ID), slog.String("err", err.Error()))
+		return p, nil
+	}
 	for _, refused := range []error{money.ErrRefused, money.ErrInvalid, money.ErrNotFound, money.ErrKeyReused, money.ErrInsufficientFunds,
 		money.ErrLimit, money.ErrApprovalNeeded} {
 		if errors.Is(err, refused) {
