@@ -23,7 +23,8 @@ import (
 //	POST /v1/money/devices               {"platform": "ios"|"android", "name", "public_key", "challenge",
 //	                                      "signature", "attestation"}, base64url — keeps the key (201)
 //	GET  /v1/money/devices               — the workspace's device keys, revoked ones included
-//	POST /v1/money/devices/{id}/revoke   — revoked at once: its signatures are refused from now on
+//	POST /v1/money/devices/{id}/revoke   — revoked at once: its signatures are refused from now on; the workspace's
+//	                                       last key is never revoked (B55.15, 409)
 //	POST /v1/money/devices/{id}/push-token {"push_token"} — B40.15: the phone's APNs or FCM token ("" removes it);
 //	                                       approvals are then pushed to it, beside web push, until the key is revoked
 //
@@ -116,6 +117,8 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		switch {
 		case errors.Is(err, economy.ErrDeviceKeyNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrLastKey):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

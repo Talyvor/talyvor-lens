@@ -112,17 +112,38 @@ func (s *DualTokenStore) ListDeviceKeys(ctx context.Context, workspaceID string)
 	return out, rows.Err()
 }
 
-// RevokeDeviceKey revokes a device key at once; revoking it again changes nothing.
+// RevokeDeviceKey revokes a device key at once, unless it is the workspace's last key (B55.15); revoking it again
+// changes nothing.
 func (s *DualTokenStore) RevokeDeviceKey(ctx context.Context, workspaceID, id, by string) (DeviceKey, error) {
-	if _, err := s.pool.Exec(ctx, `UPDATE workspace_device_keys SET revoked_at = now(), revoked_by = $3
-		WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL`, id, workspaceID, by); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeviceKey{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	last := refuseLastKey(ctx, tx, workspaceID)
+	if last != nil && !errors.Is(last, ErrLastKey) {
+		return DeviceKey{}, last
+	}
+	d, err := scanDeviceKey(tx.QueryRow(ctx, `SELECT `+deviceKeyCols+` FROM workspace_device_keys WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, workspaceID))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return d, ErrDeviceKeyNotFound
+	case err != nil:
+		return d, fmt.Errorf("economy: device key: %w", err)
+	case d.RevokedAt != nil:
+		return d, nil
+	case last != nil:
+		return DeviceKey{}, last
+	}
+	d, err = scanDeviceKey(tx.QueryRow(ctx, `UPDATE workspace_device_keys SET revoked_at = now(), revoked_by = $3
+		WHERE id = $1 AND workspace_id = $2 RETURNING `+deviceKeyCols, id, workspaceID, by))
+	if err != nil {
 		return DeviceKey{}, fmt.Errorf("economy: revoke device key: %w", err)
 	}
-	d, err := scanDeviceKey(s.pool.QueryRow(ctx, `SELECT `+deviceKeyCols+` FROM workspace_device_keys WHERE id = $1 AND workspace_id = $2`, id, workspaceID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return d, ErrDeviceKeyNotFound
+	if err := appendAudit(ctx, tx, workspaceID, id, "key_removed", map[string]any{"by": by, "kind": "phone"}); err != nil {
+		return DeviceKey{}, err
 	}
-	return d, err
+	return d, tx.Commit(ctx)
 }
 
 // lockDeviceKey reads the public key of a's device, inside tx, holding its row until tx ends; a key that is revoked

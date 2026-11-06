@@ -125,10 +125,10 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 	return p, tx.Commit(ctx)
 }
 
-// ListPasskeys reads a workspace's passkeys.
+// ListPasskeys reads a workspace's passkeys, removed ones left out.
 func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) ([]Passkey, error) {
 	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at FROM workspace_passkeys
-		WHERE workspace_id = $1 ORDER BY created_at`, workspaceID)
+		WHERE workspace_id = $1 AND removed_at IS NULL ORDER BY created_at`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
 	}
@@ -140,6 +140,96 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ErrLastKey (B55.15): removing this key would leave the workspace with none that can approve.
+var ErrLastKey = errors.New("This is your last key. With none, nobody could approve, so add another first.")
+
+// ErrPasskeyNotFound: no such passkey in the workspace.
+var ErrPasskeyNotFound = errors.New("economy: no such passkey in this workspace")
+
+// refuseLastKey (B55.15) is ErrLastKey when workspaceID has no active passkey or phone key but the one being removed.
+// It holds the workspace's enrolment lock (authorizeEnrol's) until tx ends, so two removals at once cannot both pass.
+func refuseLastKey(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL)`, workspaceID).Scan(&n); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	if n <= 1 {
+		return ErrLastKey
+	}
+	return nil
+}
+
+// RemovePasskey (B55.15) removes a passkey at once, with no signature, unless it is the workspace's last key; removing it
+// again changes nothing. A removed passkey signs nothing, and still counts as a key, as a revoked phone key does.
+func (s *DualTokenStore) RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	last := refuseLastKey(ctx, tx, workspaceID)
+	if last != nil && !errors.Is(last, ErrLastKey) {
+		return last
+	}
+	var removedAt *time.Time
+	// FOR UPDATE waits for a signature by this passkey already being checked; every later one sees it removed.
+	err = tx.QueryRow(ctx, `SELECT removed_at FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+		credentialID, workspaceID).Scan(&removedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrPasskeyNotFound
+	case err != nil:
+		return fmt.Errorf("economy: passkey: %w", err)
+	case removedAt != nil:
+		return nil
+	case last != nil:
+		return last
+	}
+	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET removed_at = now(), removed_by = $3 WHERE credential_id = $1 AND workspace_id = $2`,
+		credentialID, workspaceID, by); err != nil {
+		return fmt.Errorf("economy: remove passkey: %w", err)
+	}
+	if err := appendAudit(ctx, tx, workspaceID, credentialID, "key_removed", map[string]any{"by": by, "kind": "passkey"}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Key (B55.15) is one of a workspace's active keys: a passkey or a phone key.
+type Key struct {
+	Kind       string     `json:"kind"` // "passkey" or "phone"
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Platform   string     `json:"platform"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ListKeys reads a workspace's active passkeys and phone keys, oldest first.
+func (s *DualTokenStore) ListKeys(ctx context.Context, workspaceID string) ([]Key, error) {
+	rows, err := s.pool.Query(ctx, `SELECT 'passkey', credential_id, name, '', created_at, last_used_at FROM workspace_passkeys
+		WHERE workspace_id = $1 AND removed_at IS NULL
+		UNION ALL SELECT 'phone', id, name, platform, created_at, last_used_at FROM workspace_device_keys
+		WHERE workspace_id = $1 AND revoked_at IS NULL ORDER BY 5, 2`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: keys: %w", err)
+	}
+	defer rows.Close()
+	out := []Key{}
+	for rows.Next() {
+		var k Key
+		if err := rows.Scan(&k.Kind, &k.ID, &k.Name, &k.Platform, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }
@@ -328,10 +418,10 @@ func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspac
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+		return fmt.Errorf("%w: not a passkey of this workspace, or it was removed", passkey.ErrInvalid)
 	}
 	if err != nil {
 		return fmt.Errorf("economy: passkey: %w", err)

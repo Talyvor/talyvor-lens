@@ -118,6 +118,8 @@ import (
 //	POST   /v1/workspaces/{wsID}/agents/passkeys/challenge           a registration challenge and the RP ID
 //	POST   /v1/workspaces/{wsID}/agents/passkeys   {credential_id, name, public_key (SPKI), client_data_json, authenticator_data}
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
+//	DELETE /v1/workspaces/{wsID}/agents/passkeys/{credentialID}      B55.15: removed at once, unless it is the last key (409)
+//	GET    /v1/workspaces/{wsID}/agents/keys                         B55.15: every active passkey and phone key
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
 //	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion}   decides them all, or none
@@ -291,6 +293,8 @@ type agentBank interface {
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
 	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
+	RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error
+	ListKeys(ctx context.Context, workspaceID string) ([]economy.Key, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string, allow *economy.PayeeAllowance) (challenge string, credentialIDs []string, err error)
 	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
 	DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]economy.AgentApproval, error)
@@ -1508,6 +1512,29 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"passkeys": list})
 	})
+	r.Delete("/v1/workspaces/{wsID}/agents/passkeys/{credentialID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		who, _ := storedanswers.OwnerOrAdmin(req.Context())
+		id := chi.URLParam(req, "credentialID")
+		err := bank.RemovePasskey(req.Context(), chi.URLParam(req, "wsID"), id, who)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrLastKey):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"credential_id": id, "removed": true})
+		}
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/keys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		list, err := bank.ListKeys(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"keys": list})
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		// B54.29: approving with always_allow is signed over the allowance too, so its challenge names it.
 		var in struct {

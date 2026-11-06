@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -150,7 +151,7 @@ func TestB5515_AnyKeyButTheLastCanBeRemoved(t *testing.T) {
 		t.Fatalf("remove the passkey beside a phone key = %d %v, want 200", code, out)
 	}
 	var by string
-	if err := pool.QueryRow(ctx, `SELECT body->>'by' FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'key_removed'`,
+	if err := pool.QueryRow(ctx, `SELECT body::jsonb->>'by' FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'key_removed'`,
 		ws, w.credID).Scan(&by); err != nil || by != "jwt:user:ada" {
 		t.Errorf("audit entry for the removed passkey: by %q, err %v; want jwt:user:ada", by, err)
 	}
@@ -183,6 +184,18 @@ func TestB5515_AnyKeyButTheLastCanBeRemoved(t *testing.T) {
 	// Two removals at once in a two-key workspace: exactly one passes.
 	const ws2 = "ws-b5515-race"
 	w2 := b5515NewWorkspace(t, store, r, ws2)
+	// The test holds both keys' rows, so both removals are under way before either can finish; it lets go once both wait.
+	hold, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hold.Rollback(ctx) }()
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM workspace_passkeys WHERE workspace_id = $1 FOR UPDATE`, ws2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM workspace_device_keys WHERE workspace_id = $1 FOR UPDATE`, ws2); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	codes := make([]int, 2)
 	wg.Add(2)
@@ -194,6 +207,15 @@ func TestB5515_AnyKeyButTheLastCanBeRemoved(t *testing.T) {
 		defer wg.Done()
 		codes[1], _ = w2.call(http.MethodPost, "/v1/money/devices/"+w2.deviceID+"/revoke", nil)
 	}()
+	for waiting := 0; waiting < 2; time.Sleep(10 * time.Millisecond) {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).
+			Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hold.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	wg.Wait()
 	var active int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL)
