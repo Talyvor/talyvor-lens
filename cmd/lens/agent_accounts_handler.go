@@ -1417,6 +1417,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		p, err := bank.RegisterPasskey(req.Context(), chi.URLParam(req, "wsID"), in.Name,
 			passkey.Registration{CredentialID: in.CredentialID, PublicKey: pk, ClientDataJSON: cdj, AuthenticatorData: ad}, in.Assertion)
 		switch {
+		case writeEnrolmentWaiting(w, err): // B55.1
 		case errors.Is(err, economy.ErrPasskeyRequired):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, passkey.ErrInvalid):
