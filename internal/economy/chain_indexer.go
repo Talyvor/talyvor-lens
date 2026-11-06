@@ -7,12 +7,16 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/nativepush"
+	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 )
 
 // chain_indexer.go — B48.6: EVERY MOVEMENT OF AN AGENT'S CRYPTO WALLET SEEN, CONFIRMED AND RECONCILED.
@@ -308,6 +312,13 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 			status := m.status
 			switch {
 			case !posted && conf >= need:
+				var held bool
+				if held, err = x.quarantined(ctx, m); held {
+					status = "quarantined"
+				}
+				if err != nil || held {
+					break
+				}
 				if err = x.move(ctx, m, false); err != nil {
 					break
 				}
@@ -318,6 +329,7 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 				// block (eth_getBlockByNumber "finalized") once every network's node serves it.
 				status = "final"
 				res.Final++
+			case status == "quarantined": // B48.7: it stays so until its case is released
 			case !posted:
 				status = "seen"
 			}
@@ -331,6 +343,37 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 		}
 	}
 	return res, errors.Join(errs...)
+}
+
+// quarantined screens the sender of deposit m before it posts (B48.7). A flagged one is quarantined: the money is in
+// the agent's wallet on the chain, but nothing is posted until an operator releases its case, and the owner is told
+// once. A released one posts — and screens again as it does, under the same key, so the release is what lets it.
+func (x *ChainIndexer) quarantined(ctx context.Context, m chainMovement) (bool, error) {
+	if m.direction != "in" {
+		return false, nil
+	}
+	if x.s.screener == nil {
+		return false, fmt.Errorf("%w: no screener is set, so no deposit posts", partners.ErrScreeningUnavailable)
+	}
+	err := x.s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: m.workspaceID, ID: fmt.Sprintf("chain:%s:%d", m.id, m.posted+1),
+		Capability: CapabilityStablecoins, Direction: "in", Counterparty: m.counterparty, AmountMinor: m.amount, Currency: money.USDC,
+		Funding: m.funding, Quarantine: true})
+	var r *screening.Refusal
+	if !errors.As(err, &r) {
+		return false, err
+	}
+	if m.status != "quarantined" && x.s.nativePusher != nil {
+		msg := nativepush.Message{Title: "Deposit held for review",
+			Body: formatMinor(money.USDC, m.amount) + " came into an agent's wallet from " + m.counterparty +
+				", an address on a screening list. It isn't in the agent's balance until it is reviewed.",
+			Data: map[string]string{"type": "deposit_quarantined", "agent_id": m.agentID, "case_id": r.Case.ID, "workspace_id": m.workspaceID}}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			x.s.pushDevices(ctx, m.workspaceID, msg)
+		}()
+	}
+	return true, nil
 }
 
 // chainRef is the reference the ledger's accounts for wallet on network carry.
@@ -441,6 +484,14 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 			w.workspaceID, chainRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor); err != nil {
 			return out, fmt.Errorf("economy: reconcile: %w", err)
 		}
+		// B48.7: a quarantined deposit is in the wallet, and posts only once released.
+		var quarantined int64
+		if err := x.s.pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor), 0)::bigint FROM chain_movements WHERE workspace_id = $1
+			AND agent_id = $2 AND network = $3 AND status = 'quarantined' AND block_number IS NOT NULL AND block_number <= $4`,
+			w.workspaceID, w.agentID, network, block).Scan(&quarantined); err != nil {
+			return out, fmt.Errorf("economy: reconcile: %w", err)
+		}
+		r.PendingMinor += quarantined
 		r.DifferenceMinor = r.ChainMinor - r.LedgerMinor - r.PendingMinor
 		if _, err := x.s.pool.Exec(ctx, `INSERT INTO chain_reconciliations (id, workspace_id, agent_id, network, wallet, asset, block_number,
 			chain_minor, ledger_minor, pending_minor, difference_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,

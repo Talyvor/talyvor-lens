@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,6 +36,9 @@ import (
 //	POST /v1/money/payees/{id}/details {the same details, "assertion": {...}} — changes them with a passkey: the name is
 //	                          checked afresh at the new account's bank, and every payment to it is held for 24 hours
 //	                          (held_until), with a notice to call them on a number the owner already knows
+//	POST /v1/money/payees/{id}/address-proof {"signature": "0x…"} — B48.7: the owner proves, once, that they hold the
+//	                          key of a self-hosted USDC address, with its personal_sign of the message a payment of more
+//	                          than 1,000 USDC to it was refused with (409); a wrong signature is 403, with the message
 //
 // The workspace is the key's; only its owner or an admin may use these. Mounted in the authed group.
 
@@ -46,6 +51,7 @@ type moneyPayeeBank interface {
 	ConfirmPayeeCalled(ctx context.Context, workspaceID, payeeID string, a *passkey.Assertion) (economy.OutsidePayee, error)
 	PayeeDetailsChallenge(ctx context.Context, workspaceID, payeeID string, in economy.OutsidePayee) (challenge string, credentialIDs []string, err error)
 	ChangeOutsidePayeeDetails(ctx context.Context, workspaceID, payeeID string, in economy.OutsidePayee, a *passkey.Assertion) (economy.OutsidePayee, error)
+	ProveAddressControl(ctx context.Context, workspaceID, payeeID string, sig []byte) error
 }
 
 func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
@@ -225,6 +231,30 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, p)
+		}
+	})
+	r.Post("/v1/money/payees/{id}/address-proof", func(w http.ResponseWriter, req *http.Request) {
+		ws, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Signature string `json:"signature"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		sig, _ := hex.DecodeString(strings.TrimPrefix(in.Signature, "0x"))
+		err := bank.ProveAddressControl(req.Context(), ws, chi.URLParam(req, "id"), sig)
+		switch {
+		case errors.Is(err, economy.ErrPayeeNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrPayee):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAddressProof):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"proved": true})
 		}
 	})
 }

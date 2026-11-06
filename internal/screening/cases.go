@@ -83,6 +83,8 @@ type Case struct {
 	DecidedBy    string                    `json:"decided_by,omitempty"`
 	DecidedAt    *time.Time                `json:"decided_at,omitempty"`
 	DecisionNote string                    `json:"decision_note,omitempty"`
+
+	quarantine bool // B48.7: a hit is held for an operator, not blocked
 }
 
 const caseCols = `id, workspace_id, kind, subject_kind, subject_id, name, outcome, status, matches, provider, capability, direction,
@@ -133,6 +135,9 @@ type Payment struct {
 	AmountMinor  int64
 	Currency     string
 	Funding      string // test or live
+	// Quarantine (B48.7): money already in the agent's wallet on a chain, which nothing can refuse: a hit is held,
+	// quarantined for an operator to review, rather than blocked.
+	Quarantine bool
 }
 
 // ScreenPayment screens p's counterparty before any money moves. It answers nil when the money may move, a *Refusal
@@ -144,7 +149,7 @@ func (s *Screener) ScreenPayment(ctx context.Context, p Payment) error {
 	}
 	amount := p.AmountMinor
 	c := Case{WorkspaceID: p.WorkspaceID, SubjectKind: SubjectPayment, SubjectID: p.ID, Name: strings.TrimSpace(p.Counterparty),
-		Capability: p.Capability, Direction: p.Direction, AmountMinor: &amount, Currency: p.Currency, Funding: p.Funding}
+		Capability: p.Capability, Direction: p.Direction, AmountMinor: &amount, Currency: p.Currency, Funding: p.Funding, quarantine: p.Quarantine}
 	return s.screen(ctx, c, func(prov partners.ScreeningProvider) (partners.Screening, error) {
 		req := partners.PaymentScreen{ID: p.ID, Amount: partners.Money{Minor: p.AmountMinor, Currency: p.Currency}}
 		if p.Direction == "in" {
@@ -210,6 +215,9 @@ func (s *Screener) screen(ctx context.Context, c Case, ask func(partners.Screeni
 		c.Outcome, c.Status = OutcomeStale, CaseHeld
 	case partners.ScreenHit:
 		c.Outcome, c.Status = partners.ScreenHit, CaseBlocked
+		if c.quarantine {
+			c.Status = CaseHeld
+		}
 	case partners.ScreenReview:
 		c.Outcome, c.Status = partners.ScreenReview, CaseHeld
 	default:

@@ -2023,6 +2023,15 @@ func run() error {
 	screener.HoldWhenListsStale(screeningLists)
 	statusPage.UseScreeningLists(screeningLists)
 	dualToken.SetScreener(screener)
+	// B48.7 — the Travel Rule's identity data goes with a USDC payment to another regulated provider: off until a live
+	// partner is chosen; LENS_TRAVEL_RULE=test is the Test adapter.
+	travelRule, err := newTravelRule(cfg.TravelRule)
+	if err != nil {
+		return err
+	}
+	if travelRule != nil {
+		dualToken.SetTravelRule(travelRule)
+	}
 	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
@@ -2179,6 +2188,12 @@ func run() error {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
+				// B48.7: payments in an operator released from quarantine post, once each.
+				if n, err := dualToken.PostReleasedDeposits(ctx); err != nil {
+					slog.Warn("money: released payments in did not all post", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: released payments in posted", slog.Int("posted", n))
+				}
 				if res, err := dualToken.RunAgentSchedules(ctx, now); err != nil {
 					slog.Warn("agents: schedule run failed", slog.String("err", err.Error()))
 				} else if res != (economy.ScheduleRunResult{}) {
