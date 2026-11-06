@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -79,5 +82,71 @@ func TestPaymentRequests_ListPending(t *testing.T) {
 	}
 	if code, _ := list(ws, "approved"); code != http.StatusBadRequest {
 		t.Errorf("?status=approved = %d, want 400", code)
+	}
+}
+
+// B55.9 — a request nobody answered within the approval life reads expired: GET /{id} says so, the pending list leaves it
+// out, approving it is refused in words, and cancelling it answers it as it is. One inside its life is unchanged.
+func TestPaymentRequests_AnUnansweredRequestExpires(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b559"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetPayeeScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
+	store.SetApprovalTTL(time.Second)
+	r := chi.NewRouter()
+	mountPaymentRequestRoutes(r, store)
+	get := func(path string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT,
+			UserID: "ada", Scopes: []string{auth.ScopeKeys}}))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d %s", path, w.Code, w.Body.String())
+		}
+		return out
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number, check_result, checked_by)
+		VALUES ('payee_b559', $1, 'Ada Plumbing', 'GB', '20-00-00', '55779911', 'exact_match', 'test')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	prepare := func(key string) string {
+		t.Helper()
+		pr, _, err := store.PreparePaymentRequest(ctx, ws, "ada", key, economy.PaymentRequestIn{Client: "chat",
+			Items: []economy.PaymentRequestItemIn{{PayeeID: "payee_b559", Currency: "GBP", AmountMinor: 4200, Reference: key}}})
+		if err != nil || pr.Status != "pending_approval" {
+			t.Fatalf("prepare %s = %v %v, want pending_approval", key, pr.Status, err)
+		}
+		return pr.ID
+	}
+	stale, fresh := prepare("stale"), prepare("fresh")
+	if _, err := pool.Exec(ctx, `UPDATE payment_requests SET created_at = now() - interval '2 seconds' WHERE id = $1`, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := get("/v1/money/payment-requests/" + stale)["status"]; got != "expired" {
+		t.Errorf("the unanswered request reads %v, want expired", got)
+	}
+	if got := get("/v1/money/payment-requests/" + fresh)["status"]; got != "pending_approval" {
+		t.Errorf("the request inside its life reads %v, want pending_approval", got)
+	}
+	list := get("/v1/money/payment-requests?status=pending_approval")["requests"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["id"] != fresh {
+		t.Errorf("the pending list = %v, want only %s", list, fresh)
+	}
+	const refusal = "this request waited 24 hours without an answer and expired: ask for it again"
+	if _, _, _, err := store.PrepareRequestApproval(ctx, ws, stale, nil, ""); !errors.Is(err, economy.ErrPaymentRequest) ||
+		!strings.HasSuffix(err.Error(), refusal) {
+		t.Errorf("approving the unanswered request = %v, want %q", err, refusal)
+	}
+	if _, _, _, err := store.PrepareRequestApproval(ctx, ws, fresh, nil, ""); err != nil && strings.Contains(err.Error(), "expired") {
+		t.Errorf("approving the request inside its life = %v", err)
+	}
+	got, err := store.CancelPaymentRequest(ctx, ws, "", stale, "ada")
+	if err != nil || got.Status != "expired" || got.CancelledAt != nil || got.Items[0].PaymentID != "" {
+		t.Errorf("cancelling the unanswered request = %v %+v, want it as it is: expired, unpaid", err, got)
 	}
 }

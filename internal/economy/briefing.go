@@ -87,8 +87,9 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 		       CASE WHEN count(*) > 1 THEN count(*)::text || ' payments' ELSE COALESCE(min(i.payee_name), '') END, min(i.reason), r.created_at
 		  FROM payment_requests r JOIN payment_request_items i ON i.request_id = r.id
 		 WHERE r.workspace_id = $1 AND r.status = 'pending_approval' AND i.decision = 'needs_approval'
+		   AND r.created_at > now() - $2 * interval '1 microsecond'
 		 GROUP BY r.id, r.agent_id, i.currency, r.created_at
-		ORDER BY 8, 1`, workspaceID)
+		ORDER BY 8, 1`, workspaceID, s.approvalLife().Microseconds())
 	if err != nil {
 		return fail(err)
 	}

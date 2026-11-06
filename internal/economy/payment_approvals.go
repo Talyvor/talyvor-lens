@@ -111,10 +111,11 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 		return r, err
 	case r.Status == "approved":
 		return r, ErrPaymentRequestApproved
+	case r.Status == "expired":
+		// shortcut: names the default approval life (LENS_APPROVAL_TTL), reword if production ever sets another.
+		return r, fmt.Errorf("%w: this request waited 24 hours without an answer and expired: ask for it again", ErrPaymentRequest)
 	case r.Status != "pending_approval":
 		return r, fmt.Errorf("%w: the request is %s: there is nothing to approve", ErrPaymentRequest, r.Status)
-	case time.Since(r.CreatedAt) >= s.approvalLife():
-		return r, fmt.Errorf("%w: the request waited %s unanswered and expired: ask again", ErrPaymentRequest, s.approvalLife())
 	case !frozenIntact(workspaceID, r):
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: it cannot be approved", ErrPaymentRequest)
 	}

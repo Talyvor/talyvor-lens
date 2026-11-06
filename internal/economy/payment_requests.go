@@ -582,6 +582,10 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 	if err != nil {
 		return r, fmt.Errorf("economy: payment request: %w", err)
 	}
+	// Nobody answered it within an approval's life: it can no longer be approved, so it reads expired (B55.9).
+	if r.Status == "pending_approval" && time.Since(r.CreatedAt) >= s.approvalLife() {
+		r.Status = "expired"
+	}
 	rows, err := s.pool.Query(ctx, `SELECT position, payee_id, payee_name, listing_id, currency, amount_minor, reference, decision,
 		reason, rule, mandate_id, payment_id, pay_status, pay_detail, authority, bill_id, flags FROM payment_request_items WHERE request_id = $1 ORDER BY position`, id)
 	if err != nil {
@@ -619,10 +623,11 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 }
 
 // PendingPaymentRequests lists workspaceID's requests waiting for approval, newest first, each as PaymentRequest reads
-// it; agentID, when not "", only that agent's (B40.38).
+// it; agentID, when not "", only that agent's (B40.38). One past an approval's life has expired and is not listed (B55.9).
 func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests WHERE workspace_id = $1 AND status = 'pending_approval'
-		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
+		AND created_at > now() - $3 * interval '1 microsecond'
+		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID, s.approvalLife().Microseconds())
 	if err != nil {
 		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
 	}
@@ -656,9 +661,10 @@ func formatMinor(currency string, minor int64) string {
 
 // CancelPaymentRequest cancels a request not yet cancelled: its auto items stop counting towards the mandates' limits.
 // agentID, when not "", cancels only a request that agent prepared. One approved, or with an item paid, stays (B40.5).
+// One expired is answered as it is: nothing in it can be paid (B55.9).
 func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (PaymentRequest, error) {
-	if _, err := s.PaymentRequest(ctx, workspaceID, agentID, id); err != nil {
-		return PaymentRequest{}, err
+	if r, err := s.PaymentRequest(ctx, workspaceID, agentID, id); err != nil || r.Status == "expired" {
+		return r, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
