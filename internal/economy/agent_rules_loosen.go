@@ -272,7 +272,18 @@ func (s *DualTokenStore) proposeRulesTx(ctx context.Context, tx pgx.Tx, workspac
 	if now, err = scanAgentRules(tx.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID)); err != nil {
 		return now, j, "", fmt.Errorf("economy: agent rules: %w", err)
 	}
-	for _, c := range rulesChanges(was, now) {
+	// Judged with the boosts in force laid over both: a limit put back where a boost was raised from brings the boost back.
+	at := time.Now()
+	boosts, err := agentBoosts(ctx, tx, agentID, at)
+	if err != nil {
+		return now, j, "", err
+	}
+	was.applyBoosts(boosts)
+	inForce, err := agentRulesInForce(ctx, tx, agentID, at)
+	if err != nil {
+		return now, j, "", fmt.Errorf("economy: agent rules: %w", err)
+	}
+	for _, c := range rulesChanges(was, inForce) {
 		j.Changes = append(j.Changes, c.words)
 		j.Looser = j.Looser || c.looser
 	}
