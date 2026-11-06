@@ -354,10 +354,18 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 			out := OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
 				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key}
 			p, err := s.PayOutside(ctx, workspaceID, out)
-			if errors.Is(err, ErrMoneyAccountNotFound) && r.AgentTrust != nil && r.AgentID != "" {
-				// B54.10: an outside agent's request pays from the agent's own account in the currency, else the
-				// company's as before B54.10 — but not while the agent is paused.
-				if err = refuseIfPaused(ctx, tx, r.AgentID); err == nil {
+			if errors.Is(err, ErrMoneyAccountNotFound) && r.AgentTrust != nil && r.AgentID != "" && authority == "approval" {
+				// B54.10: an outside agent's request the owner signed pays from the agent's own account in the currency,
+				// else the company's as before B54.10 — not while the agent is paused, nor once its account was closed.
+				var held bool
+				if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts WHERE workspace_id = $1 AND agent_id = $2 AND currency = $3)`,
+					workspaceID, r.AgentID, it.Currency).Scan(&held); err == nil {
+					err = refuseIfPaused(ctx, tx, r.AgentID)
+				}
+				if err == nil && held {
+					err = fmt.Errorf("%w: the agent's %s account is closed", ErrMoneyAccountNotOpen, it.Currency)
+				}
+				if err == nil {
 					out.AgentID = ""
 					p, err = s.PayOutside(ctx, workspaceID, out)
 				}

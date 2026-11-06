@@ -239,5 +239,17 @@ func TestB5410_AnApprovedOutsideRequestPaysFromTheAgentsAccountElseTheCompanys(t
 		b.balance(t, 48000)
 		companyBalance(t, 28500)
 	})
+
+	t.Run("the agent's pounds account was closed: nobody pays", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `INSERT INTO money_accounts (id, workspace_id, agent_id, currency, purpose, parent_account_id, status)
+			VALUES ('macc_b5410_closed', $1, $2, 'GBP', 'agent', $3, 'closed')`, ws, pennyless.ID, company); err != nil {
+			t.Fatal(err)
+		}
+		if it := askApprovePay(t, pennyless.ID, "closed", 1200); it.PaymentID != "" || it.PayStatus != economy.PayFailed {
+			t.Fatalf("item = %+v, want failed and unpaid", it)
+		}
+		b.balance(t, 48000)
+		companyBalance(t, 28500)
+	})
 	b501ZeroSum(t, pool)
 }
