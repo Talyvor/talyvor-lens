@@ -2656,6 +2656,8 @@ func run() error {
 		mountAgentSignatureRoutes(pub, agentSigs)
 		// B45.29: an outside agent asks to be paid; it lands in the owner's approvals with its trust level.
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
+		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
+		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -3150,7 +3152,8 @@ func run() error {
 		// Extracted to newAuthTokenMintHandler (auth_token_mint_handler.go) so the
 		// admin-scoping invariant is provable over HTTP; behavior is unchanged.
 		authed.Post("/v1/auth/token", newAuthTokenMintHandler(authManager))
-		authed.Post("/v1/auth/connect-token", newConnectTokenMintHandler(authManager, dualToken)) // B52.4
+		authed.Post("/v1/auth/connect-token", newConnectTokenMintHandler(authManager, dualToken))        // B52.4
+		authed.Post("/v1/auth/connect-revocations", newConnectRevocationHandler(authManager, dualToken)) // B54.13
 
 		// W4.6.1 step 4 — session-scoped keys. Registered ONLY when configured, so an
 		// unconfigured deployment 404s these paths rather than serving a route that refuses.
