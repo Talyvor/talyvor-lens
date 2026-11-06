@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -241,5 +242,49 @@ func TestPaymentRequests_OneApprovalEachItemPaidOnce(t *testing.T) {
 	entries[4].Body = strings.Replace(entries[4].Body, "INV", "XXX", 1) + " "
 	if economy.VerifyAuditChain(entries) == nil {
 		t.Error("an altered entry still verifies")
+	}
+
+	// B55.9 — a mixed request nobody answered for 24 hours: its auto item is not paid, before or after it is cancelled.
+	age := func(id string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE payment_requests SET created_at = created_at - interval '24 hours 1 minute' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, mixed := call(http.MethodPost, "/v1/money/payment-requests", "mixed-1", `{"client":"chat","items":[
+		{"payee_id":"`+payee["Ada Plumbing"]+`","currency":"GBP","amount_minor":2000,"reference":"Tap"},
+		{"payee_id":"`+payee["Grace Groceries"]+`","currency":"GBP","amount_minor":1000,"reference":"INV-M"}]}`)
+	if code != http.StatusCreated || mixed["status"] != "pending_approval" {
+		t.Fatalf("the mixed request = %d %v", code, mixed)
+	}
+	mixedID := mixed["id"].(string)
+	age(mixedID)
+	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+mixedID+"/pay", "", ""); code == http.StatusOK || out["error"] == nil {
+		t.Errorf("paying the expired request = %d %v, want refused", code, out)
+	}
+	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+mixedID+"/cancel", "", ""); code != http.StatusOK || out["status"] != "cancelled" {
+		t.Errorf("cancelling the expired request = %d %v, want cancelled", code, out)
+	}
+	call(http.MethodPost, "/v1/money/payment-requests/"+mixedID+"/pay", "", "")
+	if n, minor := paymentsOut(); n != 3 || minor != 26000 {
+		t.Errorf("after the expired request the ledger has %d payments out of %d, want still 3 of 26000", n, minor)
+	}
+
+	// A bill in a request nobody answered for 24 hours is free to pay in a new one.
+	if _, err := pool.Exec(ctx, `INSERT INTO money_bills (id, workspace_id, source, document_sha256, supplier, amount_minor, currency,
+		payee_id, payee_match) VALUES ('bill_b559', $1, 'upload', 'bill_b559', 'Carol Consulting', 4000, 'GBP', $2, 'matched')`, ws, payee["Carol Consulting"]); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := store.PrepareBillsPayment(ctx, ws, "ada", "bills-1", "chat", nil)
+	if err != nil || len(first.Items) != 1 || first.Items[0].BillID != "bill_b559" {
+		t.Fatalf("the bills request = %+v %v", first, err)
+	}
+	if _, _, err := store.PrepareBillsPayment(ctx, ws, "ada", "bills-2", "chat", nil); !errors.Is(err, economy.ErrPaymentRequest) {
+		t.Errorf("a second bills request while the first waits = %v, want no bill is due", err)
+	}
+	age(first.ID)
+	again, _, err := store.PrepareBillsPayment(ctx, ws, "ada", "bills-3", "chat", []string{"bill_b559"})
+	if err != nil || len(again.Items) != 1 || again.Items[0].Decision == economy.ItemBlocked {
+		t.Errorf("the bill after its request expired = %+v %v, want it payable in a new request", again, err)
 	}
 }

@@ -86,7 +86,7 @@ func TestPaymentRequests_ListPending(t *testing.T) {
 }
 
 // B55.9 — a request nobody answered within the approval life reads expired: GET /{id} says so, the pending list leaves it
-// out, approving it is refused in words, and cancelling it answers it as it is. One inside its life is unchanged.
+// out, approving it is refused in words, and it can still be cancelled. One inside its life is unchanged.
 func TestPaymentRequests_AnUnansweredRequestExpires(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -146,7 +146,7 @@ func TestPaymentRequests_AnUnansweredRequestExpires(t *testing.T) {
 		t.Errorf("approving the request inside its life = %v", err)
 	}
 	got, err := store.CancelPaymentRequest(ctx, ws, "", stale, "ada")
-	if err != nil || got.Status != "expired" || got.CancelledAt != nil || got.Items[0].PaymentID != "" {
-		t.Errorf("cancelling the unanswered request = %v %+v, want it as it is: expired, unpaid", err, got)
+	if err != nil || got.Status != "cancelled" || got.CancelledAt == nil || got.Items[0].PaymentID != "" {
+		t.Errorf("cancelling the unanswered request = %v %+v, want it cancelled, unpaid", err, got)
 	}
 }

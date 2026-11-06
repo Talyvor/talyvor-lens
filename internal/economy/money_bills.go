@@ -357,10 +357,11 @@ func (s *DualTokenStore) BillByID(ctx context.Context, workspaceID, billID strin
 }
 
 // billTaken is the live request a bill is in already, if any: one not cancelled whose item for the bill was not
-// blocked, left out of the approval, refused, or failed with nothing paid.
-const billTaken = `SELECT r.id FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
+// blocked, left out of the approval, refused, failed with nothing paid, or unpaid in an expired request ($3, B55.9).
+var billTaken = `SELECT r.id FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
 	WHERE r.workspace_id = $1 AND i.bill_id = $2 AND r.status <> 'cancelled' AND i.decision <> 'blocked'
-	AND i.pay_status NOT IN ('not_approved', 'refused') AND NOT (i.pay_status = 'failed' AND i.payment_id <> '')`
+	AND i.pay_status NOT IN ('not_approved', 'refused') AND NOT (i.pay_status = 'failed' AND i.payment_id <> '')
+	AND NOT (` + requestExpired(3) + ` AND i.payment_id = '')`
 
 // resolveBill (B41.102) fills in an item that names a bill: its saved payee, amount and currency, and its invoice
 // number as the reference. It is blocked, with why, when the bill was paid, is in another live request, has no saved
@@ -378,7 +379,7 @@ func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID
 		it.Reference = b.Supplier
 	}
 	var taken string
-	if err := tx.QueryRow(ctx, billTaken, workspaceID, b.ID).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, billTaken, workspaceID, b.ID, s.approvalLife().Microseconds()).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("economy: bill taken: %w", err)
 	}
 	_, held := MoneyCurrencies[b.Currency]
@@ -412,7 +413,7 @@ func (s *DualTokenStore) PrepareBillsPayment(ctx context.Context, workspaceID, b
 		// Each bill due that no live request holds — but this key's own, so a retry finds its bills again.
 		rows, err := s.pool.Query(ctx, `SELECT b.id FROM money_bills b WHERE b.workspace_id = $1 AND b.status = 'due'
 			AND NOT EXISTS (`+strings.Replace(billTaken, "$2", "b.id", 1)+` AND r.idempotency_key <> $2)
-			ORDER BY b.due_date NULLS LAST, b.created_at, b.id`, workspaceID, strings.TrimSpace(idempotencyKey))
+			ORDER BY b.due_date NULLS LAST, b.created_at, b.id`, workspaceID, strings.TrimSpace(idempotencyKey), s.approvalLife().Microseconds())
 		if err != nil {
 			return PaymentRequest{}, false, fmt.Errorf("economy: bills due: %w", err)
 		}
