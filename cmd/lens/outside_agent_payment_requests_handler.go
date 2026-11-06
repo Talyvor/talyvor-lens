@@ -26,8 +26,12 @@ import (
 // paid until the owner approves it with a passkey. The payee is one the owner saved; bank details are refused. The
 // asker gets {"id", "status", "agent_trust"} back, never how the owner's rules judged it. Each signing domain's
 // Idempotency-Keys are its own; unsigned agents share one space. Mounted in the public, rate-limited group.
+//
+// B54.10: {agentID} is the agent's id or @handle, and the request is that agent's: its mandates and its own rules
+// judge it, and while it is paused the request is refused and recorded nowhere.
 
 type outsidePaymentBank interface {
+	ResolveWallet(ctx context.Context, address string) (economy.WalletAddress, error)
 	AgentCardFacts(ctx context.Context, agentID string) (economy.AgentCardFacts, error)
 	PreparePaymentRequest(ctx context.Context, workspaceID, by, idempotencyKey string, in economy.PaymentRequestIn) (economy.PaymentRequest, bool, error)
 }
@@ -35,7 +39,11 @@ type outsidePaymentBank interface {
 func mountOutsideAgentPaymentRoutes(r chi.Router, v *agentsig.Verifier, bank outsidePaymentBank) {
 	r.With(v.Middleware(agentsig.Money)).Post("/v1/a2a/agents/{agentID}/payment-requests", func(w http.ResponseWriter, req *http.Request) {
 		trust, _ := agentsig.FromContext(req.Context())
-		f, err := bank.AgentCardFacts(req.Context(), chi.URLParam(req, "agentID"))
+		var f economy.AgentCardFacts
+		to, err := bank.ResolveWallet(req.Context(), chi.URLParam(req, "agentID"))
+		if err == nil {
+			f, err = bank.AgentCardFacts(req.Context(), to.WalletID)
+		}
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound) || (err == nil && f.Archived):
 			writeJSONErr(w, http.StatusNotFound, "no such agent")
@@ -80,8 +88,12 @@ func mountOutsideAgentPaymentRoutes(r chi.Router, v *agentsig.Verifier, bank out
 		}
 		trustJSON, _ := json.Marshal(trust)
 		pr, again, err := bank.PreparePaymentRequest(req.Context(), f.WorkspaceID, asker, asker+":"+key,
-			economy.PaymentRequestIn{Client: asker, Items: in.Items, AgentTrust: trustJSON})
+			economy.PaymentRequestIn{Client: asker, AgentID: f.AgentID, Items: in.Items, AgentTrust: trustJSON})
 		switch {
+		case errors.Is(err, economy.ErrAgentRule):
+			// the owner's pause reason is theirs, not the asker's
+			writeJSONErr(w, http.StatusConflict, "this agent is not taking payment requests")
+			return
 		case errors.Is(err, economy.ErrPaymentRequest):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return

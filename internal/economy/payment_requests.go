@@ -291,6 +291,12 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 
+	// B54.10: an outside agent does not ask a paused agent's owner at all.
+	if in.AgentTrust != nil && in.AgentID != "" {
+		if err := refuseIfPaused(ctx, tx, in.AgentID); err != nil {
+			return r, false, err
+		}
+	}
 	id = "preq_" + uuid.NewString()
 	items, err := s.judgePaymentItems(ctx, tx, workspaceID, in)
 	if err != nil {
