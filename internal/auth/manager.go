@@ -192,6 +192,8 @@ type AuthContext struct {
 	// for (B52.4); EMPTY for every other method.
 	ConnectAgentID  string `json:"connect_agent_id,omitempty"`
 	ConnectClientID string `json:"connect_client_id,omitempty"`
+	// ConnectIssuedAt is when the Connect token was minted (B54.13): a revocation recorded at or after it stops it.
+	ConnectIssuedAt time.Time `json:"connect_issued_at,omitempty"`
 }
 
 // HasScope reports whether the resolved identity carries `scope`.
