@@ -184,7 +184,7 @@ func PlayNegotiationGym(pb NegotiationPlaybook) NegotiationGymResult {
 			r.Negotiations++
 			var first, closed int64
 			for range 3*len(p.Schedule) + 4 {
-				m := NegotiationMoveFor(mt, p, sheets, cp)
+				m := gymMoveFor(mt, p, sheets, cp)
 				if m.Action == MoveAccept {
 					if !inside(m.PriceMinor) && m.PriceMinor != walk {
 						return fail("game %d: accepted %d past the walk-away %d", g, m.PriceMinor, walk)
@@ -228,6 +228,9 @@ func PlayNegotiationGym(pb NegotiationPlaybook) NegotiationGymResult {
 	r.ScoreBPS = saved / int64(r.Negotiations)
 	return r
 }
+
+// gymMoveFor is the engine's move the gym plays; its tests stand in an engine that breaks a rule the gym must catch.
+var gymMoveFor = NegotiationMoveFor
 
 // The gym's counterparts, shared with B52.14's release gate (negotiation_gym_test.go).
 
