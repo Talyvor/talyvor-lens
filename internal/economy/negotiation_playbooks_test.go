@@ -55,7 +55,9 @@ func TestB5430_GymWalkAwayIsOutside(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func(f func(NegotiationMandateTerms, NegotiationPlan, map[string][]NegotiationOffer, string) NegotiationMove) { gymMoveFor = f }(gymMoveFor)
+	defer func(f func(NegotiationMandateTerms, NegotiationPlan, map[string][]NegotiationOffer, string) NegotiationMove) {
+		gymMoveFor = f
+	}(gymMoveFor)
 	gymMoveFor = func(mt NegotiationMandateTerms, p NegotiationPlan, sheets map[string][]NegotiationOffer, cp string) NegotiationMove {
 		m := NegotiationMoveFor(mt, p, sheets, cp)
 		if m.Action == MoveAccept || m.Action == MoveWalkAway {

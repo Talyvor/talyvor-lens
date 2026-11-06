@@ -186,7 +186,7 @@ func PlayNegotiationGym(pb NegotiationPlaybook) NegotiationGymResult {
 			for range 3*len(p.Schedule) + 4 {
 				m := gymMoveFor(mt, p, sheets, cp)
 				if m.Action == MoveAccept {
-					if !inside(m.PriceMinor) && m.PriceMinor != walk {
+					if !inside(m.PriceMinor) { // the walk-away itself is outside, as Counter has it (B52.13)
 						return fail("game %d: accepted %d past the walk-away %d", g, m.PriceMinor, walk)
 					}
 					closed = m.PriceMinor
