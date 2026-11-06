@@ -378,9 +378,14 @@ func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID
 	if it.Reference == "" {
 		it.Reference = b.Supplier
 	}
+	// The bill's waiting requests are held first, so one being approved as it expires is read once its approval is
+	// kept or not (B55.9).
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
+		WHERE r.workspace_id = $1 AND i.bill_id = $2 AND r.status = 'pending_approval' FOR UPDATE OF r`, workspaceID, b.ID); err != nil {
+		return "", fmt.Errorf("economy: bill taken: %w", err)
+	}
 	var taken string
-	// Locked, so a request being approved as it expires is read once its approval is kept or not (B55.9).
-	if err := tx.QueryRow(ctx, billTaken+" FOR UPDATE OF r", workspaceID, b.ID, s.approvalLife().Microseconds()).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, billTaken, workspaceID, b.ID, s.approvalLife().Microseconds()).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("economy: bill taken: %w", err)
 	}
 	_, held := MoneyCurrencies[b.Currency]

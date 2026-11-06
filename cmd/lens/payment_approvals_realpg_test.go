@@ -287,4 +287,27 @@ func TestPaymentRequests_OneApprovalEachItemPaidOnce(t *testing.T) {
 	if err != nil || len(again.Items) != 1 || again.Items[0].Decision == economy.ItemBlocked {
 		t.Errorf("the bill after its request expired = %+v %v, want it payable in a new request", again, err)
 	}
+
+	// One approved in the instant it expires keeps its bill: a new request waits for the approval, then finds the bill taken.
+	age(again.ID)
+	approving, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = approving.Rollback(ctx) }()
+	if _, err := approving.Exec(ctx, `UPDATE payment_requests SET status = 'approved' WHERE id = $1`, again.ID); err != nil {
+		t.Fatal(err)
+	}
+	raced := make(chan economy.PaymentRequest, 1)
+	go func() {
+		r, _, _ := store.PrepareBillsPayment(ctx, ws, "ada", "bills-4", "chat", []string{"bill_b559"})
+		raced <- r
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if err := approving.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-raced; len(r.Items) != 1 || r.Items[0].Decision != economy.ItemBlocked || !strings.Contains(r.Items[0].Reason, again.ID) {
+		t.Errorf("the bill while its request was approved as it expired = %+v, want blocked: in %s already", r, again.ID)
+	}
 }
