@@ -93,7 +93,8 @@ func (s *DualTokenStore) PasskeyRegistrationChallenge(ctx context.Context, works
 }
 
 // RegisterPasskey verifies a registration against the challenge it answers and keeps the passkey; once the workspace
-// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol), and
+// with none it keeps the passkey waiting (B55.1) and returns *EnrolmentWaiting.
 func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (Passkey, error) {
 	if s.approvalRP == nil {
 		return Passkey{}, errors.New("economy: passkeys are not configured on this server")
@@ -108,7 +109,11 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); err != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
+		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
+		return Passkey{}, s.waitEnrolment(ctx, tx, workspaceID, "register", challenge, KeyEnrolment{Kind: "passkey", Name: name},
+			"", r.CredentialID, r.PublicKey, int64(count), nil)
+	} else if err != nil {
 		return Passkey{}, err
 	}
 	p := Passkey{CredentialID: r.CredentialID, Name: name}

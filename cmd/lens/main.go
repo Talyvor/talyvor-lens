@@ -4875,6 +4875,7 @@ func run() error {
 		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
+		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
