@@ -55,29 +55,44 @@ type NegotiationPlan struct {
 	Ask          []string `json:"ask"`            // the counterparties asked for a quote
 	WalkAway     string   `json:"walk_away"`
 	Notes        []string `json:"notes,omitempty"`
+
+	wording *NegotiationWording // a playbook's (B52.16); nil: the model or the fixed template words each move
 }
 
 // NegotiationPlanFor plans t. benchmarks are prices the owner knows for the same thing (last year's, a list price);
 // the opening offer anchors on the best of them when it is better than the default opening.
 func NegotiationPlanFor(t NegotiationMandateTerms, benchmarks []int64) (NegotiationPlan, error) {
+	return negotiationPlan(t, benchmarks, nil)
+}
+
+// negotiationPlan plans t under pb, or under the engine's own settings when pb is nil.
+func negotiationPlan(t NegotiationMandateTerms, benchmarks []int64, pb *NegotiationPlaybook) (NegotiationPlan, error) {
 	rules, ok := dealRules[t.Task.Kind]
 	if !ok {
 		return NegotiationPlan{}, fmt.Errorf("%w: no deal engine for %q", ErrNegotiationMandate, t.Task.Kind)
+	}
+	rounds, openPct, limitPct := rules.rounds, int64(50), int64(75)
+	if pb != nil {
+		rounds, openPct, limitPct = pb.Rounds, pb.OpenPct, pb.LimitPct
 	}
 	buy := t.Side == NegotiationBuy
 	// better(a, b): a is at least as good for the owner as b.
 	better := func(a, b int64) bool { return buy && a <= b || !buy && a >= b }
 	p := NegotiationPlan{DealType: t.Task.Kind, Side: t.Side, Currency: t.Currency}
+	if pb != nil {
+		p.wording = &pb.Wording
+	}
 	span := t.WalkAwayMinor - t.TargetMinor
 	if !buy {
 		span = -span
 	}
-	// The furthest Counter offers: three quarters of the way from target to walk-away, and always short of it.
-	limit, open := t.TargetMinor+span*3/4, t.TargetMinor-span/2
+	// The furthest Counter offers: limitPct of the way from target to walk-away (three quarters without a playbook), and
+	// always short of it.
+	limit, open := t.TargetMinor+span*limitPct/100, t.TargetMinor-span*openPct/100
 	if buy {
 		limit = min(limit, t.WalkAwayMinor-1)
 	} else {
-		limit, open = max(t.TargetMinor-span*3/4, t.WalkAwayMinor+1), t.TargetMinor+span/2
+		limit, open = max(t.TargetMinor-span*limitPct/100, t.WalkAwayMinor+1), t.TargetMinor+span*openPct/100
 	}
 	for _, b := range benchmarks {
 		if b <= 0 {
@@ -96,9 +111,9 @@ func NegotiationPlanFor(t NegotiationMandateTerms, benchmarks []int64) (Negotiat
 	}
 	p.OpeningMinor = open
 	// Each concession is half the one before; the last round goes to the limit.
-	for k := range rules.rounds {
+	for k := range rounds {
 		num, den := int64(1)<<k-1, int64(1)<<k
-		if k == rules.rounds-1 {
+		if k == rounds-1 {
 			num, den = 1, 1
 		}
 		p.Schedule = append(p.Schedule, open+(limit-open)*num/den)
@@ -111,7 +126,7 @@ func NegotiationPlanFor(t NegotiationMandateTerms, benchmarks []int64) (Negotiat
 	if t.Authority == AuthorityResearch {
 		p.Notes = append(p.Notes, "the mandate allows research only: Counter gathers quotes and makes no offer")
 	}
-	p.WalkAway = fmt.Sprintf("Counter walks away from a counterparty whose price is still past the walk-away after the final offer of round %d, and from every counterparty at the deadline", rules.rounds)
+	p.WalkAway = fmt.Sprintf("Counter walks away from a counterparty whose price is still past the walk-away after the final offer of round %d, and from every counterparty at the deadline", rounds)
 	return p, nil
 }
 
@@ -128,14 +143,15 @@ type NegotiationMove struct {
 	Why          string            `json:"why"`
 	Offer        *NegotiationOffer `json:"offer,omitempty"` // the counter as recorded on the term sheet
 
-	bestOther int64 // the best real quote from another counterparty, for wording when the owner allows it
+	bestOther int64               // the best real quote from another counterparty, for wording when the owner allows it
+	wording   *NegotiationWording // the plan's playbook wording (B52.16)
 }
 
 // NegotiationMoveFor is the engine's next move with counterparty, from t, its plan p and the term sheets.
 func NegotiationMoveFor(t NegotiationMandateTerms, p NegotiationPlan, sheets map[string][]NegotiationOffer, counterparty string) NegotiationMove {
 	buy := t.Side == NegotiationBuy
 	better := func(a, b int64) bool { return buy && a <= b || !buy && a >= b }
-	m := NegotiationMove{Counterparty: counterparty}
+	m := NegotiationMove{Counterparty: counterparty, wording: p.wording}
 	sheet := sheets[counterparty]
 	for cp, s := range sheets {
 		for _, o := range s {
@@ -244,13 +260,20 @@ func wordMove(ctx context.Context, ai NegotiationInferer, model string, t Negoti
 	var figures []string
 	facts := map[string]any{"what": t.Task.What, "move": m.Action}
 	var template string
+	w := m.wording
 	switch m.Action {
 	case MoveAskForQuote:
 		template = fmt.Sprintf("Hello. We are looking at %s and would like your best quote, with its term, payment terms and what is included.", t.Task.What)
+		if w != nil {
+			template = w.fill(w.Ask, t.Task.What, "")
+		}
 	case MoveCounter:
 		offer := FormatMinor(m.PriceMinor, t.Currency)
 		figures, facts["our_offer"], facts["final"] = []string{offer}, offer, m.Final
 		template = fmt.Sprintf("Thank you for your quote for %s. We can offer %s.", t.Task.What, offer)
+		if w != nil {
+			template = w.fill(w.Counter, t.Task.What, offer)
+		}
 		mentionRival = mentionRival && m.bestOther > 0 && !MentionsAmount(FormatMinor(m.bestOther, t.Currency), t.WalkAwayMinor, MoneyCurrencies[t.Currency])
 		if mentionRival {
 			rival := FormatMinor(m.bestOther, t.Currency)
@@ -262,11 +285,16 @@ func wordMove(ctx context.Context, ai NegotiationInferer, model string, t Negoti
 		}
 	case MoveWalkAway:
 		template = fmt.Sprintf("Thank you for your time on %s. We will not be going ahead at this price.", t.Task.What)
+		if w != nil {
+			template = w.fill(w.WalkAway, t.Task.What, "")
+		}
 	default:
 		return nil
 	}
 	m.Message, m.WrittenBy = template, "template"
-	if ai != nil && model != "" {
+	if w != nil {
+		m.WrittenBy = "playbook" // the creator's wording is the style: no model rewrites it
+	} else if ai != nil && model != "" {
 		b, _ := json.Marshal(facts)
 		ictx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -358,7 +386,7 @@ func (s *DualTokenStore) PlanNegotiation(ctx context.Context, workspaceID, id st
 	if err != nil {
 		return NegotiationPlan{}, err
 	}
-	return NegotiationPlanFor(t, benchmarks)
+	return s.negotiationPlanOf(ctx, t, benchmarks)
 }
 
 // NextNegotiationMove is the engine's next move with counterparty under mandate id, worded; a counter is recorded on
@@ -370,7 +398,7 @@ func (s *DualTokenStore) NextNegotiationMove(ctx context.Context, workspaceID, i
 	if err != nil {
 		return NegotiationMove{}, err
 	}
-	p, err := NegotiationPlanFor(t, benchmarks)
+	p, err := s.negotiationPlanOf(ctx, t, benchmarks)
 	if err != nil {
 		return NegotiationMove{}, err
 	}

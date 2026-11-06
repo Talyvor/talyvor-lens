@@ -546,7 +546,8 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 	// What it paid other agents counts (B19.3), and its card purchases (B19.12); what they paid it does not raise its limit. What it
 	// used of paid marketplace listings counts too (B20.2), though it is billed to its company. Its questions' platform fees count (B32.11).
 	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
-	// invoices it paid from its currency account (B30.131), recorded under their entry key as the rules let them through.
+	// invoices it paid from its currency account (B30.131), recorded under their entry key as the rules let them through,
+	// and the charges on its reusable cards (B54.6).
 	err := tx.QueryRow(ctx, `SELECT (
 		(SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
@@ -556,7 +557,9 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_payments
 		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned'))
 		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_payee_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND ref LIKE 'invoice_agent:%' AND created_at >= $3))::bigint`,
+		   WHERE workspace_id = $1 AND agent_id = $4 AND ref LIKE 'invoice_agent:%' AND created_at >= $3)
+		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_card_authorizations
+		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3))::bigint`,
 		workspaceID, agentAccount(agentID), since, agentID).Scan(&spent)
 	return spent, err
 }
@@ -940,14 +943,38 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if need.Expired, err = s.expireApprovals(ctx, need.agentID, need.req.Fingerprint); err != nil {
 		return err
 	}
+	client, _ := ctx.Value(connectClientKey{}).(string)
 	var filed string
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond')
-		ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
-		"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
-		payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds()).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("economy: file approval: %w", err)
+	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if client != "" {
+			// B54.13: an assistant leaves at most ConnectApprovalsWaiting new approvals waiting; under the agent's lock, so
+			// two at once cannot both be the last. A retry of one already open finds it below.
+			if err := lockAgent(ctx, tx, need.workspaceID, need.agentID); err != nil {
+				return err
+			}
+			var open bool
+			var waiting int
+			if err := tx.QueryRow(ctx, `SELECT
+				EXISTS (SELECT 1 FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2 AND status IN ('pending', 'approved')),
+				(SELECT count(*) FROM agent_approvals WHERE agent_id = $1 AND connect_client_id = $3 AND status = 'pending' AND expires_at > now())`,
+				need.agentID, need.req.Fingerprint, client).Scan(&open, &waiting); err != nil {
+				return fmt.Errorf("economy: approvals waiting: %w", err)
+			}
+			if !open && waiting >= ConnectApprovalsWaiting {
+				return ErrConnectApprovalsWaiting
+			}
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
+			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
+			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
+			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("economy: file approval: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	if filed != "" {
 		s.notifyApproval(need.workspaceID, filed) // B19.16: a retry finds the open one and tells nobody again

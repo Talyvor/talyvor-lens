@@ -973,6 +973,7 @@ func run() error {
 	// mint LXC, approve a conversion rate or revoke a payout.
 	authManager := auth.NewManager(os.Getenv("LENS_API_KEY"), jwtKey, keyStore, tenantStore).
 		WithMintKey(os.Getenv("LENS_MINT_KEY")).
+		WithConnectMintKey(os.Getenv("LENS_CONNECT_MINT_KEY")).
 		WithOperatorReadKey(os.Getenv("LENS_OPERATOR_READ_KEY"))
 
 	// B20.13 — the marketplace moderator key: the web app's credential for the review queue and
@@ -2022,6 +2023,15 @@ func run() error {
 	screener.HoldWhenListsStale(screeningLists)
 	statusPage.UseScreeningLists(screeningLists)
 	dualToken.SetScreener(screener)
+	// B48.7 — the Travel Rule's identity data goes with a USDC payment to another regulated provider: off until a live
+	// partner is chosen; LENS_TRAVEL_RULE=test is the Test adapter.
+	travelRule, err := newTravelRule(cfg.TravelRule)
+	if err != nil {
+		return err
+	}
+	if travelRule != nil {
+		dualToken.SetTravelRule(travelRule)
+	}
 	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
@@ -2178,6 +2188,12 @@ func run() error {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
+				// B48.7: payments in an operator released from quarantine post, once each.
+				if n, err := dualToken.PostReleasedDeposits(ctx); err != nil {
+					slog.Warn("money: released payments in did not all post", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: released payments in posted", slog.Int("posted", n))
+				}
 				if res, err := dualToken.RunAgentSchedules(ctx, now); err != nil {
 					slog.Warn("agents: schedule run failed", slog.String("err", err.Error()))
 				} else if res != (economy.ScheduleRunResult{}) {
@@ -2640,6 +2656,8 @@ func run() error {
 		mountAgentSignatureRoutes(pub, agentSigs)
 		// B45.29: an outside agent asks to be paid; it lands in the owner's approvals with its trust level.
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
+		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
+		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -3134,6 +3152,8 @@ func run() error {
 		// Extracted to newAuthTokenMintHandler (auth_token_mint_handler.go) so the
 		// admin-scoping invariant is provable over HTTP; behavior is unchanged.
 		authed.Post("/v1/auth/token", newAuthTokenMintHandler(authManager))
+		authed.Post("/v1/auth/connect-token", newConnectTokenMintHandler(authManager, dualToken))        // B52.4
+		authed.Post("/v1/auth/connect-revocations", newConnectRevocationHandler(authManager, dualToken)) // B54.13
 
 		// W4.6.1 step 4 — session-scoped keys. Registered ONLY when configured, so an
 		// unconfigured deployment 404s these paths rather than serving a route that refuses.
@@ -4855,6 +4875,7 @@ func run() error {
 		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
+		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
@@ -4870,6 +4891,7 @@ func run() error {
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
+		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16
 		mountMarketReceiptRoutes(authed, marketStore)                                   // B32.40
 		mountMarketPayoutRoutes(authed, marketStore, stripeKinds.connectFor, dualToken, // B20.5
 			marketPayoutURLs{refresh: cfg.MarketPayoutRefreshURL, ret: cfg.MarketPayoutReturnURL})

@@ -1,11 +1,13 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
@@ -29,9 +32,13 @@ import (
 // signature again, so a mandate altered after it was signed allows nothing.
 //
 // The walk-away is the owner's alone: RecordNegotiationTerms refuses an outbound offer or message that names it, in
-// any way a number is written, and an offer that reaches it. One side per deal: a deal holds at most one live mandate
-// across every workspace, so Counter never acts for both sides of one deal or for two bidders in one RFQ, and the
-// refusal names nobody. Nothing here moves money. Class: rules_approvals_statements_pots, GREEN.
+// any way a number is written, and an offer that reaches it. One side per deal (B54.7): the reference the owner types
+// holds nothing until the counterparty's own signed agent confirms it (ConfirmNegotiationDeal), so no one can squat an
+// RFQ by typing it first; a confirmed deal holds at most one live mandate across every workspace, so Counter never
+// acts for both sides of one deal or for two bidders in one RFQ, and a refusal in it names nobody. A deal is its
+// reference and its two parties, told apart by the domains each workspace proved it trades as (ClaimNegotiationDomain),
+// so a workspace confirming its own deal holds nothing and strangers sharing a reference block no one. Nothing here moves
+// money. Class: rules_approvals_statements_pots, GREEN.
 
 var (
 	// ErrNegotiationMandate: terms a negotiation mandate cannot have, a signature that does not sign them, or an
@@ -39,7 +46,8 @@ var (
 	ErrNegotiationMandate = errors.New("economy: invalid negotiation mandate")
 	// ErrNegotiationNotFound: no such negotiation in this workspace.
 	ErrNegotiationNotFound = errors.New("economy: no such negotiation")
-	// ErrNegotiationOneSide: Counter already acts for a party in this deal.
+	// ErrNegotiationOneSide: the counterparty already confirmed this deal to another party. Only the counterparty
+	// is told; a workspace refused in a confirmed deal gets ErrNegotiationMandate, like any other refusal.
 	ErrNegotiationOneSide = errors.New("economy: Counter acts for one party per deal")
 )
 
@@ -203,15 +211,20 @@ type NegotiationOffer struct {
 // NegotiationMandate is a signed mandate as kept, with its term sheet per counterparty. Only its owner reads it.
 type NegotiationMandate struct {
 	NegotiationMandateTerms
-	Status       string                        `json:"status"` // active, past_deadline or revoked
-	Canonical    string                        `json:"canonical"`
-	CredentialID string                        `json:"credential_id,omitempty"`
-	DeviceID     string                        `json:"device_id,omitempty"`
-	CreatedBy    string                        `json:"created_by"`
-	CreatedAt    time.Time                     `json:"created_at"`
-	EndedAt      *time.Time                    `json:"ended_at,omitempty"`
-	TermSheets   map[string][]NegotiationOffer `json:"term_sheets"`
-	Messages     []NegotiationMessage          `json:"messages"` // the deal's timeline: what Counter sent and the replies
+	Status string `json:"status"` // active, past_deadline or revoked
+	// Where the deal was confirmed from: the counterparty agent's signing domain and its channel. Empty: unconfirmed,
+	// so the deal reference holds nothing.
+	DealConfirmedBy  string                        `json:"deal_confirmed_by,omitempty"`
+	DealConfirmedVia string                        `json:"deal_confirmed_via,omitempty"`
+	DealConfirmedAt  *time.Time                    `json:"deal_confirmed_at,omitempty"`
+	Canonical        string                        `json:"canonical"`
+	CredentialID     string                        `json:"credential_id,omitempty"`
+	DeviceID         string                        `json:"device_id,omitempty"`
+	CreatedBy        string                        `json:"created_by"`
+	CreatedAt        time.Time                     `json:"created_at"`
+	EndedAt          *time.Time                    `json:"ended_at,omitempty"`
+	TermSheets       map[string][]NegotiationOffer `json:"term_sheets"`
+	Messages         []NegotiationMessage          `json:"messages"` // the deal's timeline: what Counter sent and the replies
 }
 
 // PrepareNegotiationMandate checks t for workspaceID, gives it a new id, and answers the canonical JSON to sign, its
@@ -247,7 +260,8 @@ func (s *DualTokenStore) PrepareNegotiationMandate(ctx context.Context, workspac
 
 // CreateNegotiationMandate keeps a mandate the owner signed: canonical as prepare answered it, and an assertion over
 // its challenge by one of the workspace's passkeys or device keys. An unsigned or altered mandate, another
-// workspace's, one already kept, or one in a deal Counter already acts in is refused.
+// workspace's, one already kept, or one in a deal a counterparty confirmed to another workspace is refused; the deal is
+// looked up before the signature is checked, so a refusal in a held deal takes what any signature refusal takes.
 func (s *DualTokenStore) CreateNegotiationMandate(ctx context.Context, workspaceID, by, canonical string, a *passkey.Assertion) (NegotiationMandate, error) {
 	t, err := parseNegotiationCanonical(canonical)
 	if err != nil {
@@ -263,6 +277,13 @@ func (s *DualTokenStore) CreateNegotiationMandate(ctx context.Context, workspace
 		return NegotiationMandate{}, fmt.Errorf("%w: the mandate is not signed: sign its challenge with a passkey", ErrNegotiationMandate)
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockDeal(ctx, tx, t.Deal); err != nil {
+			return err
+		}
+		held, err := dealHeld(ctx, tx, workspaceID, t, t.Counterparties)
+		if err != nil {
+			return err
+		}
 		if a.DeviceID != "" {
 			if err := signDevice(ctx, tx, workspaceID, MandateChallenge(canonical), *a); err != nil {
 				return err
@@ -288,30 +309,13 @@ func (s *DualTokenStore) CreateNegotiationMandate(ctx context.Context, workspace
 				return fmt.Errorf("economy: passkey: %w", err)
 			}
 		}
-		if t.Deal != "" {
-			// A mandate past its deadline gives its deal up; a live one keeps it, whoever's it is.
-			if _, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET ended_at = now(), ended_by = 'deadline'
-				WHERE deal_ref = $1 AND ended_at IS NULL AND deadline <= now()`, t.Deal); err != nil {
-				return fmt.Errorf("economy: negotiation mandate: %w", err)
-			}
-			var holder string
-			err := tx.QueryRow(ctx, `SELECT workspace_id FROM negotiation_mandates WHERE deal_ref = $1 AND ended_at IS NULL`, t.Deal).Scan(&holder)
-			switch {
-			case err == nil && holder == workspaceID:
-				return fmt.Errorf("%w: you already have a live mandate in this deal: revoke it first", ErrNegotiationOneSide)
-			case err == nil:
-				return errOtherParty
-			case !errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("economy: negotiation mandate: %w", err)
-			}
+		if held {
+			return errHeldElsewhere
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO negotiation_mandates (id, workspace_id, deal_ref, deadline, canonical, credential_id, device_id,
+		_, err = tx.Exec(ctx, `INSERT INTO negotiation_mandates (id, workspace_id, deal_ref, deadline, canonical, credential_id, device_id,
 			client_data_json, authenticator_data, signature, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			t.ID, workspaceID, t.Deal, t.Deadline, canonical, a.CredentialID, a.DeviceID, a.ClientDataJSON, a.AuthenticatorData, a.Signature, by)
 		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23505" {
-			if pe.ConstraintName == "idx_negotiation_mandates_live_deal" {
-				return errOtherParty
-			}
 			return fmt.Errorf("%w: this mandate was already signed once; prepare a new one", ErrNegotiationMandate)
 		}
 		if err != nil {
@@ -325,14 +329,215 @@ func (s *DualTokenStore) CreateNegotiationMandate(ctx context.Context, workspace
 	return s.NegotiationMandate(ctx, workspaceID, t.ID)
 }
 
-// errOtherParty names nobody: who else Counter acts for, and on what terms, is theirs.
-var errOtherParty = fmt.Errorf("%w: Counter already acts for another party in this deal, and represents only one side of a deal and one bidder in an RFQ or auction", ErrNegotiationOneSide)
+// errHeldElsewhere names nobody, and is an invalid mandate like any other: who else Counter acts for is theirs.
+var errHeldElsewhere = fmt.Errorf("%w: Counter can't take this negotiation", ErrNegotiationMandate)
+
+// lockDeal serialises everything that holds or acts in deal, so its two sides cannot both get in at once.
+func lockDeal(ctx context.Context, tx pgx.Tx, deal string) error {
+	if deal == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('negotiation_deal:' || $1))`, deal); err != nil {
+		return fmt.Errorf("economy: negotiation mandate: %w", err)
+	}
+	return nil
+}
+
+// negotiationDomains answers the registrable domains workspaceID has proved it trades as.
+func negotiationDomains(ctx context.Context, tx pgx.Tx, workspaceID string) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT domain FROM negotiation_domains WHERE workspace_id = $1 AND verified_at IS NOT NULL`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: negotiation domains: %w", err)
+	}
+	domains, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("economy: negotiation domains: %w", err)
+	}
+	return domains, nil
+}
+
+// dealHeld reports whether t's deal is confirmed to a live mandate that workspaceID's t may not stand beside. A deal is
+// its reference and its two parties, never the reference alone: on t's side, another workspace's mandate confirmed by
+// one of domains (two bidders to one counterparty); on the other side, a mandate of workspaceID itself, or one whose
+// workspace proved a domain t names, or one that workspaceID's own proved domain confirmed (Counter acting for both
+// parties). Only proved domains and confirmations count, never another mandate's own list of counterparties, so no one
+// can name a stranger to block it. Domains are counted as their registrable domains, as a confirmation is. An empty
+// deal is held by no one.
+func dealHeld(ctx context.Context, tx pgx.Tx, workspaceID string, t NegotiationMandateTerms, domains []string) (bool, error) {
+	if t.Deal == "" {
+		return false, nil
+	}
+	own, err := negotiationDomains(ctx, tx, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	reg := func(in []string) []string {
+		out := make([]string, len(in))
+		for i, d := range in {
+			out[i] = registrableDomain(d)
+		}
+		return out
+	}
+	by, names := reg(domains), reg(t.Counterparties)
+	rows, err := tx.Query(ctx, `SELECT m.workspace_id, m.canonical::jsonb->>'side', m.deal_confirmed_by,
+		ARRAY(SELECT d.domain FROM negotiation_domains d WHERE d.workspace_id = m.workspace_id AND d.verified_at IS NOT NULL)
+		FROM negotiation_mandates m
+		WHERE m.deal_ref = $1 AND m.deal_confirmed_at IS NOT NULL AND m.ended_at IS NULL AND m.deadline > now()`, t.Deal)
+	if err != nil {
+		return false, fmt.Errorf("economy: negotiation mandate: %w", err)
+	}
+	defer rows.Close()
+	overlaps := func(a, b []string) bool {
+		return slices.ContainsFunc(a, func(x string) bool { return slices.Contains(b, x) })
+	}
+	for rows.Next() {
+		var ws, side, confirmedBy string
+		var theirs []string
+		if err := rows.Scan(&ws, &side, &confirmedBy, &theirs); err != nil {
+			return false, fmt.Errorf("economy: negotiation mandate: %w", err)
+		}
+		if side == t.Side {
+			if ws != workspaceID && slices.Contains(by, confirmedBy) {
+				return true, nil
+			}
+		} else if ws == workspaceID || overlaps(theirs, names) || slices.Contains(own, confirmedBy) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// registrableDomain is the domain a business registered, so agent.acme.example and procurement.acme.example are one
+// counterparty, acme.example. A public suffix or an address is itself.
+func registrableDomain(d string) string {
+	d = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+	if net.ParseIP(strings.Trim(d, "[]")) != nil {
+		return d
+	}
+	if r, err := publicsuffix.EffectiveTLDPlusOne(d); err == nil {
+		return r
+	}
+	return d
+}
+
+// ConfirmNegotiationDeal records that the counterparty's agent, signed by domain, confirmed deal as mandate id's: the
+// deal is then the mandate's alone, recorded as domain's registrable domain. The mandate must be live and allow the
+// agent channel, domain must be one of its counterparties or under one, and deal must be its reference; otherwise it is
+// not found, so a stranger learns nothing. The mandate's workspace must have proved a domain it trades as, and domain
+// must not be one of them: a workspace never confirms its own deal. A mandate is confirmed once; a deal already
+// confirmed to a mandate it may not stand beside (dealHeld) is ErrNegotiationOneSide.
+func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain, deal string) error {
+	var workspaceID string
+	err := s.pool.QueryRow(ctx, `SELECT workspace_id FROM negotiation_mandates WHERE id = $1`, id).Scan(&workspaceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNegotiationNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("economy: negotiation mandate: %w", err)
+	}
+	t, err := s.signedNegotiation(ctx, workspaceID, id)
+	if err != nil || !slices.Contains(t.Channels, ChannelAgent) || !slices.ContainsFunc(t.Counterparties, func(c string) bool {
+		return domain == c || strings.HasSuffix(domain, "."+c)
+	}) {
+		return ErrNegotiationNotFound
+	}
+	if t.Deal == "" || strings.ToLower(strings.TrimSpace(deal)) != t.Deal {
+		return fmt.Errorf("%w: that is not the deal reference this negotiation is in", ErrNegotiationMandate)
+	}
+	by := registrableDomain(domain)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockDeal(ctx, tx, t.Deal); err != nil {
+			return err
+		}
+		// A mandate past its deadline gives its deal up.
+		if _, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET ended_at = now(), ended_by = 'deadline'
+			WHERE deal_ref = $1 AND ended_at IS NULL AND deadline <= now()`, t.Deal); err != nil {
+			return fmt.Errorf("economy: negotiation mandate: %w", err)
+		}
+		own, err := negotiationDomains(ctx, tx, workspaceID)
+		if err != nil {
+			return err
+		}
+		if len(own) == 0 || slices.Contains(own, by) {
+			return fmt.Errorf("%w: a deal is confirmed from the counterparty's side, to an owner who has proved the domain it trades as", ErrNegotiationMandate)
+		}
+		held, err := dealHeld(ctx, tx, workspaceID, t, []string{by})
+		if err != nil {
+			return err
+		}
+		if held {
+			return fmt.Errorf("%w: this deal is already confirmed to another party", ErrNegotiationOneSide)
+		}
+		tag, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET deal_confirmed_by = $2, deal_confirmed_via = $3, deal_confirmed_at = now()
+			WHERE id = $1 AND ended_at IS NULL AND deadline > now() AND deal_confirmed_at IS NULL`, id, by, ChannelAgent)
+		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23505" {
+			return fmt.Errorf("%w: this deal is already confirmed to another party", ErrNegotiationOneSide)
+		}
+		if err != nil {
+			return fmt.Errorf("economy: negotiation mandate: %w", err)
+		}
+		if tag.RowsAffected() == 1 {
+			return nil
+		}
+		// Not confirmed now: ended, past its deadline, or confirmed before — by this counterparty, which is no change.
+		var prev string
+		err = tx.QueryRow(ctx, `SELECT deal_confirmed_by FROM negotiation_mandates WHERE id = $1 AND ended_at IS NULL AND deadline > now()`, id).Scan(&prev)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return ErrNegotiationNotFound
+		case err != nil:
+			return fmt.Errorf("economy: negotiation mandate: %w", err)
+		case prev != by:
+			return fmt.Errorf("%w: this negotiation's deal is already confirmed", ErrNegotiationOneSide)
+		}
+		return nil
+	})
+}
+
+// NegotiationDomain is a domain a workspace trades as in Counter's negotiations.
+type NegotiationDomain struct {
+	Domain     string     `json:"domain"`
+	Verified   bool       `json:"verified"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+}
+
+// ClaimNegotiationDomain records that workspaceID trades as domain (its registrable domain). The claim counts for
+// nothing until VerifyNegotiationDomain: that domain's own signed agent names the workspace.
+func (s *DualTokenStore) ClaimNegotiationDomain(ctx context.Context, workspaceID, domain, by string) (NegotiationDomain, error) {
+	d := registrableDomain(domain)
+	if _, err := publicsuffix.EffectiveTLDPlusOne(d); err != nil || net.ParseIP(strings.Trim(d, "[]")) != nil {
+		return NegotiationDomain{}, fmt.Errorf("%w: %q is not a domain a business registers", ErrNegotiationMandate, domain)
+	}
+	out := NegotiationDomain{Domain: d}
+	err := s.pool.QueryRow(ctx, `INSERT INTO negotiation_domains (workspace_id, domain, claimed_by) VALUES ($1, $2, $3)
+		ON CONFLICT (workspace_id, domain) DO UPDATE SET domain = EXCLUDED.domain RETURNING verified_at`, workspaceID, d, by).Scan(&out.VerifiedAt)
+	if err != nil {
+		return NegotiationDomain{}, fmt.Errorf("economy: negotiation domains: %w", err)
+	}
+	out.Verified = out.VerifiedAt != nil
+	return out, nil
+}
+
+// VerifyNegotiationDomain records that the agent signing as domain says workspaceID trades as it: a claim of
+// workspaceID's for domain's registrable domain is then verified. Without that claim it is not found.
+func (s *DualTokenStore) VerifyNegotiationDomain(ctx context.Context, workspaceID, domain string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE negotiation_domains SET verified_at = COALESCE(verified_at, now()) WHERE workspace_id = $1 AND domain = $2`,
+		workspaceID, registrableDomain(domain))
+	if err != nil {
+		return fmt.Errorf("economy: negotiation domains: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNegotiationNotFound
+	}
+	return nil
+}
 
 // NegotiationMandate reads one of workspaceID's mandates, with its term sheets.
 func (s *DualTokenStore) NegotiationMandate(ctx context.Context, workspaceID, id string) (NegotiationMandate, error) {
 	var m NegotiationMandate
-	err := s.pool.QueryRow(ctx, `SELECT canonical, credential_id, device_id, created_by, created_at, ended_at FROM negotiation_mandates
-		WHERE id = $1 AND workspace_id = $2`, id, workspaceID).Scan(&m.Canonical, &m.CredentialID, &m.DeviceID, &m.CreatedBy, &m.CreatedAt, &m.EndedAt)
+	err := s.pool.QueryRow(ctx, `SELECT canonical, credential_id, device_id, created_by, created_at, ended_at, deal_confirmed_by,
+		deal_confirmed_via, deal_confirmed_at FROM negotiation_mandates WHERE id = $1 AND workspace_id = $2`, id, workspaceID).
+		Scan(&m.Canonical, &m.CredentialID, &m.DeviceID, &m.CreatedBy, &m.CreatedAt, &m.EndedAt, &m.DealConfirmedBy, &m.DealConfirmedVia, &m.DealConfirmedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, ErrNegotiationNotFound
 	}
@@ -427,7 +632,7 @@ func (s *DualTokenStore) signedNegotiation(ctx context.Context, workspaceID, id 
 
 // RecordNegotiationTerms adds o to the term sheet of its counterparty under mandate id: theirs as received, ours only
 // when the signed mandate allows it — a counterparty and channel it names, an authority above research, a price short
-// of the walk-away, and no outbound text naming the walk-away.
+// of the walk-away, no outbound text naming the walk-away, and a deal that counterparty has not confirmed to another.
 func (s *DualTokenStore) RecordNegotiationTerms(ctx context.Context, workspaceID, id string, o NegotiationOffer) (NegotiationOffer, error) {
 	t, err := s.signedNegotiation(ctx, workspaceID, id)
 	if err != nil {
@@ -464,11 +669,25 @@ func (s *DualTokenStore) RecordNegotiationTerms(ctx context.Context, workspaceID
 		return bad(`party must be "ours" or "theirs"`)
 	}
 	terms, _ := json.Marshal(o.Terms)
-	err = s.pool.QueryRow(ctx, `INSERT INTO negotiation_terms (mandate_id, workspace_id, counterparty, party, channel, terms, message)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`, id, workspaceID, o.Counterparty, o.Party, o.Channel, string(terms), o.Message).
-		Scan(&o.ID, &o.CreatedAt)
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if o.Party == "ours" {
+			if err := lockDeal(ctx, tx, t.Deal); err != nil {
+				return err
+			}
+			if held, err := dealHeld(ctx, tx, workspaceID, t, []string{o.Counterparty}); err != nil || held {
+				return cmp.Or(err, errHeldElsewhere)
+			}
+		}
+		err := tx.QueryRow(ctx, `INSERT INTO negotiation_terms (mandate_id, workspace_id, counterparty, party, channel, terms, message)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`, id, workspaceID, o.Counterparty, o.Party, o.Channel, string(terms), o.Message).
+			Scan(&o.ID, &o.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("economy: negotiation terms: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return NegotiationOffer{}, fmt.Errorf("economy: negotiation terms: %w", err)
+		return NegotiationOffer{}, err
 	}
 	return o, nil
 }

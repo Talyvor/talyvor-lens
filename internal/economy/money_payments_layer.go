@@ -75,6 +75,11 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 	if err != nil {
 		return partners.Result{}, false
 	}
+	if payee.Address != "" && s.travelRule != nil { // B48.7: the identity data travels before the money
+		if res, ok, stop := s.travelRuleBeforeSend(ctx, p, from, payee); stop {
+			return res, ok
+		}
+	}
 	r, err := t.Outbound(partners.WithWorkspace(ctx, p.WorkspaceID), money.Outbound{Key: p.ID, From: from.partnerRef, Reference: p.Reference,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, Payee: money.Payee{Name: payee.Name, IBAN: payee.IBAN, BIC: payee.BIC,
 			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, RoutingNumber: payee.RoutingNumber, Network: payee.Network, Address: payee.Address}})

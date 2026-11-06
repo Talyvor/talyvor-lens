@@ -124,14 +124,16 @@ func blocksAll(blocked, codes []string) bool {
 	return true
 }
 
+// same is whether in, its controls checked, asks for the card c is; both sets of categories are in order (mccSet).
 func (c ReusableCard) same(in ReusableCard) bool {
 	return c.AgentID == in.AgentID && c.Currency == in.Currency && c.Funding == in.Funding &&
-		c.PerPaymentLimitMinor == in.PerPaymentLimitMinor && c.DailyLimitMinor == in.DailyLimitMinor
+		c.PerPaymentLimitMinor == in.PerPaymentLimitMinor && c.DailyLimitMinor == in.DailyLimitMinor &&
+		slices.Equal(c.AllowedMCCs, in.AllowedMCCs) && slices.Equal(c.BlockedMCCs, in.BlockedMCCs)
 }
 
 // IssueReusableCard issues in.AgentID's reusable card — the owner's own with no agent — in workspaceID under
 // in.IdempotencyKey, with its limits and categories. The same key again answers the card it first issued, asking the
-// issuer again if it had not answered; with other limits, ErrIdempotencyKeyReused.
+// issuer again if it had not answered; with other limits or categories, ErrIdempotencyKeyReused.
 func (s *DualTokenStore) IssueReusableCard(ctx context.Context, workspaceID string, in ReusableCard) (ReusableCard, error) {
 	if s.moneyLayer == nil {
 		return ReusableCard{}, ErrAgentWalletsOff
@@ -225,11 +227,14 @@ func (s *DualTokenStore) fileReusableCard(ctx context.Context, workspaceID strin
 }
 
 // SetReusableCardControls changes workspaceID's reusable card id as c says: frozen or not, its limits, its categories.
+// A new daily limit is the cap the issuer holds too (B54.3): the issuer is asked to lock the card to it, and if it
+// does not, the card keeps all its old controls and the issuer's answer is the error.
 func (s *DualTokenStore) SetReusableCardControls(ctx context.Context, workspaceID, id string, c CardControls) (ReusableCard, error) {
 	card, err := s.reusableCard(ctx, workspaceID, "", id, "")
 	if err != nil {
 		return card, err
 	}
+	old := card
 	if c.Frozen != nil {
 		if card.Status != ReusableCardActive && card.Status != ReusableCardFrozen {
 			return card, fmt.Errorf("%w: the card is %s, so it is neither frozen nor unfrozen", ErrReusableCard, card.Status)
@@ -256,17 +261,56 @@ func (s *DualTokenStore) SetReusableCardControls(ctx context.Context, workspaceI
 	if err := card.controls(); err != nil {
 		return card, err
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE money_reusable_cards SET status = $3, per_payment_limit_minor = $4, daily_limit_minor = $5,
-		allowed_mccs = $6, blocked_mccs = $7, updated_at = now() WHERE id = $1 AND workspace_id = $2`, card.ID, workspaceID, card.Status,
-		card.PerPaymentLimitMinor, card.DailyLimitMinor, card.AllowedMCCs, card.BlockedMCCs); err != nil {
-		return card, fmt.Errorf("economy: reusable card: %w", err)
+	if err := s.writeReusableCardControls(ctx, card, nil); err != nil {
+		return card, err
+	}
+	// Written first, so the money layer's limits see the cap the owner set (issuingReusableCard); taken back if refused.
+	if card.DailyLimitMinor != old.DailyLimitMinor && card.partnerRef != "" {
+		if err := s.lockReusableCardCap(ctx, card); err != nil {
+			// Only while the card still holds what this call wrote: a change made since, a freeze above all, stands.
+			if werr := s.writeReusableCardControls(context.WithoutCancel(ctx), old, &card); werr != nil {
+				return old, errors.Join(err, werr)
+			}
+			return old, fmt.Errorf("economy: the issuer kept the card's daily limit at %s: %w", minorString(old.DailyLimitMinor, old.Currency), err)
+		}
 	}
 	return s.reusableCard(ctx, workspaceID, "", id, "")
 }
 
+// writeReusableCardControls writes card's controls — with was set, only if the card still has was's.
+func (s *DualTokenStore) writeReusableCardControls(ctx context.Context, card ReusableCard, was *ReusableCard) error {
+	if was == nil {
+		was = &ReusableCard{}
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE money_reusable_cards SET status = $3, per_payment_limit_minor = $4, daily_limit_minor = $5,
+		allowed_mccs = $6, blocked_mccs = $7, updated_at = now() WHERE id = $1 AND workspace_id = $2 AND ($8 = '' OR (status = $8
+		AND per_payment_limit_minor = $9 AND daily_limit_minor = $10 AND allowed_mccs = $11 AND blocked_mccs = $12))`, card.ID, card.WorkspaceID,
+		card.Status, card.PerPaymentLimitMinor, card.DailyLimitMinor, card.AllowedMCCs, card.BlockedMCCs,
+		was.Status, was.PerPaymentLimitMinor, was.DailyLimitMinor, was.AllowedMCCs, was.BlockedMCCs); err != nil {
+		return fmt.Errorf("economy: reusable card: %w", err)
+	}
+	return nil
+}
+
+// lockReusableCardCap asks card's issuer to cap it at its daily limit, under a key of its own: each change is a new
+// lock, so a limit set back to an earlier value is locked again rather than answered from the first time.
+func (s *DualTokenStore) lockReusableCardCap(ctx context.Context, card ReusableCard) error {
+	if s.moneyLayer == nil {
+		return ErrAgentWalletsOff
+	}
+	cards, err := s.moneyLayer.Cards(ctx, cardRoute(card.WorkspaceID, card.AgentID))
+	if err != nil {
+		return err
+	}
+	_, err = cards.Lock(ctx, money.LockCard{Key: card.ID + ":cap:" + uuid.NewString(), Ref: card.partnerRef,
+		Cap: money.Amount{Minor: card.DailyLimitMinor, Asset: card.Currency}})
+	return err
+}
+
 // authorizeReusableCharge decides a's charge if it is on a reusable card, in tx: done is false for a card that is
 // not one. Approved only while the card is active, its agent not paused, in its currency, within its limit per payment
-// and what is left of its daily limit, in a category it pays, and while its account holds the charge.
+// and what is left of its daily limit, in a category it pays, while its account holds the charge, and — on an agent's
+// card — within the agent's own rules (B54.6).
 func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx, partner string, a money.Authorization) (done, approved bool, reason string, err error) {
 	var c ReusableCard
 	err = tx.QueryRow(ctx, `SELECT `+reusableCardCols+` FROM money_reusable_cards WHERE partner = $1 AND partner_ref = $2 FOR UPDATE`, partner, a.Card).
@@ -280,6 +324,10 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 	d := a.Normal()
 	var paused error
 	if c.AgentID != "" {
+		// As money leaving the agent does: its row first, then the accounts (PayOutside's order).
+		if err := lockAgent(ctx, tx, c.WorkspaceID, c.AgentID); err != nil {
+			return true, false, "", fmt.Errorf("economy: card charge: %w", err)
+		}
 		paused = refuseIfPaused(ctx, tx, c.AgentID)
 	}
 	var spent, held int64
@@ -325,14 +373,23 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 	default:
 		approved = true
 	}
+	key := "card_charge:" + partner + ":" + a.ID
+	var value int64
+	if approved && c.AgentID != "" { // B54.6: the agent's own rules judge it too, so the stricter of theirs and the card's wins
+		if value, reason, err = s.agentCardCharge(ctx, tx, c, key, a); err != nil {
+			return true, false, "", err
+		}
+		approved = reason == ""
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO money_card_authorizations (partner, id, card_id, workspace_id, merchant, amount_minor, currency, approved, reason,
-		mcc, merchant_country, channel, wallet) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, partner, a.ID, c.ID, c.WorkspaceID,
-		a.Merchant, a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet); err != nil {
+		mcc, merchant_country, channel, wallet, agent_id, value_ulxc) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		partner, a.ID, c.ID, c.WorkspaceID, a.Merchant, a.Amount.Minor, a.Amount.Asset, approved, reason, d.MCC, d.Country, d.Channel, d.Wallet,
+		c.AgentID, value); err != nil {
 		return true, false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	if approved {
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: c.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_charge",
-			IdempotencyKey: "card_charge:" + partner + ":" + a.ID, Funding: c.Funding, Memo: a.Merchant, Counterparty: a.Merchant, PartnerRef: a.ID,
+			IdempotencyKey: key, Funding: c.Funding, Memo: a.Merchant, Counterparty: a.Merchant, PartnerRef: a.ID,
 			Card: &d, Postings: []MoneyPosting{{AccountID: c.accountID, AmountMinor: -a.Amount.Minor}, {AccountID: from.partnerID, AmountMinor: a.Amount.Minor}}},
 			s.screener); err != nil {
 			return true, false, "", err
@@ -344,16 +401,51 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 	return true, approved, reason, nil
 }
 
+// agentCardCharge judges a charge the controls of agent card c let through by the agent's own rules, in tx with the
+// agent's row locked, as any money leaving the agent is (moneyLimits.Allow): its limits per payment and per hour, day,
+// week and month, its payee lists and caps, its hours and its approval amount. It answers the charge's value in µLXC,
+// which counts toward the agent's spend, or why the rules decline it. A charge cannot wait for the owner, so one above
+// the approval amount is declined and files no approval. The merchant is named "merchant:<name>" in the payee lists, so
+// a merchant's own name can never pass for an agent's or a company's id.
+func (s *DualTokenStore) agentCardCharge(ctx context.Context, tx pgx.Tx, c ReusableCard, key string, a money.Authorization) (int64, string, error) {
+	value, err := s.moneyValue(ctx, money.Op{Route: money.Route{Workspace: c.WorkspaceID}, Amount: a.Amount, Key: key})
+	if err != nil {
+		return 0, "the charge cannot be valued against the agent's limits", nil
+	}
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: "merchant:" + a.Merchant, Name: a.Merchant},
+		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant})
+	var need *ApprovalNeededError
+	switch err = enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
+	case err == nil:
+		return value, "", nil
+	case errors.As(err, &need):
+		return 0, "needs your approval", nil
+	case errors.Is(err, ErrAgentRule):
+		return 0, strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": "), nil
+	}
+	return 0, "", err
+}
+
 // issuingReusableCard is whether op is the money layer issuing a reusable card the owner asked for: the card issuing
-// under op's key, for that agent (none for the owner's own), account and daily limit, at no one merchant.
+// under op's key, for that agent (none for the owner's own), account and daily limit, at no one merchant. Or locking
+// one the issuer serves to the daily limit the owner set on it (B54.3), under a key the card's id begins.
 func (s *DualTokenStore) issuingReusableCard(ctx context.Context, op money.Op) (bool, error) {
-	if op.Capability != money.CapCards || op.Method != "issue" || !strings.HasPrefix(op.Key, "rcard_") || op.Payee != "" {
+	if op.Capability != money.CapCards || !strings.HasPrefix(op.Key, "rcard_") || op.Payee != "" {
 		return false, nil
 	}
 	var ok bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_reusable_cards WHERE id = $1 AND workspace_id = $2 AND agent_id = $3
-		AND status = $4 AND daily_limit_minor = $5 AND currency = $6 AND wallet_ref = $7)`, op.Key, op.Workspace, op.Agent,
-		ReusableCardIssuing, op.Amount.Minor, op.Amount.Asset, op.Ref).Scan(&ok)
+	var err error
+	switch op.Method {
+	case "issue":
+		err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_reusable_cards WHERE id = $1 AND workspace_id = $2 AND agent_id = $3
+			AND status = $4 AND daily_limit_minor = $5 AND currency = $6 AND wallet_ref = $7)`, op.Key, op.Workspace, op.Agent,
+			ReusableCardIssuing, op.Amount.Minor, op.Amount.Asset, op.Ref).Scan(&ok)
+	case "lock":
+		id, _, _ := strings.Cut(op.Key, ":")
+		err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_reusable_cards WHERE id = $1 AND workspace_id = $2 AND agent_id = $3
+			AND status IN ($4, $5) AND daily_limit_minor = $6 AND currency = $7 AND partner_ref = $8)`, id, op.Workspace, op.Agent,
+			ReusableCardActive, ReusableCardFrozen, op.Amount.Minor, op.Amount.Asset, op.Ref).Scan(&ok)
+	}
 	return ok, err
 }
 

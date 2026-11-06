@@ -42,18 +42,131 @@ func (c Chain) Sponsor(ctx context.Context, op *UserOp) (*big.Int, error) {
 		return nil, fmt.Errorf("%w: chain %d has no paymaster", ErrInvalid, c.ID)
 	}
 	op.PaymasterAndData, op.Signature = nil, nil
+	pm, err := c.paymasterData(ctx, "pm_getPaymasterData", *op, map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	op.PaymasterAndData = pm
+	return MaxFee(*op), nil
+}
+
+// paymasterData asks the chain's ERC-7677 paymaster method for op's paymasterAndData, with pmContext.
+func (c Chain) paymasterData(ctx context.Context, method string, op UserOp, pmContext map[string]any) ([]byte, error) {
 	var out struct {
 		PaymasterAndData string `json:"paymasterAndData"`
 	}
-	if err := c.rpc(ctx, c.PaymasterURL, "pm_getPaymasterData", []any{op, EntryPoint, quantity(big.NewInt(c.ID)), map[string]any{}}, &out); err != nil {
+	if err := c.rpc(ctx, c.PaymasterURL, method, []any{op, EntryPoint, quantity(big.NewInt(c.ID)), pmContext}, &out); err != nil {
 		return nil, err
 	}
 	pm, err := hex.DecodeString(strings.TrimPrefix(out.PaymasterAndData, "0x"))
 	if err != nil || !strings.HasPrefix(out.PaymasterAndData, "0x") || len(pm) < 20 {
 		return nil, fmt.Errorf("smartaccount: the paymaster answered no paymasterAndData")
 	}
+	return pm, nil
+}
+
+// B48.25 — on a chain where no one sponsors agents' fees (every EVM network but Base), an ERC-20 paymaster takes each
+// operation's network fee in USDC from the agent's own account: Lens asks the chain's ERC-7677 paymaster with a context
+// naming the token, and the paymaster's paymasterAndData is
+//
+//	paymaster (20 bytes) | abi.encode(uint48 validUntil, uint48 validAfter, address token, uint256 price) | signature
+//
+// price being the token's base units per 1e18 wei; once the operation has run, the paymaster takes
+// ceil(actualGasCost × price / 1e18) of the token, which the operation approves it, from the account.
+
+const tokenPaymasterHead = 20 + 4*32
+
+// tokenPrice reads the paymaster and its price in token from pm, refusing a price in any other token.
+func tokenPrice(pm []byte, token string) (string, *big.Int, error) {
+	if len(pm) < tokenPaymasterHead || !strings.EqualFold(checksum(pm[20+2*32+12:20+3*32]), token) {
+		return "", nil, fmt.Errorf("smartaccount: the paymaster answered no price in %s", token)
+	}
+	price := new(big.Int).SetBytes(pm[20+3*32 : tokenPaymasterHead])
+	if price.Sign() <= 0 {
+		return "", nil, fmt.Errorf("smartaccount: the paymaster answered no price in %s", token)
+	}
+	return checksum(pm[:20]), price, nil
+}
+
+var wei = big.NewInt(1e18)
+
+// SponsorInToken has the chain's ERC-20 paymaster take op's network fee in token, from the agent's account itself, and
+// answers the most that fee can be in token's base units, which the owner is shown before op is signed. op is one
+// payment in token (PaymentOf): it becomes that payment and token's approval of the paymaster for exactly that most, so
+// the paymaster can never take more, and the owner's permission counts both (Payment.Total). op's gas fields are final.
+// What the paymaster does not take stays approved to it until the next such payment replaces it: the permission counted
+// it already.
+func (c Chain) SponsorInToken(ctx context.Context, op *UserOp, token string) (*big.Int, error) {
+	if c.PaymasterURL == "" || c.TokenPaymaster == "" {
+		return nil, fmt.Errorf("%w: chain %d has no ERC-20 paymaster", ErrInvalid, c.ID)
+	}
+	pay, err := PaymentOf(op.CallData)
+	if err != nil || pay.Fee != nil || !strings.EqualFold(pay.Token, token) || Checksum(token) == Checksum(Native) {
+		return nil, fmt.Errorf("%w: the operation is not one payment in %s", ErrInvalid, token)
+	}
+	pmContext := map[string]any{"token": Checksum(token)}
+	op.PaymasterAndData, op.Signature = nil, nil
+	stub, err := c.paymasterData(ctx, "pm_getPaymasterStubData", *op, pmContext)
+	if err != nil {
+		return nil, err
+	}
+	paymaster, price, err := tokenPrice(stub, token)
+	if err != nil {
+		return nil, err
+	}
+	if paymaster != Checksum(c.TokenPaymaster) {
+		return nil, fmt.Errorf("smartaccount: the paymaster service answered for %s, not chain %d's paymaster", paymaster, c.ID)
+	}
+	if strings.EqualFold(pay.To, paymaster) {
+		return nil, fmt.Errorf("%w: a payment to the paymaster itself", ErrInvalid)
+	}
+	op.PaymasterAndData = stub // MaxFee counts the paymaster's verification three times
+	fee := new(big.Int).Mul(MaxFee(*op), price)
+	fee.Add(fee, new(big.Int).Sub(wei, big.NewInt(1))).Div(fee, wei)
+	to, _ := addressW(pay.To)
+	pmw, _ := addressW(paymaster)
+	if op.CallData, err = executeBatch(batchItem{pay.Token, nil, call("transfer(address,uint256)", to, bigW(pay.Amount))},
+		batchItem{pay.Token, nil, call("approve(address,uint256)", pmw, bigW(fee))}); err != nil {
+		return nil, err
+	}
+	pm, err := c.paymasterData(ctx, "pm_getPaymasterData", *op, pmContext)
+	if err != nil {
+		return nil, err
+	}
+	final, finalPrice, err := tokenPrice(pm, token)
+	if err != nil {
+		return nil, err
+	}
+	if final != paymaster || finalPrice.Cmp(price) > 0 {
+		return nil, fmt.Errorf("smartaccount: the paymaster's price moved from %s to %s in %s", price, finalPrice, token)
+	}
 	op.PaymasterAndData = pm
-	return MaxFee(*op), nil
+	return fee, nil
+}
+
+// TokenFeeCharged is what op's ERC-20 paymaster (SponsorInToken) took from the account for operation hash's network
+// fee, read from the token's own Transfer logs of the operation's transaction, which the chain indexer also posts to
+// the agent's history: nil while it is not on the chain.
+func (c Chain) TokenFeeCharged(ctx context.Context, op UserOp, hash string) (*big.Int, error) {
+	pay, err := PaymentOf(op.CallData)
+	if err != nil || pay.Fee == nil {
+		return nil, fmt.Errorf("%w: the operation's fee is not paid in a token", ErrInvalid)
+	}
+	r, err := c.Receipt(ctx, hash)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	ts, mined, err := c.TxTransfers(ctx, r.Receipt.TransactionHash)
+	if err != nil || !mined {
+		return nil, err
+	}
+	took := new(big.Int)
+	for _, t := range ts {
+		if t.Token == pay.Token && strings.EqualFold(t.From, op.Sender) && t.To == pay.Paymaster {
+			took.Add(took, t.Value)
+		}
+	}
+	return took, nil
 }
 
 // MaxFee is the most the EntryPoint can take for op's network fee, in wei: v0.6's required prefund, whose
