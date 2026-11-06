@@ -80,6 +80,10 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 			return res, ok
 		}
 	}
+	// B54.17: from here p may have gone, so a resend asks the rail under the same key and never fails before it.
+	if _, err := s.pool.Exec(ctx, `UPDATE money_payments SET send_started_at = COALESCE(send_started_at, now()) WHERE id = $1`, p.ID); err != nil {
+		return partners.Result{}, false
+	}
 	r, err := t.Outbound(partners.WithWorkspace(ctx, p.WorkspaceID), money.Outbound{Key: p.ID, From: from.partnerRef, Reference: p.Reference,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, Payee: money.Payee{Name: payee.Name, IBAN: payee.IBAN, BIC: payee.BIC,
 			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, RoutingNumber: payee.RoutingNumber, Network: payee.Network, Address: payee.Address}})
