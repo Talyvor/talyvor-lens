@@ -96,6 +96,8 @@ type UseRequest struct {
 	// agent its wallet. Set by the room's run (internal/rooms Spender), never by the buyer's request body.
 	RoomID           string `json:"-"`
 	ActorWorkspaceID string `json:"-"`
+
+	counterRun bool // B52.16: a playbook's run on a negotiation, by RunCounterPlaybook alone
 }
 
 // CaseResult is one evaluation case's outcome.
@@ -613,6 +615,12 @@ func plan(kind string, artifact map[string]any, req UseRequest) ([]call, string,
 	}
 	if kind == "pipeline" {
 		return nil, "", ErrNotRunnable // a pipeline's steps are planned one at a time (pipeline.go)
+	}
+	if kind == KindCounterPlaybook {
+		if !req.counterRun {
+			return nil, "", ErrNotRunnable // a playbook runs on a negotiation: POST /v1/negotiations/{id}/playbook
+		}
+		return nil, "", nil // no model call: Counter plans and words the negotiation by it
 	}
 	if model == "" {
 		return nil, "", ErrNoModel
