@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -406,8 +407,11 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if to != "" {
 			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
 		}
-		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Data: map[string]string{
-			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID}})
+		// B55.12: the agent_approval category gives the lock screen its Approve button, and the data is what the phone
+		// checks the approval against before it signs; an agent's approval counts in µLXC, LXC's minor unit.
+		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{
+			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID,
+			"agent_name": agentName, "payee_name": payeeName, "currency": "LXC", "amount_minor": strconv.FormatInt(amount, 10)}})
 		s.pushWeb(ctx, workspaceID, payload)
 	}()
 }
