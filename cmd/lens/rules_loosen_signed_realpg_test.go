@@ -161,10 +161,14 @@ func TestB5513_LooseningRulesIsSignedTighteningIsNot(t *testing.T) {
 	if code, out := call(http.MethodPost, base+"/rules/boosts", jsonOf(boost)); code != http.StatusCreated {
 		t.Fatalf("signed boost = %d %v, want 201", code, out)
 	}
-	// The rules are judged with the boost laid over them: 20 under a boost to 50 tightens, so it saves unsigned; while
-	// the boost lasts, putting the limit back where it was raised from brings the 50 back, which loosens.
-	if code, out := call(http.MethodPut, base+"/rules", `{"daily_limit_ulxc":20000000}`); code != http.StatusOK || daily() != 20_000_000 {
-		t.Fatalf("unsigned 20 under a boost to 50 = %d %v, daily %d; want 200 and 20000000", code, out, daily())
+	// 20 under a boost to 50 is still 20 once the boost ends, so it is signed; and while the boost lasts, putting the
+	// limit back where it was raised from brings the 50 back, which is signed too.
+	if code, out := call(http.MethodPut, base+"/rules", `{"daily_limit_ulxc":20000000}`); code != http.StatusForbidden || daily() != 5_000_000 {
+		t.Fatalf("unsigned 20 under a boost to 50 = %d %v, daily %d; want 403 and 5000000 kept", code, out, daily())
+	}
+	twenty := assertion(`{"rules":{"daily_limit_ulxc":20000000}}`)
+	if code, out := call(http.MethodPut, base+"/rules", jsonOf(map[string]any{"rules": map[string]int64{"daily_limit_ulxc": 20_000_000}, "assertion": twenty})); code != http.StatusOK {
+		t.Fatalf("signed 20 = %d %v, want 200", code, out)
 	}
 	if code, out := call(http.MethodPut, base+"/rules", `{"daily_limit_ulxc":5000000}`); code != http.StatusForbidden || daily() != 20_000_000 {
 		t.Fatalf("unsigned return to the boosted limit = %d %v, daily %d; want 403 and 20000000 kept", code, out, daily())

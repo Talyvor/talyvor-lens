@@ -272,7 +272,13 @@ func (s *DualTokenStore) proposeRulesTx(ctx context.Context, tx pgx.Tx, workspac
 	if now, err = scanAgentRules(tx.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID)); err != nil {
 		return now, j, "", fmt.Errorf("economy: agent rules: %w", err)
 	}
-	// Judged with the boosts in force laid over both: a limit put back where a boost was raised from brings the boost back.
+	purpose, err := hashPurpose("rules", agentID, now)
+	if err != nil {
+		return now, j, "", err
+	}
+	// Judged as saved and with the boosts in force laid over both: a limit raised under a boost is raised once it ends,
+	// and a limit put back where a boost was raised from brings the boost back.
+	changes := rulesChanges(was, now)
 	at := time.Now()
 	boosts, err := agentBoosts(ctx, tx, agentID, at)
 	if err != nil {
@@ -283,12 +289,13 @@ func (s *DualTokenStore) proposeRulesTx(ctx context.Context, tx pgx.Tx, workspac
 	if err != nil {
 		return now, j, "", fmt.Errorf("economy: agent rules: %w", err)
 	}
-	for _, c := range rulesChanges(was, inForce) {
-		j.Changes = append(j.Changes, c.words)
+	for _, c := range append(changes, rulesChanges(was, inForce)...) {
+		if !slices.Contains(j.Changes, c.words) {
+			j.Changes = append(j.Changes, c.words)
+		}
 		j.Looser = j.Looser || c.looser
 	}
-	purpose, err := hashPurpose("rules", agentID, now)
-	return now, j, purpose, err
+	return now, j, purpose, nil
 }
 
 // RulesChallenge answers what p would do to the agent's rules and, when it loosens them, issues the challenge a
