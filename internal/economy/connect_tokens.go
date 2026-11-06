@@ -35,8 +35,10 @@ func (s *DualTokenStore) RevokeConnect(ctx context.Context, userID, clientID str
 	if userID == "" {
 		return errors.New("economy: a revocation names the person")
 	}
-	if _, err := s.pool.Exec(ctx, `INSERT INTO connect_revocations (user_id, client_id) VALUES ($1, $2)
-		ON CONFLICT (user_id, client_id) DO UPDATE SET revoked_at = now()`, userID, clientID); err != nil {
+	// On Lens's clock, the one a token's issued-at is on, not the database's: a database behind it would spare a token.
+	if _, err := s.pool.Exec(ctx, `INSERT INTO connect_revocations (user_id, client_id, revoked_at) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, client_id) DO UPDATE SET revoked_at = GREATEST(connect_revocations.revoked_at, EXCLUDED.revoked_at)`,
+		userID, clientID, time.Now()); err != nil {
 		return fmt.Errorf("economy: record the revocation: %w", err)
 	}
 	return nil
