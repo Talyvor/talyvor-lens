@@ -9,6 +9,9 @@ ALTER TABLE money_payments ADD COLUMN IF NOT EXISTS send_started_at TIMESTAMPTZ;
 ALTER TABLE money_earnings_payouts ADD COLUMN IF NOT EXISTS sent_to TEXT;
 ALTER TABLE money_earnings_payouts ADD COLUMN IF NOT EXISTS travel_rule_attempts INT NOT NULL DEFAULT 0;
 
--- A payment pending before this column, its Travel Rule never tried, was handed to its rail or may have been: safer
--- counted as gone. Earnings payouts are not backfilled: what they were sent to is not known, so they are screened.
-UPDATE money_payments SET send_started_at = created_at WHERE status = 'pending' AND travel_rule_attempts = 0 AND send_started_at IS NULL;
+-- One pending before these columns was handed to its rail, or may have been: safer counted as gone. A payout's
+-- destination is its recipient's verified details now: the best that is known of it.
+UPDATE money_payments SET send_started_at = created_at WHERE status = 'pending' AND send_started_at IS NULL;
+UPDATE money_earnings_payouts e SET sent_to = d.holder || '|' || d.iban || '|' || d.bic || '|' || d.network || '|' || lower(d.address)
+    FROM money_payout_details d WHERE d.workspace_id = e.recipient_workspace_id AND d.asset = e.currency AND d.status = 'verified'
+    AND e.status = 'pending' AND e.partner_ref = '' AND e.sent_to IS NULL;
