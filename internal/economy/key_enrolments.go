@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/passkey"
@@ -37,6 +38,12 @@ var ErrTooManyEnrolments = errors.New("economy: three new keys already wait to j
 
 // ErrEnrolmentCodeTaken: a key with the same code already waits, so the two could not be told apart on screen.
 var ErrEnrolmentCodeTaken = errors.New("economy: a key with this code already waits to join this workspace — decline it first")
+
+// ErrPasskeyRegistered (B54.28): the passkey is already a workspace's key.
+var ErrPasskeyRegistered = errors.New("economy: this passkey is already registered — use it as it is, or create a new passkey on this device")
+
+// ErrNoLiveKey (B54.28): every key the workspace has is revoked, so none could let a waiting key in.
+var ErrNoLiveKey = errors.New("economy: every key of this workspace is revoked, so no key can let a new one in — recover the workspace's keys first")
 
 // KeyEnrolment is a key waiting to join a workspace. Status is waiting, approved, declined or expired.
 type KeyEnrolment struct {
@@ -68,6 +75,14 @@ func enrolmentCode(spki []byte) string {
 // spends the challenge the registration answered, commits and pushes the workspace's phones.
 func (s *DualTokenStore) waitEnrolment(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, e KeyEnrolment,
 	person, credentialID string, publicKey []byte, signCount int64, attestation []byte) error {
+	var live int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL)`, workspaceID).Scan(&live); err != nil {
+		return fmt.Errorf("economy: key enrolments: %w", err)
+	}
+	if live == 0 {
+		return ErrNoLiveKey
+	}
 	if err := useChallenge(ctx, tx, workspaceID, purpose, challenge); err != nil {
 		return err
 	}
@@ -197,6 +212,9 @@ func (s *DualTokenStore) ApproveKeyEnrolment(ctx context.Context, workspaceID, i
 	} else {
 		_, err = tx.Exec(ctx, `INSERT INTO workspace_device_keys (id, workspace_id, person, platform, name, public_key, attestation)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`, "dev_"+uuid.NewString(), workspaceID, person, platform, name, publicKey, attestation)
+	}
+	if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23505" {
+		return KeyEnrolment{}, ErrPasskeyRegistered // registered elsewhere while it waited
 	}
 	if err != nil {
 		return KeyEnrolment{}, fmt.Errorf("economy: key enrolment: add the key: %w", err)
