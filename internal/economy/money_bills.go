@@ -379,7 +379,8 @@ func (s *DualTokenStore) resolveBill(ctx context.Context, tx pgx.Tx, workspaceID
 		it.Reference = b.Supplier
 	}
 	var taken string
-	if err := tx.QueryRow(ctx, billTaken, workspaceID, b.ID, s.approvalLife().Microseconds()).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	// Locked, so a request being approved as it expires is read once its approval is kept or not (B55.9).
+	if err := tx.QueryRow(ctx, billTaken+" FOR UPDATE OF r", workspaceID, b.ID, s.approvalLife().Microseconds()).Scan(&taken); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("economy: bill taken: %w", err)
 	}
 	_, held := MoneyCurrencies[b.Currency]
