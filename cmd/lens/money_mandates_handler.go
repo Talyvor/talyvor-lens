@@ -147,7 +147,7 @@ func writeMandateErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, economy.ErrMandateOverLimit), errors.As(err, &refusal):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, economy.ErrMandateRevoked), errors.Is(err, economy.ErrMandateExpired), errors.Is(err, economy.ErrMandateShort),
-		errors.Is(err, economy.ErrMandatePayerPaused), errors.Is(err, economy.ErrMandatePayeeAccount),
+		errors.Is(err, economy.ErrMandatePayerPaused), errors.Is(err, economy.ErrMandateWorkspacePaused), errors.Is(err, economy.ErrMandatePayeeAccount),
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrIdempotencyKeyReused):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	default: // an outside business's payee and its payment out answer as a payment out does

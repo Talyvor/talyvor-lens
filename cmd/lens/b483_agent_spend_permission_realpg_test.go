@@ -210,6 +210,29 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 		t.Fatalf("a payment under a permission altered in the database: %v, want refused", err)
 	}
 
+	// B55.23 — paused, on its own or with every agent in the workspace, the agent's key is asked to sign nothing.
+	if err := store.PauseAgent(ctx, ws, agent.ID, "incident 9"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(usdc, payee, 1); !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "the agent is paused") {
+		t.Fatalf("a paused agent's payment: %v, want refused", err)
+	}
+	if err := store.ResumeAgent(ctx, ws, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PauseAllAgents(ctx, ws, "incident 9"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(usdc, payee, 1); !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "every agent in this workspace is paused") {
+		t.Fatalf("a payment while every agent is paused: %v, want refused", err)
+	}
+	if err := store.ResumeAllAgents(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := uses(); n != 6 {
+		t.Fatalf("the gate kept %d payments while paused, want still 6", n)
+	}
+
 	// Freeze: everything refused at once, and the call that takes the agent's key out of the account on chain.
 	var frozen economy.AgentFreeze
 	if code := call(http.MethodPost, base+"/freeze", "", &frozen); code != http.StatusOK || frozen.Account != acct.Address ||
