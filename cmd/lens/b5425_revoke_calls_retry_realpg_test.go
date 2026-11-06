@@ -101,7 +101,7 @@ func TestB5425_UnbuildableRevokeCallsAreStoredRetriedAndRaised(t *testing.T) {
 	if l.Frozen[0].AgentID != broken || !strings.Contains(l.Frozen[0].RevokeCallsError, "record") || l.Frozen[1].RevokeCallsError != "" {
 		t.Fatalf("lockdown's freezes = %+v, want only %s's revoke calls named as failed, by its record", l.Frozen, broken)
 	}
-	if strings.Contains(l.Frozen[0].RevokeCallsError, "freeze it again") {
+	if strings.Contains(l.Frozen[0].RevokeCallsError, "freeze it again to retry") {
 		t.Fatalf("revoke calls error = %q: freezing again cannot fix a wrong record", l.Frozen[0].RevokeCallsError)
 	}
 	if got := onAgent(); got != l.Frozen[0].RevokeCallsError {
@@ -127,6 +127,9 @@ func TestB5425_UnbuildableRevokeCallsAreStoredRetriedAndRaised(t *testing.T) {
 	}
 	if got := onAgent(); got != "" {
 		t.Fatalf("agent's revoke calls error after the retry = %q, want none", got)
+	}
+	if rec, err := store.AuditRecord(ctx, ws, "agent:"+broken); err != nil || rec[len(rec)-1].Kind != "agent.revoke_calls_built" {
+		t.Fatalf("agent's record after the retry = %+v %v, want agent.revoke_calls_built last", rec, err)
 	}
 	if code, l := lockdown(); code != http.StatusOK || len(l.Frozen[0].PreviousKeyRevokeCalls) != 1 {
 		t.Fatalf("lockdown after the fix = %d %+v, want 200 with the rotated-from key's call", code, l)

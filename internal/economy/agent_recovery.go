@@ -424,7 +424,8 @@ type RevokeCallsOutstanding struct {
 }
 
 // RetryRevokeCalls builds again the revoke calls of every frozen agent whose calls could not be built (B54.25): it
-// answers how many it built, which clears their failure, and those still outstanding, for the operator's alert.
+// answers how many it built, which clears their failure and records agent.revoke_calls_built (freezing again answers
+// the calls), and those still outstanding, for the operator's alert.
 func (s *DualTokenStore) RetryRevokeCalls(ctx context.Context) (int, []RevokeCallsOutstanding, error) {
 	rows, err := s.pool.Query(ctx, `SELECT workspace_id, agent_id, revoke_calls_error FROM agent_smart_accounts
 		WHERE frozen_at IS NOT NULL AND revoke_calls_error <> '' ORDER BY workspace_id, agent_id`)
@@ -443,9 +444,12 @@ func (s *DualTokenStore) RetryRevokeCalls(ctx context.Context) (int, []RevokeCal
 				return err
 			}
 			p.Error = revokeCallsError((&AgentFreeze{}).buildRevokeCalls(acct))
-			_, err = tx.Exec(ctx, `UPDATE agent_smart_accounts SET revoke_calls_error = $3 WHERE agent_id = $1 AND workspace_id = $2`,
-				p.AgentID, p.WorkspaceID, p.Error)
-			return err
+			if _, err := tx.Exec(ctx, `UPDATE agent_smart_accounts SET revoke_calls_error = $3 WHERE agent_id = $1 AND workspace_id = $2`,
+				p.AgentID, p.WorkspaceID, p.Error); err != nil || p.Error != "" {
+				return err
+			}
+			// Nothing here sends them: the owner's freeze answers them, so the agent's record says they are ready.
+			return appendAudit(ctx, tx, p.WorkspaceID, "agent:"+p.AgentID, "agent.revoke_calls_built", map[string]any{"agent_id": p.AgentID})
 		})
 		switch {
 		case err != nil:

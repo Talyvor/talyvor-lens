@@ -372,8 +372,8 @@ func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, 
 var errRotatedFromRecord = errors.New("economy: freeze: the keys the agent rotated from and their indexes differ")
 
 // revokeCallsError is what the owner reads when buildRevokeCalls failed with err, "" when it did not. Building is
-// decided by the agent's record alone, so freezing again never helps: Talyvor fixes the record and RetryRevokeCalls
-// builds them (B54.25).
+// decided by the agent's record alone, so freezing again helps only once Talyvor fixes the record; RetryRevokeCalls
+// clears it then (B54.25).
 func revokeCallsError(err error) string {
 	if err == nil {
 		return ""
@@ -383,7 +383,7 @@ func revokeCallsError(err error) string {
 		what = "Talyvor's record of the keys it rotated from does not match their places in the account"
 	}
 	return "the agent is frozen at Talyvor, but its key could not be taken out of the account on chain: " + what +
-		". Talyvor has to fix that record, and retries on its own until it is fixed"
+		". Talyvor has to fix that record, and once it is fixed, freezing it again answers the calls"
 }
 
 // buildRevokeCalls fills f's calls that take acct's agent key, and each key it rotated from, out of the account.
