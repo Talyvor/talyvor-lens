@@ -111,7 +111,7 @@ func TestB5425_UnbuildableRevokeCallsAreStoredRetriedAndRaised(t *testing.T) {
 	// 2. The retry leaves it outstanding while the record is still wrong, and the operator is told once.
 	sink := &b5425Sink{}
 	told := retryRevokeCallsOnce(ctx, store, sink, "")
-	if told = retryRevokeCallsOnce(ctx, store, sink, told); len(sink.alerts) != 1 || !strings.Contains(sink.alerts[0], ws+", agent "+broken) {
+	if retryRevokeCallsOnce(ctx, store, sink, told); len(sink.alerts) != 1 || !strings.Contains(sink.alerts[0], ws+", agent "+broken) {
 		t.Fatalf("operator alerts = %q, want one naming %s", sink.alerts, broken)
 	}
 	if got := onAgent(); got == "" {
