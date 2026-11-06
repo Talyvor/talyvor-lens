@@ -94,7 +94,8 @@ func (s *DualTokenStore) PasskeyRegistrationChallenge(ctx context.Context, works
 }
 
 // RegisterPasskey verifies a registration against the challenge it answers and keeps the passkey; once the workspace
-// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol), and
+// with none it keeps the passkey waiting (B55.1) and returns *EnrolmentWaiting.
 func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (Passkey, error) {
 	if s.approvalRP == nil {
 		return Passkey{}, errors.New("economy: passkeys are not configured on this server")
@@ -109,7 +110,11 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); err != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
+		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
+		return Passkey{}, s.waitEnrolment(ctx, tx, workspaceID, "register", challenge, KeyEnrolment{Kind: "passkey", Name: name},
+			"", r.CredentialID, r.PublicKey, int64(count), nil)
+	} else if err != nil {
 		return Passkey{}, err
 	}
 	p := Passkey{CredentialID: r.CredentialID, Name: name}
@@ -246,8 +251,21 @@ func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspac
 // authorizeSigned lets an act for purpose through: at once for a workspace with no passkey or device key, and
 // otherwise only with a's assertion over an open challenge for purpose, which it spends.
 func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpose string, a *passkey.Assertion) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.authorizeSignedTx(ctx, tx, workspaceID, purpose, a, ErrPasskeyRequired); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// authorizeSignedTx is authorizeSigned inside tx; unsigned is the refusal of an act that carried no assertion.
+func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, workspaceID, purpose string, a *passkey.Assertion, unsigned error) error {
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
 	}
@@ -255,17 +273,9 @@ func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpo
 		return nil
 	}
 	if a == nil {
-		return ErrPasskeyRequired
+		return unsigned
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, purpose, *a); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.spendAssertion(ctx, tx, workspaceID, purpose, *a)
 }
 
 // authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no

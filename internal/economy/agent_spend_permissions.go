@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -323,49 +324,60 @@ type AgentFreeze struct {
 	// B48.15: the calls that take out each key the agent rotated from, in case a rotation is not on chain yet; on chain
 	// the call for a key no longer there is refused, harmlessly, and the one for the key still there takes it out.
 	PreviousKeyRevokeCalls []string `json:"previous_key_revoke_calls,omitempty"`
+	// B54.9: why the calls above could not all be built. The freeze holds at Talyvor's gate regardless; freezing
+	// again builds them again.
+	RevokeCallsError string `json:"revoke_calls_error,omitempty"`
 }
 
 // FreezeAgent freezes agentID at once: the gate refuses everything for it from now on. Freezing again answers the
-// same freeze.
+// same freeze. The freeze and its audit entry commit before the revoke calls are built (B54.9): a call that cannot be
+// built never leaves the agent able to spend, and is answered in RevokeCallsError instead.
 func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (AgentFreeze, error) {
-	var f AgentFreeze
-	var fresh bool
+	f := AgentFreeze{AgentID: agentID}
+	var acct spendAccount
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		acct, err := s.spendAccount(ctx, tx, workspaceID, agentID)
-		if err != nil {
+		var err error
+		if acct, err = s.spendAccount(ctx, tx, workspaceID, agentID); err != nil {
 			return err
 		}
-		fresh = acct.frozenAt == nil
 		if err := tx.QueryRow(ctx, `UPDATE agent_smart_accounts SET frozen_at = COALESCE(frozen_at, now()),
 			frozen_by = CASE WHEN frozen_at IS NULL THEN $3 ELSE frozen_by END
 			WHERE agent_id = $1 AND workspace_id = $2 RETURNING frozen_at`, agentID, workspaceID, by).Scan(&f.FrozenAt); err != nil {
 			return fmt.Errorf("economy: freeze: %w", err)
 		}
-		call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.agentSigner, AgentIndex: acct.agentIndex})
-		if err != nil {
-			return err
+		if acct.frozenAt != nil {
+			return nil
 		}
-		f.AgentID, f.Account, f.RevokeCall = agentID, acct.address, fmt.Sprintf("0x%x", call)
-		for i, key := range acct.rotatedFrom {
-			if i >= len(acct.rotatedFromIndexes) {
-				return fmt.Errorf("economy: freeze: the keys the agent rotated from and their indexes differ")
-			}
-			prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: key, AgentIndex: uint64(acct.rotatedFromIndexes[i])})
-			if err != nil {
-				return err
-			}
-			f.PreviousKeyRevokeCalls = append(f.PreviousKeyRevokeCalls, fmt.Sprintf("0x%x", prev))
-		}
-		return nil
+		return appendAudit(ctx, tx, workspaceID, "agent:"+agentID, "agent.frozen", map[string]any{"agent_id": agentID,
+			"account": acct.address, "by": by})
 	})
 	if err != nil {
 		return AgentFreeze{}, err
 	}
-	if fresh {
-		if err := s.AppendAudit(ctx, workspaceID, "agent:"+agentID, "agent.frozen", map[string]any{"agent_id": agentID,
-			"account": f.Account, "by": by}); err != nil {
-			return AgentFreeze{}, err
-		}
+	f.Account = acct.address
+	if err := f.buildRevokeCalls(acct); err != nil {
+		slog.Error("economy: freeze: the revoke calls were not built", slog.String("agent_id", agentID), slog.String("err", err.Error()))
+		f.RevokeCallsError = "the agent is frozen at Talyvor, but its key could not be taken out of the account on chain: freeze it again to retry"
 	}
 	return f, nil
+}
+
+// buildRevokeCalls fills f's calls that take acct's agent key, and each key it rotated from, out of the account.
+func (f *AgentFreeze) buildRevokeCalls(acct spendAccount) error {
+	call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.agentSigner, AgentIndex: acct.agentIndex})
+	if err != nil {
+		return err
+	}
+	f.RevokeCall = fmt.Sprintf("0x%x", call)
+	for i, key := range acct.rotatedFrom {
+		if i >= len(acct.rotatedFromIndexes) {
+			return fmt.Errorf("economy: freeze: the keys the agent rotated from and their indexes differ")
+		}
+		prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: key, AgentIndex: uint64(acct.rotatedFromIndexes[i])})
+		if err != nil {
+			return err
+		}
+		f.PreviousKeyRevokeCalls = append(f.PreviousKeyRevokeCalls, fmt.Sprintf("0x%x", prev))
+	}
+	return nil
 }

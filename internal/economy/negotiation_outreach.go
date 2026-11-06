@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -147,10 +148,22 @@ func (s *DualTokenStore) SendNegotiationOutreach(ctx context.Context, workspaceI
 		return out, fmt.Errorf("%w: the message would name the walk-away, which is never shown to a counterparty", ErrNegotiationMandate)
 	}
 	m := NegotiationMessage{Counterparty: counterparty, Channel: channel, Direction: "out", Address: to, Body: body}
-	if err := s.pool.QueryRow(ctx, `INSERT INTO negotiation_messages (mandate_id, workspace_id, counterparty, channel, direction,
-		address, to_workspace_id, body) VALUES ($1, $2, $3, $4, 'out', $5, $6, $7) RETURNING id, created_at`,
-		id, workspaceID, counterparty, channel, to, toWorkspace, body).Scan(&m.ID, &m.CreatedAt); err != nil {
-		return out, fmt.Errorf("economy: negotiation outreach: %w", err)
+	// Reaching out is acting in the deal, so it is refused as an offer is when the deal is held elsewhere.
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockDeal(ctx, tx, t.Deal); err != nil {
+			return err
+		}
+		if held, err := dealHeld(ctx, tx, workspaceID, t, []string{counterparty}); err != nil || held {
+			return cmp.Or(err, errHeldElsewhere)
+		}
+		if err := tx.QueryRow(ctx, `INSERT INTO negotiation_messages (mandate_id, workspace_id, counterparty, channel, direction,
+			address, to_workspace_id, body) VALUES ($1, $2, $3, $4, 'out', $5, $6, $7) RETURNING id, created_at`,
+			id, workspaceID, counterparty, channel, to, toWorkspace, body).Scan(&m.ID, &m.CreatedAt); err != nil {
+			return fmt.Errorf("economy: negotiation outreach: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return out, err
 	}
 	out.Sent = &m
 	return out, nil

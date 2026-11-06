@@ -18,7 +18,8 @@ import (
 
 // B52.10 — Counter's negotiation mandate: kept only with the owner's signature; altered after it was kept, it allows
 // nothing; the walk-away never appears in an outbound offer, however it is written; a second Talyvor owner in the
-// same RFQ is refused without being told who holds it, and cannot read the first's mandate.
+// same RFQ, on either side of a deal the counterparty confirmed, is refused without being told who holds it, and cannot
+// read the first's mandate.
 func TestB5210_TheNegotiationMandateTheOwnerSigns(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -153,15 +154,23 @@ func TestB5210_TheNegotiationMandateTheOwnerSigns(t *testing.T) {
 		t.Fatalf("term sheet = %d %+v", code, got.TermSheets)
 	}
 
-	// A second Talyvor owner in the same RFQ, on either side, is refused without being told who holds it, and cannot
-	// read the first's mandate.
+	// A second Talyvor owner in the same RFQ, on either side — another of Acme's bidders, or Acme's own workspace
+	// selling to the first — is refused without being told who holds it, once Acme has confirmed the deal (B54.7: its
+	// agent's signature and its proved domain; here, their rows), and cannot read the first's mandate.
+	if _, err := pool.Exec(ctx, `UPDATE negotiation_mandates SET deal_confirmed_by = 'acme.example', deal_confirmed_via = 'email',
+		deal_confirmed_at = now() WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO negotiation_domains (workspace_id, domain, claimed_by, verified_at) VALUES ($1, 'acme.example', 'test', now())`, wsB); err != nil {
+		t.Fatal(err)
+	}
 	for _, side := range []string{"buy", "sell"} {
 		rival := strings.Replace(terms(side, "rfq-acme-2026-114"), `"target_minor":1000000,"walk_away_minor":1200000`,
 			map[string]string{"buy": `"target_minor":1000000,"walk_away_minor":1200000`, "sell": `"target_minor":1500000,"walk_away_minor":1100000`}[side], 1)
 		c, ch := prepare(callB, rival)
 		code, msg := keep(callB, c, signB(ch), nil)
-		if code != http.StatusConflict || strings.Contains(msg, wsA) || strings.Contains(msg, "1200000") {
-			t.Errorf("a second owner on the %s side of the same RFQ = %d %s, want 409 naming nobody", side, code, msg)
+		if code != http.StatusBadRequest || strings.Contains(msg, wsA) || strings.Contains(msg, "1200000") {
+			t.Errorf("a second owner on the %s side of the same RFQ = %d %s, want 400 naming nobody", side, code, msg)
 		}
 	}
 	if n := count(`SELECT count(*) FROM negotiation_mandates WHERE workspace_id = $1`, wsB); n != 0 {

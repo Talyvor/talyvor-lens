@@ -141,22 +141,22 @@ func TestPasskeyEnrol_SecondKeyNeedsTheFirstKeysSignature(t *testing.T) {
 	if code, out := enrol(a, nil, ""); code != http.StatusCreated {
 		t.Fatalf("registering the first passkey = %d %v, want 201", code, out)
 	}
-	// B with no signature, and B signed by A over some other challenge: both refused, B kept nowhere.
-	if code, out := enrol(b, nil, ""); code != http.StatusForbidden || passkeys() != 1 {
-		t.Fatalf("registering B with no signature = %d %v, %d passkeys; want 403 and only A", code, out, passkeys())
+	// B with no signature only waits (B55.1), and B signed by A over some other challenge is refused: B kept nowhere.
+	if code, out := enrol(b, nil, ""); code != http.StatusAccepted || passkeys() != 1 {
+		t.Fatalf("registering B with no signature = %d %v, %d passkeys; want 202 waiting and only A", code, out, passkeys())
 	}
 	if code, out := enrol(b, &a, challenge(base+"/approvals/"+held.ID+"/challenge")); code != http.StatusBadRequest || passkeys() != 1 {
 		t.Fatalf("registering B signed by A over an approval's challenge = %d %v, %d passkeys; want 400 and only A", code, out, passkeys())
 	}
-	// Nor a phone key with no signature.
+	// Nor a phone key with no signature: it only waits (B55.1).
 	dev := challenge("/v1/money/devices/challenge")
 	phone, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	phoneSPKI, _ := x509.MarshalPKIXPublicKey(&phone.PublicKey)
 	h := sha256.Sum256(devicekey.Message(dev))
 	phoneSig, _ := ecdsa.SignASN1(rand.Reader, phone, h[:])
 	device := map[string]any{"platform": "test", "name": "a phone", "public_key": b64(phoneSPKI), "challenge": dev, "signature": b64(phoneSig), "attestation": ""}
-	if code, out := call("/v1/money/devices", device); code != http.StatusForbidden {
-		t.Fatalf("registering a phone key with no signature = %d %v, want 403", code, out)
+	if code, out := call("/v1/money/devices", device); code != http.StatusAccepted {
+		t.Fatalf("registering a phone key with no signature = %d %v, want 202 waiting", code, out)
 	}
 	// So B cannot approve the payment.
 	if code, status := approveSignedBy(b); code != http.StatusForbidden || status != "pending" {
@@ -167,7 +167,11 @@ func TestPasskeyEnrol_SecondKeyNeedsTheFirstKeysSignature(t *testing.T) {
 	if code, out := enrol(b, &a, ""); code != http.StatusCreated || passkeys() != 2 {
 		t.Fatalf("registering B signed by A = %d %v, %d passkeys; want 201 and two", code, out, passkeys())
 	}
-	device["assertion"] = a.sign(dev)
+	// The waiting registration spent dev, so the phone registers again over a fresh one, signed by A.
+	dev = challenge("/v1/money/devices/challenge")
+	h = sha256.Sum256(devicekey.Message(dev))
+	phoneSig, _ = ecdsa.SignASN1(rand.Reader, phone, h[:])
+	device["challenge"], device["signature"], device["assertion"] = dev, b64(phoneSig), a.sign(dev)
 	if code, out := call("/v1/money/devices", device); code != http.StatusCreated {
 		t.Fatalf("registering a phone key signed by A = %d %v, want 201", code, out)
 	}
