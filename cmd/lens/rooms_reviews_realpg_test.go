@@ -61,6 +61,7 @@ func TestRooms_TwoRandomUnlinkedReviewersScoreAContributionsQuality(t *testing.T
 	base := "/v1/rooms/" + room.ID
 	for _, ws := range []string{author, sameKey, sameCard, sameUser, r1} {
 		do(http.StatusCreated, nil, ws, http.MethodPost, base+"/join", `{"terms_version":1}`)
+		do(http.StatusCreated, nil, ws, http.MethodPost, base+"/agreement", `{"version":"`+rooms.AgreementVersion+`","signed_name":"Signer"}`) // B41.150: points count once signed
 	}
 	if _, err := pool.Exec(ctx, `UPDATE room_members SET user_id = 'user-'||$2 WHERE room_id = $1 AND workspace_id = $3`, room.ID, author, sameUser); err != nil {
 		t.Fatal(err)
@@ -83,6 +84,7 @@ func TestRooms_TwoRandomUnlinkedReviewersScoreAContributionsQuality(t *testing.T
 		t.Fatalf("the draw seated %+v, want r1 alone: the owner, the author and members linked to it are never drawn", v.Reviews)
 	}
 	do(http.StatusCreated, nil, r2, http.MethodPost, base+"/join", `{"terms_version":1}`)
+	do(http.StatusCreated, nil, r2, http.MethodPost, base+"/agreement", `{"version":"`+rooms.AgreementVersion+`","signed_name":"Signer"}`) // B41.150: points count once signed
 	do(http.StatusOK, &v, author, http.MethodPost, c1base+"/reviewers", "")
 	if len(v.Reviews) != 2 || v.Reviews[0].ReviewerWorkspaceID != r1 || v.Reviews[1].ReviewerWorkspaceID != r2 {
 		t.Fatalf("the second draw seated %+v, want r1 kept and r2 in the empty seat", v.Reviews)

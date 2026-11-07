@@ -54,10 +54,18 @@ import (
 //	PUT  /v1/rooms/{roomID}/contributions/{contributionID}/review      {score_bps}   a drawn reviewer: 5000–15000 while it
 //	                                     is proposed; once both scored, quality_bps is the median
 //
+// B41.150 — the room's contributor agreement, e-signed before points count (internal/rooms/agreement.go):
+//
+//	GET  /v1/rooms/{roomID}/agreement    {version, draft, marked, text, text_sha256, signature} to a member that accepted
+//	                                     the room's current terms; signature is null until its workspace signs
+//	POST /v1/rooms/{roomID}/agreement    {version, signed_name}   the workspace's owner or an admin, signed in as a
+//	                                     person, signs the version it read: 201, or 200 with the signature already kept;
+//	                                     409 for any version but the current one
+//
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
 // mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
-// reviewers (B41.144), the leaderboard (B41.145) and the Gate tracker (B41.146).
+// reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146) and the contributor agreement (B41.150).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -111,6 +119,42 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, rc)
 	})
+	r.Get("/v1/rooms/{roomID}/agreement", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		a, err := store.Agreement(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, a)
+	})
+	r.Post("/v1/rooms/{roomID}/agreement", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, user, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Version    string `json:"version"`
+			SignedName string `json:"signed_name"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"version", "signed_name"}: `+err.Error())
+			return
+		}
+		a, created, err := store.SignAgreement(req.Context(), ws, user, chi.URLParam(req, "roomID"), in.Version, in.SignedName)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSONOK(w, status, a)
+	}))
 	r.Get("/v1/rooms/{roomID}/points", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := actor(w, req)
 		if !ok {

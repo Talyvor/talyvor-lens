@@ -150,6 +150,11 @@ func withdraw(ctx context.Context, tx pgx.Tx, c Contribution) error {
 }
 
 func insertPoints(ctx context.Context, tx pgx.Tx, roomID string, e PointsEntry) error {
+	if e.Points > 0 { // B41.150: points count only for a workspace that signed the contributor agreement
+		if signed, err := signedAgreement(ctx, tx, roomID, e.WorkspaceID); err != nil || !signed {
+			return err
+		}
+	}
 	_, err := tx.Exec(ctx, `INSERT INTO room_points (id, room_id, contribution_id, workspace_id, reason, size_points,
 		received_usd_micros, quality_bps, survival_bps, remix_share_bps, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		"rpts_"+strings.ReplaceAll(uuid.NewString(), "-", ""), roomID, e.ContributionID, e.WorkspaceID, e.Reason, e.SizePoints,
