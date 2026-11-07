@@ -2656,6 +2656,8 @@ func run() error {
 		mountAgentSignatureRoutes(pub, agentSigs)
 		// B45.29: an outside agent asks to be paid; it lands in the owner's approvals with its trust level.
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
+		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
+		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -2991,7 +2993,7 @@ func run() error {
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
-		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken}
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4873,6 +4875,7 @@ func run() error {
 		mountNegotiationOutreachRoutes(authed, dualToken, routingInferer, cfg.CounterModel)
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
+		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
@@ -4888,6 +4891,7 @@ func run() error {
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
+		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16
 		mountMarketReceiptRoutes(authed, marketStore)                                   // B32.40
 		mountMarketPayoutRoutes(authed, marketStore, stripeKinds.connectFor, dualToken, // B20.5
 			marketPayoutURLs{refresh: cfg.MarketPayoutRefreshURL, ret: cfg.MarketPayoutReturnURL})

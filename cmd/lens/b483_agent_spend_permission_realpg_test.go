@@ -140,7 +140,8 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 
 	gate := func(token, to string, amount int64) error {
-		return store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: token, To: to, Amount: big.NewInt(amount)})
+		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: token, To: to, Amount: big.NewInt(amount)})
+		return err
 	}
 	uses := func() (n, sum int64) {
 		t.Helper()
@@ -170,18 +171,84 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 	// B48.25: the most an ERC-20 paymaster may take for the network fee counts with the payment, in the check and in
 	// the use kept.
-	feeGate := func(amount, fee int64) error {
+	feeGate := func(amount, fee int64) (int64, error) {
 		return store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(amount),
 			Fee: big.NewInt(fee), Paymaster: "0x000000000000000000000000000000000000FEE0"})
 	}
-	if err := feeGate(24_000_000, 1_000_001); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "cap") {
+	if _, err := feeGate(24_000_000, 1_000_001); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("a payment whose fee goes over the cap on one payment: %v, want refused", err)
 	}
-	if err := feeGate(4_000_000, 1_000_000); err != nil {
+	use, err := feeGate(4_000_000, 1_000_000)
+	if err != nil {
 		t.Fatalf("a payment and its fee inside the permission: %v", err)
 	}
 	if n, sum := uses(); n != 5 || sum != 90_000_000 {
 		t.Fatalf("the gate kept %d payments of %d in all, want 5 of 90000000, the fee counted", n, sum)
+	}
+	// B54.12: once the operation is on the chain, the allowance counts the fee the paymaster took, 300,000 of the
+	// 1,000,000 counted, and what is still approved to it, until the next such payment's approval replaces that.
+	if err := gate(usdc, payee, 10_000_001); !errors.Is(err, smartaccount.ErrPermission) {
+		t.Fatalf("a payment over what the quoted fee left: %v, want refused", err)
+	}
+	settle := func(use, charged, left int64) error {
+		return store.SettleAgentCryptoFee(ctx, ws, agent.ID, use, big.NewInt(charged), big.NewInt(left))
+	}
+	if err := settle(use, 1_000_001, 0); err == nil {
+		t.Fatal("a fee charged above the most it could be was settled")
+	}
+	if err := store.SettleAgentCryptoFee(ctx, "ws_other", agent.ID, use, big.NewInt(300_000), big.NewInt(0)); err == nil {
+		t.Fatal("another workspace settled the agent's fee")
+	}
+	row := func(id int64) (amount, charged, left int64) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT amount, fee_charged, fee_left FROM agent_spend_permission_uses WHERE id = $1`, id).Scan(&amount, &charged, &left); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := settle(use, 300_000, 700_000); err != nil {
+		t.Fatalf("settle the fee, 700,000 still approved: %v", err)
+	}
+	if a, c, l := row(use); a != 5_000_000 || c != 300_000 || l != 700_000 {
+		t.Fatalf("the use settled counts %d (%d charged, %d left); want 5000000: the approval left still counts", a, c, l)
+	}
+	if err := settle(use, 200_000, 0); err == nil {
+		t.Fatal("a settled fee was settled again at another figure")
+	}
+	// Each later fee payment's approval replaces the one left, so what is left approved counts once, on the newest
+	// settled use, whatever order they are settled in; settling again never lowers what a use counts.
+	next, err := feeGate(1_000_000, 500_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := feeGate(1_000_000, 500_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settle(third, 100_000, 400_000); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, l := row(use); a != 4_300_000 || l != 0 {
+		t.Fatalf("the first use counts %d with %d left, want 4300000 and 0 once its approval was replaced", a, l)
+	}
+	if err := settle(next, 200_000, 450_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := settle(next, 200_000, 0); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, l := row(next); a != 1_200_000 || l != 0 {
+		t.Fatalf("an older use settled after a newer one counts %d with %d left, want 1200000 and 0", a, l)
+	}
+	if a, _, l := row(third); a != 1_550_000 || l != 450_000 {
+		t.Fatalf("the newest use counts %d with %d left, want 1550000 and 450000: what is approved now", a, l)
+	}
+	// 92,050,000 counted: 7,949,999 fits, where the quoted fees (93,000,000) left 7,000,000.
+	if err := gate(usdc, payee, 7_949_999); err != nil {
+		t.Fatalf("a payment inside what the fees charged left: %v", err)
+	}
+	if n, sum := uses(); n != 8 || sum != 99_999_999 {
+		t.Fatalf("the gate kept %d payments of %d in all, want 8 of 99999999", n, sum)
 	}
 
 	// Changing it is signing the next one; this one ends in a second.
@@ -222,7 +289,7 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	if code := call(http.MethodPost, base+"/spend-permission/prepare", `{"tokens":[],"expires":"`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"}`, nil); code != http.StatusBadRequest {
 		t.Fatalf("a new permission for a frozen agent = %d, want 400", code)
 	}
-	if n, _ := uses(); n != 6 {
-		t.Fatalf("the gate kept %d payments, want 6", n)
+	if n, _ := uses(); n != 9 {
+		t.Fatalf("the gate kept %d payments, want 9", n)
 	}
 }

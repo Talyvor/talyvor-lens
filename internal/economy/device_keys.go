@@ -51,7 +51,8 @@ func (s *DualTokenStore) DeviceRegistrationChallenge(ctx context.Context, worksp
 }
 
 // RegisterDeviceKey verifies r against the challenge it answers and keeps the key as person's; once the workspace has a
-// passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+// passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol), and with none
+// it keeps the key waiting (B55.1) and returns *EnrolmentWaiting.
 func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, person, name string, r devicekey.Registration, a *passkey.Assertion) (DeviceKey, error) {
 	if err := s.deviceVerifier.VerifyRegistration(r); err != nil {
 		return DeviceKey{}, err
@@ -61,8 +62,18 @@ func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, per
 		return DeviceKey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.authorizeEnrol(ctx, tx, workspaceID, "device-register", r.Challenge, a); err != nil {
-		if errors.Is(err, ErrPasskeyRequired) || a != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "device-register", r.Challenge, a); errors.Is(err, ErrPasskeyRequired) {
+		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
+		err = s.waitEnrolment(ctx, tx, workspaceID, "device-register", r.Challenge, KeyEnrolment{Kind: "device", Name: name, Platform: r.Platform},
+			person, "", r.PublicKey, 0, r.Attestation)
+		var waiting *EnrolmentWaiting
+		if errors.As(err, &waiting) || errors.Is(err, ErrTooManyEnrolments) || errors.Is(err, ErrEnrolmentCodeTaken) ||
+			errors.Is(err, ErrNoLiveKey) {
+			return DeviceKey{}, err
+		}
+		return DeviceKey{}, fmt.Errorf("%w: %v", devicekey.ErrInvalid, err)
+	} else if err != nil {
+		if a != nil {
 			return DeviceKey{}, err
 		}
 		return DeviceKey{}, fmt.Errorf("%w: %v", devicekey.ErrInvalid, err)

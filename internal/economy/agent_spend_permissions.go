@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"strings"
 	"time"
 
@@ -250,9 +252,11 @@ func (s *DualTokenStore) AgentSpendPermission(ctx context.Context, workspaceID, 
 
 // AuthoriseAgentCryptoPayment is Talyvor's gate before agentID's key is asked to sign pay: the agent is not frozen,
 // the permission it pays under is the one its account's owner signed, and pay is inside it, counting what it already
-// paid in the token this period. A payment it allows is kept, and counts against the allowance from then on.
-func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, workspaceID, agentID string, pay smartaccount.Payment) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
+// paid in the token this period. A payment it allows is kept, and counts against the allowance from then on: its use,
+// which SettleAgentCryptoFee settles once a fee paid in the token is known.
+func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, workspaceID, agentID string, pay smartaccount.Payment) (int64, error) {
+	var use int64
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		acct, err := s.spendAccount(ctx, tx, workspaceID, agentID) // locked: two payments are counted one after the other
 		if err != nil {
 			return err
@@ -305,8 +309,74 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 		if err := t.Permission.Check(pay, spent, now); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_spend_permission_uses (agent_id, workspace_id, permission_number, token, counterparty, amount, used_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, agentID, workspaceID, t.Number, token, to, pay.Total().Int64(), now); err != nil {
+		var fee *int64
+		if pay.Fee != nil {
+			f := pay.Fee.Int64()
+			fee = &f
+		}
+		if err := tx.QueryRow(ctx, `INSERT INTO agent_spend_permission_uses (agent_id, workspace_id, permission_number, token, counterparty, amount, fee, used_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, agentID, workspaceID, t.Number, token, to, pay.Total().Int64(), fee, now).Scan(&use); err != nil {
+			return fmt.Errorf("economy: spend permission: %w", err)
+		}
+		return nil
+	})
+	return use, err
+}
+
+// SettleAgentCryptoFee charges use, agentID's payment whose network fee an ERC-20 paymaster takes in the token, what
+// the paymaster took for it (smartaccount.Chain.TokenFeeCharged) instead of the most the fee could be, once the
+// operation is on the chain; left is what the account approves the paymaster now (Chain.FeeApprovalLeft), which the
+// paymaster could still take. Each such payment's approval replaces the one before, so left is counted once, on the
+// newest settled use of the agent's token, and an older one counts only what was taken: the rest of every quote is the
+// allowance's again. What a use counts never falls on settling it again, and an approval left moves only to a newer
+// use, never to an older period's.
+//
+// shortcut: left is read before the agent's lock is taken, so two of an agent's fees settled at once, with a third
+// payment landing between, can count the older approval; upgrade by settling each agent's fees one at a time.
+func (s *DualTokenStore) SettleAgentCryptoFee(ctx context.Context, workspaceID, agentID string, use int64, charged, left *big.Int) error {
+	if charged == nil || charged.Sign() < 0 || !charged.IsInt64() || left == nil || left.Sign() < 0 || !left.IsInt64() {
+		return fmt.Errorf("%w: a fee charged and what is left approved are whole amounts, not negative", smartaccount.ErrInvalid)
+	}
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := s.spendAccount(ctx, tx, workspaceID, agentID); err != nil { // locked, as the gate is
+			return err
+		}
+		var token string
+		var fee, was *int64
+		err := tx.QueryRow(ctx, `SELECT token, fee, fee_charged FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2 AND workspace_id = $3`,
+			use, agentID, workspaceID).Scan(&token, &fee, &was)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("%w: no payment %d of the agent's", smartaccount.ErrInvalid, use)
+		case err != nil:
+			return fmt.Errorf("economy: spend permission: %w", err)
+		case fee == nil:
+			return fmt.Errorf("%w: payment %d's fee is not paid in the token", smartaccount.ErrInvalid, use)
+		case was != nil && *was == charged.Int64():
+			return nil
+		case was != nil:
+			return fmt.Errorf("%w: payment %d's fee was settled at %d", smartaccount.ErrInvalid, use, *was)
+		case charged.Int64() > *fee:
+			return fmt.Errorf("%w: a fee of %s is more than the %d approved for it", smartaccount.ErrInvalid, charged, *fee)
+		}
+		var newest int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(id), 0) FROM agent_spend_permission_uses
+			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND fee_charged IS NOT NULL AND id > $4`, agentID, workspaceID, token, use).Scan(&newest); err != nil {
+			return fmt.Errorf("economy: spend permission: %w", err)
+		}
+		mine := left.Int64()
+		if newest != 0 { // a newer use holds what is left approved
+			mine = 0
+			if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = amount - fee_left + $2, fee_left = $2
+				WHERE id = $1 AND fee_left < $2`, newest, left.Int64()); err != nil {
+				return fmt.Errorf("economy: spend permission: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = amount - fee_left, fee_left = 0
+			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND fee_left > 0 AND id < $4`, agentID, workspaceID, token, use); err != nil {
+			return fmt.Errorf("economy: spend permission: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = amount - fee + $2 + $3, fee_charged = $2, fee_left = $3
+			WHERE id = $1`, use, charged.Int64(), mine); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
 		return nil
@@ -323,49 +393,60 @@ type AgentFreeze struct {
 	// B48.15: the calls that take out each key the agent rotated from, in case a rotation is not on chain yet; on chain
 	// the call for a key no longer there is refused, harmlessly, and the one for the key still there takes it out.
 	PreviousKeyRevokeCalls []string `json:"previous_key_revoke_calls,omitempty"`
+	// B54.9: why the calls above could not all be built. The freeze holds at Talyvor's gate regardless; freezing
+	// again builds them again.
+	RevokeCallsError string `json:"revoke_calls_error,omitempty"`
 }
 
 // FreezeAgent freezes agentID at once: the gate refuses everything for it from now on. Freezing again answers the
-// same freeze.
+// same freeze. The freeze and its audit entry commit before the revoke calls are built (B54.9): a call that cannot be
+// built never leaves the agent able to spend, and is answered in RevokeCallsError instead.
 func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, by string) (AgentFreeze, error) {
-	var f AgentFreeze
-	var fresh bool
+	f := AgentFreeze{AgentID: agentID}
+	var acct spendAccount
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		acct, err := s.spendAccount(ctx, tx, workspaceID, agentID)
-		if err != nil {
+		var err error
+		if acct, err = s.spendAccount(ctx, tx, workspaceID, agentID); err != nil {
 			return err
 		}
-		fresh = acct.frozenAt == nil
 		if err := tx.QueryRow(ctx, `UPDATE agent_smart_accounts SET frozen_at = COALESCE(frozen_at, now()),
 			frozen_by = CASE WHEN frozen_at IS NULL THEN $3 ELSE frozen_by END
 			WHERE agent_id = $1 AND workspace_id = $2 RETURNING frozen_at`, agentID, workspaceID, by).Scan(&f.FrozenAt); err != nil {
 			return fmt.Errorf("economy: freeze: %w", err)
 		}
-		call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.agentSigner, AgentIndex: acct.agentIndex})
-		if err != nil {
-			return err
+		if acct.frozenAt != nil {
+			return nil
 		}
-		f.AgentID, f.Account, f.RevokeCall = agentID, acct.address, fmt.Sprintf("0x%x", call)
-		for i, key := range acct.rotatedFrom {
-			if i >= len(acct.rotatedFromIndexes) {
-				return fmt.Errorf("economy: freeze: the keys the agent rotated from and their indexes differ")
-			}
-			prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: key, AgentIndex: uint64(acct.rotatedFromIndexes[i])})
-			if err != nil {
-				return err
-			}
-			f.PreviousKeyRevokeCalls = append(f.PreviousKeyRevokeCalls, fmt.Sprintf("0x%x", prev))
-		}
-		return nil
+		return appendAudit(ctx, tx, workspaceID, "agent:"+agentID, "agent.frozen", map[string]any{"agent_id": agentID,
+			"account": acct.address, "by": by})
 	})
 	if err != nil {
 		return AgentFreeze{}, err
 	}
-	if fresh {
-		if err := s.AppendAudit(ctx, workspaceID, "agent:"+agentID, "agent.frozen", map[string]any{"agent_id": agentID,
-			"account": f.Account, "by": by}); err != nil {
-			return AgentFreeze{}, err
-		}
+	f.Account = acct.address
+	if err := f.buildRevokeCalls(acct); err != nil {
+		slog.Error("economy: freeze: the revoke calls were not built", slog.String("agent_id", agentID), slog.String("err", err.Error()))
+		f.RevokeCallsError = "the agent is frozen at Talyvor, but its key could not be taken out of the account on chain: freeze it again to retry"
 	}
 	return f, nil
+}
+
+// buildRevokeCalls fills f's calls that take acct's agent key, and each key it rotated from, out of the account.
+func (f *AgentFreeze) buildRevokeCalls(acct spendAccount) error {
+	call, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: acct.agentSigner, AgentIndex: acct.agentIndex})
+	if err != nil {
+		return err
+	}
+	f.RevokeCall = fmt.Sprintf("0x%x", call)
+	for i, key := range acct.rotatedFrom {
+		if i >= len(acct.rotatedFromIndexes) {
+			return fmt.Errorf("economy: freeze: the keys the agent rotated from and their indexes differ")
+		}
+		prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: key, AgentIndex: uint64(acct.rotatedFromIndexes[i])})
+		if err != nil {
+			return err
+		}
+		f.PreviousKeyRevokeCalls = append(f.PreviousKeyRevokeCalls, fmt.Sprintf("0x%x", prev))
+	}
+	return nil
 }

@@ -212,8 +212,20 @@ func TestNativePush_ApprovalsReachEachPhoneUntilRevoked(t *testing.T) {
 	if data["categoryId"] != "payment_request" || data["items"] != wantItems {
 		t.Errorf("the prepared request's FCM data = %v", data)
 	}
-	if _, ok := apnsGot[0].body["aps"].(map[string]any)["category"]; ok {
-		t.Errorf("a held payment's push carries a category: %v", apnsGot[0].body)
+	// B55.12: an agent's approval carries the agent_approval category (the lock screen's Approve button) and what the
+	// phone checks the approval against before it signs.
+	wantData := map[string]any{"approval_id": held.ID, "agent_name": "researcher", "payee_name": "vendor", "currency": "LXC", "amount_minor": "2000000"}
+	if apnsGot[0].body["aps"].(map[string]any)["category"] != "agent_approval" {
+		t.Errorf("an agent's approval's APNs push = %v", apnsGot[0].body)
+	}
+	heldData, _ := fcmGot[0].body["message"].(map[string]any)["data"].(map[string]any)
+	if heldData["categoryId"] != "agent_approval" {
+		t.Errorf("an agent's approval's FCM data = %v", heldData)
+	}
+	for k, v := range wantData {
+		if apnsGot[0].body[k] != v || heldData[k] != v {
+			t.Errorf("%s: APNs %v, FCM %v, want %v", k, apnsGot[0].body[k], heldData[k], v)
+		}
 	}
 	if raw, _ := json.Marshal(fcmGot); strings.Contains(string(raw), "55779911") {
 		t.Errorf("a push carried the payee's account number: %s", raw)

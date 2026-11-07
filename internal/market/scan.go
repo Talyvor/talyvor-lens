@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/injection"
 	"github.com/talyvor/lens/internal/pii"
 )
@@ -48,6 +49,8 @@ type Scan struct {
 	Refused       string   `json:"refused,omitempty"`   // why it may not be published; empty when it may
 	Held          string   `json:"held,omitempty"`      // why a person must review it before anyone else may use it (B20.4)
 	Similar       *Similar `json:"similar,omitempty"`   // B32.46: the listing it copies without declaring it as a parent (similarity.go)
+
+	Gym *economy.NegotiationGymResult `json:"gym,omitempty"` // B52.16: a Counter playbook's gym result (playbooks.go)
 }
 
 var (
