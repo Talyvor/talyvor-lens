@@ -2998,7 +2998,8 @@ func run() error {
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
-		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken}
+		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken,
+		scan: scanWriter}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4907,6 +4908,8 @@ func run() error {
 		dualToken.SetRoomBudgets(roomStore)                       // B32.32: a room wallet's monthly limit, within the plan
 		roomStore.SetContextMessages(cfg.RoomContextMessages)     // B32.33: what the room's AI reads
 		roomStore.SetReportsHide(cfg.RoomReportsHide)             // B32.52: reports that take a public room off the list
+		roomStore.SetPointsPerUSD(cfg.RoomPointsPerUSD)           // B41.143: money received takes points off a size
+		roomStore.SetReviewPoints(cfg.RoomReviewPoints)           // B41.144: a reviewer's points when its score agreed
 		mountRoomRoutes(authed, roomStore)
 		mountMoneyEarningsRoutes(authed, dualToken, roomStore) // B46.11: payouts of earnings on the money layer
 		// B32.52: the operator's queue of reported rooms, and keeping, locking, unlocking or closing one (operator audit).
@@ -4919,7 +4922,8 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
-		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
+		mountRoomTakeoverRoutes(authed, roomStore)  // B41.148
+		mountRoomOwnershipRoutes(authed, roomStore) // B41.141
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()
@@ -5584,42 +5588,9 @@ func run() error {
 		// straight to the http.ResponseWriter so a 100k-record CSV never
 		// materialises in memory. Format defaults to JSON; query params
 		// drive the WHERE filters and the LIMIT cap.
-		authed.Get("/v1/audit/export", newAuditExportHandler(auditExporter))
+		authed.Get("/v1/audit/export", newAuditExportHandler(auditExporter, pool))
 
-		authed.Post("/v1/audit/webhook", func(w http.ResponseWriter, req *http.Request) {
-			var in struct {
-				WebhookURL string             `json:"webhook_url"`
-				Filter     audit.ExportFilter `json:"filter"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			if in.WebhookURL == "" {
-				writeJSONErr(w, http.StatusBadRequest, "webhook_url required")
-				return
-			}
-			// Authz (#146): non-admin scoped to own workspace; admin honors the
-			// filter (empty workspace = all tenants, admin-only).
-			effWS, _, ok := effectiveWorkspaceID(req, in.Filter.WorkspaceID)
-			if !ok {
-				writeJSONErr(w, http.StatusForbidden, "forbidden: no workspace identity")
-				return
-			}
-			in.Filter.WorkspaceID = effWS
-			// Fire-and-forget so the caller doesn't block on a slow SIEM.
-			// Use a fresh context detached from the request so cancellation
-			// of the HTTP connection doesn't kill the export mid-flight.
-			go func(filter audit.ExportFilter, url string) {
-				if err := auditExporter.ExportWebhook(context.Background(), url, filter); err != nil {
-					logger.Warn("audit: webhook export failed",
-						slog.String("url", url),
-						slog.String("err", err.Error()),
-					)
-				}
-			}(in.Filter, in.WebhookURL)
-			writeJSONOK(w, http.StatusAccepted, map[string]any{"ok": true, "message": "export started"})
-		})
+		authed.Post("/v1/audit/webhook", newAuditWebhookHandler(auditExporter, pool))
 
 		// API-key pool: enterprise customers attach multiple keys per
 		// provider to escape per-key rate limits. Raw key material is

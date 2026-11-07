@@ -496,12 +496,19 @@ func (s *StatusPage) moneyRails(ctx context.Context) []MoneyRail {
 				}
 			}
 		}
+		anyCleared := false
 		for _, key := range railCapabilities[r.Service] {
 			c := RailCapability{Key: key, Label: labels[key]}
 			if v, ok := cleared[key]; ok {
 				c.Cleared = &v
+				anyCleared = anyCleared || v
 			}
 			m.Capabilities = append(m.Capabilities, c)
+		}
+		// B56.6: the public page names no trading before a trade_ capability is cleared; operators still see the
+		// capabilities on /v1/wallets/capabilities.
+		if r.Service == partners.ServiceBroker && !anyCleared {
+			continue
 		}
 		out = append(out, m)
 	}
