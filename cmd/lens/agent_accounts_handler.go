@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -1854,6 +1855,10 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 	}
 	for _, a := range st.Accounts {
 		_ = cw.Write([]string{"", "", at(st.To), a.Account, "closing", "", "", "", i64(a.ClosingULXC)})
+	}
+	// B56.14: what the agent put on the company's marketplace bill, which moves no balance here.
+	for _, l := range st.MarketplaceBill {
+		_ = cw.Write([]string{"", l.UseID, at(l.At), economy.OnMarketplaceBill, l.Kind, i64(l.AmountULXC), cmp.Or(l.PayeeAgentID, l.ListingID), csvText(l.Memo), ""})
 	}
 	cw.Flush()
 }

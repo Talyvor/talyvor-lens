@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -22,6 +26,8 @@ import (
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
 //	                          test money into a company account, a payment in from the Test partner
+//	GET  /v1/money/accounts/{id}/statement?from=&to=&format=json|csv — B56.14: every posting to it in [from, to), with
+//	                          the opening, in, out and closing balances
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.
@@ -32,6 +38,7 @@ type moneyAccountBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
+	AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (economy.MoneyStatement, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -123,6 +130,28 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONOK(w, http.StatusCreated, e)
 		}
 	})
+	r.Get("/v1/money/accounts/{id}/statement", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req, "")
+		if !ok {
+			return
+		}
+		from, to, asCSV, err := statementPeriod(req, time.Now())
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		st, err := bank.AccountStatement(req.Context(), ws, agentID, chi.URLParam(req, "id"), from, to)
+		switch {
+		case errors.Is(err, economy.ErrMoneyAccountNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		case !asCSV:
+			writeJSONOK(w, http.StatusOK, st)
+		default:
+			writeMoneyStatement(w, st)
+		}
+	})
 	r.Get("/v1/money/accounts/{id}/details", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req, "")
 		if !ok {
@@ -144,4 +173,24 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONOK(w, http.StatusOK, d)
 		}
 	})
+}
+
+// writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,
+// then the closing balance, in the currency's minor units.
+func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.csv"`,
+		st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
+	w.WriteHeader(http.StatusOK)
+	cw := csv.NewWriter(w)
+	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
+	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor"})
+	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor)})
+	for _, l := range st.Lines {
+		_ = cw.Write([]string{l.EntryID, strconv.Itoa(l.Line), at(l.At), l.Kind, i64(l.AmountMinor), st.Currency, l.Funding,
+			csvText(l.Counterparty), csvText(l.Memo), csvText(l.PartnerRef), i64(l.BalanceAfterMinor)})
+	}
+	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor)})
+	cw.Flush()
 }
