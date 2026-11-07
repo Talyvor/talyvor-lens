@@ -81,6 +81,8 @@ type OutsidePayment struct {
 	ArrivesMinor     int64  `json:"arrives_minor,omitempty"`
 	ArrivesCurrency  string `json:"arrives_currency,omitempty"`
 	Rate             string `json:"rate,omitempty"`
+	// B48.31: a payment to a USDC address says where it stands under the Travel Rule, when it is read.
+	TravelRule *PaymentTravelRule `json:"travel_rule,omitempty"`
 
 	holdAccountID string
 	quoteRef      string             // the partner's reference for the quote
@@ -498,6 +500,18 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 // RefreshOutsidePayment reads workspaceID's payment id — with agentID set, only that agent's — and first asks the
 // partner where it stands unless it has failed or come back: a payment the partner never answered is sent again.
 func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (OutsidePayment, error) {
+	p, err := s.refreshOutsidePayment(ctx, workspaceID, agentID, id)
+	if err != nil {
+		return p, err
+	}
+	one := []OutsidePayment{p}
+	if err := s.withTravelRule(ctx, one); err != nil {
+		return p, err
+	}
+	return one[0], nil
+}
+
+func (s *DualTokenStore) refreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (OutsidePayment, error) {
 	p, err := scanOutsidePayment(s.pool.QueryRow(ctx, `SELECT `+outsidePaymentCols+` FROM money_payments
 		WHERE id = $1 AND workspace_id = $2 AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID))
 	if err != nil || p.Status == PaymentFailed || p.Status == PaymentReturned || s.accountPartners == nil {
@@ -560,5 +574,8 @@ func (s *DualTokenStore) OutsidePayments(ctx context.Context, workspaceID, agent
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, s.withTravelRule(ctx, out)
 }

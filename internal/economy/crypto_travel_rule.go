@@ -186,6 +186,70 @@ func (s *DualTokenStore) sendTravelRule(ctx context.Context, id, workspaceID, as
 	return err
 }
 
+// Where a payment to a USDC address stands under the Travel Rule (B48.31).
+const (
+	TravelRuleOff        = "off"         // LENS_TRAVEL_RULE is unset: nothing tells an exchange's address from a self-hosted one
+	TravelRuleSelfHosted = "self_hosted" // no regulated provider holds the address
+	TravelRulePending    = "pending"     // a provider holds it, and its identity data has not gone yet
+	TravelRuleSent       = "sent"        // its identity data went to the provider
+)
+
+// PaymentTravelRule is where a payment to a USDC address stands under the Travel Rule: sent names the provider and its
+// reference for what it was sent.
+type PaymentTravelRule struct {
+	Status      string `json:"status"`
+	VASP        string `json:"vasp,omitempty"`
+	ProviderRef string `json:"provider_ref,omitempty"`
+}
+
+// withTravelRule sets the Travel Rule status of each of ps paid to a USDC address, from its travel_rule_transfers row.
+//
+// shortcut: a payment with no row asks the provider again which address it holds, one call per payment read; keep the
+// answer on the payment when a live Travel Rule partner is chosen.
+func (s *DualTokenStore) withTravelRule(ctx context.Context, ps []OutsidePayment) error {
+	ids := make([]string, len(ps))
+	for i, p := range ps {
+		ids[i] = p.ID
+	}
+	rows, err := s.pool.Query(ctx, `SELECT m.id, m.address, COALESCE(y.network, ''), COALESCE(t.vasp, ''), COALESCE(t.provider_ref, '')
+		FROM money_payments m LEFT JOIN money_payees y ON y.id = m.payee_id AND y.workspace_id = m.workspace_id
+		LEFT JOIN travel_rule_transfers t ON t.payment_id = m.id WHERE m.id = ANY($1) AND m.address <> ''`, ids)
+	if err != nil {
+		return fmt.Errorf("economy: payment's Travel Rule: %w", err)
+	}
+	type row struct{ id, address, network, vasp, ref string }
+	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var x row
+		return x, r.Scan(&x.id, &x.address, &x.network, &x.vasp, &x.ref)
+	})
+	if err != nil {
+		return fmt.Errorf("economy: payment's Travel Rule: %w", err)
+	}
+	byID := map[string]*PaymentTravelRule{}
+	for _, x := range list {
+		tr := &PaymentTravelRule{Status: TravelRuleSent, VASP: x.vasp, ProviderRef: x.ref}
+		switch {
+		case x.vasp != "":
+		case s.travelRule == nil:
+			tr = &PaymentTravelRule{Status: TravelRuleOff}
+		default:
+			vasp, err := s.travelRule.Provider(ctx, x.network, x.address)
+			if err != nil {
+				return fmt.Errorf("economy: payment's Travel Rule: %w", err)
+			}
+			tr = &PaymentTravelRule{Status: TravelRuleSelfHosted}
+			if vasp != "" {
+				tr = &PaymentTravelRule{Status: TravelRulePending, VASP: vasp}
+			}
+		}
+		byID[x.id] = tr
+	}
+	for i := range ps {
+		ps[i].TravelRule = byID[ps[i].ID]
+	}
+	return nil
+}
+
 // earningsTravelRule is the Travel Rule step before earnings payout p is paid from the wallet fromRef to d's address:
 // held is why p waits — while what is paid to d's recipient takes a self-hosted address over SelfHostedProofAboveMinor
 // and the recipient has not proved they hold its key — and otherwise the identity data goes to the provider that holds

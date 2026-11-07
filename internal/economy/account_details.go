@@ -107,22 +107,44 @@ var ErrTestMoney = errors.New("economy: invalid amount to add")
 
 // AddTestMoney is B17.255: the owner puts amountMinor of test money into workspaceID's company account accountID, so
 // a preview can pay out of it. It is a payment in from the Test partner through ReceivePayment — screened, asked of
-// payments_in, posted once per key and funding test, so it never counts as real money.
+// payments_in, posted once per key and funding test, so it never counts as real money. B48.31: accountID may be an
+// agent's open wallet too, in any asset; one the sandbox holds is credited there as well, so the agent can spend it.
 func (s *DualTokenStore) AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (MoneyEntry, error) {
 	if amountMinor <= 0 || strings.TrimSpace(key) == "" {
 		return MoneyEntry{}, fmt.Errorf("%w: it needs a positive amount_minor and an idempotency_key", ErrTestMoney)
 	}
-	var ref, currency string
-	err := s.pool.QueryRow(ctx, `SELECT partner_account_ref, currency FROM money_accounts
-		WHERE id = $1 AND workspace_id = $2 AND purpose = 'company' AND status = 'open'`, accountID, workspaceID).Scan(&ref, &currency)
+	// An agent's sub-account of its owner's (B30.13) is paid at its owner's details with its payment reference.
+	var ref, currency, agentID, reference, partner string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(c.partner_account_ref, a.partner_account_ref), a.currency, COALESCE(a.agent_id, ''),
+		COALESCE(a.payment_reference, ''), COALESCE((SELECT m.name FROM money_accounts m WHERE m.workspace_id = a.workspace_id
+			AND m.partner_account_ref = a.partner_account_ref AND m.purpose = 'partner' AND a.purpose = 'agent' AND a.partner_account_ref <> '' LIMIT 1), '')
+		FROM money_accounts a LEFT JOIN money_accounts c ON c.id = a.parent_account_id
+		WHERE a.id = $1 AND a.workspace_id = $2 AND a.purpose IN ('company', 'agent') AND a.status = 'open'`,
+		accountID, workspaceID).Scan(&ref, &currency, &agentID, &reference, &partner)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MoneyEntry{}, fmt.Errorf("%w: no open company account %s in this workspace", ErrMoneyAccountNotFound, accountID)
+		return MoneyEntry{}, fmt.Errorf("%w: no open company account or agent wallet %s in this workspace", ErrMoneyAccountNotFound, accountID)
 	}
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: add money: %w", err)
 	}
-	return s.ReceivePayment(ctx, InboundPayment{PartnerAccountRef: ref, PartnerRef: "test_money:" + accountID + ":" + key,
-		Payer: "Talyvor", Reference: "Money added", AmountMinor: amountMinor, Currency: currency, Funding: FundingTest})
+	e, err := s.ReceivePayment(ctx, InboundPayment{PartnerAccountRef: ref, PartnerRef: "test_money:" + accountID + ":" + key,
+		Payer: "Talyvor", Reference: strings.TrimSpace("Money added " + reference), AmountMinor: amountMinor, Currency: currency, Funding: FundingTest})
+	if err != nil || partner != money.SandboxName || s.moneyLayer == nil {
+		return e, err
+	}
+	rt := agentWalletRoute(workspaceID, agentID, currency)
+	if via, err := s.moneyLayer.Partner(ctx, money.CapTransfers, rt); err != nil || via != money.SandboxName {
+		return e, err
+	}
+	t, err := s.moneyLayer.Transfers(ctx, rt)
+	if err == nil {
+		_, err = t.Credit(ctx, money.Credit{Key: "test_money:" + accountID + ":" + key, To: ref,
+			Amount: money.Amount{Minor: amountMinor, Asset: currency}, PartnerRef: e.PartnerRef})
+	}
+	if err != nil { // posted, not yet spendable: the same key again posts nothing more and credits the sandbox once
+		return MoneyEntry{}, fmt.Errorf("economy: add money: the sandbox's wallet was not credited: %w", err)
+	}
+	return e, nil
 }
 
 // paymentReference is an agent account's payment reference, found in what a payer quoted once it is upper-cased and

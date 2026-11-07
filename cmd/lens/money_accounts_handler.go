@@ -21,7 +21,8 @@ import (
 //	GET  /v1/money/accounts/{id}/details — what a payer pays into it (B30.14): the company account's details, and an
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
-//	                          test money into a company account, a payment in from the Test partner
+//	                          test money into a company account, a payment in from the Test partner; B48.31: or into
+//	                          an agent's open wallet, in any asset, spendable on the sandbox
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.

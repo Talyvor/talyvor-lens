@@ -39,7 +39,8 @@ type TravelRuleTransfer struct {
 }
 
 // TestTravelRuleProvider is test mode for the Travel Rule: VASPs is the addresses a regulated provider holds (lower
-// case → its name), and every other address is self-hosted. It keeps what it is sent, once per id.
+// case → its name), beside TestVASPAddress, which "Test Exchange" always holds (B48.31), and every other address is
+// self-hosted. It keeps what it is sent, once per id.
 type TestTravelRuleProvider struct {
 	VASPs map[string]string
 
@@ -50,9 +51,19 @@ type TestTravelRuleProvider struct {
 // Name is "test".
 func (*TestTravelRuleProvider) Name() string { return "test" }
 
-// Provider is the provider VASPs names for address.
+// TestVASPAddress is the address the Test Travel Rule provider always names as held by TestVASP (B48.31).
+const TestVASPAddress, TestVASP = "0x7e57000000000000000000000000000000000002", "Test Exchange"
+
+// Provider is the provider VASPs names for address, and TestVASP for TestVASPAddress.
 func (p *TestTravelRuleProvider) Provider(_ context.Context, _, address string) (string, error) {
-	return p.VASPs[strings.ToLower(strings.TrimSpace(address))], nil
+	address = strings.ToLower(strings.TrimSpace(address))
+	if vasp, ok := p.VASPs[address]; ok {
+		return vasp, nil
+	}
+	if address == TestVASPAddress {
+		return TestVASP, nil
+	}
+	return "", nil
 }
 
 // Send keeps t.
