@@ -397,7 +397,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/approve": map[string]any{
 			"post": withBody(op("Approve a request, once — or approve it and always allow its payee",
-				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body carries {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge. With always_allow, a payment's approval also saves that allowance for its payee on the agent's rules (payee_allowances), and the answer adds the rules as saved.`,
+				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body carries {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge; approving with always_allow, over the challenge asked for with that same always_allow, which the signature covers. With always_allow, a payment's approval also saves that allowance for its payee on the agent's rules (payee_allowances), and the answer adds the rules as saved.`,
 				[]map[string]any{ws, approval},
 				map[string]any{"200": ok("the approval, approved", ref("AgentApproval")), "400": map[string]any{"description": "always_allow without an amount above 0 and per day or month"},
 					"403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"},

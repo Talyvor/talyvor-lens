@@ -35,3 +35,33 @@ func TestB5513_WhatLoosensTheRules(t *testing.T) {
 		}
 	}
 }
+
+// B54.29 — a payee allowance loosens the rules when it is new, raised, or moved from a month to a day; moving the same
+// amount from a day to a month, or setting an allowance of 0 (none), does not.
+func TestB5429_WhichAllowanceChangesLoosen(t *testing.T) {
+	was := AgentRules{PayeeAllowances: map[string]PayeeAllowance{"agt_a": {ULXC: 5, Per: "day"}, "agt_m": {ULXC: 5, Per: "month"}}}
+	for _, c := range []struct {
+		name  string
+		allow map[string]PayeeAllowance
+		want  bool
+	}{
+		{"the same amount a month instead of a day", map[string]PayeeAllowance{"agt_a": {ULXC: 5, Per: "month"}}, false},
+		{"an allowance of 0 for a new payee", map[string]PayeeAllowance{"agt_b": {ULXC: 0, Per: "day"}}, false},
+		{"an allowance lowered", map[string]PayeeAllowance{"agt_a": {ULXC: 4, Per: "day"}}, false},
+		{"an allowance raised", map[string]PayeeAllowance{"agt_a": {ULXC: 6, Per: "day"}}, true},
+		{"the same amount a day instead of a month", map[string]PayeeAllowance{"agt_m": {ULXC: 5, Per: "day"}}, true},
+		{"a new payee allowed", map[string]PayeeAllowance{"agt_b": {ULXC: 1, Per: "month"}}, true},
+	} {
+		now := AgentRules{PayeeAllowances: map[string]PayeeAllowance{"agt_a": was.PayeeAllowances["agt_a"], "agt_m": was.PayeeAllowances["agt_m"]}}
+		for id, a := range c.allow {
+			now.PayeeAllowances[id] = a
+		}
+		looser := false
+		for _, ch := range rulesChanges(was, now) {
+			looser = looser || ch.looser
+		}
+		if looser != c.want {
+			t.Errorf("%s: looser = %v, want %v (%v)", c.name, looser, c.want, rulesChanges(was, now))
+		}
+	}
+}

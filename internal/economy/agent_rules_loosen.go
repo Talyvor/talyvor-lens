@@ -185,16 +185,16 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		}
 		add(l.rule, text(l.was), text(l.now), looser)
 	}
-	allowed := func(a PayeeAllowance, ok bool) string {
-		if !ok {
+	allowed := func(a PayeeAllowance) string {
+		if a.ULXC <= 0 { // none, or 0, which allows nothing
 			return "none"
 		}
 		return fmt.Sprintf("up to %s LXC a %s", lxcString(a.ULXC), a.Per)
 	}
 	for _, id := range slices.Sorted(maps.Keys(mergedKeys(was.PayeeAllowances, now.PayeeAllowances))) {
-		b, hadB := was.PayeeAllowances[id]
-		n, hasN := now.PayeeAllowances[id]
-		add("Always allow "+id, allowed(b, hadB), allowed(n, hasN), hasN && (!hadB || n.ULXC > b.ULXC || n.Per != b.Per))
+		b, n := was.PayeeAllowances[id], now.PayeeAllowances[id]
+		// B54.29: an amount a month is never more than the same amount a day, so only a month made a day loosens it.
+		add("Always allow "+id, allowed(b), allowed(n), n.ULXC > b.ULXC || (n.ULXC > 0 && b.Per == "month" && n.Per == "day"))
 	}
 	hours := hoursLoosened(was, now)
 	add("Works from", cmp.Or(was.ActiveFrom, "any time"), cmp.Or(now.ActiveFrom, "any time"), hours)
@@ -368,11 +368,9 @@ func (s *DualTokenStore) ChangeAgentRules(ctx context.Context, workspaceID, agen
 }
 
 // BoostAgentRuleSigned is BoostAgentRule once the workspace's passkey or device key has signed exactly b, when it
-// has one: a boost always loosens the rules.
+// has one: a boost always loosens the rules. Judged and saved in the transaction that spends the signature, holding
+// the agent's rules lock, so a boost the rules refuse leaves its signature unspent (B54.29).
 func (s *DualTokenStore) BoostAgentRuleSigned(ctx context.Context, workspaceID, agentID string, b AgentRuleBoost, a *passkey.Assertion) (AgentRuleBoost, error) {
-	if err := agentExists(ctx, s.pool, workspaceID, agentID); err != nil {
-		return b, err
-	}
 	purpose, err := boostPurpose(agentID, b)
 	if err != nil {
 		return b, err
@@ -382,11 +380,14 @@ func (s *DualTokenStore) BoostAgentRuleSigned(ctx context.Context, workspaceID, 
 		return b, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agent_rules:' || $1, 0))`, agentID); err != nil {
+		return b, fmt.Errorf("economy: boost agent rule: %w", err)
+	}
+	if b, err = s.boostAgentRule(ctx, tx, workspaceID, agentID, b); err != nil {
+		return b, err
+	}
 	if err := s.authorizeSignedTx(ctx, tx, workspaceID, purpose, a, ErrRulesUnsigned); err != nil {
 		return b, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return b, err
-	}
-	return s.BoostAgentRule(ctx, workspaceID, agentID, b)
+	return b, tx.Commit(ctx)
 }
