@@ -114,8 +114,8 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 		(got != p1+","+p3+","+p4 && got != p2+","+p3+","+p4) {
 		t.Fatalf("the objection is %+v, want it open about Alice's points before p3, p4 and one of p1 and p2", o)
 	}
-	// One objection to a contribution is before a panel at a time.
-	do(http.StatusConflict, nil, linked, http.MethodPost, base+"/objections", raise)
+	// Bob objects once to a contribution's points.
+	do(http.StatusConflict, nil, bob, http.MethodPost, base+"/objections", raise)
 	do(http.StatusForbidden, nil, bob, http.MethodPut, base+"/objections/"+o.ID+"/vote", `{"uphold":true}`)
 
 	// Two of three uphold it: the objection is decided, and Alice's 400 points become 200 by an objection row.
