@@ -112,7 +112,8 @@ func (s *DualTokenStore) ListDeviceKeys(ctx context.Context, workspaceID string)
 	return out, rows.Err()
 }
 
-// RevokeDeviceKey revokes a device key at once, unless it is the workspace's last key (B55.15); revoking it again
+// RevokeDeviceKey revokes a device key at once, unless it is the workspace's last key or owns an agent's
+// smart account (B55.15); revoking it again
 // changes nothing.
 func (s *DualTokenStore) RevokeDeviceKey(ctx context.Context, workspaceID, id, by string) (DeviceKey, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -134,6 +135,9 @@ func (s *DualTokenStore) RevokeDeviceKey(ctx context.Context, workspaceID, id, b
 		return d, nil
 	case last != nil:
 		return DeviceKey{}, last
+	}
+	if err := refuseAccountOwner(ctx, tx, workspaceID, "owner_device_id", id); err != nil {
+		return DeviceKey{}, err
 	}
 	d, err = scanDeviceKey(tx.QueryRow(ctx, `UPDATE workspace_device_keys SET revoked_at = now(), revoked_by = $3
 		WHERE id = $1 AND workspace_id = $2 RETURNING `+deviceKeyCols, id, workspaceID, by))

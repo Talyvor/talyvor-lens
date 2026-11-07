@@ -110,6 +110,13 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var taken bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1)`, r.CredentialID).Scan(&taken); err != nil {
+		return Passkey{}, fmt.Errorf("economy: register passkey: %w", err)
+	}
+	if taken { // B55.15: a removed passkey keeps its row, so it is never registered again
+		return Passkey{}, fmt.Errorf("%w: this passkey is registered already, or was removed; make a new one", passkey.ErrInvalid)
+	}
 	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
 		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
 		return Passkey{}, s.waitEnrolment(ctx, tx, workspaceID, "register", challenge, KeyEnrolment{Kind: "passkey", Name: name},
@@ -150,6 +157,26 @@ var ErrLastKey = errors.New("economy: this is the workspace's last key")
 // LastKeySentence is what the owner is told when a removal is refused with ErrLastKey.
 const LastKeySentence = "This is your last key. With none, nobody could approve, so add another first."
 
+// ErrKeyOwnsAccount (B55.15): the key owns an agent's smart account, and only it signs for that account.
+var ErrKeyOwnsAccount = errors.New("economy: this key owns an agent's smart account")
+
+// KeyOwnsAccountSentence is what the owner is told when a removal is refused with ErrKeyOwnsAccount.
+const KeyOwnsAccountSentence = "This key owns an agent's account, so it stays. Without it, nobody could sign for that account."
+
+// refuseAccountOwner is ErrKeyOwnsAccount when the key whose id is in column (owner_credential_id or owner_device_id)
+// owns one of workspaceID's agent smart accounts.
+func refuseAccountOwner(ctx context.Context, tx pgx.Tx, workspaceID, column, id string) error {
+	var owns bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_smart_accounts WHERE workspace_id = $1 AND `+column+` = $2)`,
+		workspaceID, id).Scan(&owns); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	if owns {
+		return ErrKeyOwnsAccount
+	}
+	return nil
+}
+
 // ErrPasskeyNotFound: no such passkey in the workspace.
 var ErrPasskeyNotFound = errors.New("economy: no such passkey in this workspace")
 
@@ -170,7 +197,8 @@ func refuseLastKey(ctx context.Context, tx pgx.Tx, workspaceID string) error {
 	return nil
 }
 
-// RemovePasskey (B55.15) removes a passkey at once, with no signature, unless it is the workspace's last key; removing it
+// RemovePasskey (B55.15) removes a passkey at once, with no signature, unless it is the workspace's last key or owns an
+// agent's smart account; removing it
 // again changes nothing. A removed passkey signs nothing, and still counts as a key, as a revoked phone key does.
 func (s *DualTokenStore) RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error {
 	tx, err := s.pool.Begin(ctx)
@@ -195,6 +223,9 @@ func (s *DualTokenStore) RemovePasskey(ctx context.Context, workspaceID, credent
 		return nil
 	case last != nil:
 		return last
+	}
+	if err := refuseAccountOwner(ctx, tx, workspaceID, "owner_credential_id", credentialID); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET removed_at = now(), removed_by = $3 WHERE credential_id = $1 AND workspace_id = $2`,
 		credentialID, workspaceID, by); err != nil {

@@ -118,7 +118,7 @@ import (
 //	POST   /v1/workspaces/{wsID}/agents/passkeys/challenge           a registration challenge and the RP ID
 //	POST   /v1/workspaces/{wsID}/agents/passkeys   {credential_id, name, public_key (SPKI), client_data_json, authenticator_data}
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
-//	DELETE /v1/workspaces/{wsID}/agents/passkeys/{credentialID}      B55.15: removed at once, unless it is the last key (409)
+//	DELETE /v1/workspaces/{wsID}/agents/passkeys/{credentialID}      B55.15: removed at once, unless it is the last key or owns an agent's account (409)
 //	GET    /v1/workspaces/{wsID}/agents/keys                         B55.15: every active passkey and phone key
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
@@ -1512,7 +1512,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"passkeys": list})
 	})
-	r.Delete("/v1/workspaces/{wsID}/agents/passkeys/{credentialID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Delete("/v1/workspaces/{wsID}/agents/passkeys/{credentialID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		who, _ := storedanswers.OwnerOrAdmin(req.Context())
 		id := chi.URLParam(req, "credentialID")
 		err := bank.RemovePasskey(req.Context(), chi.URLParam(req, "wsID"), id, who)
@@ -1521,6 +1521,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrLastKey):
 			writeJSONErr(w, http.StatusConflict, economy.LastKeySentence)
+		case errors.Is(err, economy.ErrKeyOwnsAccount):
+			writeJSONErr(w, http.StatusConflict, economy.KeyOwnsAccountSentence)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

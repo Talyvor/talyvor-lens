@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,11 +27,16 @@ import (
 	"github.com/talyvor/lens/internal/tenant"
 )
 
-const b5515LastKey = "This is your last key. With none, nobody could approve, so add another first."
+const (
+	b5515LastKey       = "This is your last key. With none, nobody could approve, so add another first."
+	b5515OwnsAnAccount = "This key owns an agent's account, so it stays. Without it, nobody could sign for that account."
+)
 
 // b5515Workspace is a workspace with one passkey and one phone key, each held by the test, mounted on its own router.
 type b5515Workspace struct {
 	call        func(method, path string, body any) (int, map[string]any)
+	callAs      func(actx *auth.AuthContext, method, path string, body any) (int, map[string]any)
+	register    func(sign func(challenge string) *passkey.Assertion) (int, map[string]any) // registers the test's passkey again
 	signPasskey func(challenge string) *passkey.Assertion
 	signPhone   func(challenge string) *passkey.Assertion
 	credID      string
@@ -42,17 +48,18 @@ func b5515NewWorkspace(t *testing.T, store *economy.DualTokenStore, r chi.Router
 	const rpID, origin = "app.talyvor.com", "https://app.talyvor.com"
 	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}
 	var w b5515Workspace
-	w.call = func(method, path string, body any) (int, map[string]any) {
+	w.callAs = func(actx *auth.AuthContext, method, path string, body any) (int, map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(body)
 		req := httptest.NewRequest(method, path, strings.NewReader(string(b)))
-		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), actx))
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		var out map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &out)
 		return rec.Code, out
 	}
+	w.call = func(method, path string, body any) (int, map[string]any) { return w.callAs(owner, method, path, body) }
 	b64 := base64.RawURLEncoding.EncodeToString
 	rpHash := sha256.Sum256([]byte(rpID))
 	clientData := func(typ, challenge string) []byte {
@@ -74,11 +81,19 @@ func b5515NewWorkspace(t *testing.T, store *economy.DualTokenStore, r chi.Router
 		sig, _ := ecdsa.SignASN1(rand.Reader, pk, digest[:])
 		return &passkey.Assertion{CredentialID: w.credID, ClientDataJSON: b64(cdj), AuthenticatorData: b64(ad), Signature: b64(sig)}
 	}
-	_, c := w.call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/passkeys/challenge", nil)
-	ad := binary.BigEndian.AppendUint32(append(append([]byte{}, rpHash[:]...), 0x45), 0)
-	ad = append(append(binary.BigEndian.AppendUint16(append(ad, make([]byte, 16)...), uint16(len(cred))), cred...), 0xa0)
-	if code, out := w.call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/passkeys", map[string]any{"credential_id": w.credID, "name": "This Mac",
-		"public_key": b64(pkSPKI), "client_data_json": b64(clientData("webauthn.create", c["challenge"].(string))), "authenticator_data": b64(ad)}); code != http.StatusCreated {
+	w.register = func(sign func(challenge string) *passkey.Assertion) (int, map[string]any) {
+		_, c := w.call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/passkeys/challenge", nil)
+		ad := binary.BigEndian.AppendUint32(append(append([]byte{}, rpHash[:]...), 0x45), 0)
+		ad = append(append(binary.BigEndian.AppendUint16(append(ad, make([]byte, 16)...), uint16(len(cred))), cred...), 0xa0)
+		var a *passkey.Assertion
+		if sign != nil {
+			a = sign(c["challenge"].(string))
+		}
+		return w.call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/passkeys", map[string]any{"credential_id": w.credID, "name": "This Mac",
+			"public_key": b64(pkSPKI), "client_data_json": b64(clientData("webauthn.create", c["challenge"].(string))), "authenticator_data": b64(ad),
+			"assertion": a})
+	}
+	if code, out := w.register(nil); code != http.StatusCreated {
 		t.Fatalf("register passkey = %d %v", code, out)
 	}
 
@@ -90,7 +105,7 @@ func b5515NewWorkspace(t *testing.T, store *economy.DualTokenStore, r chi.Router
 		sig, _ := ecdsa.SignASN1(rand.Reader, dk, h[:])
 		return b64(sig)
 	}
-	_, c = w.call(http.MethodPost, "/v1/money/devices/challenge", nil)
+	_, c := w.call(http.MethodPost, "/v1/money/devices/challenge", nil)
 	reg := c["challenge"].(string)
 	code, dev := w.call(http.MethodPost, "/v1/money/devices", map[string]any{"platform": "test", "name": "Ada's phone", "public_key": b64(dkSPKI),
 		"challenge": reg, "signature": signDevice(reg), "attestation": "", "assertion": w.signPasskey(reg)})
@@ -224,5 +239,65 @@ func TestB5515_AnyKeyButTheLastCanBeRemoved(t *testing.T) {
 	}
 	if active != 1 || codes[0]+codes[1] != http.StatusOK+http.StatusConflict {
 		t.Errorf("two removals at once = %v, %d active keys; want one 200, one 409 and one key left", codes, active)
+	}
+}
+
+// B55.15 review of #1030 — the key that owns an agent's smart account is never removed or revoked, since only it signs
+// for that account; no workspace key, admin or not, removes or revokes a key (B50.33); and registering a removed passkey
+// again is refused in words, not with a 500.
+func TestB5515_TheKeyThatOwnsAnAccountStaysAndOnlyTheOwnerRemoves(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5515-owner"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetApprovalAuth(passkey.RelyingParty{ID: "app.talyvor.com", Origins: []string{"https://app.talyvor.com"}}, nil)
+	store.SetDeviceKeys(devicekey.Verifier{AllowTest: true})
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	mountDeviceKeyRoutes(r, store)
+	w := b5515NewWorkspace(t, store, r, ws)
+	removePasskey := "/v1/workspaces/" + ws + "/agents/passkeys/" + w.credID
+	revokePhone := "/v1/money/devices/" + w.deviceID + "/revoke"
+
+	// An admin-scoped workspace key removes and revokes nothing.
+	adminKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-admin", Scopes: []string{auth.ScopeAdmin}}
+	if code, out := w.callAs(adminKey, http.MethodDelete, removePasskey, nil); code != http.StatusForbidden {
+		t.Errorf("remove a passkey with an admin workspace key = %d %v, want 403", code, out)
+	}
+	if code, out := w.callAs(adminKey, http.MethodPost, revokePhone, nil); code != http.StatusForbidden {
+		t.Errorf("revoke a phone key with an admin workspace key = %d %v, want 403", code, out)
+	}
+
+	agent, err := store.CreateAgent(ctx, ws, "trader", "user-ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO agent_smart_accounts (agent_id, workspace_id, address, factory, implementation,
+		owner_credential_id, owner_public_key, agent_signer, provider, solana_address)
+		VALUES ($1, $2, '0xacc', '0xfac', '0x1mp', $3, decode(repeat('ab', 64), 'hex'), '0xa9e', 'test', 'So1')`,
+		agent.ID, ws, w.credID); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := w.call(http.MethodDelete, removePasskey, nil); code != http.StatusConflict || out["error"] != b5515OwnsAnAccount {
+		t.Errorf("remove the passkey that owns an agent's account = %d %v, want 409 %q", code, out, b5515OwnsAnAccount)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_smart_accounts SET owner_credential_id = '', owner_device_id = $2 WHERE agent_id = $1`,
+		agent.ID, w.deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := w.call(http.MethodPost, revokePhone, nil); code != http.StatusConflict || out["error"] != b5515OwnsAnAccount {
+		t.Errorf("revoke the phone key that owns an agent's account = %d %v, want 409 %q", code, out, b5515OwnsAnAccount)
+	}
+	_, out := w.call(http.MethodGet, "/v1/workspaces/"+ws+"/agents/keys", nil)
+	if keys, _ := out["keys"].([]any); len(keys) != 2 {
+		t.Errorf("GET keys after both refusals = %v, want both keys still active", out)
+	}
+
+	// The passkey no longer owns anything: it goes, and registering it again is refused in words.
+	if code, out := w.call(http.MethodDelete, removePasskey, nil); code != http.StatusOK {
+		t.Fatalf("remove the passkey that owns nothing = %d %v, want 200", code, out)
+	}
+	if code, out := w.register(w.signPhone); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out["error"]), "removed") {
+		t.Errorf("register the removed passkey again = %d %v, want 400 saying it was removed", code, out)
 	}
 }

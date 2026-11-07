@@ -24,7 +24,7 @@ import (
 //	                                      "signature", "attestation"}, base64url — keeps the key (201)
 //	GET  /v1/money/devices               — the workspace's device keys, revoked ones included
 //	POST /v1/money/devices/{id}/revoke   — revoked at once: its signatures are refused from now on; the workspace's
-//	                                       last key is never revoked (B55.15, 409)
+//	                                       last key, or one that owns an agent's account, is never revoked, and only the owner signed in revokes (B55.15, 409)
 //	POST /v1/money/devices/{id}/push-token {"push_token"} — B40.15: the phone's APNs or FCM token ("" removes it);
 //	                                       approvals are then pushed to it, beside web push, until the key is revoked
 //
@@ -108,7 +108,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"devices": list})
 	})
-	r.Post("/v1/money/devices/{id}/revoke", func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/money/devices/{id}/revoke", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		ws, who, ok := owner(w, req)
 		if !ok {
 			return
@@ -119,12 +119,14 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrLastKey):
 			writeJSONErr(w, http.StatusConflict, economy.LastKeySentence)
+		case errors.Is(err, economy.ErrKeyOwnsAccount):
+			writeJSONErr(w, http.StatusConflict, economy.KeyOwnsAccountSentence)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, d)
 		}
-	})
+	}))
 	r.Post("/v1/money/devices/{id}/push-token", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := owner(w, req)
 		if !ok {
