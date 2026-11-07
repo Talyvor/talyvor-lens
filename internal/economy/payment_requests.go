@@ -668,8 +668,8 @@ func formatMinor(currency string, minor int64) string {
 }
 
 // itemWaits is an item of a request not paid and not settled yet: one waiting for the person, or a covered one not
-// paid yet or that failed (B55.21). A blocked item never waits.
-const itemWaits = `decision <> 'blocked' AND payment_id = '' AND pay_status IN ('', 'failed')`
+// paid yet, failed or held for its new payee (B55.21). A blocked item never waits.
+const itemWaits = `decision <> 'blocked' AND payment_id = '' AND pay_status IN ('', 'failed', 'held')`
 
 // CancelPaymentRequest cancels a request not yet cancelled: what still waits is never paid, and its auto items not
 // paid stop counting towards the mandates' limits; an item paid stays paid (B55.21). agentID, when not "", cancels

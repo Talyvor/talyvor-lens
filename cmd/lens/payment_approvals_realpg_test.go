@@ -279,11 +279,11 @@ func TestPaymentRequests_OneApprovalEachItemPaidOnce(t *testing.T) {
 // mixed request the covered item is paid at once and the rest once approved; declining keeps what was paid and
 // cancels what waits, and a request with nothing waiting cannot be declined; the runner pays a covered item that failed
 // for want of money, but never one paid since under another request, one prepared more than a day ago, nor one
-// prepared before covered payments were paid when prepared; and a paused agent's covered request is refused, and
-// stays unpaid once the agent is resumed.
+// prepared before covered payments were paid when prepared; a paused agent's covered request is refused, and stays
+// unpaid once the agent is resumed; and a covered payment held for its new payee can be declined, and is never paid.
 func TestPaymentRequests_CoveredPaidWhenPrepared(t *testing.T) {
 	const ws = "ws-b5521-covered"
-	w := newPaymentRequestWorld(t, ws, 0, "Ada Plumbing", "Grace Groceries")
+	w := newPaymentRequestWorld(t, ws, 0, "Ada Plumbing", "Grace Groceries", "Carol Consulting")
 	pool, store, payee, call := w.pool, w.store, w.payee, w.call
 	ctx := context.Background()
 	const agentID = "agt_b5521"
@@ -474,4 +474,35 @@ func TestPaymentRequests_CoveredPaidWhenPrepared(t *testing.T) {
 		t.Errorf("the agent's covered request once resumed = %+v, want paid", r.Items[0])
 	}
 	paidOut("a new covered request once resumed", "Ada Plumbing 200")
+
+	// A covered £1,500 to a payee saved today is held for its 24 hours: declining it cancels it, and it is never paid.
+	canonical, challenge, _, err = store.PreparePermissionMandate(ctx, ws, economy.PermissionMandateTerms{
+		Principal: economy.MandatePrincipal{Type: "person", ID: "ada", Name: "Ada Lovelace"}, Clients: []string{"chat"},
+		Scope:    economy.MandateScope{Payees: []string{payee["Carol Consulting"]}, Currencies: []string{"GBP"}},
+		Limits:   economy.MandateLimits{PerPayment: map[string]int64{"GBP": 200000}},
+		NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeConfirmationOfPayee}, ExpiresAt: time.Now().Add(48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePermissionMandate(ctx, ws, "ada", canonical, w.sign(challenge)); err != nil {
+		t.Fatal(err)
+	}
+	_, consult := prepare("consult-1", `{"payee_id":"`+payee["Carol Consulting"]+`","currency":"GBP","amount_minor":150000,"reference":"Audit"}`)
+	if item(consult, 0)["pay_status"] != economy.PayHeld {
+		t.Fatalf("a covered £1,500 to a payee saved today = %v, want held", consult)
+	}
+	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+consult["id"].(string)+"/cancel", "", ""); code != http.StatusOK ||
+		item(out, 0)["pay_status"] != economy.PayNotApproved {
+		t.Errorf("declining the held payment = %d %v, want cancelled and not approved", code, out)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE money_payees SET created_at = now() - interval '25 hours' WHERE id = $1`, payee["Carol Consulting"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunHeldPayments(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunCoveredPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	paidOut("the held payment declined")
 }
