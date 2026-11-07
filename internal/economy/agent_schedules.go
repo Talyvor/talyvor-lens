@@ -139,6 +139,21 @@ func (s *DualTokenStore) CreateStandingOrder(ctx context.Context, workspaceID, f
 	return sc, nil
 }
 
+// BringTestScheduleDue is B45.42: an active standing order's next tick moved to now, so the minute tick runs it once as
+// it would on its day. Only the synthetic route calls it, for a test workspace; an order still awaiting its signature
+// is not active and is not found.
+func (s *DualTokenStore) BringTestScheduleDue(ctx context.Context, workspaceID, scheduleID string, now time.Time) (AgentSchedule, error) {
+	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `UPDATE agent_payment_schedules SET next_run_at = $3
+		WHERE id = $1 AND workspace_id = $2 AND active RETURNING `+agentScheduleColumns, scheduleID, workspaceID, now.UTC()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sc, ErrScheduleNotFound
+	}
+	if err != nil {
+		return sc, fmt.Errorf("economy: bring schedule due: %w", err)
+	}
+	return sc, nil
+}
+
 // SkipAgentScheduleTick skips a schedule's next tick: it is recorded as a skipped run and the schedule moves on to
 // the tick after it.
 func (s *DualTokenStore) SkipAgentScheduleTick(ctx context.Context, workspaceID, scheduleID string) (AgentSchedule, error) {

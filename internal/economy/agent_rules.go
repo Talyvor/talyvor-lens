@@ -494,15 +494,19 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 
 // GetAgentRules reads an agent's rules; an agent with none set has none.
 func (s *DualTokenStore) GetAgentRules(ctx context.Context, workspaceID, agentID string) (AgentRules, error) {
+	return getAgentRules(ctx, s.pool, workspaceID, agentID)
+}
+
+func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (AgentRules, error) {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE id = $1 AND workspace_id = $2)`,
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE id = $1 AND workspace_id = $2)`,
 		agentID, workspaceID).Scan(&exists); err != nil {
 		return AgentRules{}, fmt.Errorf("economy: agent rules: %w", err)
 	}
 	if !exists {
 		return AgentRules{}, ErrAgentNotFound
 	}
-	r, err := scanAgentRules(s.pool.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID))
+	r, err := scanAgentRules(q.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var hourly, weekly, rpm, commitment int64
 		var maySubscribe bool

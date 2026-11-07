@@ -262,7 +262,7 @@ type agentBank interface {
 	EndAgentBoost(ctx context.Context, workspaceID, agentID, rule string) error
 	ListAgentApprovals(ctx context.Context, workspaceID string) ([]economy.AgentApproval, error)
 	DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (economy.AgentApproval, error)
-	DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, a passkey.Assertion) (economy.AgentApproval, error)
+	DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, allow *economy.PayeeAllowance, a passkey.Assertion) (economy.AgentApproval, error)
 	AllowPayee(ctx context.Context, workspaceID, approvalID string, a economy.PayeeAllowance) (economy.AgentRules, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
@@ -287,11 +287,11 @@ type agentBank interface {
 	SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (economy.AgentTopUp, error)
 	GetAgentTopUp(ctx context.Context, workspaceID, agentID string) (economy.AgentTopUp, bool, error)
 	RemoveAgentTopUp(ctx context.Context, workspaceID, agentID string) error
-	AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error
+	AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, allow *economy.PayeeAllowance, a *passkey.Assertion) error
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
 	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
-	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error)
+	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string, allow *economy.PayeeAllowance) (challenge string, credentialIDs []string, err error)
 	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
 	DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]economy.AgentApproval, error)
 	PushPublicKey() (string, bool)
@@ -1006,8 +1006,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			if in.Assertion != nil {
 				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
 				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
-				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, *in.Assertion)
-			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, nil); err == nil {
+				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
+			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.AlwaysAllow, nil); err == nil {
 				a, err = bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
 			}
 			switch {
@@ -1509,7 +1509,12 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		writeJSONOK(w, http.StatusOK, map[string]any{"passkeys": list})
 	})
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
-		c, creds, err := bank.ApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"))
+		// B54.29: approving with always_allow is signed over the allowance too, so its challenge names it.
+		var in struct {
+			AlwaysAllow *economy.PayeeAllowance `json:"always_allow"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		c, creds, err := bank.ApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"), in.AlwaysAllow)
 		switch {
 		case errors.Is(err, economy.ErrApprovalNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
