@@ -568,7 +568,12 @@ func (x *ChainIndexer) value(ctx context.Context, n ChainNetwork, m *chainMoveme
 		m.id, v, currency); err != nil {
 		return err
 	}
-	m.valued, m.value, m.valueCurrency = true, v, currency
+	// read back: a value another poll kept first is the one this movement is screened at
+	if err = x.s.pool.QueryRow(ctx, `SELECT value_minor, value_currency FROM chain_movements WHERE id = $1`, m.id).Scan(&m.value,
+		&m.valueCurrency); err != nil {
+		return err
+	}
+	m.valued = true
 	return nil
 }
 
