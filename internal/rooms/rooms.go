@@ -109,16 +109,17 @@ type Room struct {
 
 // Member is a workspace's membership of a room.
 type Member struct {
-	WorkspaceID  string     `json:"workspace_id"`
-	UserID       string     `json:"user_id,omitempty"` // shown to its own workspace (and an admin) only
-	Role         string     `json:"role"`
-	MaySpend     bool       `json:"may_spend"`
-	TermsVersion int        `json:"terms_version"`
-	TermsCurrent bool       `json:"terms_current"` // false: the room's terms changed since it accepted them
-	JoinedAt     time.Time  `json:"joined_at"`
-	RemovedAt    *time.Time `json:"removed_at,omitempty"`
-	MutedAt      *time.Time `json:"muted_at,omitempty"`  // muted: it reads the room and posts nothing (B32.52)
-	BannedAt     *time.Time `json:"banned_at,omitempty"` // banned: removed, and does not join again until unbanned
+	WorkspaceID   string     `json:"workspace_id"`
+	WorkspaceName string     `json:"workspace_name"`
+	UserID        string     `json:"user_id,omitempty"` // shown to its own workspace (and an admin) only
+	Role          string     `json:"role"`
+	MaySpend      bool       `json:"may_spend"`
+	TermsVersion  int        `json:"terms_version"`
+	TermsCurrent  bool       `json:"terms_current"` // false: the room's terms changed since it accepted them
+	JoinedAt      time.Time  `json:"joined_at"`
+	RemovedAt     *time.Time `json:"removed_at,omitempty"`
+	MutedAt       *time.Time `json:"muted_at,omitempty"`  // muted: it reads the room and posts nothing (B32.52)
+	BannedAt      *time.Time `json:"banned_at,omitempty"` // banned: removed, and does not join again until unbanned
 }
 
 // Agent is an agent in a room, there as its workspace's.
@@ -354,12 +355,19 @@ func (s *Store) Joined(ctx context.Context, ws string) ([]Room, error) {
 }
 
 const memberCols = `m.workspace_id, m.user_id, m.role, m.may_spend, m.terms_version, m.terms_version = r.terms_version, m.joined_at, m.removed_at,
-	m.muted_at, m.banned_at`
+	m.muted_at, m.banned_at, ` + workspaceNameOf + `m.workspace_id` + workspaceNameEnd
+
+// workspaceNameOf + an id column + workspaceNameEnd is the SQL for that workspace's name (B55.34): its workspaces.name,
+// "A workspace not named yet" while that is still its id, and "" for no workspace (a system message).
+const (
+	workspaceNameOf  = `coalesce((SELECT coalesce(nullif(nullif(w.name, w.id), ''), 'A workspace not named yet') FROM workspaces w WHERE w.id = `
+	workspaceNameEnd = `), '')`
+)
 
 func scanMember(row pgx.Row) (Member, error) {
 	var m Member
 	err := row.Scan(&m.WorkspaceID, &m.UserID, &m.Role, &m.MaySpend, &m.TermsVersion, &m.TermsCurrent, &m.JoinedAt, &m.RemovedAt,
-		&m.MutedAt, &m.BannedAt)
+		&m.MutedAt, &m.BannedAt, &m.WorkspaceName)
 	return m, err
 }
 

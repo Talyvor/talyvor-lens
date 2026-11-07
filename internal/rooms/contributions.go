@@ -58,6 +58,7 @@ type Contribution struct {
 	Kind                 string          `json:"kind"`
 	Title                string          `json:"title"`
 	AuthorWorkspaceID    string          `json:"author_workspace_id"`
+	AuthorWorkspaceName  string          `json:"author_workspace_name"`
 	ForkedFrom           string          `json:"forked_from,omitempty"` // the contribution this one forked
 	Status               string          `json:"status"`
 	DecidedByWorkspaceID string          `json:"decided_by_workspace_id,omitempty"`
@@ -273,12 +274,13 @@ const contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.ti
 	coalesce((SELECT sum(v.value) FROM room_votes v WHERE v.contribution_id = c.id), 0),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = 1),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = -1),
-	coalesce((SELECT v.value FROM room_votes v WHERE v.contribution_id = c.id AND v.workspace_id = $1), 0)`
+	coalesce((SELECT v.value FROM room_votes v WHERE v.contribution_id = c.id AND v.workspace_id = $1), 0), ` +
+	workspaceNameOf + `c.author_workspace_id` + workspaceNameEnd
 
 func scanContribution(row pgx.Row) (Contribution, error) {
 	var c Contribution
 	err := row.Scan(&c.ID, &c.RoomID, &c.ListingID, &c.Version, &c.Kind, &c.Title, &c.AuthorWorkspaceID, &c.ForkedFrom,
-		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote)
+		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote, &c.AuthorWorkspaceName)
 	return c, err
 }
 

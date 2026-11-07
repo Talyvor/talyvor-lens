@@ -154,15 +154,15 @@ func (s *Store) readWallet(ctx context.Context, tx pgx.Tx, r Room, walletID stri
 func whyNotSpend(r Room, t Terms, me Member) string {
 	switch {
 	case r.Status == Closed:
-		return "the room is closed, and its budget is spent no more"
+		return "This room is closed, so its budget is not spent."
 	case r.Status == Locked:
-		return "Talyvor has locked the room: it is read-only, and its budget is not spent until it is unlocked"
+		return "Talyvor has locked this room: it is read-only until it is unlocked."
 	case me.Role == RoleOwner:
 		return ""
 	case t.SpendPolicy != SpendMembersWithSpend:
-		return "the room's spend policy is owner_only: only its owner spends the room's budget"
+		return "Only the room’s owner spends its budget."
 	case !me.MaySpend:
-		return "the room's owner has not given you may_spend: ask its owner or an editor"
+		return "The room’s owner has not let you spend its budget. Ask the owner or an editor."
 	}
 	return ""
 }
