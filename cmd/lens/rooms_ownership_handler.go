@@ -36,6 +36,19 @@ import (
 //	                                identity_checked, share_bps}], note, notice} to a member that accepted the room's
 //	                                current terms; the identity-checked holders' share_bps add up to 10000
 //
+// B41.147 — objections to the frozen leaderboard, decided by three random members (internal/rooms/objections.go):
+//
+//	POST /v1/rooms/{roomID}/leaderboard/freeze           the room's owner, once: opens the 14-day objection window
+//	GET  /v1/rooms/{roomID}/objections                   {frozen_at, objections_close_at, rules, objections: [{id,
+//	                                                     contribution_id, holder_workspace_id, objector_workspace_id,
+//	                                                     points, reason, status, raised_at, decide_by, decided_at,
+//	                                                     panel: [{workspace_id, workspace_name, uphold, voted_at}]}]}
+//	                                                     to a member that accepted the room's current terms
+//	POST /v1/rooms/{roomID}/objections                   {contribution_id, points, reason}   any member, in the window:
+//	                                                     Lens draws three members linked to neither side; 409 if it cannot
+//	PUT  /v1/rooms/{roomID}/objections/{objectionID}/vote   {uphold}   a drawn panelist, within 14 days; two votes the
+//	                                                     same way decide it, and upheld it changes the points
+//
 // B41.146 — the room's Gate tracker: shipped, used, paid (internal/rooms/gate.go):
 //
 //	GET /v1/rooms/{roomID}/gate              {thresholds, shipped: {status, note, weeks}, used: {status, people},
@@ -65,7 +78,8 @@ import (
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
 // mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
-// reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146) and the contributor agreement (B41.150).
+// reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146), objections (B41.147) and the contributor
+// agreement (B41.150).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -179,6 +193,66 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, l)
 	})
+	r.Post("/v1/rooms/{roomID}/leaderboard/freeze", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, user, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		o, err := store.FreezeLeaderboard(req.Context(), ws, user, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, o)
+	}))
+	r.Get("/v1/rooms/{roomID}/objections", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		o, err := store.RoomObjections(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, o)
+	})
+	r.Post("/v1/rooms/{roomID}/objections", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in rooms.ObjectionRaise
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 16<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"contribution_id", "points", "reason"}: `+err.Error())
+			return
+		}
+		o, err := store.RaiseObjection(req.Context(), ws, chi.URLParam(req, "roomID"), in)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusCreated, o)
+	}))
+	r.Put("/v1/rooms/{roomID}/objections/{objectionID}/vote", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Uphold *bool `json:"uphold"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1<<10)).Decode(&in); err != nil || in.Uphold == nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"uphold": true or false}`)
+			return
+		}
+		o, err := store.VoteObjection(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "objectionID"), *in.Uphold)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, o)
+	}))
 	r.Get("/v1/rooms/{roomID}/gate", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := actor(w, req)
 		if !ok {

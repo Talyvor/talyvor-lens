@@ -36,7 +36,7 @@ type PointsEntry struct {
 	ID                string    `json:"id"`
 	ContributionID    string    `json:"contribution_id"`
 	WorkspaceID       string    `json:"workspace_id"`
-	Reason            string    `json:"reason"` // accepted, remix_share or withdrawn
+	Reason            string    `json:"reason"` // accepted, remix_share, withdrawn, review or objection
 	SizePoints        int64     `json:"size_points"`
 	ReceivedUSDMicros int64     `json:"received_usd_micros"`
 	QualityBPS        int       `json:"quality_bps"`
@@ -80,6 +80,9 @@ func (s *Store) earnedSize(size, received int64) int64 {
 
 // recordPoints writes c's rows when Decide moves it from was to status, inside Decide's transaction.
 func (s *Store) recordPoints(ctx context.Context, tx pgx.Tx, c Contribution, was, status string) error {
+	if err := frozenPoints(ctx, tx, c, was); err != nil { // B41.147
+		return err
+	}
 	if err := s.rewardReviewers(ctx, tx, c, was, status); err != nil { // B41.144
 		return err
 	}
