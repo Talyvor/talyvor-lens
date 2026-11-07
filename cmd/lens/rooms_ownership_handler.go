@@ -36,6 +36,15 @@ import (
 //	                                identity_checked, share_bps}], note, notice} to a member that accepted the room's
 //	                                current terms; the identity-checked holders' share_bps add up to 10000
 //
+// B41.146 — the room's Gate tracker: shipped, used, paid (internal/rooms/gate.go):
+//
+//	GET /v1/rooms/{roomID}/gate              {thresholds, shipped: {status, note, weeks}, used: {status, people},
+//	                                         paid: {status, note, usd_micros, payers}, met, notice} to a member that
+//	                                         accepted the room's current terms; shipped and paid read
+//	                                         needs_published_build until a room can publish a build
+//	PUT /v1/rooms/{roomID}/gate-thresholds   {shipped_weeks, used_people, used_active_weeks, paid_usd_micros,
+//	                                         paid_payers}   the room's owner; 409 for any value lowered
+//
 // B41.144 — a contribution's quality scored by two random reviewers not linked to its author (internal/rooms/reviews.go):
 //
 //	GET  /v1/rooms/{roomID}/contributions/{contributionID}/reviews     {quality_bps, reviews: [{reviewer_workspace_id,
@@ -48,7 +57,7 @@ import (
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
 // mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
-// reviewers (B41.144) and the leaderboard (B41.145).
+// reviewers (B41.144), the leaderboard (B41.145) and the Gate tracker (B41.146).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -126,6 +135,35 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, l)
 	})
+	r.Get("/v1/rooms/{roomID}/gate", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		g, err := store.GateTracker(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, g)
+	})
+	r.Put("/v1/rooms/{roomID}/gate-thresholds", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, user, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in rooms.GateThresholdsChange
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 16<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"shipped_weeks", "used_people", "used_active_weeks", "paid_usd_micros", "paid_payers"}: `+err.Error())
+			return
+		}
+		t, err := store.SetGateThresholds(req.Context(), ws, user, chi.URLParam(req, "roomID"), in)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, t)
+	}))
 	r.Get("/v1/rooms/{roomID}/contributions/{contributionID}/reviews", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := actor(w, req)
 		if !ok {
