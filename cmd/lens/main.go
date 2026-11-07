@@ -1840,6 +1840,7 @@ func run() error {
 	// one-way LENS->LXC conversion + LXC spend path.
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
+	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
 	// B30.5: every agent's Know Your Agent credential, signed with Ed25519.
 	kyaKey, kyaEphemeral, err := kya.ParseKey(cfg.KYASigningKey)
 	if err != nil {

@@ -18,9 +18,10 @@ import (
 //	GET  /v1/money/lockdown       — {"active", "started_at", "started_by", "reason"}
 //	POST /v1/money/lockdown       {"device_ids", "passkey_ids", "reason"} — revokes the lost phone's device keys and
 //	                                passkeys (every one of them when none is named), freezes every card and pauses every
-//	                                agent, at once and with no signature; nothing restarts until it is lifted
+//	                                agent, at once and with no signature, and ends every other session of the workspace
+//	                                (a JWT issued before it is refused); nothing restarts until it is lifted
 //	POST /v1/money/lockdown/lift  — lifts it once an identity check (POST /v1/workspaces/{wsID}/verification/identity) has passed
-//	                                since it began; 403 until then. Agents and cards then restart one by one, as before.
+//	                                since it began, started by this same sign-in; 403 until then, and to any other. Agents and cards then restart one by one, as before.
 //	                                {"active": false, "enrol_challenge"}: when the check matched the person checked before,
 //	                                one new passkey or device key registered over enrol_challenge, within five minutes,
 //	                                enrols with no other key's signature if the lockdown left none live.
@@ -28,9 +29,9 @@ import (
 // Every route is the owner's or an admin's (the device key routes' rule). Mounted in the authed group.
 
 type lockdownBank interface {
-	LockDown(ctx context.Context, workspaceID, by, reason string, deviceIDs, passkeyIDs []string) (economy.Lockdown, error)
-	LockdownStatus(ctx context.Context, workspaceID string) (economy.Lockdown, error)
-	LiftLockdown(ctx context.Context, workspaceID string) (string, error)
+	LockDown(ctx context.Context, workspaceID, by, session, reason string, deviceIDs, passkeyIDs []string) (economy.WorkspaceLockdown, error)
+	LockdownStatus(ctx context.Context, workspaceID string) (economy.WorkspaceLockdown, error)
+	LiftLockdown(ctx context.Context, workspaceID, session string) (string, error)
 }
 
 func mountLockdownRoutes(r chi.Router, bank lockdownBank) {
@@ -69,7 +70,7 @@ func mountLockdownRoutes(r chi.Router, bank lockdownBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"device_ids", "passkey_ids", "reason"}, each optional`)
 			return
 		}
-		l, err := bank.LockDown(req.Context(), ws, who, in.Reason, in.DeviceIDs, in.PasskeyIDs)
+		l, err := bank.LockDown(req.Context(), ws, who, auth.GetAuthContext(req.Context()).Session(), in.Reason, in.DeviceIDs, in.PasskeyIDs)
 		switch {
 		case errors.Is(err, economy.ErrDeviceKeyNotFound), errors.Is(err, economy.ErrPasskeyNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
@@ -84,9 +85,9 @@ func mountLockdownRoutes(r chi.Router, bank lockdownBank) {
 		if !ok {
 			return
 		}
-		enrol, err := bank.LiftLockdown(req.Context(), ws)
+		enrol, err := bank.LiftLockdown(req.Context(), ws, auth.GetAuthContext(req.Context()).Session())
 		switch {
-		case errors.Is(err, economy.ErrIdentityRecheck):
+		case errors.Is(err, economy.ErrIdentityRecheck), errors.Is(err, economy.ErrLiftOtherSession):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())

@@ -10,10 +10,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -47,7 +49,7 @@ func TestB41116_LostPhoneLockdown(t *testing.T) {
 	mountAgentCardRoutes(r, store, nil)
 	mountVerificationRoutes(r, store, partners.OneVerifier(&partners.TestKYCProvider{}))
 	mountLockdownRoutes(r, store)
-	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}, TokenID: "ada-laptop"}
 	call := func(method, path, body string) (int, map[string]any) {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -209,7 +211,7 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
 	mountVerificationRoutes(r, store, partners.OneVerifier(&partners.TestKYCProvider{}))
 	mountLockdownRoutes(r, store)
-	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}, TokenID: "ada-laptop"}
 	call := func(path string, body any) (int, map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(body)
@@ -284,8 +286,8 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 		t.Fatalf("lockdown = %d %v", code, out)
 	}
 	laptop := newAuthenticator("Ada's laptop")
-	if code, out := enrol(laptop, ""); code != http.StatusForbidden {
-		t.Fatalf("enrolling a key during the lockdown with no signature = %d %v; want 403", code, out)
+	if code, out := enrol(laptop, ""); code == http.StatusCreated {
+		t.Fatalf("enrolling a key during the lockdown with no signature = %d %v; want it not enrolled", code, out)
 	}
 	if code, out := call(verification+"/identity", ada); code != http.StatusCreated {
 		t.Fatalf("Ada's new identity check = %d %v", code, out)
@@ -297,8 +299,8 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 	}
 
 	// Another session holding the owner's cookie, but not the lift's challenge, enrols nothing.
-	if code, out := enrol(newAuthenticator("Mallory's"), ""); code != http.StatusForbidden {
-		t.Fatalf("a key over a fresh challenge after the lift = %d %v; want 403", code, out)
+	if code, out := enrol(newAuthenticator("Mallory's"), ""); code == http.StatusCreated {
+		t.Fatalf("a key over a fresh challenge after the lift = %d %v; want it not enrolled", code, out)
 	}
 	// One new passkey over the lift's challenge enrols with no signature, is on the audit chain, and resumes the agents.
 	if code, out := enrol(laptop, enrolChallenge); code != http.StatusCreated {
@@ -309,8 +311,8 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 		ws, "lockdown:"+ws).Scan(&audited); err != nil || audited != 1 {
 		t.Fatalf("audit entries for the re-enrolment = %d (%v); want 1", audited, err)
 	}
-	if code, out := enrol(newAuthenticator("Mallory's"), enrolChallenge); code != http.StatusForbidden {
-		t.Fatalf("a second key over the lift's spent challenge = %d %v; want 403", code, out)
+	if code, out := enrol(newAuthenticator("Mallory's"), enrolChallenge); code == http.StatusCreated {
+		t.Fatalf("a second key over the lift's spent challenge = %d %v; want it not enrolled", code, out)
 	}
 	_, c := call(agents+"/resume-all/challenge", nil)
 	if code, out := call(agents+"/resume-all", map[string]any{"assertion": laptop.sign(c["challenge"].(string))}); code != http.StatusOK {
@@ -319,5 +321,152 @@ func TestB41116_FullLockdownReEnrolsOneKeyAfterTheLift(t *testing.T) {
 	var paused bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_workspace_pauses WHERE workspace_id = $1)`, ws).Scan(&paused); err != nil || paused {
 		t.Fatalf("every agent still paused after resume-all: %v %v", paused, err)
+	}
+}
+
+// B41.116 second review (1): a lockdown ends every session of the workspace but the one that ran it — the lost phone
+// is still signed in — and a sign-in after it works.
+func TestB41116_LockdownEndsEveryOtherSession(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b41116-sessions"
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic) VALUES ($1, $1, $1, true)`, ws); err != nil {
+		t.Fatal(err)
+	}
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	m := auth.NewManager("", key, nil, nil).WithSessionCutoff(store)
+	r := chi.NewRouter()
+	mountLockdownRoutes(r, store)
+	mint := func() string {
+		t.Helper()
+		tok, err := auth.GenerateToken(ws, ws, []string{auth.ScopeKeys}, key, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	signedIn := func(tok string) (*auth.AuthContext, error) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/money/lockdown", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		return m.Authenticate(req)
+	}
+	phone, laptop := mint(), mint()
+	actx, err := signedIn(laptop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/money/lockdown", strings.NewReader(`{"reason": "lost my phone"}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req.WithContext(auth.WithAuthContext(req.Context(), actx)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("lockdown from the laptop = %d %s", w.Code, w.Body)
+	}
+	if _, err := signedIn(phone); !errors.Is(err, auth.ErrInvalidAuth) {
+		t.Errorf("the lost phone's session after the lockdown: %v; want ErrInvalidAuth", err)
+	}
+	if _, err := signedIn(laptop); err != nil {
+		t.Errorf("the session that ran the lockdown: %v; want still signed in", err)
+	}
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second))) // a JWT's iat counts whole seconds
+	if _, err := signedIn(mint()); err != nil {
+		t.Errorf("a sign-in after the lockdown: %v; want signed in", err)
+	}
+}
+
+// B41.116 second review (2) and (3): the thief, still signed in on the stolen phone, ran the lockdown and polls the
+// lift while Ada passes her re-check on a new sign-in. The phone never gets the lift or its challenge and enrols
+// nothing; a re-check with Ada's name and country but another date of birth lifts nothing; Ada's own session lifts and
+// enrols exactly one key.
+func TestB41116_TheLiftGoesOnlyToTheSessionThatPassedTheCheck(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws, rpID, origin = "ws-b41116-lift-session", "app.talyvor.com", "https://app.talyvor.com"
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic) VALUES ($1, $1, $1, true)`, ws); err != nil {
+		t.Fatal(err)
+	}
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	mountVerificationRoutes(r, store, partners.OneVerifier(&partners.TestKYCProvider{}))
+	mountLockdownRoutes(r, store)
+	as := func(session string) func(path string, body any) (int, map[string]any) {
+		owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: ws, Scopes: []string{auth.ScopeKeys}, TokenID: session}
+		return func(path string, body any) (int, map[string]any) {
+			t.Helper()
+			b, _ := json.Marshal(body)
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(b)))
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req.WithContext(auth.WithAuthContext(req.Context(), owner)))
+			var out map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &out)
+			return w.Code, out
+		}
+	}
+	phone, laptop := as("phone"), as("laptop")
+	b64 := base64.RawURLEncoding.EncodeToString
+	rpHash := sha256.Sum256([]byte(rpID))
+	register := func(call func(string, any) (int, map[string]any), over string) (int, map[string]any) {
+		t.Helper()
+		if over == "" {
+			_, c := call("/v1/workspaces/"+ws+"/agents/passkeys/challenge", nil)
+			over, _ = c["challenge"].(string)
+		}
+		pub, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		spki, _ := x509.MarshalPKIXPublicKey(&pub.PublicKey)
+		credID := make([]byte, 16)
+		_, _ = rand.Read(credID)
+		ad := binary.BigEndian.AppendUint32(append(append([]byte{}, rpHash[:]...), 0x45), 0)
+		ad = append(append(binary.BigEndian.AppendUint16(append(ad, make([]byte, 16)...), uint16(len(credID))), credID...), 0xa0)
+		return call("/v1/workspaces/"+ws+"/agents/passkeys", map[string]any{"credential_id": b64(credID), "name": "key",
+			"public_key": b64(spki), "authenticator_data": b64(ad),
+			"client_data_json": b64([]byte(`{"type":"webauthn.create","challenge":"` + over + `","origin":"` + origin + `"}`))})
+	}
+	verification := "/v1/workspaces/" + ws + "/verification"
+	ada := map[string]string{"name": "Ada Lovelace", "country": "GB", "date_of_birth": "1990-12-10"}
+	if code, out := laptop(verification+"/contact", map[string]string{"email": "ada@example.com", "phone": "+447700900123"}); code != http.StatusCreated {
+		t.Fatalf("contact check = %d %v", code, out)
+	}
+	if code, out := laptop(verification+"/identity", ada); code != http.StatusCreated {
+		t.Fatalf("identity check = %d %v", code, out)
+	}
+	if code, out := register(laptop, ""); code != http.StatusCreated {
+		t.Fatalf("registering Ada's passkey = %d %v", code, out)
+	}
+
+	// The thief locks down from the phone, revoking every key.
+	if code, out := phone("/v1/money/lockdown", map[string]string{}); code != http.StatusOK {
+		t.Fatalf("lockdown from the phone = %d %v", code, out)
+	}
+	// Ada signs in again and passes a re-check with her name and country but another date of birth: nothing lifts.
+	ada2 := as("ada-again")
+	if code, out := ada2(verification+"/identity", map[string]string{"name": "Ada Lovelace", "country": "GB", "date_of_birth": "1985-01-01"}); code != http.StatusCreated {
+		t.Fatalf("re-check with another date of birth = %d %v", code, out)
+	}
+	if code, out := ada2("/v1/money/lockdown/lift", nil); code != http.StatusForbidden {
+		t.Fatalf("lift after a re-check with another date of birth = %d %v; want 403", code, out)
+	}
+	// Her real re-check passes; the phone, polling, never gets the lift or its challenge, and enrols nothing.
+	if code, out := ada2(verification+"/identity", ada); code != http.StatusCreated {
+		t.Fatalf("Ada's re-check = %d %v", code, out)
+	}
+	if code, out := phone("/v1/money/lockdown/lift", nil); code != http.StatusForbidden || out["enrol_challenge"] != nil {
+		t.Fatalf("lift from the phone after Ada's re-check = %d %v; want 403 and no challenge", code, out)
+	}
+	if code, out := register(phone, ""); code == http.StatusCreated {
+		t.Fatalf("the phone enrolling a key after Ada's re-check = %d %v; want it not enrolled", code, out)
+	}
+	code, lift := ada2("/v1/money/lockdown/lift", nil)
+	enrol, _ := lift["enrol_challenge"].(string)
+	if code != http.StatusOK || enrol == "" {
+		t.Fatalf("lift from Ada's session = %d %v; want 200 and an enrol_challenge", code, lift)
+	}
+	if code, out := register(ada2, enrol); code != http.StatusCreated {
+		t.Fatalf("Ada enrolling over the lift's challenge = %d %v; want 201", code, out)
+	}
+	var live int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND revoked_at IS NULL`, ws).Scan(&live); err != nil || live != 1 {
+		t.Fatalf("live passkeys after the re-enrolment = %d (%v); want exactly 1", live, err)
 	}
 }
