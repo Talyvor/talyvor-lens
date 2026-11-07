@@ -264,7 +264,8 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	fp := sha256.Sum256([]byte("money\x00" + op.Agent + "\x00" + string(op.Capability) + "\x00" + op.Method + "\x00" + op.Key + "\x00" +
 		op.Ref + "\x00" + op.Payee + "\x00" + strconv.FormatInt(op.Amount.Minor, 10) + "\x00" + op.Amount.Asset))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
-		Payee: Payee{Kind: "outside", ID: op.Payee, Name: op.Payee}, Memo: minorString(op.Amount.Minor, op.Amount.Asset) + " to " + op.Payee})
+		Payee: Payee{Kind: "outside", ID: op.Payee, Name: op.Payee}, Memo: minorString(op.Amount.Minor, op.Amount.Asset) + " to " + op.Payee,
+		PaidFrom: PaidFrom{Kind: "account", Currency: op.Amount.Asset, AmountMinor: op.Amount.Minor}})
 	tx, err := l.s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("economy: money limits: %w", err)
