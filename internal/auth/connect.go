@@ -21,6 +21,9 @@ const (
 	MethodConnect   = "connect"
 	// ScopePaymentsSend lets a Connect token pay from its agent, inside the agent's rules.
 	ScopePaymentsSend = "payments:send"
+	// ScopePaymentsPrepare lets a Connect token only prepare a payment from its agent (B52.41): every one files an
+	// approval the owner answers, whatever the rules allow.
+	ScopePaymentsPrepare = "payments:prepare"
 	// ConnectTokenTTL is how long a Connect token lives; the BFF mints a fresh one as it needs.
 	ConnectTokenTTL = 15 * time.Minute
 	// ScopeConnectMint is LENS_CONNECT_MINT_KEY's one power: POST /v1/auth/connect-token. It is not ScopeMint,
