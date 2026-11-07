@@ -440,6 +440,17 @@ func (s *DualTokenStore) carryOn(ctx context.Context, workspaceID string, n Cryp
 		if r, err := n.Chain.Receipt(ctx, c.UserOpHash); err == nil && r != nil {
 			return s.landCryptoSend(ctx, workspaceID, c, r)
 		}
+		// Not sent again once the owner froze the agent, or the workspace is frozen: it may have landed, so it still
+		// counts, and its receipt is read whenever it is asked about.
+		var frozen bool
+		if err := s.pool.QueryRow(ctx, `SELECT frozen_at IS NOT NULL FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+			c.AgentID, workspaceID).Scan(&frozen); err != nil {
+			return c, fmt.Errorf("economy: crypto send: %w", err)
+		}
+		stablecoins, _ := CapabilityByKey(CapabilityStablecoins)
+		if frozen || refuseFrozen(ctx, s.pool, workspaceID, stablecoins) != nil {
+			return c, nil
+		}
 		// Sent again as signed: its nonce lets it land once. A refusal now may be its landing: it stays to be read.
 		if _, err := s.handToBundler(ctx, workspaceID, n, op); err != nil {
 			return c, nil
@@ -485,10 +496,7 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 	err = n.Chain.SignPaymentAsAgent(ctx, s.smartAccounts.signers, a, a.AgentKey, &op, func(pay smartaccount.Payment) error {
 		use, err := s.AuthoriseAgentCryptoPayment(ctx, workspaceID, c.AgentID, pay)
 		if err == nil {
-			c.useID = &use
-			if _, err = s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET use_id = $2, updated_at = now() WHERE id = $1`, c.ID, use); err != nil {
-				return fmt.Errorf("economy: crypto send: %w", err)
-			}
+			c.useID = &use // kept on the send with its signed operation, below
 		}
 		return err
 	})
@@ -509,14 +517,16 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 	fee := smartaccount.MaxFee(op)
 	// Kept before the bundler sees it, and only if no other operation was kept for the send: from here a retry sends
 	// this very operation, never a new one.
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET signed_op = $2, user_op_hash = $3, max_fee_wei = $4, updated_at = now()
-		WHERE id = $1 AND status = 'sending' AND signed_op = ''`, c.ID, string(signed), fmt.Sprintf("0x%x", h), fee.String())
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET signed_op = $2, user_op_hash = $3, max_fee_wei = $4, use_id = $5, updated_at = now()
+		WHERE id = $1 AND status = 'sending' AND signed_op = ''`, c.ID, string(signed), fmt.Sprintf("0x%x", h), fee.String(), c.useID)
 	if err != nil {
 		return c, fmt.Errorf("economy: crypto send: %w", err)
 	}
 	if tag.RowsAffected() == 0 { // another caller's operation is the send: this one is never sent, and counts nothing
-		if _, err := s.pool.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`, *c.useID, c.AgentID); err != nil {
-			return c, fmt.Errorf("economy: crypto send: %w", err)
+		if c.useID != nil {
+			if _, err := s.pool.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`, *c.useID, c.AgentID); err != nil {
+				return c, fmt.Errorf("economy: crypto send: %w", err)
+			}
 		}
 		return s.cryptoSend(ctx, workspaceID, c.AgentID, c.ID)
 	}
