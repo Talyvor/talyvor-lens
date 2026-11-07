@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/money"
+	tokens "github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/partners"
@@ -501,6 +503,81 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 		}
 		if r.DifferenceMinor != 0 {
 			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// ErrChainUnread: the workspace's agents have smart accounts on a network Lens does not read, so what they hold there
+// is unknown.
+var ErrChainUnread = errors.New("economy: Lens does not read every network, so what the smart accounts hold is unknown")
+
+// SmartAccountsHolding is each smart account of workspaceID's agents that holds anything now, read on the chain, as
+// "<address> on <network>". An account's address is the same on every EVM network the factory is on, so each is read
+// on every EVM network a wallet holds tokens on (tokens.Networks), and its Solana wallet beside it by solana. Held is the
+// network's coin and each token on the verified list (and the network's USDC): an airdrop nobody can value never stops
+// a deletion. A network with no reader, or a read that fails, is an error: unknown is not empty.
+func (s *DualTokenStore) SmartAccountsHolding(ctx context.Context, x *ChainIndexer, solana tokens.Reader, workspaceID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT address, solana_address FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: smart accounts: %w", err)
+	}
+	type wallet struct{ evm, solana string }
+	wallets, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (wallet, error) {
+		var w wallet
+		return w, r.Scan(&w.evm, &w.solana)
+	})
+	if err != nil || len(wallets) == 0 {
+		return nil, err
+	}
+	listed := map[string][]string{} // each network's verified tokens
+	for _, t := range tokens.Verified().Tokens {
+		if t.Address != "" {
+			listed[t.Network] = append(listed[t.Network], t.Address)
+		}
+	}
+	var out []string
+	for _, w := range wallets {
+		for _, n := range tokens.Networks {
+			var held []tokens.Held
+			switch {
+			case n.ChainID != 0:
+				net, ok := ChainNetwork{}, false
+				if x != nil {
+					net, ok = x.nets[n.ID]
+				}
+				if !ok {
+					return nil, fmt.Errorf("%w: %s", ErrChainUnread, n.ID)
+				}
+				toks := listed[n.ID]
+				if net.USDC != "" && !slices.Contains(toks, net.USDC) {
+					toks = append(slices.Clip(toks), net.USDC)
+				}
+				if held, err = net.Chain.Balances(ctx, w.evm, toks); err != nil {
+					return nil, err
+				}
+			case w.solana == "":
+				continue
+			case solana == nil:
+				return nil, fmt.Errorf("%w: solana", ErrChainUnread)
+			default:
+				all, err := solana.Holdings(ctx, w.solana)
+				if err != nil {
+					return nil, err
+				}
+				for _, h := range all {
+					if h.Address == "" || slices.Contains(listed[n.ID], h.Address) {
+						held = append(held, h)
+					}
+				}
+			}
+			address := w.evm
+			if n.ChainID == 0 {
+				address = w.solana
+			}
+			if slices.ContainsFunc(held, func(h tokens.Held) bool { return h.Amount != nil && h.Amount.Sign() > 0 }) {
+				out = append(out, address+" on "+n.ID)
+			}
 		}
 	}
 	return out, nil

@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +86,28 @@ func deriveWorkspaceID(identity string) string {
 	return "u" + strings.ToLower(enc)[:26]
 }
 
+// accountDeletionLookup says when a workspace's account was deleted (*workspace.Manager, B52.37).
+type accountDeletionLookup interface {
+	AccountDeletedAt(ctx context.Context, id string) (time.Time, bool, error)
+}
+
+// currentWorkspaceID is identity's workspace now: deriveWorkspaceID's, or, after each deletion of its account, the next
+// generation's, so a person who signs up again gets a new workspace and nothing the deleted one kept (B52.37).
+func currentWorkspaceID(ctx context.Context, identity string, d accountDeletionLookup) (string, error) {
+	for gen := 0; ; gen++ {
+		id := deriveWorkspaceID(identity)
+		if gen > 0 {
+			id = deriveWorkspaceID(identity + "\x00" + strconv.Itoa(gen))
+		}
+		if d == nil {
+			return id, nil
+		}
+		if _, deleted, err := d.AccountDeletedAt(ctx, id); err != nil || !deleted {
+			return id, err
+		}
+	}
+}
+
 func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter) {
 	if secret == "" {
 		return
@@ -107,7 +131,13 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			return
 		}
 
-		wsID := deriveWorkspaceID(in.Identity)
+		deletions, _ := p.(accountDeletionLookup)
+		wsID, err := currentWorkspaceID(req.Context(), in.Identity, deletions)
+		if err != nil {
+			slog.Error("provision: account deletions not read", "err", err)
+			writeJSONErr(w, http.StatusServiceUnavailable, "sign-in is unavailable right now; try again shortly")
+			return
+		}
 		name := in.DisplayName
 		if name == "" {
 			name = wsID
