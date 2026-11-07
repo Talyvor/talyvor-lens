@@ -218,7 +218,7 @@ The key never grants admin, and a workspace can only ever see its own data.
 | `docker-compose.yaml` | **lens** | `127.0.0.1:8080` | loopback only — local dev, `make status`, `tools/trial`, admin over SSH; **never** the internet |
 | `docker-compose.yaml` | nats | *(none)* | was `0.0.0.0:4222` — an unauthenticated bus; now internal-only (`nats://nats:4222`) |
 | `docker-compose.yaml` | postgres / pgbouncer / redis / autoheal | *(none)* | internal compose network only |
-| `docker-compose.dev.yaml` | postgres / redis / nats | `127.0.0.1:5432 / 6379 / 4222 / 8222` | **local dev only** — loopback-bound so host tooling works but nothing is exposed if run on a VM. Do not run this file on a public host. |
+| `docker-compose.dev.yaml` | postgres / redis / nats | `127.0.0.1:5432 / 6379 / 4222 / 8222` | **local dev only** — loopback-bound so host tooling works but nothing is exposed if run on a VM. Do not run this file on a public host. Postgres starts empty: run `go run ./cmd/lens migrate` against it after `up -d` (the command is in the file's header). |
 | `docker-compose.trial*.yaml` | (overlays base) | inherits the base's `127.0.0.1:8080` | local test harness (`tools/trial`); publishes no ports of its own |
 
 ## Not covered here

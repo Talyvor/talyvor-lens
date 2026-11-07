@@ -374,7 +374,7 @@ func dealHeld(ctx context.Context, tx pgx.Tx, workspaceID string, t NegotiationM
 	reg := func(in []string) []string {
 		out := make([]string, len(in))
 		for i, d := range in {
-			out[i] = registrableDomain(d)
+			out[i] = RegistrableDomain(d)
 		}
 		return out
 	}
@@ -407,9 +407,9 @@ func dealHeld(ctx context.Context, tx pgx.Tx, workspaceID string, t NegotiationM
 	return false, rows.Err()
 }
 
-// registrableDomain is the domain a business registered, so agent.acme.example and procurement.acme.example are one
+// RegistrableDomain is the domain a business registered, so agent.acme.example and procurement.acme.example are one
 // counterparty, acme.example. A public suffix or an address is itself.
-func registrableDomain(d string) string {
+func RegistrableDomain(d string) string {
 	d = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
 	if net.ParseIP(strings.Trim(d, "[]")) != nil {
 		return d
@@ -420,14 +420,16 @@ func registrableDomain(d string) string {
 	return d
 }
 
-// ConfirmNegotiationDeal records that the counterparty, proved to be domain over channel via (its signed agent, or an
-// email its domain's DKIM signature holds for, B54.8), confirmed deal as mandate id's: the deal is then the mandate's
-// alone, recorded as domain's registrable domain and via. The mandate must be live and allow via, domain must be one
-// of its counterparties or under one, and deal must be its reference; otherwise it is not found, so a stranger learns
-// nothing. The mandate's workspace must have proved a domain it trades as, and domain
-// must not be one of them: a workspace never confirms its own deal. A mandate is confirmed once; a deal already
-// confirmed to a mandate it may not stand beside (dealHeld) is ErrNegotiationOneSide.
-func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain, deal, via string) error {
+// ConfirmNegotiationDeal records that the counterparty, proved to be domain over channel via (its agent, signed with
+// key keyID, or an email its domain's DKIM signature holds for, B54.8, which passes no keyID), confirmed deal as
+// mandate id's: the deal is then the mandate's alone, recorded as domain's registrable domain and via. For the agent
+// channel the caller has checked that the agent speaks for that registrable domain (B54.16). The mandate must be live
+// and allow via, domain must be one of its counterparties or under one, and deal must be its reference; otherwise it
+// is not found, so a stranger learns nothing. The mandate's workspace must have proved a domain it trades as, and
+// neither domain nor keyID may be its own (a domain it proved, or an agent that proved one): a workspace never
+// confirms its own deal. A mandate is confirmed once; a deal already confirmed to a mandate it may not stand beside
+// (dealHeld) is ErrNegotiationOneSide.
+func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain, keyID, deal, via string) error {
 	var workspaceID string
 	err := s.pool.QueryRow(ctx, `SELECT workspace_id FROM negotiation_mandates WHERE id = $1`, id).Scan(&workspaceID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -446,7 +448,7 @@ func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain,
 	if t.Deal == "" || strings.ToLower(strings.TrimSpace(deal)) != t.Deal {
 		return fmt.Errorf("%w: that is not the deal reference this negotiation is in", ErrNegotiationMandate)
 	}
-	by := registrableDomain(domain)
+	by := RegistrableDomain(domain)
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		if err := lockDeal(ctx, tx, t.Deal); err != nil {
 			return err
@@ -460,7 +462,12 @@ func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain,
 		if err != nil {
 			return err
 		}
-		if len(own) == 0 || slices.Contains(own, by) {
+		var ownAgent bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM negotiation_signers WHERE workspace_id = $1 AND (domain = $2 OR key_id = $3))`,
+			workspaceID, domain, keyID).Scan(&ownAgent); err != nil {
+			return fmt.Errorf("economy: negotiation mandate: %w", err)
+		}
+		if len(own) == 0 || slices.Contains(own, by) || ownAgent {
 			return fmt.Errorf("%w: a deal is confirmed from the counterparty's side, to an owner who has proved the domain it trades as", ErrNegotiationMandate)
 		}
 		held, err := dealHeld(ctx, tx, workspaceID, t, []string{by})
@@ -506,7 +513,7 @@ type NegotiationDomain struct {
 // ClaimNegotiationDomain records that workspaceID trades as domain (its registrable domain). The claim counts for
 // nothing until VerifyNegotiationDomain: that domain's own signed agent names the workspace.
 func (s *DualTokenStore) ClaimNegotiationDomain(ctx context.Context, workspaceID, domain, by string) (NegotiationDomain, error) {
-	d := registrableDomain(domain)
+	d := RegistrableDomain(domain)
 	if _, err := publicsuffix.EffectiveTLDPlusOne(d); err != nil || net.ParseIP(strings.Trim(d, "[]")) != nil {
 		return NegotiationDomain{}, fmt.Errorf("%w: %q is not a domain a business registers", ErrNegotiationMandate, domain)
 	}
@@ -520,18 +527,26 @@ func (s *DualTokenStore) ClaimNegotiationDomain(ctx context.Context, workspaceID
 	return out, nil
 }
 
-// VerifyNegotiationDomain records that the agent signing as domain says workspaceID trades as it: a claim of
-// workspaceID's for domain's registrable domain is then verified. Without that claim it is not found.
-func (s *DualTokenStore) VerifyNegotiationDomain(ctx context.Context, workspaceID, domain string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE negotiation_domains SET verified_at = COALESCE(verified_at, now()) WHERE workspace_id = $1 AND domain = $2`,
-		workspaceID, registrableDomain(domain))
-	if err != nil {
-		return fmt.Errorf("economy: negotiation domains: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNegotiationNotFound
-	}
-	return nil
+// VerifyNegotiationDomain records that the agent signing as domain with key keyID says workspaceID trades as it: a
+// claim of workspaceID's for domain's registrable domain is then verified, and the agent is recorded as workspaceID's
+// own. The caller has checked that the agent speaks for that registrable domain (B54.16). Without that claim it is not
+// found.
+func (s *DualTokenStore) VerifyNegotiationDomain(ctx context.Context, workspaceID, domain, keyID string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE negotiation_domains SET verified_at = COALESCE(verified_at, now()) WHERE workspace_id = $1 AND domain = $2`,
+			workspaceID, RegistrableDomain(domain))
+		if err != nil {
+			return fmt.Errorf("economy: negotiation domains: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNegotiationNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO negotiation_signers (workspace_id, domain, key_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+			workspaceID, domain, keyID); err != nil {
+			return fmt.Errorf("economy: negotiation domains: %w", err)
+		}
+		return nil
+	})
 }
 
 // NegotiationMandate reads one of workspaceID's mandates, with its term sheets.
