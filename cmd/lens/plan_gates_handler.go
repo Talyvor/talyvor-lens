@@ -18,15 +18,18 @@ func publicPlanGatesHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSONOK(w, http.StatusOK, map[string]any{"order": plans.Order, "plans": plans.Current()})
 }
 
-// writePlanRefusal answers a plan's refusal with 402 and the refusal itself — in words in "error", with the setting,
-// the plan and the plan that would allow it beside — or reports false when err is none.
+// writePlanRefusal answers a plan's refusal with 402 and the refusal itself — in words in "error", with the setting
+// (where it names one), the plan and the plan that would allow it beside — or reports false when err is none.
 func writePlanRefusal(w http.ResponseWriter, err error) bool {
 	var r *plans.Refusal
 	if !errors.As(err, &r) {
 		return false
 	}
-	writeJSONOK(w, http.StatusPaymentRequired, map[string]any{"error": r.Detail, "setting": r.Setting, "plan": r.Plan,
-		"gate": r.Gate, "limit": r.Limit, "allows": r.Allows})
+	out := map[string]any{"error": r.Detail, "plan": r.Plan, "gate": r.Gate, "limit": r.Limit, "allows": r.Allows}
+	if r.Setting != "" {
+		out["setting"] = r.Setting
+	}
+	writeJSONOK(w, http.StatusPaymentRequired, out)
 	return true
 }
 

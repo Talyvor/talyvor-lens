@@ -13,6 +13,7 @@ import (
 	"github.com/talyvor/lens/internal/audit"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/guardrails"
+	"github.com/talyvor/lens/internal/plans"
 )
 
 // authz_handlers.go extracts the Phase-1 cross-tenant-fix routes (#146) into
@@ -33,19 +34,41 @@ type auditReportExporter interface {
 	Export(ctx context.Context, filter audit.ExportFilter, format audit.ExportFormat, w io.Writer) (int, error)
 }
 
+// auditWebhookExporter is the slice of *audit.Exporter the webhook handler needs.
+type auditWebhookExporter interface {
+	ExportWebhook(ctx context.Context, webhookURL string, filter audit.ExportFilter) error
+}
+
+// auditExportRefused answers 402 when the caller's plan has no audit export (B56.5), in words and with no setting
+// name. The global admin is Talyvor's operator, on no plan, and passes.
+func auditExportRefused(w http.ResponseWriter, req *http.Request, db plans.Querier, ws string, admin bool) bool {
+	if admin {
+		return false
+	}
+	plan, err := plans.Of(req.Context(), db, ws)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return true
+	}
+	return !plan.AuditExport && writePlanRefusal(w, plan.RefuseAuditExport(plans.Current()))
+}
+
 // newAuditExportHandler streams an audit export. Authz (#146): a non-admin is
 // scoped to its OWN workspace ALWAYS — an empty workspace_id must never mean
 // "all tenants" for a tenant; only the global admin may export across workspaces.
-func newAuditExportHandler(exporter auditReportExporter) http.HandlerFunc {
+func newAuditExportHandler(exporter auditReportExporter, db plans.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		q := req.URL.Query()
 		format := audit.ExportFormat(q.Get("format"))
 		if format == "" {
 			format = audit.FormatJSON
 		}
-		effWS, _, ok := effectiveWorkspaceID(req, q.Get("workspace_id"))
+		effWS, admin, ok := effectiveWorkspaceID(req, q.Get("workspace_id"))
 		if !ok {
 			writeJSONErr(w, http.StatusForbidden, "forbidden: no workspace identity")
+			return
+		}
+		if auditExportRefused(w, req, db, effWS, admin) {
 			return
 		}
 		filter := audit.ExportFilter{
@@ -83,6 +106,46 @@ func newAuditExportHandler(exporter auditReportExporter) http.HandlerFunc {
 		if _, err := exporter.Export(req.Context(), filter, format, w); err != nil {
 			slog.Warn("audit: export failed mid-stream", slog.String("err", err.Error()))
 		}
+	}
+}
+
+// newAuditWebhookHandler starts an audit export to the caller's webhook. Authz (#146): non-admin scoped to own
+// workspace; admin honors the filter (empty workspace = all tenants, admin-only).
+func newAuditWebhookHandler(exporter auditWebhookExporter, db plans.Querier) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			WebhookURL string             `json:"webhook_url"`
+			Filter     audit.ExportFilter `json:"filter"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if in.WebhookURL == "" {
+			writeJSONErr(w, http.StatusBadRequest, "webhook_url required")
+			return
+		}
+		effWS, admin, ok := effectiveWorkspaceID(req, in.Filter.WorkspaceID)
+		if !ok {
+			writeJSONErr(w, http.StatusForbidden, "forbidden: no workspace identity")
+			return
+		}
+		if auditExportRefused(w, req, db, effWS, admin) {
+			return
+		}
+		in.Filter.WorkspaceID = effWS
+		// Fire-and-forget so the caller doesn't block on a slow SIEM.
+		// Use a fresh context detached from the request so cancellation
+		// of the HTTP connection doesn't kill the export mid-flight.
+		go func(filter audit.ExportFilter, url string) {
+			if err := exporter.ExportWebhook(context.Background(), url, filter); err != nil {
+				slog.Warn("audit: webhook export failed",
+					slog.String("url", url),
+					slog.String("err", err.Error()),
+				)
+			}
+		}(in.Filter, in.WebhookURL)
+		writeJSONOK(w, http.StatusAccepted, map[string]any{"ok": true, "message": "export started"})
 	}
 }
 
