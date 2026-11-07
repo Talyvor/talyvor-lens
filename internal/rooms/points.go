@@ -157,6 +157,31 @@ func insertPoints(ctx context.Context, tx pgx.Tx, roomID string, e PointsEntry) 
 	return err
 }
 
+// pointsHolders is each holder's points in roomID, most first, and the total of those identity-checked.
+func pointsHolders(ctx context.Context, tx pgx.Tx, roomID string) (holders []PointsHolder, total int64, err error) {
+	rows, err := tx.Query(ctx, `SELECT p.workspace_id, `+workspaceNameOf+`p.workspace_id`+workspaceNameEnd+`, sum(p.points)::bigint
+		FROM room_points p WHERE p.room_id = $1 GROUP BY p.workspace_id ORDER BY 3 DESC, 1`, roomID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if holders, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (h PointsHolder, err error) {
+		err = r.Scan(&h.WorkspaceID, &h.WorkspaceName, &h.Points)
+		return h, err
+	}); err != nil {
+		return nil, 0, err
+	}
+	for i := range holders {
+		h := &holders[i]
+		if h.IdentityChecked, err = economy.IdentityChecked(ctx, tx, h.WorkspaceID); err != nil {
+			return nil, 0, err
+		}
+		if h.IdentityChecked {
+			total += h.Points
+		}
+	}
+	return holders, total, nil
+}
+
 // Points is roomID's points ledger, for ws, a member that accepted the room's current terms.
 func (s *Store) Points(ctx context.Context, ws, roomID string) (p Points, err error) {
 	p = Points{RoomID: roomID, Holders: []PointsHolder{}, Entries: []PointsEntry{}}
@@ -164,27 +189,11 @@ func (s *Store) Points(ctx context.Context, ws, roomID string) (p Points, err er
 		if _, err := ownershipMember(ctx, tx, roomID, ws); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT p.workspace_id, `+workspaceNameOf+`p.workspace_id`+workspaceNameEnd+`, sum(p.points)::bigint
-			FROM room_points p WHERE p.room_id = $1 GROUP BY p.workspace_id ORDER BY 3 DESC, 1`, roomID)
-		if err != nil {
+		var err error
+		if p.Holders, p.TotalPoints, err = pointsHolders(ctx, tx, roomID); err != nil {
 			return err
 		}
-		if p.Holders, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (h PointsHolder, err error) {
-			err = r.Scan(&h.WorkspaceID, &h.WorkspaceName, &h.Points)
-			return h, err
-		}); err != nil {
-			return err
-		}
-		for i := range p.Holders {
-			h := &p.Holders[i]
-			if h.IdentityChecked, err = economy.IdentityChecked(ctx, tx, h.WorkspaceID); err != nil {
-				return err
-			}
-			if h.IdentityChecked {
-				p.TotalPoints += h.Points
-			}
-		}
-		rows, err = tx.Query(ctx, `SELECT id, contribution_id, workspace_id, reason, size_points, received_usd_micros, quality_bps,
+		rows, err := tx.Query(ctx, `SELECT id, contribution_id, workspace_id, reason, size_points, received_usd_micros, quality_bps,
 			survival_bps, remix_share_bps, points, created_at FROM room_points WHERE room_id = $1 ORDER BY created_at DESC, id LIMIT $2`,
 			roomID, maxPointsEntries)
 		if err != nil {
