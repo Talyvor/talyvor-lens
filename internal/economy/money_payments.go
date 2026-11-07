@@ -17,6 +17,7 @@ import (
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/screening"
 )
 
@@ -82,8 +83,10 @@ type OutsidePayment struct {
 	Rate             string `json:"rate,omitempty"`
 
 	holdAccountID string
-	quoteRef      string    // the partner's reference for the quote
-	at            time.Time // when the agent's rules judge it (B30.18: a standing order's run); zero means now
+	quoteRef      string             // the partner's reference for the quote
+	at            time.Time          // when the agent's rules judge it (B30.18: a standing order's run); zero means now
+	signed        bool               // B54.33: a person's payment, made only with the signature its workspace needs
+	assertion     *passkey.Assertion // that signature
 }
 
 // debit is what leaves the account: the amount, and an international payment's partner cost and fee.
@@ -179,6 +182,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	case !errors.Is(err, ErrOutsidePaymentNotFound):
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
+	if err := s.checkPaymentSigned(ctx, workspaceID, in); err != nil { // B54.33: before anything is screened or held
+		return OutsidePayment{}, err
+	}
 
 	from, err := s.payingAccount(ctx, workspaceID, in)
 	if err != nil {
@@ -256,6 +262,11 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if in.signed { // B54.33: the challenge is spent only with the payment it pays
+		if err := s.authorizeSignedTx(ctx, tx, workspaceID, paymentPurpose(in), in.assertion, ErrPaymentUnsigned); err != nil {
+			return OutsidePayment{}, err
+		}
+	}
 	if p.AgentID != "" {
 		if err := lockAgent(ctx, tx, workspaceID, p.AgentID); err != nil {
 			return OutsidePayment{}, err
