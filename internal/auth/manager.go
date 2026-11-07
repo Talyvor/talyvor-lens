@@ -314,6 +314,7 @@ type Manager struct {
 	sessionKeys     sessionKeyValidator
 	moderatorKeys   moderatorKeyValidator
 	sessionCutoff   sessionCutoff
+	deletions       accountDeletions
 
 	mu       sync.RWMutex
 	jwtCache map[string]*jwtCacheEntry
@@ -366,6 +367,15 @@ type sessionCutoff interface {
 
 // WithSessionCutoff attaches the lockdown's session cutoff. Unset ⇒ a JWT is valid until it expires, as before.
 func (m *Manager) WithSessionCutoff(c sessionCutoff) *Manager { m.sessionCutoff = c; return m }
+
+// accountDeletions is the slice of *workspace.Manager that says when a workspace's account was deleted (B52.37).
+type accountDeletions interface {
+	AccountDeletedAt(ctx context.Context, workspaceID string) (time.Time, bool, error)
+}
+
+// WithAccountDeletions refuses a session token issued to a workspace before its account was deleted (B52.37):
+// a token has no row of its own to delete. Unset ⇒ no such check.
+func (m *Manager) WithAccountDeletions(v accountDeletions) *Manager { m.deletions = v; return m }
 
 func NewManager(globalKey string, privateKey *ecdsa.PrivateKey, keyStore *KeyStore, tenantStore *tenant.Store) *Manager {
 	var pub *ecdsa.PublicKey
@@ -430,6 +440,18 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		claims, err := m.validateJWTCached(raw)
 		if err != nil {
 			return nil, ErrInvalidAuth
+		}
+		// B52.37 — a deleted account's workspace id is never anyone's again (a re-signup gets the next generation), so
+		// every token naming it is refused, whenever it was issued: before the deletion, or by a sign-in racing it.
+		// Checked before the audience, so a Connect token is refused too.
+		if m.deletions != nil && claims.WorkspaceID != "" {
+			_, deleted, err := m.deletions.AccountDeletedAt(r.Context(), claims.WorkspaceID)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+			}
+			if deleted {
+				return nil, ErrInvalidAuth
+			}
 		}
 		if len(claims.Audience) > 0 {
 			if len(claims.Audience) == 1 && claims.Audience[0] == ConnectAudience {

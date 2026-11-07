@@ -119,6 +119,7 @@ var Manifest = map[string]Entry{
 	// question or answer is held in either.
 	"deletion_requests":         {Retain, "B21.3: the record that erasure was requested and completed"},
 	"workspace_requests":        {Retain, "B59.27: the record that support, a complaint, closing the account, an export or a deletion was asked for and how Talyvor answered, as B21.3 keeps deletion_requests"},
+	"account_deletions":         {Retain, "B52.37: the record that the person deleted their account, and when; the workspace's tokens issued before it are refused against it"},
 	"stored_answer_deletions":   {Retain, "B21.3: the audit log of each deletion of stored answers"},
 	"answer_removals":           {Retain, "B23.1: who marked a served answer wrong, and what was removed; holds no question or answer"},
 	"agent_postings":            {Retain, "B19.1: audit-guarded (0140, append-only): the agents' double-entry LXC ledger; financial-record retention"},

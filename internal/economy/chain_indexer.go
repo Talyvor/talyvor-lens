@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -653,6 +654,60 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 		}
 		if r.DifferenceMinor != 0 {
 			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// ErrChainUnread: the workspace's agents have smart accounts and Lens reads none of their networks, so what they hold
+// is unknown.
+var ErrChainUnread = errors.New("economy: Lens reads no chain, so what the smart accounts hold is unknown")
+
+// SmartAccountsHolding is each smart account of workspaceID's agents that holds anything now — its network's coin or
+// any token ever sent to it — on every network x reads, and each Solana wallet beside one, read by solana: as
+// "<address> on <network>". A wallet with no reader for its network is ErrChainUnread: unknown is not empty.
+func (s *DualTokenStore) SmartAccountsHolding(ctx context.Context, x *ChainIndexer, solana tokens.Reader, workspaceID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT address, solana_address FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: smart accounts: %w", err)
+	}
+	type wallet struct{ evm, solana string }
+	wallets, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (wallet, error) {
+		var w wallet
+		return w, r.Scan(&w.evm, &w.solana)
+	})
+	if err != nil || len(wallets) == 0 {
+		return nil, err
+	}
+	if x == nil || len(x.nets) == 0 {
+		return nil, ErrChainUnread
+	}
+	names := x.Networks()
+	slices.Sort(names)
+	type probe struct {
+		network, address string
+		r                tokens.Reader
+	}
+	var probes []probe
+	for _, w := range wallets {
+		for _, name := range names {
+			probes = append(probes, probe{name, w.evm, x.nets[name].Chain})
+		}
+		if w.solana != "" {
+			if solana == nil {
+				return nil, ErrChainUnread
+			}
+			probes = append(probes, probe{"solana", w.solana, solana})
+		}
+	}
+	var out []string
+	for _, p := range probes {
+		held, err := p.r.Holdings(ctx, p.address)
+		if err != nil {
+			return nil, err
+		}
+		if slices.ContainsFunc(held, func(h tokens.Held) bool { return h.Amount != nil && h.Amount.Sign() > 0 }) {
+			out = append(out, p.address+" on "+p.network)
 		}
 	}
 	return out, nil

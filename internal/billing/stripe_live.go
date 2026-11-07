@@ -348,6 +348,14 @@ func (l *LiveStripe) SetCancelAtPeriodEnd(ctx context.Context, subscriptionID st
 	return subscription.Client{B: l.backend(), Key: l.key}.Update(subscriptionID, params)
 }
 
+// CancelSubscription ends the subscription now (B52.37: its account is deleted). Stripe answers with it cancelled and
+// sends customer.subscription.deleted.
+func (l *LiveStripe) CancelSubscription(ctx context.Context, subscriptionID string) (*stripe.Subscription, error) {
+	params := &stripe.SubscriptionCancelParams{}
+	params.Context = ctx
+	return subscription.Client{B: l.backend(), Key: l.key}.Cancel(subscriptionID, params)
+}
+
 // ChangeSubscriptionPrice moves a subscription's one item to priceID with proration (B18.14): Stripe credits
 // the unused time on the old price and charges the rest of the period on the new one, on the next invoice.
 // Stripe answers with the updated subscription and sends customer.subscription.updated, which records it.
