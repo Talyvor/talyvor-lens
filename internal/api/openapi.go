@@ -442,6 +442,14 @@ func openAPIPaths() map[string]any {
 				"responses":   map[string]any{"200": map[string]any{"description": "every fee setting"}},
 			},
 		},
+		"/v1/public/labels": map[string]any{
+			"get": map[string]any{
+				"summary":     "Get whether each money feature is Live or Sandbox",
+				"description": "No key needed. labels: each money capability's label, live or sandbox, worked out on every request: a GREEN capability is live while card payments are live, an AMBER or RED one while it has a clearance in force and every rail its money moves on is live. card_payments (live, test or off) and updated_at.",
+				"security":    []map[string]any{},
+				"responses":   map[string]any{"200": map[string]any{"description": "labels, card_payments, updated_at"}},
+			},
+		},
 		"/v1/public/plan-gates": map[string]any{
 			"get": map[string]any{
 				"summary":     "Get what each plan unlocks",

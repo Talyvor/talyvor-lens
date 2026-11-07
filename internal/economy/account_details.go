@@ -42,6 +42,7 @@ type CurrencyAccountDetails struct {
 	partners.AccountDetails
 	PaymentReference string `json:"payment_reference,omitempty"` // an agent's: quoted with the details, it routes the money to the agent
 	Mode             string `json:"mode"`                        // TEST or LIVE
+	Label            string `json:"label,omitempty"`             // B56.7: live or sandbox
 }
 
 // CurrencyAccountDetails is what a payer needs to pay into workspaceID's account accountID — with agentID, only if
@@ -79,6 +80,7 @@ func (s *DualTokenStore) CurrencyAccountDetails(ctx context.Context, workspaceID
 	if p.Name() == "test" {
 		// The Test partner's details reach no bank: show none rather than made-up ones (B49.1).
 		d.Currency, d.Mode = currency, DetailsTest
+		d.Label = s.objectLabel(ctx, workspaceID, CapabilityAccountDetails, d.Mode)
 		return d, nil
 	}
 	details, err := p.AccountDetails(ctx, ref)
@@ -87,6 +89,7 @@ func (s *DualTokenStore) CurrencyAccountDetails(ctx context.Context, workspaceID
 	}
 	d.AccountDetails = details
 	d.Mode = DetailsLive
+	d.Label = s.objectLabel(ctx, workspaceID, CapabilityAccountDetails, d.Mode)
 	return d, nil
 }
 
