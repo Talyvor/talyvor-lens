@@ -177,7 +177,17 @@ func (c Chain) TokenFeeCharged(ctx context.Context, op UserOp, hash string) (*bi
 	if err != nil || r == nil {
 		return nil, err
 	}
-	ts, mined, err := c.TxTransfers(ctx, r.Receipt.TransactionHash)
+	return c.TokenFeeTaken(ctx, op, r.Receipt.TransactionHash)
+}
+
+// TokenFeeTaken is what op's ERC-20 paymaster took from the account in transaction txHash, as the node has it: nil
+// while the transaction is not on the chain.
+func (c Chain) TokenFeeTaken(ctx context.Context, op UserOp, txHash string) (*big.Int, error) {
+	pay, err := PaymentOf(op.CallData)
+	if err != nil || pay.Fee == nil {
+		return nil, fmt.Errorf("%w: the operation's fee is not paid in a token", ErrInvalid)
+	}
+	ts, mined, err := c.TxTransfers(ctx, txHash)
 	if err != nil || !mined {
 		return nil, err
 	}
@@ -300,4 +310,97 @@ func actualGasCost(r *Receipt, hash string) (*big.Int, error) {
 		return nil, fmt.Errorf("smartaccount: the bundler answered no actualGasCost for %s", hash)
 	}
 	return charged, nil
+}
+
+// userOperationEvent is the topic of the EntryPoint's log of each operation it runs, whose first indexed field is the
+// operation's hash.
+var userOperationEvent = func() string {
+	h := keccak([]byte("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)"))
+	return hexBytes(h[:])
+}()
+
+// Landed is how op, handed to a bundler when the chain's head was block from, ended, as the node has it in finalized
+// blocks: the EntryPoint's log of running it, whether the operation's call succeeded and the transaction it ran in.
+// found is false while no such log is finalized.
+func (c Chain) Landed(ctx context.Context, op UserOp, from int64) (found, success bool, txHash string, err error) {
+	h, err := op.Hash(c.ID)
+	if err != nil {
+		return false, false, "", err
+	}
+	logs, err := c.operationLogs(ctx, []any{userOperationEvent, hexBytes(h[:])}, from)
+	if err != nil {
+		return false, false, "", err
+	}
+	if len(logs) == 0 {
+		return false, false, "", nil
+	}
+	return true, logs[0].data[63] == 1, strings.ToLower(logs[0].TxHash), nil
+}
+
+// Dropped is whether op, handed to a bundler when the chain's head was block from, can no longer reach the chain:
+// another operation of its account with its nonce is in a finalized block since from. Without that proof op is never
+// called dropped.
+func (c Chain) Dropped(ctx context.Context, op UserOp, from int64) (bool, error) {
+	sender, err := addressW(op.Sender)
+	if err != nil || op.Nonce == nil {
+		return false, fmt.Errorf("%w: the operation names no account or nonce", ErrInvalid)
+	}
+	h, err := op.Hash(c.ID)
+	if err != nil {
+		return false, err
+	}
+	logs, err := c.operationLogs(ctx, []any{userOperationEvent, nil, hexBytes(sender[:])}, from)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range logs {
+		if new(big.Int).SetBytes(l.data[:32]).Cmp(op.Nonce) == 0 && !strings.EqualFold(l.Topics[1], hexBytes(h[:])) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// operationLog is one of the EntryPoint's UserOperationEvent logs, its data read: nonce, success, actualGasCost and
+// actualGasUsed.
+type operationLog struct {
+	rpcLog
+	data []byte
+}
+
+// operationLogs is the EntryPoint's UserOperationEvent logs matching topics from block from to the finalized block.
+func (c Chain) operationLogs(ctx context.Context, topics []any, from int64) ([]operationLog, error) {
+	var final *struct {
+		Number string `json:"number"`
+	}
+	if err := c.rpc(ctx, c.RPCURL, "eth_getBlockByNumber", []any{"finalized", false}, &final); err != nil {
+		return nil, err
+	}
+	to, ok := new(big.Int), final != nil
+	if ok {
+		_, ok = to.SetString(strings.TrimPrefix(final.Number, "0x"), 16)
+	}
+	if !ok {
+		return nil, fmt.Errorf("smartaccount: chain %d has no finalized block", c.ID)
+	}
+	if to.Cmp(big.NewInt(from)) < 0 { // nothing since from is finalized yet
+		return nil, nil
+	}
+	var logs []rpcLog
+	if err := c.rpc(ctx, c.RPCURL, "eth_getLogs", []any{map[string]any{"address": EntryPoint, "topics": topics,
+		"fromBlock": quantity(big.NewInt(from)), "toBlock": quantity(to)}}, &logs); err != nil {
+		return nil, err
+	}
+	var out []operationLog
+	for _, l := range logs {
+		data, err := hex.DecodeString(strings.TrimPrefix(l.Data, "0x"))
+		switch {
+		case l.Removed:
+		case err != nil || len(data) != 4*32 || len(l.Topics) != 4:
+			return nil, fmt.Errorf("smartaccount: an EntryPoint log in transaction %s is unreadable", l.TxHash)
+		default:
+			out = append(out, operationLog{l, data})
+		}
+	}
+	return out, nil
 }
