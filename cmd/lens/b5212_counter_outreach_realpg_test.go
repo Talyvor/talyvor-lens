@@ -47,6 +47,11 @@ func TestB5212_CounterReachesTheOtherSideHonestly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An agent is reached only as a counterparty its workspace proved it trades as (B54.23).
+	if _, err := pool.Exec(ctx, `INSERT INTO negotiation_domains (workspace_id, domain, claimed_by, verified_at) VALUES
+		($1, 'acme.example', 'test', now()), ($1, 'shop.example', 'test', now()), ($2, 'shop.example', 'test', now())`, seller, other); err != nil {
+		t.Fatal(err)
+	}
 
 	r := chi.NewRouter()
 	mountNegotiationRoutes(r, store)
