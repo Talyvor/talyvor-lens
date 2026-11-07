@@ -179,7 +179,7 @@ func (s *DualTokenStore) SafeToSpend(ctx context.Context, workspaceID string, at
 		UNION ALL
 		SELECT r.agent_id, i.currency, sum(i.amount_minor)::bigint FROM payment_requests r
 		  JOIN payment_request_items i ON i.request_id = r.id
-		 WHERE r.workspace_id = $1 AND r.status = 'pending_approval' AND i.decision = 'needs_approval' AND NOT `+requestExpired(2)+`
+		 WHERE r.workspace_id = $1 AND r.status = 'pending_approval' AND i.decision = 'needs_approval' AND NOT `+requestExpired2+`
 		 GROUP BY r.agent_id, i.currency`, workspaceID, s.approvalLife().Microseconds())
 	if err != nil {
 		return fail(err)

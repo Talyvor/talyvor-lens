@@ -358,10 +358,10 @@ func (s *DualTokenStore) BillByID(ctx context.Context, workspaceID, billID strin
 
 // billTaken is the live request a bill is in already, if any: one not cancelled whose item for the bill was not
 // blocked, left out of the approval, refused, failed with nothing paid, or unpaid in an expired request ($3, B55.9).
-var billTaken = `SELECT r.id FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
+const billTaken = `SELECT r.id FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
 	WHERE r.workspace_id = $1 AND i.bill_id = $2 AND r.status <> 'cancelled' AND i.decision <> 'blocked'
 	AND i.pay_status NOT IN ('not_approved', 'refused') AND NOT (i.pay_status = 'failed' AND i.payment_id <> '')
-	AND NOT (` + requestExpired(3) + ` AND i.payment_id = '')`
+	AND NOT (` + requestExpired3 + ` AND i.payment_id = '')`
 
 // resolveBill (B41.102) fills in an item that names a bill: its saved payee, amount and currency, and its invoice
 // number as the reference. It is blocked, with why, when the bill was paid, is in another live request, has no saved
