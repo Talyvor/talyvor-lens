@@ -30,6 +30,12 @@ import (
 //	GET /v1/rooms/{roomID}/points   {total_points, holders: [{workspace_id, workspace_name, points, identity_checked}],
 //	                                entries: [...]} to a member that accepted the room's current terms
 //
+// B41.145 — the room's provisional leaderboard (internal/rooms/leaderboard.go):
+//
+//	GET /v1/rooms/{roomID}/leaderboard   {enabled, pool_bps, total_points, rows: [{workspace_id, workspace_name, points,
+//	                                identity_checked, share_bps}], note, notice} to a member that accepted the room's
+//	                                current terms; the identity-checked holders' share_bps add up to 10000
+//
 // B41.144 — a contribution's quality scored by two random reviewers not linked to its author (internal/rooms/reviews.go):
 //
 //	GET  /v1/rooms/{roomID}/contributions/{contributionID}/reviews     {quality_bps, reviews: [{reviewer_workspace_id,
@@ -41,8 +47,8 @@ import (
 //
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
-// mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143) and
-// its reviewers (B41.144).
+// mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
+// reviewers (B41.144) and the leaderboard (B41.145).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -107,6 +113,18 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, p)
+	})
+	r.Get("/v1/rooms/{roomID}/leaderboard", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		l, err := store.Leaderboard(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, l)
 	})
 	r.Get("/v1/rooms/{roomID}/contributions/{contributionID}/reviews", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := actor(w, req)
