@@ -1123,6 +1123,10 @@ type Config struct {
 	// RoomReportsHide is how many workspaces' open reports take a public room off the list of rooms until the operator
 	// reviews it (B32.52). Env: LENS_ROOM_REPORTS_HIDE, default 3 — a proposal for Nicolai.
 	RoomReportsHide int
+	// RoomPointsPerUSD is how many points each US dollar a contribution already received in prizes or royalties takes
+	// off its size in a room's points ledger (B41.143). Env: LENS_ROOM_POINTS_PER_USD, a setting Nicolai fills; until he
+	// does (0), any money received takes the whole size, so nobody is paid twice for the same work.
+	RoomPointsPerUSD int64
 
 	// MarketPayoutReturnURL / MarketPayoutRefreshURL are where Stripe's seller onboarding returns to when a
 	// seller finishes it, and when its link has expired (B20.5). Env: LENS_MARKET_PAYOUT_RETURN_URL,
@@ -2501,6 +2505,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_ROOM_REPORTS_HIDE must be a positive integer, got %q", v)
 		}
 		c.RoomReportsHide = n
+	}
+	if v := os.Getenv("LENS_ROOM_POINTS_PER_USD"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_ROOM_POINTS_PER_USD must be a non-negative integer, got %q", v)
+		}
+		c.RoomPointsPerUSD = n
 	}
 
 	// D — the Model 2 allowance, in µLXC (W4.6.1 step 2). Default 0 = "no allowance

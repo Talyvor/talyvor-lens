@@ -4903,6 +4903,7 @@ func run() error {
 		dualToken.SetRoomBudgets(roomStore)                       // B32.32: a room wallet's monthly limit, within the plan
 		roomStore.SetContextMessages(cfg.RoomContextMessages)     // B32.33: what the room's AI reads
 		roomStore.SetReportsHide(cfg.RoomReportsHide)             // B32.52: reports that take a public room off the list
+		roomStore.SetPointsPerUSD(cfg.RoomPointsPerUSD)           // B41.143: money received takes points off a size
 		mountRoomRoutes(authed, roomStore)
 		mountMoneyEarningsRoutes(authed, dualToken, roomStore) // B46.11: payouts of earnings on the money layer
 		// B32.52: the operator's queue of reported rooms, and keeping, locking, unlocking or closing one (operator audit).
