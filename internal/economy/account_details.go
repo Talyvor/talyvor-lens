@@ -173,12 +173,22 @@ func (s *DualTokenStore) ReceivePayment(ctx context.Context, in InboundPayment) 
 			return MoneyEntry{}, fmt.Errorf("economy: receive payment: %w", err)
 		}
 	}
-	e, err := s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsIn, Kind: "payment_in",
-		IdempotencyKey: "payment_in:" + in.PartnerRef, Funding: in.Funding, Memo: in.Reference, Counterparty: in.Payer, PartnerRef: in.PartnerRef,
-		Postings: []MoneyPosting{
-			{AccountID: partnerID, AmountMinor: -in.AmountMinor, Currency: in.Currency},
-			{AccountID: to, AmountMinor: in.AmountMinor, Currency: in.Currency},
-		}, quarantine: true})
+	// B48.8: a ramp delivering a top-up's USDC posts as the top-up, once, under this deposit's key.
+	e, delivered, err := s.deliverWalletMove(ctx, ws, to, in)
+	if !delivered && err == nil {
+		e, err = s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsIn, Kind: "payment_in",
+			IdempotencyKey: "payment_in:" + in.PartnerRef, Funding: in.Funding, Memo: in.Reference, Counterparty: in.Payer, PartnerRef: in.PartnerRef,
+			Postings: []MoneyPosting{
+				{AccountID: partnerID, AmountMinor: -in.AmountMinor, Currency: in.Currency},
+				{AccountID: to, AmountMinor: in.AmountMinor, Currency: in.Currency},
+			}, quarantine: true})
+	}
+	if errors.Is(err, ErrIdempotencyKeyReused) { // a top-up's confirm posted this deposit as its delivery first
+		if first, rerr := readMoneyEntry(ctx, s.pool, `e.workspace_id = $1 AND e.idempotency_key = $2 AND e.kind LIKE 'wallet\_%'`, ws,
+			"payment_in:"+in.PartnerRef); rerr == nil && first.ID != "" {
+			return first, nil
+		}
+	}
 	if r := (*screening.Refusal)(nil); errors.As(err, &r) && r.Case.Status == screening.CaseHeld { // B48.7
 		return MoneyEntry{WorkspaceID: ws}, s.quarantineDeposit(ctx, ws, r, in)
 	}

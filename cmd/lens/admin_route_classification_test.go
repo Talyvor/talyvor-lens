@@ -53,6 +53,7 @@ var operatorReadable = map[string]string{
 	"/v1/admin/scan/models":               "B52.24: every Scan model's latest backtest and, when it passed, the latest point against its normal — for an operator to check a model before it feeds a report. scan.Models.Reports is Query-only.",
 	"/v1/admin/reconciliation":            "B30.11: each day's reconciliation of the ledger against the partner's statements, with every break. DualTokenStore.ReconciliationRuns is Query-only.",
 	"/v1/admin/safeguarding":              "B30.11: what customers hold in each currency against what the partner reports holding for them. DualTokenStore.Safeguarding is Query-only.",
+	"/v1/admin/wallet-moves/held":         "B48.8: agents' top-ups and cash-outs held with their money out, the operators' cases. DualTokenStore.HeldWalletMoves is Query-only.",
 	"/v1/admin/operator-audit":            "B27.28: the operator audit trail, filtered — the Operator screen shows it. operatoraudit.Store.List is Query-only.",
 	"/v1/admin/operator-audit/export":     "B27.28: the same trail as a CSV download. operatoraudit.Store.List is Query-only.",
 	"/v1/admin/waitlist":                  "B44.6: every talyvor.com waitlist signup, oldest first, for the operator's CSV. A SELECT only.",

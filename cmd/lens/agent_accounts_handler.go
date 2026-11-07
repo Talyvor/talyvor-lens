@@ -20,7 +20,9 @@ import (
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/tenant"
 	"github.com/talyvor/lens/internal/workspace"
@@ -205,6 +207,19 @@ import (
 //	                                                     pays what it sponsors, so an owner cannot until a top-up
 //	                                                     is paid for (403)
 //
+// B48.8 — topping up and cashing out an agent's wallet (agent_wallet_moves.go); each is quoted — rate, the partner's
+// fee and what it buys — then confirmed once, and shows in both wallets' history:
+//
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/quote  {"route": "wallet"|"card"|"bank_transfer"|"convert"|"cash_out",
+//	                                                     "amount_minor", "currency", "from_agent_id"?, "payee_id"?, "to_currency"?}
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/confirm   make it, once; 409 when expired or refused.
+//	                                                     Once money has left, a refusal holds it (status held), and
+//	                                                     confirming again carries it on to its end
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/return    a held move's money, given back by the ramp
+//	                                                     that has not executed it; 409 when it cannot be
+//	GET  /v1/workspaces/{wsID}/agents/{id}/wallet-moves     its top-ups, cash-outs and moves to the owner's other agents
+//	GET  /v1/workspaces/{wsID}/agents/owner-wallets/moves   what left the owner's own wallets
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
@@ -240,6 +255,10 @@ type agentBank interface {
 	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
+	QuoteWalletMove(ctx context.Context, workspaceID, agentID string, r economy.WalletMoveRequest, by string, workspaceOwner bool) (economy.WalletMove, error)
+	ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
+	ReturnWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
+	WalletMoves(ctx context.Context, workspaceID, agentID string) ([]economy.WalletMove, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -808,6 +827,60 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		b, err := bank.TopUpGasBudget(req.Context(), chi.URLParam(req, "wsID"), in.ChainID, in.Wei, actx.UserID)
 		writeGasBudget(w, b, err)
+	}))
+	// B48.8: top an agent's wallet up, or cash it out — quoted first, confirmed once.
+	writeMove := func(w http.ResponseWriter, out any, err error) {
+		var refusal *economy.CapabilityRefusal
+		switch {
+		case errors.Is(err, economy.ErrWalletMove), errors.Is(err, economy.ErrWalletKind):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrWalletMoveNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrWalletMoveExpired), errors.Is(err, money.ErrRefused), errors.Is(err, money.ErrInsufficientFunds):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.As(err, &refusal), errors.As(err, new(*screening.Refusal)):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrAgentWalletsOff), errors.Is(err, economy.ErrNoRampPartner), errors.Is(err, partners.ErrScreeningUnavailable):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, money.ErrPartnerDown):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, out)
+		}
+	}
+	// The workspace's owner is the person whose provisioned session carries the keys scope (storedanswers.OwnerOrAdmin);
+	// an admin key, or the operator, is not.
+	wsOwner := func(req *http.Request) bool {
+		actx := auth.GetAuthContext(req.Context())
+		return actx != nil && !actx.IsAdmin && actx.HasScope(auth.ScopeKeys)
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/quote", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in economy.WalletMoveRequest
+		if !decode(w, req, &in, `{"route", "amount_minor", "currency", "from_agent_id"?, "payee_id"?, "to_currency"?}`) {
+			return
+		}
+		out, err := bank.QuoteWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in, actor(req), wsOwner(req))
+		writeMove(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/confirm", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.ConfirmWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req))
+		writeMove(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/return", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.ReturnWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req))
+		writeMove(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.WalletMoves(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeMove(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/owner-wallets/moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.WalletMoves(req.Context(), chi.URLParam(req, "wsID"), "")
+		writeMove(w, out, err)
 	}))
 	// B55.13: the body is the rules, or {"rules", "assertion"} when the change loosens them (…/rules/challenge).
 	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
