@@ -180,10 +180,10 @@ func (w *Writer) rehearsalMissing(ctx context.Context, ws string, id int64) erro
 
 // RehearsalTrackRecord is ws's approved rehearsed reports' record, newest first, and the tally.
 func (w *Writer) RehearsalTrackRecord(ctx context.Context, ws string) (TrackRecord, error) {
-	return w.readTrackRecord(ctx, `SELECT id, series, coalesce(draft ->> 'title', ''), coalesce(draft -> 'sources', '[]'),
+	return readTrackRecord(w.store.pool.Query(ctx, `SELECT id, series, coalesce(draft ->> 'title', ''), coalesce(draft -> 'sources', '[]'),
 		reviewed_at, (finding ->> 'at')::timestamptz, (finding ->> 'value')::float8, coalesce(finding ->> 'unit', ''),
 		(finding ->> 'normal_low')::float8, (finding ->> 'normal_high')::float8, (finding ->> 'outlook_at')::timestamptz,
 		(finding ->> 'outlook_low')::float8, (finding ->> 'outlook_high')::float8, outcome_value, outcome_at,
 		NULL::bigint, hit, scored_at FROM scan_rehearsals WHERE workspace_id = $1 AND status = 'approved'
-		ORDER BY reviewed_at DESC, id DESC`, ws)
+		ORDER BY reviewed_at DESC, id DESC`, ws))
 }

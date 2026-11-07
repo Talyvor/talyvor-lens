@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // trackrecord.go — B52.26: SCAN'S TRACK RECORD, COMPLETE AND PUBLIC.
@@ -107,14 +109,13 @@ func (w *Writer) Score(ctx context.Context) (int, error) {
 // TrackRecord is every published report's record: none is left out, hit or miss.
 func (w *Writer) TrackRecord(ctx context.Context) (TrackRecord, error) {
 	// shortcut: every record in one reply, a few a week; page it when it reaches thousands.
-	return w.readTrackRecord(ctx, `SELECT report_id, series, title, sources, published_at, observed_at, value,
+	return readTrackRecord(w.store.pool.Query(ctx, `SELECT report_id, series, title, sources, published_at, observed_at, value,
 		unit, normal_low, normal_high, outlook_at, outlook_low, outlook_high, outcome_value, outcome_at, outcome_point,
-		hit, scored_at FROM scan_track_record ORDER BY published_at DESC, id DESC`)
+		hit, scored_at FROM scan_track_record ORDER BY published_at DESC, id DESC`))
 }
 
-// readTrackRecord is the records sql selects, in TrackEntry's order, and their tally.
-func (w *Writer) readTrackRecord(ctx context.Context, sql string, args ...any) (TrackRecord, error) {
-	rows, err := w.store.pool.Query(ctx, sql, args...)
+// readTrackRecord is the records rows hold, in TrackEntry's order, and their tally.
+func readTrackRecord(rows pgx.Rows, err error) (TrackRecord, error) {
 	if err != nil {
 		return TrackRecord{}, err
 	}
