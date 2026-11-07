@@ -372,6 +372,8 @@ type DualTokenStore struct {
 	gasBudgetWei int64
 	// gasSponsors answers, per chain, what each sponsored operation was charged (B48.5); a chain not in it is not served.
 	gasSponsors map[int64]smartaccount.Chain
+	// cryptoSendNets are the networks agents send on (B48.9); none, nothing is sent.
+	cryptoSendNets map[string]CryptoSendNetwork
 	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
