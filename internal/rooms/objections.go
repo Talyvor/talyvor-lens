@@ -16,8 +16,9 @@ import (
 // The room's owner freezes the leaderboard once, and that opens a 14-day objection window; from then on a decision that
 // would write to the points ledger is refused, so the points only move by objection. In the window any member may
 // object to the points an accepted contribution earned its author, proposing a change that leaves the author holding
-// between none and the contribution's size at the highest quality; each member objects once to a contribution's points,
-// and no objection blocks another, so nobody can hold the window shut with one. Lens draws the panel at random, never
+// between none and the contribution's size at the highest quality. It objects as a member linked neither to the author
+// nor to anyone who already objected to those points, so each person objects once, and no objection blocks another, so
+// nobody can hold the window shut with one. Lens draws the panel at random, never
 // the objector: three live members (not the owner or an editor, who decided the contributions, nor viewers or muted
 // ones) under the room's current terms, not the objector or the holder and linked to neither nor to each other — the
 // same person joined both, or the two share an owner key or a card, as the reviewer draw links them (B41.144). An
@@ -33,7 +34,7 @@ const ObjectionDays = 14
 const PanelSize = 3
 
 // ObjectionRules are the published rules every objections answer carries.
-const ObjectionRules = "Objections are raised within 14 days of the leaderboard freezing. Each one is about the points a single " +
+const ObjectionRules = "Objections are raised within 14 days of the leaderboard freezing, once by each person other than the author. Each one is about the points a single " +
 	"contribution earned its author and proposes a change that leaves the author with no fewer than none and no more than " +
 	"the contribution's size at the highest quality. Three members linked neither to the objector nor to the author, drawn " +
 	"at random, decide it within 14 days. Two votes the same way decide it, and an upheld objection changes the points. " +
@@ -179,6 +180,23 @@ func (s *Store) RaiseObjection(ctx context.Context, ws, roomID string, in Object
 		}
 		if c.Status != ContributionAccepted {
 			return fmt.Errorf("%w: the contribution is %s: objections are about the points accepted ones earned", ErrConflict, c.Status)
+		}
+		// One objection per person: never the author's, nor one linked to the author or to someone who already objected.
+		var linkedParty bool
+		if err := tx.QueryRow(ctx, `WITH p AS (SELECT $3::text AS ws UNION SELECT objector_workspace_id FROM room_objections
+				WHERE contribution_id = $2)
+			SELECT EXISTS (SELECT 1 FROM p WHERE p.ws = $1
+				OR EXISTS (SELECT 1 FROM room_members a JOIN room_members b ON b.room_id = a.room_id AND b.user_id = a.user_id
+					WHERE a.room_id = $4 AND a.workspace_id = p.ws AND b.workspace_id = $1 AND a.user_id <> '')
+				OR EXISTS (SELECT 1 FROM workspace_owner_links x JOIN workspace_owner_links y ON y.owner_key = x.owner_key
+					WHERE x.workspace_id = p.ws AND y.workspace_id = $1)
+				OR EXISTS (SELECT 1 FROM workspace_card_fingerprints x JOIN workspace_card_fingerprints y
+					ON y.fingerprint_hash = x.fingerprint_hash WHERE x.workspace_id = p.ws AND y.workspace_id = $1))`,
+			ws, c.ID, c.AuthorWorkspaceID, roomID).Scan(&linkedParty); err != nil {
+			return err
+		} else if linkedParty {
+			return fmt.Errorf("%w: objections come from members linked neither to the author nor to anyone who already objected to these points",
+				ErrConflict)
 		}
 		var held int64
 		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(points), 0)::bigint FROM room_points WHERE contribution_id = $1
