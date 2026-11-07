@@ -65,7 +65,7 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 					return
 				}
 				if errors.Is(err, ErrConnectRoute) {
-					writeAuthError(w, http.StatusForbidden, "a Connect token may only pay from its own agent, inside the agent's rules")
+					writeAuthError(w, http.StatusForbidden, "a Connect token may only pay from its own agent, inside the agent's rules, or accept a money request made of it")
 					return
 				}
 				if err == nil && actx.AuthMethod == MethodModeratorKey {

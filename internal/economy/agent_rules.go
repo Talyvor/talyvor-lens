@@ -675,7 +675,11 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		return err
 	}
 	req := agentRequestFrom(ctx)
+	prepared := req.Payment && prepareOnly(ctx)           // B52.41: it waits for the owner's approval, whatever the rules allow
 	r, err := agentRulesInForce(ctx, tx, agentID, req.At) // with its boosts in force then (B28.308)
+	if errors.Is(err, pgx.ErrNoRows) && prepared {
+		r, err = AgentRules{}, nil // judged by no rules, as below, then held for the approval
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := (AgentRules{}).judgeCommitment(req.Commitment); err != nil {
 			return err
@@ -792,7 +796,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			}
 		}
 	}
-	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC {
+	if prepared || (r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC) {
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
@@ -806,10 +810,13 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			used = tag.RowsAffected()
 		}
 		if used == 0 {
-			allowed, err := r.withinPayeeAllowance(ctx, tx, agentID, ids, amount, day, month)
+			allowed := false // a prepared payment is never "always allowed"
+			if !prepared {
+				if allowed, err = r.withinPayeeAllowance(ctx, tx, agentID, ids, amount, day, month); err != nil {
+					return err
+				}
+			}
 			switch {
-			case err != nil:
-				return err
 			case allowed && req.Fingerprint != "":
 				// "Always allow" is for requests made after it (B50.18): one already waiting in the inbox waits for its own tap.
 				var waiting bool
@@ -1018,17 +1025,19 @@ type AgentApproval struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
+	// ConnectClientID is the assistant whose payment filed it (B52.41), so an approval screen can name it; empty otherwise.
+	ConnectClientID string `json:"connect_client_id,omitempty"`
 }
 
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at`
+	approved_by_agent_id, expires_at, connect_client_id`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.ConnectClientID)
 	if p.Kind != "" {
 		a.Payee = &p
 	}

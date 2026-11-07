@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -21,6 +22,9 @@ const (
 	MethodConnect   = "connect"
 	// ScopePaymentsSend lets a Connect token pay from its agent, inside the agent's rules.
 	ScopePaymentsSend = "payments:send"
+	// ScopePaymentsPrepare lets a Connect token only prepare a payment from its agent (B52.41): every one files an
+	// approval the owner answers, whatever the rules allow.
+	ScopePaymentsPrepare = "payments:prepare"
 	// ConnectTokenTTL is how long a Connect token lives; the BFF mints a fresh one as it needs.
 	ConnectTokenTTL = 15 * time.Minute
 	// ScopeConnectMint is LENS_CONNECT_MINT_KEY's one power: POST /v1/auth/connect-token. It is not ScopeMint,
@@ -30,10 +34,10 @@ const (
 )
 
 // ConnectScopes are the only scopes a Connect token may carry.
-var ConnectScopes = []string{ScopePaymentsSend}
+var ConnectScopes = []string{ScopePaymentsSend, ScopePaymentsPrepare}
 
 // ErrConnectRoute is a Connect token used anywhere but where it may be: AuthMiddleware answers it 403.
-var ErrConnectRoute = errors.New("auth: a Connect token may only pay from its own agent")
+var ErrConnectRoute = errors.New("auth: a Connect token may only pay from its own agent, or accept a money request made of it")
 
 // GenerateConnectToken signs a Connect token for one agent of workspaceID, on behalf of clientID (the assistant).
 func GenerateConnectToken(workspaceID, userID, clientID, agentID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration) (string, error) {
@@ -69,12 +73,18 @@ func GenerateConnectToken(workspaceID, userID, clientID, agentID string, scopes 
 }
 
 // connectContext is the identity a Connect token resolves to on r, or ErrConnectRoute when r is not its agent's
-// pay route. The check lives here, in Authenticate, so every handler — those behind AuthMiddleware and those that
-// call Authenticate themselves — refuses the token everywhere else.
+// pay route or a money request's accept route (B52.41; the handler checks the request is made of the token's agent).
+// The check lives here, in Authenticate, so every handler — those behind AuthMiddleware and those that call
+// Authenticate themselves — refuses the token everywhere else.
 func connectContext(r *http.Request, c *TokenClaims) (*AuthContext, error) {
 	// An escaped path (RawPath set) is refused: chi routes on it, so it could name another route than Path does.
-	if c.AgentID == "" || c.ClientID == "" || r.Method != http.MethodPost || r.URL.RawPath != "" ||
-		r.URL.Path != "/v1/workspaces/"+c.WorkspaceID+"/agents/"+c.AgentID+"/pay" {
+	if c.AgentID == "" || c.ClientID == "" || r.Method != http.MethodPost || r.URL.RawPath != "" {
+		return nil, ErrConnectRoute
+	}
+	rest, underRequests := strings.CutPrefix(r.URL.Path, "/v1/workspaces/"+c.WorkspaceID+"/money-requests/")
+	request, accepts := strings.CutSuffix(rest, "/accept")
+	isAccept := underRequests && accepts && request != "" && !strings.Contains(request, "/")
+	if !isAccept && r.URL.Path != "/v1/workspaces/"+c.WorkspaceID+"/agents/"+c.AgentID+"/pay" {
 		return nil, ErrConnectRoute
 	}
 	actx := &AuthContext{
