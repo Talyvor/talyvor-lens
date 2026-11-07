@@ -63,6 +63,7 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 	for _, ws := range []string{alice, bob, linked, p1, p2} {
 		do(http.StatusCreated, nil, ws, http.MethodPost, base+"/join", `{"terms_version":1}`)
 	}
+	do(http.StatusCreated, nil, alice, http.MethodPost, base+"/agreement", `{"version":"`+rooms.AgreementVersion+`","signed_name":"Signer"}`) // B41.150: points count once signed
 	do(http.StatusOK, nil, owner, http.MethodPut, base+"/shared-ownership", `{"enabled":true,"pool_bps":2500}`)
 	do(http.StatusOK, nil, owner, http.MethodPut, base+"/rate-card", `{"pool_points":10000,"sizes":[{"size":"M","hours":8,"points_per_hour":50}]}`)
 	contribute := func(ws, title string) rooms.Contribution {
