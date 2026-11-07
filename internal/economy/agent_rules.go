@@ -1018,17 +1018,23 @@ type AgentApproval struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
+	// B48.10: another Talyvor agent's request to be paid by this one — the request, what it asks in its own currency,
+	// and the trust Talyvor has in the agent asking.
+	PaymentRequestID string `json:"payment_request_id,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	AmountMinor      int64  `json:"amount_minor,omitempty"`
+	Trust            string `json:"trust,omitempty"`
 }
 
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at`
+	approved_by_agent_id, expires_at, payment_request_id, currency, amount_minor, trust`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust)
 	if p.Kind != "" {
 		a.Payee = &p
 	}

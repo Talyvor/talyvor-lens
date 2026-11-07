@@ -2990,6 +2990,8 @@ func run() error {
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
 	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
 	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
+	// B48.10 — a request to be paid, as its shared link shows it — PUBLIC (its id is the secret a link carries).
+	limited.Get("/v1/crypto-requests/{requestID}", serveCryptoRequest(dualToken))
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
@@ -4851,6 +4853,7 @@ func run() error {
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
+		mountCryptoRequestRoutes(authed, dualToken, chainIdx)                           // B48.10
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
 		mountAgentEscrowRoutes(authed, dualToken)                                       // B22.6

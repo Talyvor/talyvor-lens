@@ -105,6 +105,7 @@ var shipped = map[string]recorded{
 	"distill.DefaultIsolatorMemoryBytes":          {distill.DefaultIsolatorMemoryBytes, 512 << 20, "sandbox memory bound"},
 	"distill.DefaultIsolatorTimeout":              {distill.DefaultIsolatorTimeout, 30 * time.Second, "sandbox wall-clock bound"},
 	"economy.DefaultAgentCeilingLXC":              {economy.DefaultAgentCeilingLXC, int64(50_000_000), "agent LXC spend ceiling"},
+	"economy.DefaultPayerRequestsPerDay":          {economy.DefaultPayerRequestsPerDay, 20, "requests to be paid naming a payer, per workspace a day (B48.10)"},
 	"eval.DefaultEstOutputTokens":                 {eval.DefaultEstOutputTokens, 256, "pre-serve cost estimate"},
 	"keel.DefaultMinWorkspaces":                   {keel.DefaultMinWorkspaces, 3, "k-anonymity floor"},
 	"localrouter.DefaultHealthCheckInterval":      {localrouter.DefaultHealthCheckInterval, 30 * time.Second, "health check interval"},

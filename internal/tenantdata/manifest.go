@@ -170,6 +170,10 @@ var Manifest = map[string]Entry{
 	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
 	"money_quarantined_deposits": {Retain, "B48.7: each payment in from a flagged payer held for an operator — who it was from, how much, its partner's reference and case — and when it posted once released; it explains money_entries; financial-record retention"},
 
+	// B48.10: their keys are longer than the rest, so they stand apart rather than realign them.
+	"crypto_payment_requests":         {Retain, "B48.10: each request to be paid into an agent's crypto wallet — amount, network, the wallet, memo, expiry, the payer's address when named and the owner's decision on an overpayment; it explains why money arrived; financial-record retention"},
+	"crypto_payment_request_payments": {Retain, "B48.10: which chain_movements deposit paid which request, how much and whether it came late; financial-record retention"},
+
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
 

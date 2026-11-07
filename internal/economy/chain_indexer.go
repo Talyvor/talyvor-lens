@@ -58,6 +58,8 @@ func (n ChainNetwork) threshold(amount int64) int64 {
 type ChainIndexer struct {
 	s    *DualTokenStore
 	nets map[string]ChainNetwork
+	// PayerRequestsPerDay is how many requests to be paid naming a payer a workspace may make a day (B48.10).
+	PayerRequestsPerDay int
 }
 
 // ErrChainNetwork: a network the indexer does not read.
@@ -65,7 +67,7 @@ var ErrChainNetwork = errors.New("economy: the chain indexer does not read that 
 
 // NewChainIndexer reads nets into s's ledger. Every network names its USDC contract, its confirmations and its funding.
 func (s *DualTokenStore) NewChainIndexer(nets []ChainNetwork) (*ChainIndexer, error) {
-	x := &ChainIndexer{s: s, nets: map[string]ChainNetwork{}}
+	x := &ChainIndexer{s: s, nets: map[string]ChainNetwork{}, PayerRequestsPerDay: DefaultPayerRequestsPerDay}
 	for _, n := range nets {
 		n.USDC = smartaccount.Checksum(n.USDC)
 		switch {
@@ -429,6 +431,9 @@ func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) 
 	_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4,
 		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
 		m.id, status, posted, e.ID, reverse)
+	if err == nil {
+		x.matchRequest(ctx, m, reverse) // B48.10
+	}
 	return err
 }
 
