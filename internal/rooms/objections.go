@@ -15,12 +15,12 @@ import (
 //
 // The room's owner freezes the leaderboard once, and that opens a 14-day objection window; from then on a decision
 // that would write to the points ledger is refused, so the points only move by objection. In the window any member may
-// object to the points a contribution earned its author, proposing a change that leaves the author holding between none
-// and the contribution's size at the highest quality. Lens draws the panel at random, never the objector: three live
-// members (not the owner or an editor, who decided the contributions, nor viewers or muted ones) under the room's
-// current terms, not the objector or the holder and linked to neither — the same person joined both, or the two share
-// an owner key or a card, as the reviewer draw links them (B41.144). An objection Lens cannot seat three for is
-// refused. Each panelist votes to uphold or dismiss within 14 days of the objection; two votes the same way decide it,
+// object to the points an accepted contribution earned its author, proposing a change that leaves the author holding
+// between none and the contribution's size at the highest quality; one objection per contribution is before a panel at
+// a time. Lens draws the panel at random, never the objector: three live members (not the owner or an editor, who
+// decided the contributions, nor viewers or muted ones) under the room's current terms, not the objector or the holder
+// and linked to neither nor to each other — the same person joined both, or the two share an owner key or a card, as
+// the reviewer draw links them (B41.144). An objection Lens cannot seat three for is refused. Each panelist votes to uphold or dismiss within 14 days of the objection; two votes the same way decide it,
 // and an upheld objection writes its change to the points ledger as an objection row. Undecided by then, it has lapsed
 // and the points stand. B30.69's shared dispute flow is not built yet, so a room's objections are decided here.
 
@@ -175,6 +175,16 @@ func (s *Store) RaiseObjection(ctx context.Context, ws, roomID string, in Object
 		if err != nil {
 			return err
 		}
+		if c.Status != ContributionAccepted {
+			return fmt.Errorf("%w: the contribution is %s: objections are about the points accepted ones earned", ErrConflict, c.Status)
+		}
+		var pending bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM room_objections WHERE contribution_id = $1 AND status = 'open'
+			AND decide_by > now())`, c.ID).Scan(&pending); err != nil {
+			return err
+		} else if pending {
+			return fmt.Errorf("%w: an objection to this contribution's points is before a panel already", ErrConflict)
+		}
 		var held int64
 		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(points), 0)::bigint FROM room_points WHERE contribution_id = $1
 			AND workspace_id = $2`, c.ID, c.AuthorWorkspaceID).Scan(&held); err != nil {
@@ -194,23 +204,29 @@ func (s *Store) RaiseObjection(ctx context.Context, ws, roomID string, in Object
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("%w: you have already objected to this contribution's points", ErrConflict)
 		}
-		tag, err = tx.Exec(ctx, `INSERT INTO room_objection_panel (objection_id, workspace_id)
-			SELECT $2, m.workspace_id FROM room_members m JOIN rooms r ON r.id = m.room_id
-			WHERE m.room_id = $1 AND m.removed_at IS NULL AND m.muted_at IS NULL AND m.role = 'member'
-				AND m.terms_version = r.terms_version AND m.workspace_id <> ALL ($3::text[])
-				AND NOT EXISTS (SELECT 1 FROM room_members a WHERE a.room_id = $1 AND a.workspace_id = ANY ($3::text[])
-					AND a.user_id <> '' AND a.user_id = m.user_id)
-				AND NOT EXISTS (SELECT 1 FROM workspace_owner_links x JOIN workspace_owner_links y ON y.owner_key = x.owner_key
-					WHERE x.workspace_id = ANY ($3::text[]) AND y.workspace_id = m.workspace_id)
-				AND NOT EXISTS (SELECT 1 FROM workspace_card_fingerprints x JOIN workspace_card_fingerprints y
-					ON y.fingerprint_hash = x.fingerprint_hash WHERE x.workspace_id = ANY ($3::text[]) AND y.workspace_id = m.workspace_id)
-			ORDER BY random() LIMIT $4`, roomID, id, []string{ws, c.AuthorWorkspaceID}, PanelSize)
-		switch {
-		case err != nil:
-			return err
-		case tag.RowsAffected() < PanelSize:
-			return fmt.Errorf("%w: the room needs %d members linked neither to you nor to the author to hear an objection",
-				ErrConflict, PanelSize)
+		// One seat at a time, each linked neither to the objector and the holder nor to a panelist already seated.
+		apart := []string{ws, c.AuthorWorkspaceID}
+		for range PanelSize {
+			var seated string
+			err := tx.QueryRow(ctx, `INSERT INTO room_objection_panel (objection_id, workspace_id)
+				SELECT $2, m.workspace_id FROM room_members m JOIN rooms r ON r.id = m.room_id
+				WHERE m.room_id = $1 AND m.removed_at IS NULL AND m.muted_at IS NULL AND m.role = 'member'
+					AND m.terms_version = r.terms_version AND m.workspace_id <> ALL ($3::text[])
+					AND NOT EXISTS (SELECT 1 FROM room_members a WHERE a.room_id = $1 AND a.workspace_id = ANY ($3::text[])
+						AND a.user_id <> '' AND a.user_id = m.user_id)
+					AND NOT EXISTS (SELECT 1 FROM workspace_owner_links x JOIN workspace_owner_links y ON y.owner_key = x.owner_key
+						WHERE x.workspace_id = ANY ($3::text[]) AND y.workspace_id = m.workspace_id)
+					AND NOT EXISTS (SELECT 1 FROM workspace_card_fingerprints x JOIN workspace_card_fingerprints y
+						ON y.fingerprint_hash = x.fingerprint_hash WHERE x.workspace_id = ANY ($3::text[]) AND y.workspace_id = m.workspace_id)
+				ORDER BY random() LIMIT 1 RETURNING workspace_id`, roomID, id, apart).Scan(&seated)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: the room needs %d members linked neither to you, the author nor each other to hear an objection",
+					ErrConflict, PanelSize)
+			}
+			if err != nil {
+				return err
+			}
+			apart = append(apart, seated)
 		}
 		out, err = readObjection(ctx, tx, roomID, id)
 		return err

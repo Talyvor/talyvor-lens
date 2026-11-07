@@ -23,8 +23,8 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const owner, alice, bob, linked = "ws-b41147-owner", "ws-b41147-alice", "ws-b41147-bob", "ws-b41147-linked"
-	const p1, p2, p3 = "ws-b41147-p1", "ws-b41147-p2", "ws-b41147-p3"
-	for _, ws := range []string{owner, alice, bob, linked, p1, p2, p3} {
+	const p1, p2, p3, p4 = "ws-b41147-p1", "ws-b41147-p2", "ws-b41147-p3", "ws-b41147-p4"
+	for _, ws := range []string{owner, alice, bob, linked, p1, p2, p3, p4} {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic) VALUES ($1, $1, $1, true)`, ws); err != nil {
 			t.Fatal(err)
 		}
@@ -32,6 +32,11 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 	// linked shares an owner key with Alice, the author: it never sits on a panel about her points.
 	if _, err := pool.Exec(ctx, `INSERT INTO workspace_owner_links (workspace_id, owner_key) VALUES ($1, 'human-b41147'), ($2, 'human-b41147')`,
 		alice, linked); err != nil {
+		t.Fatal(err)
+	}
+	// p1 and p2 share a card: one person, so never two seats on one panel.
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_card_fingerprints (workspace_id, fingerprint_hash) VALUES ($1, 'fp-b41147'), ($2, 'fp-b41147')`,
+		p1, p2); err != nil {
 		t.Fatal(err)
 	}
 	marketStore := market.NewStore(pool)
@@ -88,12 +93,16 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 	late := contribute(bob, "Copy B")
 	do(http.StatusConflict, nil, owner, http.MethodPatch, base+"/contributions/"+late.ID, `{"status":"accepted"}`)
 
-	// With only p1 and p2 linked to neither side, Lens cannot seat a panel: the member linked to Alice never counts.
-	do(http.StatusConflict, nil, bob, http.MethodPost, base+"/objections", raise)
+	// Only accepted contributions' points are objected to.
+	do(http.StatusConflict, nil, bob, http.MethodPost, base+"/objections", `{"contribution_id":"`+late.ID+`","points":100,"reason":"It counts."}`)
+	// With p1, p2 (one person) and p3, Lens cannot seat three independent members: the member linked to Alice never
+	// counts, and p1 and p2 never sit together.
 	do(http.StatusCreated, nil, p3, http.MethodPost, base+"/join", `{"terms_version":1}`)
+	do(http.StatusConflict, nil, bob, http.MethodPost, base+"/objections", raise)
+	do(http.StatusCreated, nil, p4, http.MethodPost, base+"/join", `{"terms_version":1}`)
 
-	// Bob objects: Lens seats the three members linked neither to Bob nor to Alice — never the owner, Alice, Bob or
-	// the member linked to Alice.
+	// Bob objects: Lens seats three members linked neither to Bob, nor to Alice, nor to each other — never the owner,
+	// Alice, Bob or the member linked to Alice, and only one of p1 and p2.
 	var o rooms.Objection
 	do(http.StatusCreated, &o, bob, http.MethodPost, base+"/objections", raise)
 	var panel []string
@@ -101,24 +110,26 @@ func TestRooms_AnObjectionGoesToThreeUnlinkedMembersWhoseMajorityChangesThePoint
 		panel = append(panel, p.WorkspaceID)
 	}
 	sort.Strings(panel)
-	if o.Status != rooms.ObjectionOpen || o.HolderWorkspaceID != alice || strings.Join(panel, ",") != p1+","+p2+","+p3 {
-		t.Fatalf("the objection is %+v, want it open about Alice's points before p1, p2 and p3", o)
+	if got := strings.Join(panel, ","); o.Status != rooms.ObjectionOpen || o.HolderWorkspaceID != alice ||
+		(got != p1+","+p3+","+p4 && got != p2+","+p3+","+p4) {
+		t.Fatalf("the objection is %+v, want it open about Alice's points before p3, p4 and one of p1 and p2", o)
 	}
-	do(http.StatusConflict, nil, bob, http.MethodPost, base+"/objections", raise)
+	// One objection to a contribution is before a panel at a time.
+	do(http.StatusConflict, nil, linked, http.MethodPost, base+"/objections", raise)
 	do(http.StatusForbidden, nil, bob, http.MethodPut, base+"/objections/"+o.ID+"/vote", `{"uphold":true}`)
 
 	// Two of three uphold it: the objection is decided, and Alice's 400 points become 200 by an objection row.
 	vote := base + "/objections/" + o.ID + "/vote"
-	do(http.StatusOK, &o, p1, http.MethodPut, vote, `{"uphold":true}`)
-	do(http.StatusOK, &o, p2, http.MethodPut, vote, `{"uphold":false}`)
+	do(http.StatusOK, &o, panel[0], http.MethodPut, vote, `{"uphold":true}`)
+	do(http.StatusOK, &o, p3, http.MethodPut, vote, `{"uphold":false}`)
 	if o.Status != rooms.ObjectionOpen {
 		t.Fatalf("after one vote each way the objection is %s, want open", o.Status)
 	}
-	do(http.StatusOK, &o, p3, http.MethodPut, vote, `{"uphold":true}`)
+	do(http.StatusOK, &o, p4, http.MethodPut, vote, `{"uphold":true}`)
 	if o.Status != rooms.ObjectionUpheld || o.DecidedAt == nil {
 		t.Fatalf("after two votes to uphold the objection is %+v, want upheld", o)
 	}
-	do(http.StatusConflict, nil, p2, http.MethodPut, vote, `{"uphold":true}`)
+	do(http.StatusConflict, nil, p3, http.MethodPut, vote, `{"uphold":true}`)
 	var row int64
 	if err := pool.QueryRow(ctx, `SELECT points FROM room_points WHERE room_id = $1 AND workspace_id = $2 AND reason = 'objection'`,
 		room.ID, alice).Scan(&row); err != nil || row != -200 {
