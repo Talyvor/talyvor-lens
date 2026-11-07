@@ -14,6 +14,7 @@ import (
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/coinbase"
+	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 )
 
@@ -66,6 +67,9 @@ func newChainIndex(store *economy.DualTokenStore, raw string) (*chainIndex, erro
 	if err != nil {
 		return nil, fmt.Errorf("LENS_CHAIN_INDEX: %w", err)
 	}
+	// B48.28: each movement valued as it confirms. shortcut: a live movement stays unpriced (the export lists it so)
+	// until a market price adapter is wired here.
+	x.SetPrices(holdings.TestPrices{}, nil)
 	return &chainIndex{x: x, webhookSecret: cfg.WebhookSecret, byWebhook: byWebhook}, nil
 }
 
