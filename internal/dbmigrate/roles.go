@@ -16,7 +16,7 @@ import (
 // B39.6 role separation (docs/AUDIT-POLICY.md §3). The login that runs migrations owns the schema and
 // the audit_block_mutation triggers; Lens itself may run as AppRole, which can never UPDATE, DELETE or
 // TRUNCATE a guarded table and, not owning it, can never DISABLE or DROP its trigger. RetentionRole
-// may only read and delete token_events, for the retention sweeper.
+// may only read and delete token_events, for the retention sweeper, and read account_deletions, whose events it deletes.
 const (
 	AppRole       = "lens_app"
 	RetentionRole = "lens_retention"
@@ -50,6 +50,9 @@ BEGIN
     END IF;
     IF to_regclass(format('%I.audit_export_state', s)) IS NOT NULL THEN
         EXECUTE format('GRANT SELECT ON %I.audit_export_state TO lens_retention', s);
+    END IF;
+    IF to_regclass(format('%I.account_deletions', s)) IS NOT NULL THEN
+        EXECUTE format('GRANT SELECT ON %I.account_deletions TO lens_retention', s);
     END IF;
 END
 $$`

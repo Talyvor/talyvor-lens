@@ -264,8 +264,8 @@ func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit fun
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("workspace: commit account deletion: %w", err)
 	}
-	// shortcut: the account is gone once tx commits, so a failure here is logged, not returned; the rows are then deleted
-	// by hand (DELETE FROM token_events WHERE workspace_id IN account_deletions, as lens_retention). Make it a job if seen.
+	// The account is gone once tx commits, so a failure here is logged, not returned: the hourly
+	// audit.DeleteDeletedAccountsEvents deletes those rows on its next run.
 	if err := evTx.Commit(ctx); err != nil {
 		slog.Error("workspace: deleted account's usage rows not deleted", "workspace", id, "err", err)
 	}

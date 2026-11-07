@@ -1092,6 +1092,23 @@ func run() error {
 	go haComps.leader.Run(ctx, "audit-retention", 30*time.Second, func(lctx context.Context) {
 		auditRetention.StartSweeper(lctx, time.Hour)
 	})
+	// B52.37 — usage rows of a deleted account that its deletion missed (a request still running) go within the hour.
+	go haComps.leader.Run(ctx, "deleted-accounts-usage", 30*time.Second, func(lctx context.Context) {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			if n, err := audit.DeleteDeletedAccountsEvents(lctx, retentionPool); err != nil {
+				slog.Warn("deleted accounts' usage rows not deleted", "err", err)
+			} else if n > 0 {
+				slog.Info("deleted accounts' usage rows deleted", "rows", n)
+			}
+			select {
+			case <-lctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	})
 	auditExport := audit.NewScheduledExport(pool, cfg.AuditExportURL)
 	go haComps.leader.Run(ctx, "audit-export", 30*time.Second, func(lctx context.Context) {
 		auditExport.StartLoop(lctx, cfg.AuditExportInterval)

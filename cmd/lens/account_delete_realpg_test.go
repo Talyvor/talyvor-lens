@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/audit"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/economy"
@@ -244,6 +245,14 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletions WHERE workspace_id = $1`, ws).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("account_deletions rows: %d (%v), want 1", n, err)
+	}
+	// A request still running when it committed writes a usage row after: the hourly job, as lens_retention, deletes it.
+	if _, err := pool.Exec(ctx, `INSERT INTO token_events (provider, model, input_tokens, output_tokens, workspace_id, prompt_text)
+		VALUES ('openai', 'gpt', 1, 1, $1, 'late words')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := audit.DeleteDeletedAccountsEvents(ctx, accountDeleteAs(t, pool, dbmigrate.RetentionRole)); err != nil || gone != 1 {
+		t.Fatalf("the hourly job deleted %d usage rows of the deleted account (%v), want 1", gone, err)
 	}
 
 	// Every key and token is refused, by this Lens and by one started afterwards.
