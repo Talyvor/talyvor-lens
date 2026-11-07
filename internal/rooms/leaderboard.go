@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -26,13 +27,15 @@ type LeaderboardRow struct {
 
 // Leaderboard is a room's provisional leaderboard as its members see it.
 type Leaderboard struct {
-	RoomID      string           `json:"room_id"`
-	Enabled     bool             `json:"enabled"`  // shared ownership is switched on
-	PoolBPS     int              `json:"pool_bps"` // the contributor pool
-	TotalPoints int64            `json:"total_points"`
-	Rows        []LeaderboardRow `json:"rows"` // most points first
-	Note        string           `json:"note"`
-	Notice      string           `json:"notice"`
+	RoomID            string           `json:"room_id"`
+	Enabled           bool             `json:"enabled"`  // shared ownership is switched on
+	PoolBPS           int              `json:"pool_bps"` // the contributor pool
+	TotalPoints       int64            `json:"total_points"`
+	Rows              []LeaderboardRow `json:"rows"`                // most points first
+	FrozenAt          *time.Time       `json:"frozen_at"`           // null until the owner freezes it (B41.147)
+	ObjectionsCloseAt *time.Time       `json:"objections_close_at"` // the objection window's end
+	Note              string           `json:"note"`
+	Notice            string           `json:"notice"`
 }
 
 // Leaderboard is roomID's provisional leaderboard, for ws, a member that accepted the room's current terms.
@@ -47,6 +50,9 @@ func (s *Store) Leaderboard(ctx context.Context, ws, roomID string) (l Leaderboa
 			return err
 		}
 		l.Enabled, l.PoolBPS = o.Enabled, o.PoolBPS
+		if l.FrozenAt, l.ObjectionsCloseAt, err = readFreeze(ctx, tx, roomID); err != nil {
+			return err
+		}
 		holders, total, err := pointsHolders(ctx, tx, roomID)
 		if err != nil {
 			return err
