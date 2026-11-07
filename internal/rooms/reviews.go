@@ -151,12 +151,13 @@ func (s *Store) Review(ctx context.Context, ws, roomID, id string, scoreBPS int)
 		tag, err := tx.Exec(ctx, `UPDATE room_reviews SET score_bps = $3, scored_at = now(), ring = EXISTS (SELECT 1 FROM room_reviews v
 			JOIN room_contributions o ON o.id = v.contribution_id
 			WHERE v.room_id = $4 AND v.reviewer_workspace_id = $5 AND o.author_workspace_id = $2 AND v.score_bps IS NOT NULL)
-			WHERE contribution_id = $1 AND reviewer_workspace_id = $2`, c.ID, ws, scoreBPS, roomID, c.AuthorWorkspaceID)
+			WHERE contribution_id = $1 AND reviewer_workspace_id = $2 AND EXISTS (SELECT 1 FROM room_members m WHERE m.room_id = $4
+				AND m.workspace_id = $2 AND m.muted_at IS NULL AND m.role = 'member')`, c.ID, ws, scoreBPS, roomID, c.AuthorWorkspaceID)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return forbidden("only the members Lens drew to review the contribution score it")
+			return forbidden("only the members Lens drew to review the contribution, while they neither decide it nor are muted, score it")
 		}
 		// The author scored ws's work too: that pair is a ring both ways, on its contributions still proposed.
 		rows, err := tx.Query(ctx, `UPDATE room_reviews v SET ring = true FROM room_contributions o WHERE o.id = v.contribution_id
