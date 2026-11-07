@@ -437,6 +437,7 @@ func (s *DualTokenStore) ReceiveNegotiationReply(ctx context.Context, workspaceI
 	if len(r.Unsure) > 0 {
 		return r, nil
 	}
+	r.Terms.MustHavesMet = r.MustHavesMet // B52.13: what Counter may close on
 	o, err := s.RecordNegotiationTerms(ctx, workspaceID, id, NegotiationOffer{Counterparty: r.Counterparty, Party: "theirs",
 		Channel: channel, Terms: r.Terms, Message: text})
 	if err != nil {

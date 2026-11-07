@@ -195,6 +195,8 @@ type NegotiationTerms struct {
 	PaymentTerms string   `json:"payment_terms,omitempty"`
 	SLA          string   `json:"sla,omitempty"`
 	Extras       []string `json:"extras,omitempty"`
+	// B52.13: the mandate's must-haves the offer meets, as read from their reply or confirmed by the owner.
+	MustHavesMet []string `json:"must_haves_met,omitempty"`
 }
 
 // NegotiationOffer is one line of a counterparty's term sheet: ours, with the message sent, or theirs, as received.
@@ -211,7 +213,7 @@ type NegotiationOffer struct {
 // NegotiationMandate is a signed mandate as kept, with its term sheet per counterparty. Only its owner reads it.
 type NegotiationMandate struct {
 	NegotiationMandateTerms
-	Status string `json:"status"` // active, past_deadline or revoked
+	Status string `json:"status"` // active, past_deadline, revoked or closed (B52.13: its deal accepted)
 	// Where the deal was confirmed from: the counterparty agent's signing domain and its channel. Empty: unconfirmed,
 	// so the deal reference holds nothing.
 	DealConfirmedBy  string                        `json:"deal_confirmed_by,omitempty"`
@@ -224,7 +226,8 @@ type NegotiationMandate struct {
 	CreatedAt        time.Time                     `json:"created_at"`
 	EndedAt          *time.Time                    `json:"ended_at,omitempty"`
 	TermSheets       map[string][]NegotiationOffer `json:"term_sheets"`
-	Messages         []NegotiationMessage          `json:"messages"` // the deal's timeline: what Counter sent and the replies
+	Messages         []NegotiationMessage          `json:"messages"`          // the deal's timeline: what Counter sent and the replies
+	Closing          *NegotiationDeal              `json:"closing,omitempty"` // B52.13: the deal accepted or waiting for the owner
 }
 
 // PrepareNegotiationMandate checks t for workspaceID, gives it a new id, and answers the canonical JSON to sign, its
@@ -550,9 +553,10 @@ func (s *DualTokenStore) VerifyNegotiationDomain(ctx context.Context, workspaceI
 // NegotiationMandate reads one of workspaceID's mandates, with its term sheets.
 func (s *DualTokenStore) NegotiationMandate(ctx context.Context, workspaceID, id string) (NegotiationMandate, error) {
 	var m NegotiationMandate
-	err := s.pool.QueryRow(ctx, `SELECT canonical, credential_id, device_id, created_by, created_at, ended_at, deal_confirmed_by,
+	var endedBy string
+	err := s.pool.QueryRow(ctx, `SELECT canonical, credential_id, device_id, created_by, created_at, ended_at, ended_by, deal_confirmed_by,
 		deal_confirmed_via, deal_confirmed_at FROM negotiation_mandates WHERE id = $1 AND workspace_id = $2`, id, workspaceID).
-		Scan(&m.Canonical, &m.CredentialID, &m.DeviceID, &m.CreatedBy, &m.CreatedAt, &m.EndedAt, &m.DealConfirmedBy, &m.DealConfirmedVia, &m.DealConfirmedAt)
+		Scan(&m.Canonical, &m.CredentialID, &m.DeviceID, &m.CreatedBy, &m.CreatedAt, &m.EndedAt, &endedBy, &m.DealConfirmedBy, &m.DealConfirmedVia, &m.DealConfirmedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, ErrNegotiationNotFound
 	}
@@ -565,6 +569,8 @@ func (s *DualTokenStore) NegotiationMandate(ctx context.Context, workspaceID, id
 	}
 	m.Status = "active"
 	switch {
+	case m.EndedAt != nil && endedBy == "deal":
+		m.Status = "closed"
 	case m.EndedAt != nil:
 		m.Status = "revoked"
 	case !time.Now().Before(m.Deadline):
@@ -587,8 +593,15 @@ func (s *DualTokenStore) NegotiationMandate(ctx context.Context, workspaceID, id
 	if err := rows.Err(); err != nil {
 		return m, err
 	}
-	m.Messages, err = s.negotiationTimeline(ctx, workspaceID, id)
-	return m, err
+	if m.Messages, err = s.negotiationTimeline(ctx, workspaceID, id); err != nil {
+		return m, err
+	}
+	if d, err := s.negotiationDeal(ctx, workspaceID, id); err == nil {
+		m.Closing = &d
+	} else if !errors.Is(err, ErrNegotiationNotFound) {
+		return m, err
+	}
+	return m, nil
 }
 
 // RevokeNegotiationMandate ends a mandate at once and gives up its deal.
