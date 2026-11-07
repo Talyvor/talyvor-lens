@@ -78,8 +78,8 @@ import (
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
 // mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
-// reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146), objections (B41.147) and the contributor
-// agreement (B41.150).
+// reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146) and the contributor agreement (B41.150).
+// It also mounts objections to the frozen leaderboard (B41.147).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
