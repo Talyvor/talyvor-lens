@@ -429,13 +429,13 @@ func TestPaymentRequests_CoveredPaidWhenPrepared(t *testing.T) {
 		t.Errorf("a payment past the day's limit after a decline = %v, want it to wait for approval", more)
 	}
 
-	// (6) The agent's own covered payment is paid when prepared; with every agent paused one is refused, and stays
-	// unpaid once they are resumed.
+	// (6) The agent's own covered payment is paid when prepared. One that failed for want of money is refused when
+	// every agent is paused, and stays unpaid once they are resumed.
 	agentAccount, err := store.OpenCurrencyAccount(ctx, ws, agentID, "GBP", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	topUp(t, store, ws, "agent-top-up", w.partnerAccount, agentAccount.ID, 10000)
+	topUp(t, store, ws, "agent-top-up", w.partnerAccount, agentAccount.ID, 500)
 	agentPays := func(key string, minor int64) economy.PaymentRequest {
 		t.Helper()
 		r, _, err := store.PreparePaymentRequest(ctx, ws, "agent:"+agentID, key, economy.PaymentRequestIn{Client: "key:k-b5521", AgentID: agentID,
@@ -449,11 +449,19 @@ func TestPaymentRequests_CoveredPaidWhenPrepared(t *testing.T) {
 		t.Fatalf("the agent's covered request = %+v, want paid", r.Items[0])
 	}
 	paidOut("the agent's covered request", "Ada Plumbing 300")
+	queued := agentPays("agent-2", 400)
+	if queued.Items[0].PayStatus != economy.PayFailed {
+		t.Fatalf("the agent's covered £4 with £2 in its account = %+v, want failed", queued.Items[0])
+	}
 	if err := store.PauseAllAgents(ctx, ws, "holiday"); err != nil {
 		t.Fatal(err)
 	}
-	if r := agentPays("agent-2", 400); r.Items[0].PaymentID != "" || r.Items[0].PayStatus != economy.PayRefused {
-		t.Errorf("a paused agent's covered request = %+v, want refused", r.Items[0])
+	topUp(t, store, ws, "agent-top-up-2", w.partnerAccount, agentAccount.ID, 1000)
+	if _, err := store.RunCoveredPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := store.PaymentRequest(ctx, ws, "", queued.ID); r.Items[0].PaymentID != "" || r.Items[0].PayStatus != economy.PayRefused {
+		t.Errorf("the agent's failed £4 while every agent is paused = %+v, want refused", r.Items[0])
 	}
 	if err := store.ResumeAllAgents(ctx, ws); err != nil {
 		t.Fatal(err)
@@ -462,4 +470,8 @@ func TestPaymentRequests_CoveredPaidWhenPrepared(t *testing.T) {
 		t.Fatal(err)
 	}
 	paidOut("the agents resumed")
+	if r := agentPays("agent-3", 200); r.Items[0].Decision != economy.ItemAuto || r.Items[0].PaymentID == "" {
+		t.Errorf("the agent's covered request once resumed = %+v, want paid", r.Items[0])
+	}
+	paidOut("a new covered request once resumed", "Ada Plumbing 200")
 }
