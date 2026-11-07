@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS agent_crypto_sends (
     signed_op        TEXT NOT NULL DEFAULT '',
     user_op_hash     TEXT NOT NULL DEFAULT '',
     tx_hash          TEXT NOT NULL DEFAULT '',
-    carried_until    TIMESTAMPTZ, -- one caller at a time takes a send further, under this lease
+    carried_until    TIMESTAMPTZ, -- one caller at a time takes a send further, under this lease,
+    carried_by       TEXT NOT NULL DEFAULT '', -- and only the caller holding it gives it up
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, agent_id, idempotency_key)
