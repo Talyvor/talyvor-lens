@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +15,8 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/tenant"
 )
 
@@ -36,6 +39,8 @@ func TestB4828_EveryTokenSeenAndValuedWhenItMoves(t *testing.T) {
 	ctx := context.Background()
 	const ws = "ws-b4828"
 	store := economy.NewDualTokenStore(nil, pool, nil)
+	const flagged = "0x00000000000000000000000000000000000B482F"
+	store.SetScreener(screening.NewScreener(pool, b487Screening{strings.ToLower(flagged): partners.AddressSanctioned}))
 	agent, err := store.CreateAgent(ctx, ws, "trader", "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -113,5 +118,24 @@ func TestB4828_EveryTokenSeenAndValuedWhenItMoves(t *testing.T) {
 	if d := x.Disposals[0]; d.TxHash != send || d.QuantityMinor.String() != "5000000000000000000" || d.ProceedsMinor != 1_750_000 ||
 		d.CostBasisMinor != 1_500_000 || d.GainMinor != 250_000 || x.Currency != "USD" || len(x.Unpriced) != 0 {
 		t.Fatalf("the tax export = %+v; want the send's 5 ETH, proceeds 1750000, basis 1500000, gain 250000 USD", x)
+	}
+
+	// ETH from a flagged address is screened at its value, in a currency screening counts, and held as USDC is (B48.7).
+	chain.send(t, devnetFunded, eth, "mint(address,uint256)", flagged, wei(1))
+	chain.impersonate(t, flagged)
+	held := chain.send(t, flagged, eth, "transfer(address,uint256)", wallet, wei(1))
+	if n, err := idx.x.Poll(ctx, "base"); err != nil || n != 1 {
+		t.Fatalf("poll = %d, %v; want the flagged deposit seen", n, err)
+	}
+	chain.mine(t, 5)
+	if res, err := idx.x.Confirm(ctx, "base"); err != nil || res.Posted != 0 {
+		t.Fatalf("the flagged deposit with 6 confirmations: %+v, %v; want it held", res, err)
+	}
+	var status, currency string
+	var amount int64
+	if err := pool.QueryRow(ctx, `SELECT m.status, c.currency, c.amount_minor FROM chain_movements m
+		JOIN compliance_cases c ON c.subject_id = 'chain:' || m.id || ':1' WHERE m.tx_hash = $1`, held).Scan(&status, &currency, &amount); err != nil ||
+		status != "quarantined" || currency != "USD" || amount != 350_000 {
+		t.Fatalf("the flagged deposit is %s, its case %d %s, %v; want it quarantined, screened at 350000 USD", status, amount, currency, err)
 	}
 }
