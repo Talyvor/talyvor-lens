@@ -37,6 +37,32 @@ var ErrAgentRequestRate = fmt.Errorf("%w", ErrAgentRule)
 // ErrApprovalRequired is the approval amount's refusal; *ApprovalNeededError carries the approval.
 var ErrApprovalRequired = errors.New("economy: this request needs a person's approval")
 
+// ErrApprovalDeclined is the refusal of a request the workspace's owner declined within the approval life (B55.18):
+// asking again the same way neither files an approval nor pushes.
+var ErrApprovalDeclined = errors.New("economy: the workspace's owner declined this request")
+
+// approvalDeclined is ErrApprovalDeclined saying when, why and until when. It is ErrAgentRule too, so every caller
+// refuses it as it refuses a rule (403), while its words name the owner's decline rather than the spending rules.
+type approvalDeclined struct {
+	at, until time.Time
+	reason    string
+}
+
+func (e approvalDeclined) Error() string {
+	const day, clock = "2 Jan 2006", "15:04 UTC"
+	reason := ""
+	if e.reason != "" {
+		reason = ": " + e.reason
+	}
+	at, until := e.at.UTC(), e.until.UTC()
+	return fmt.Sprintf("%s on %s at %s%s; the same request is refused until %s at %s",
+		ErrApprovalDeclined, at.Format(day), at.Format(clock), reason, until.Format(day), until.Format(clock))
+}
+
+func (e approvalDeclined) Is(target error) bool {
+	return target == ErrApprovalDeclined || target == ErrAgentRule
+}
+
 // ErrApprovalNotFound: no such open approval in this workspace.
 var ErrApprovalNotFound = errors.New("economy: no such pending approval in this workspace")
 
@@ -154,6 +180,18 @@ type agentRequestKey struct{}
 // WithAgentRequest carries req to the agent's hold or debit made with ctx.
 func WithAgentRequest(ctx context.Context, req AgentRequest) context.Context {
 	return context.WithValue(ctx, agentRequestKey{}, req)
+}
+
+type denyReasonKey struct{}
+
+// WithDenyReason carries what the owner wrote when declining (B55.18) to DecideAgentApproval and DecideAgentApprovalSigned.
+func WithDenyReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, denyReasonKey{}, reason)
+}
+
+func denyReasonFrom(ctx context.Context) string {
+	r, _ := ctx.Value(denyReasonKey{}).(string)
+	return r
 }
 
 func agentRequestFrom(ctx context.Context) AgentRequest {
@@ -968,6 +1006,9 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 				return ErrConnectApprovalsWaiting
 			}
 		}
+		if err := declined(ctx, tx, need.agentID, need.req.Fingerprint); err != nil { // B55.18
+			return err
+		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
@@ -988,6 +1029,27 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		return fmt.Errorf("economy: read approval: %w", err)
 	}
 	return need
+}
+
+// declined is approvalDeclined when the owner declined the agent's request of fingerprint within the approval life
+// (B55.18): the decline's expires_at is when the same request may ask again. Every place that files an approval asks it
+// in the filing's transaction, first locking the request's open approval: a retry racing the owner's decline waits for
+// it, and this statement, run after, sees it.
+func declined(ctx context.Context, tx pgx.Tx, agentID, fingerprint string) error {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2 AND status IN ('pending', 'approved')
+		FOR UPDATE`, agentID, fingerprint); err != nil {
+		return fmt.Errorf("economy: lock the open approval: %w", err)
+	}
+	var d approvalDeclined
+	err := tx.QueryRow(ctx, `SELECT decided_at, expires_at, deny_reason FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2
+		AND status = 'denied' AND expires_at > now() ORDER BY expires_at DESC LIMIT 1`, agentID, fingerprint).Scan(&d.at, &d.until, &d.reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("economy: declined approval: %w", err)
+	}
+	return d
 }
 
 // refusedMovement is what a hold or debit returns when agentMovement refused it: a request that needs
@@ -1018,17 +1080,18 @@ type AgentApproval struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
+	DenyReason        string `json:"deny_reason,omitempty"` // what the owner wrote when declining (B55.18)
 }
 
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at`
+	approved_by_agent_id, expires_at, deny_reason`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1060,9 +1123,10 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	if approve {
 		status = "approved"
 	}
-	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
+	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
+		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
 		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns,
-		approvalID, workspaceID, status, s.approvalLife().Microseconds()))
+		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
 	}

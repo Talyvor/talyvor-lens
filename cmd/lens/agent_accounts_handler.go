@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -58,7 +59,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/approvals/{id}/approve   let that request through, once; with
 //	                                                           {"always_allow": {"amount_ulxc", "per": "day"|"month"}} (B41.104)
 //	                                                           also let the agent pay that payee up to it without approval
-//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it
+//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it; {"reason"} (up to 200 characters, B55.18) is
+//	                                                           told to the agent, whose identical request is refused
+//	                                                           without asking again for the approval life (24 hours)
 //
 // B19.3 — one company's agents pay each other, inside the closed loop:
 //
@@ -120,7 +123,8 @@ import (
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
-//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion}   decides them all, or none
+//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion, reason?}   decides them all, or
+//	                                                       none; a decline's reason as on .../deny (B55.18)
 //	GET    /v1/workspaces/{wsID}/agents/push/public-key              the VAPID key a browser subscribes with
 //	POST   /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint, keys: {p256dh, auth}}   a device to tell
 //	DELETE /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint}
@@ -995,8 +999,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			var in struct {
 				Assertion   *passkey.Assertion      `json:"assertion"`
 				AlwaysAllow *economy.PayeeAllowance `json:"always_allow"` // B41.104: approve, and make it a rule
+				Reason      string                  `json:"reason"`       // B55.18: why the owner declined; the agent is told
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
+			ctx, ok := declineReason(w, req, in.Reason, approve)
+			if !ok {
+				return
+			}
 			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.ULXC <= 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
 				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
 				return
@@ -1006,9 +1015,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			if in.Assertion != nil {
 				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
 				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
-				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
+				a, err = bank.DecideAgentApprovalSigned(ctx, wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
 			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.AlwaysAllow, nil); err == nil {
-				a, err = bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
+				a, err = bank.DecideAgentApproval(ctx, wsID, approvalID, approve)
 			}
 			switch {
 			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
@@ -1529,6 +1538,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		IDs       []string           `json:"approval_ids"`
 		Decision  string             `json:"decision"`
 		Assertion *passkey.Assertion `json:"assertion"`
+		Reason    string             `json:"reason"` // B55.18: why the owner declined them all; each agent is told
 	}
 	readBatch := func(w http.ResponseWriter, req *http.Request) (batchDecision, bool) {
 		var in batchDecision
@@ -1558,7 +1568,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if !ok {
 			return
 		}
-		list, err := bank.DecideAgentApprovals(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
+		ctx, ok := declineReason(w, req, in.Reason, in.Decision == "approve")
+		if !ok {
+			return
+		}
+		list, err := bank.DecideAgentApprovals(ctx, chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
 		switch {
 		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
@@ -1703,6 +1717,16 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, pay)
 		}
 	})
+}
+
+// declineReason carries what the owner wrote when declining (B55.18) on req's context; false, after a 400, when it goes
+// with approve or is over 200 characters.
+func declineReason(w http.ResponseWriter, req *http.Request, reason string, approve bool) (context.Context, bool) {
+	if reason = strings.TrimSpace(reason); reason != "" && (approve || utf8.RuneCountInString(reason) > 200) {
+		writeJSONErr(w, http.StatusBadRequest, `reason goes with deny, up to 200 characters`)
+		return nil, false
+	}
+	return economy.WithDenyReason(req.Context(), reason), true
 }
 
 func writePaused(w http.ResponseWriter, agentID string, paused bool, err error) {
