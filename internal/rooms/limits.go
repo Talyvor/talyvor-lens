@@ -136,14 +136,15 @@ func (s *Store) LimitsOf(ctx context.Context, q plans.Querier, ws string) (PlanL
 // ErrPlanLimit is the room owner's plan not allowing one more of something under rooms_plan_limits.
 var ErrPlanLimit = errors.New("rooms: past the plan's rooms_plan_limits")
 
-// PlanLimitError is one refusal under rooms_plan_limits. Its message names the setting, the plan, the limit and the
-// plan that would allow more.
+// PlanLimitError is one refusal under rooms_plan_limits. Its message says in words what the plan allows and what the
+// plan that would allow more does; the setting is a field of its own (B55.29).
 type PlanLimitError struct {
-	Plan   string `json:"plan"`
-	Limit  string `json:"limit"` // public_rooms, private_rooms, members_per_room, agents_per_room or room_budget_max_usd
-	Max    int64  `json:"max"`
-	Allows string `json:"allows,omitempty"` // the next plan that allows more; "" when only a contract would
-	Detail string `json:"detail"`
+	Setting string `json:"setting"` // rooms_plan_limits
+	Plan    string `json:"plan"`
+	Limit   string `json:"limit"` // public_rooms, private_rooms, members_per_room, agents_per_room or room_budget_max_usd
+	Max     int64  `json:"max"`
+	Allows  string `json:"allows,omitempty"` // the next plan that allows more; "" when only a contract would
+	Detail  string `json:"detail"`
 }
 
 func (e *PlanLimitError) Error() string { return e.Detail }
@@ -169,13 +170,15 @@ func (l Limits) count(limit string) int64 {
 }
 
 // refuse answers nil while used is below p's limit, and the refusal of one more once it is not. whose says whose
-// plan it is: "your" for the actor's own, "the room owner's" for a member joining someone else's room.
+// plan it is: "your" for the actor's own ("Free allows 3 public rooms, and you have 3 open. Team allows 25."), or
+// "The room owner’s" or "The new owner’s" for someone else's ("The room owner’s plan, Free, allows 50 members in a
+// room.").
 func (s *Store) refuse(p PlanLimits, limit, whose string, used int64) error {
 	ceiling := p.count(limit)
 	if ceiling == plans.Unlimited || used < ceiling {
 		return nil
 	}
-	e := &PlanLimitError{Plan: p.Plan, Limit: limit, Max: ceiling}
+	e := &PlanLimitError{Setting: LimitsSetting, Plan: p.Plan, Limit: limit, Max: ceiling}
 	past := false
 	for _, name := range plans.Order {
 		if n := s.limits[name].count(limit); past && (n == plans.Unlimited || n > ceiling) {
@@ -185,14 +188,25 @@ func (s *Store) refuse(p PlanLimits, limit, whose string, used int64) error {
 		past = past || name == p.LimitAs
 	}
 	noun := limitNouns[limit]
-	e.Detail = fmt.Sprintf("%s (%s): %s %s plan allows %d %s", LimitsSetting, LimitsEnv, whose, p.Plan, ceiling, noun)
+	allows := fmt.Sprintf("allows %s %s", plans.Thousands(ceiling), noun)
+	if ceiling == 0 {
+		allows = "allows no " + noun
+	}
+	if whose != "your" {
+		e.Detail = fmt.Sprintf("%s plan, %s, %s.", whose, plans.Name(p.Plan), allows)
+		return e
+	}
+	e.Detail = fmt.Sprintf("%s %s", plans.Name(p.Plan), allows)
+	if ceiling > 0 {
+		e.Detail += fmt.Sprintf(", and you have %s open", plans.Thousands(used))
+	}
 	switch n := s.limits[e.Allows].count(limit); {
 	case e.Allows == "":
-		e.Detail += " — a contract with Talyvor sets more"
+		e.Detail += ". A contract with Talyvor sets more."
 	case n == plans.Unlimited:
-		e.Detail += fmt.Sprintf(" — the %s plan allows unlimited %s", e.Allows, noun)
+		e.Detail += fmt.Sprintf(". %s allows unlimited %s.", plans.Name(e.Allows), noun)
 	default:
-		e.Detail += fmt.Sprintf(" — the %s plan allows %d", e.Allows, n)
+		e.Detail += fmt.Sprintf(". %s allows %s.", plans.Name(e.Allows), plans.Thousands(n))
 	}
 	return e
 }

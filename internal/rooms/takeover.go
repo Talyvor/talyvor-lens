@@ -327,7 +327,7 @@ func (s *Store) handOver(ctx context.Context, tx pgx.Tx, r Room, to, body string
 		to, r.Visibility).Scan(&owned); err != nil {
 		return err
 	}
-	if err := s.refuse(p, r.Visibility+"_rooms", "the new owner's", owned); err != nil {
+	if err := s.refuse(p, r.Visibility+"_rooms", "The new owner’s", owned); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE room_members SET may_spend = false, role = CASE role WHEN 'owner' THEN 'editor' ELSE role END

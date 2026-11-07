@@ -483,7 +483,7 @@ func openAPIPaths() map[string]any {
 		"/v1/workspaces/{wsID}/plan/seats": map[string]any{
 			"get": map[string]any{
 				"summary":     "Check whether this workspace's plan takes a number of members",
-				"description": "Asked before a member is added, with the count the workspace would have. 402 names LENS_PLAN_GATES, the plan and the plan that would allow it.",
+				"description": "Asked before a member is added, with the count the workspace would have. 402 says it in words, with the setting (LENS_PLAN_GATES), the plan and the plan that would allow it as fields.",
 				"parameters": []map[string]any{
 					{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
 					{"name": "members", "in": "query", "required": true, "schema": map[string]any{"type": "integer"}},
