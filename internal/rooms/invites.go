@@ -66,9 +66,11 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-var inviteCols = `i.id, i.room_id, i.workspace_id, i.max_uses, i.uses, i.expires_at, i.revoked_at,
+const inviteCols = `i.id, i.room_id, i.workspace_id, i.max_uses, i.uses, i.expires_at, i.revoked_at,
 	i.revoked_at IS NULL AND i.uses < i.max_uses AND (i.expires_at IS NULL OR i.expires_at > now()),
-	i.created_by_workspace_id, i.created_at, ` + workspaceName("i.workspace_id")
+	i.created_by_workspace_id, i.created_at,
+	CASE WHEN EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = i.room_id AND rm.workspace_id = i.workspace_id)
+		THEN ` + workspaceNameOf + `i.workspace_id` + workspaceNameEnd + ` ELSE '' END` // named only once it has been a member: an id typed in is not looked up
 
 func scanInvite(row pgx.Row) (Invite, error) {
 	var i Invite

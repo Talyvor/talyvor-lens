@@ -354,15 +354,15 @@ func (s *Store) Joined(ctx context.Context, ws string) ([]Room, error) {
 	return rooms, nil
 }
 
-var memberCols = `m.workspace_id, m.user_id, m.role, m.may_spend, m.terms_version, m.terms_version = r.terms_version, m.joined_at, m.removed_at,
-	m.muted_at, m.banned_at, ` + workspaceName("m.workspace_id")
+const memberCols = `m.workspace_id, m.user_id, m.role, m.may_spend, m.terms_version, m.terms_version = r.terms_version, m.joined_at, m.removed_at,
+	m.muted_at, m.banned_at, ` + workspaceNameOf + `m.workspace_id` + workspaceNameEnd
 
-// workspaceName is the SQL for the name of the workspace whose id is in col (B55.34): its workspaces.name, "A workspace
-// not named yet" while that is still its id, and "" for no workspace (a system message).
-func workspaceName(col string) string {
-	return `CASE WHEN ` + col + ` = '' THEN '' ELSE coalesce((SELECT nullif(nullif(w.name, w.id), '') FROM workspaces w
-		WHERE w.id = ` + col + `), 'A workspace not named yet') END`
-}
+// workspaceNameOf + an id column + workspaceNameEnd is the SQL for that workspace's name (B55.34): its workspaces.name,
+// "A workspace not named yet" while that is still its id, and "" for no workspace (a system message).
+const (
+	workspaceNameOf  = `coalesce((SELECT coalesce(nullif(nullif(w.name, w.id), ''), 'A workspace not named yet') FROM workspaces w WHERE w.id = `
+	workspaceNameEnd = `), '')`
+)
 
 func scanMember(row pgx.Row) (Member, error) {
 	var m Member

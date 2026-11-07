@@ -154,9 +154,9 @@ func scanPublic(body string) ([]byte, error) {
 	return json.Marshal(sc)
 }
 
-var messageCols = `m.id, m.seq, m.room_id, m.author_workspace_id, m.author_user_id, m.author_agent_id,
+const messageCols = `m.id, m.seq, m.room_id, m.author_workspace_id, m.author_user_id, m.author_agent_id,
 	COALESCE((SELECT a.name FROM agent_accounts a WHERE a.id = m.author_agent_id), ''), m.kind, m.body, m.refs,
-	m.created_at, m.edited_at, m.deleted_at, m.deleted_by_workspace_id, m.scan, ` + workspaceName("m.author_workspace_id")
+	m.created_at, m.edited_at, m.deleted_at, m.deleted_by_workspace_id, m.scan, ` + workspaceNameOf + `m.author_workspace_id` + workspaceNameEnd
 
 // scanMessage reads a messageCols row as viewer sees it, after the columns lead is scanned into.
 func scanMessage(row pgx.Row, viewer string, lead ...any) (Message, error) {

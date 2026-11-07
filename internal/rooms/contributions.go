@@ -269,13 +269,13 @@ func contributionErr(op string, err error) error {
 	return fmt.Errorf("rooms: %s: %w", op, err)
 }
 
-var contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.title, c.author_workspace_id, coalesce(c.forked_from, ''),
+const contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.title, c.author_workspace_id, coalesce(c.forked_from, ''),
 	c.status, c.decided_by_workspace_id, c.decided_at, c.message_id, c.created_at,
 	coalesce((SELECT sum(v.value) FROM room_votes v WHERE v.contribution_id = c.id), 0),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = 1),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = -1),
 	coalesce((SELECT v.value FROM room_votes v WHERE v.contribution_id = c.id AND v.workspace_id = $1), 0), ` +
-	workspaceName("c.author_workspace_id")
+	workspaceNameOf + `c.author_workspace_id` + workspaceNameEnd
 
 func scanContribution(row pgx.Row) (Contribution, error) {
 	var c Contribution

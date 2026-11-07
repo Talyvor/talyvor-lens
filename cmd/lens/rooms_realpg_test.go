@@ -499,7 +499,8 @@ func TestRooms_MessagesScannedStreamedEditedDeletedAndLimited(t *testing.T) {
 }
 
 // B55.34 — a room's members, its messages' authors and its named invites carry their workspace's name, read from
-// workspaces.name; a workspace whose name is still its id reads "A workspace not named yet".
+// workspaces.name; a workspace whose name is still its id reads "A workspace not named yet". A named invite carries the
+// name only once its workspace has been a member: naming an id must not tell the owner whose it is.
 func TestRooms_MembersAuthorsAndInvitesCarryWorkspaceNames(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -555,16 +556,14 @@ func TestRooms_MembersAuthorsAndInvitesCarryWorkspaceNames(t *testing.T) {
 		t.Fatalf("messages = %+v, want Ana's carrying \"Ana's studio\"", page.Messages)
 	}
 
-	// The invite still waiting names its workspace.
+	// Ben's invite, used, names Ben's workspace; Dee's, still waiting, does not name Dee's.
 	var invites struct{ Invites []rooms.Invite }
 	call(ana, http.MethodGet, "/v1/rooms/"+room.ID+"/invites", "", http.StatusOK, &invites)
-	var dees []string
+	named := map[string]string{}
 	for _, i := range invites.Invites {
-		if i.WorkspaceID == dee {
-			dees = append(dees, i.WorkspaceName)
-		}
+		named[i.WorkspaceID] = i.WorkspaceName
 	}
-	if fmt.Sprint(dees) != "[Dee's desk]" {
-		t.Fatalf("Dee's invite names = %v, want [Dee's desk]", dees)
+	if want := map[string]string{ben: "Ben's lab", cy: "A workspace not named yet", dee: ""}; fmt.Sprint(named) != fmt.Sprint(want) {
+		t.Fatalf("invites by name = %v, want %v", named, want)
 	}
 }
