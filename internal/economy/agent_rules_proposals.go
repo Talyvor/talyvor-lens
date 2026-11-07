@@ -50,8 +50,8 @@ func (s *DualTokenStore) ProposeAgentRules(ctx context.Context, workspaceID, age
 		return FiledRules{}, err
 	}
 	f := FiledRules{ID: "rprop_" + uuid.NewString(), Status: "pending", Changes: j.Changes, Rules: rules}
-	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_rules_proposals (id, workspace_id, agent_id, rules) VALUES ($1, $2, $3, $4)`,
-		f.ID, workspaceID, agentID, b); err != nil {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_rules_proposals (id, workspace_id, agent_id, rules) VALUES ($1, $2, $3, $4::jsonb)`,
+		f.ID, workspaceID, agentID, string(b)); err != nil { // a string, so the simple protocol sends JSON, not bytea
 		return FiledRules{}, fmt.Errorf("economy: file rules proposal: %w", err)
 	}
 	return f, nil
