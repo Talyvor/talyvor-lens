@@ -48,6 +48,16 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 			pub         ed25519.PublicKey
 		}{o, kya.JWKOf(pub).Kid, pub}), append(privs, priv)
 	}
+	// acme.example lists its two subdomains' agents and buyer.example its one, by publishing their keys (B54.16).
+	for _, listed := range []struct {
+		origin string
+		agent  int
+	}{{"https://acme.example", acme}, {"https://acme.example", proc}, {"https://buyer.example", buyer}} {
+		dir = append(dir, struct {
+			origin, kid string
+			pub         ed25519.PublicKey
+		}{listed.origin, dir[listed.agent].kid, dir[listed.agent].pub})
+	}
 	lensURL, _ := url.Parse("https://lens.example")
 	r := chi.NewRouter()
 	mountNegotiationRoutes(r, store)

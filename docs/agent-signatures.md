@@ -17,6 +17,10 @@ Publish your Ed25519 public keys as a JWKS at `https://<your domain>/.well-known
 (Web Bot Auth). Sign with `alg="ed25519"`, `keyid` = the key's RFC 7638 JWK thumbprint, and `tag="web-bot-auth"`, and
 send `Signature-Agent: "https://<your domain>"`. Talyvor caches your directory for 5 minutes.
 
+An agent on a subdomain speaks for your business's domain (to prove the domain a workspace negotiates as, or to
+confirm a deal for it) only when it signs as that domain itself, or you list it by publishing its key in that domain's
+own directory too: `https://acme.com/.well-known/http-message-signatures-directory` lists `agent.acme.com`'s agent.
+
 ## Two profiles
 
 **Web Bot Auth** — on the A2A endpoints (`/.well-known/agent-card.json`, `/v1/a2a/...`): cover `@authority` (or
