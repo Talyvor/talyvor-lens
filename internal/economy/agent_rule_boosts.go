@@ -122,6 +122,12 @@ func (s *DualTokenStore) AgentBoosts(ctx context.Context, workspaceID, agentID s
 // limit must be set, and the boost above it: a boost raises a limit, it does not make one, and only while the rules
 // leave that limit as it is now. Who sets it is who ctx names (WithRulesChange).
 func (s *DualTokenStore) BoostAgentRule(ctx context.Context, workspaceID, agentID string, b AgentRuleBoost) (AgentRuleBoost, error) {
+	return s.boostAgentRule(ctx, s.pool, workspaceID, agentID, b)
+}
+
+// boostAgentRule is BoostAgentRule through q, so a signed boost is judged and saved in the transaction spending its
+// signature (B54.29).
+func (s *DualTokenStore) boostAgentRule(ctx context.Context, q pgxDB, workspaceID, agentID string, b AgentRuleBoost) (AgentRuleBoost, error) {
 	field, ok := boostableRules[b.Rule]
 	if !ok {
 		return b, fmt.Errorf("%w: %q is not a limit a boost can raise; it may raise %s", ErrAgentRule, b.Rule, strings.Join(BoostableRules(), ", "))
@@ -132,7 +138,7 @@ func (s *DualTokenStore) BoostAgentRule(ctx context.Context, workspaceID, agentI
 	if !b.Until.After(time.Now()) {
 		return b, fmt.Errorf("%w: a boost needs a time in the future to last until", ErrAgentRule)
 	}
-	r, err := s.GetAgentRules(ctx, workspaceID, agentID)
+	r, err := getAgentRules(ctx, q, workspaceID, agentID)
 	if err != nil {
 		return b, err
 	}
@@ -145,12 +151,12 @@ func (s *DualTokenStore) BoostAgentRule(ctx context.Context, workspaceID, agentI
 	}
 	// B32.32: a room wallet's monthly limit is not raised past what the room owner's plan allows, even for a while.
 	if b.Rule == "monthly_limit_ulxc" {
-		if err := s.checkRoomBudget(ctx, s.pool, workspaceID, agentID, b.Value); err != nil {
+		if err := s.checkRoomBudget(ctx, q, workspaceID, agentID, b.Value); err != nil {
 			return b, err
 		}
 	}
 	b.RaisedFrom, b.CreatedBy = *field(&r), rulesChangeFrom(ctx).by
-	err = s.pool.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		INSERT INTO agent_rule_boosts (agent_id, workspace_id, rule, raised_from, value, until, created_by)
 		SELECT id, workspace_id, $3, $4, $5, $6, $7 FROM agent_accounts WHERE id = $1 AND workspace_id = $2
 		ON CONFLICT (agent_id, rule) DO UPDATE SET raised_from = EXCLUDED.raised_from, value = EXCLUDED.value,
@@ -162,7 +168,7 @@ func (s *DualTokenStore) BoostAgentRule(ctx context.Context, workspaceID, agentI
 	if err != nil {
 		return b, fmt.Errorf("economy: boost agent rule: %w", err)
 	}
-	return b, revokeAgentKYA(ctx, s.pool, agentID, KYARevokedRules) // B30.5: its credential states the limit
+	return b, revokeAgentKYA(ctx, q, agentID, KYARevokedRules) // B30.5: its credential states the limit
 }
 
 // EndAgentBoost ends the agent's boost on rule now, before its time: the limit is the rules' again.
