@@ -191,7 +191,7 @@ func (s *DualTokenStore) SetSpendPermission(ctx context.Context, workspaceID, ag
 			}
 			var spki []byte
 			var count int64
-			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL FOR UPDATE`,
 				a.CredentialID, workspaceID).Scan(&spki, &count)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("%w: the passkey that owns the account is no longer the workspace's", passkey.ErrInvalid)
@@ -266,7 +266,7 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 		var spki, deviceSPKI []byte
 		err = tx.QueryRow(ctx, `SELECT p.canonical, p.credential_id, p.device_id, p.client_data_json, p.authenticator_data, p.signature,
 			k.public_key, d.public_key FROM agent_spend_permissions p
-			LEFT JOIN workspace_passkeys k ON k.credential_id = p.credential_id AND k.workspace_id = p.workspace_id
+			LEFT JOIN workspace_passkeys k ON k.credential_id = p.credential_id AND k.workspace_id = p.workspace_id AND k.removed_at IS NULL
 			LEFT JOIN workspace_device_keys d ON d.id = p.device_id AND d.workspace_id = p.workspace_id AND d.revoked_at IS NULL
 			WHERE p.agent_id = $1 AND p.workspace_id = $2 ORDER BY p.number DESC LIMIT 1`, agentID, workspaceID).
 			Scan(&canonical, &a.CredentialID, &a.DeviceID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &spki, &deviceSPKI)

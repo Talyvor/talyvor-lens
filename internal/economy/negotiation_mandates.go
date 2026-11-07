@@ -292,10 +292,10 @@ func (s *DualTokenStore) CreateNegotiationMandate(ctx context.Context, workspace
 		} else {
 			var spki []byte
 			var count int64
-			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL FOR UPDATE`,
 				a.CredentialID, workspaceID).Scan(&spki, &count)
 			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+				return fmt.Errorf("%w: not a passkey of this workspace, or it was removed", passkey.ErrInvalid)
 			}
 			if err != nil {
 				return fmt.Errorf("economy: passkey: %w", err)
@@ -594,7 +594,7 @@ func (s *DualTokenStore) signedNegotiation(ctx context.Context, workspaceID, id 
 	var endedAt *time.Time
 	err := s.pool.QueryRow(ctx, `SELECT m.canonical, m.credential_id, m.client_data_json, m.authenticator_data, m.signature, m.device_id,
 		m.ended_at, k.public_key, d.public_key FROM negotiation_mandates m
-		LEFT JOIN workspace_passkeys k ON k.credential_id = m.credential_id AND k.workspace_id = m.workspace_id
+		LEFT JOIN workspace_passkeys k ON k.credential_id = m.credential_id AND k.workspace_id = m.workspace_id AND k.removed_at IS NULL
 		LEFT JOIN workspace_device_keys d ON d.id = m.device_id AND d.workspace_id = m.workspace_id AND d.revoked_at IS NULL
 		WHERE m.id = $1 AND m.workspace_id = $2`, id, workspaceID).
 		Scan(&canonical, &a.CredentialID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &a.DeviceID, &endedAt, &spki, &deviceSPKI)
