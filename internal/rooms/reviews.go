@@ -3,7 +3,6 @@ package rooms
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,15 +10,16 @@ import (
 
 // reviews.go — B41.144: QUALITY SCORED BY TWO RANDOM REVIEWERS (migration 0351).
 //
-// Lens draws a contribution's two reviewers at random, never its author: live members that are not viewers or muted,
-// under the room's current terms, not its author and not linked to it — the same person joined both, or the two share
+// Lens draws a contribution's two reviewers at random, never its author: live members — not the owner or an editor, who
+// decide it, nor viewers or muted ones — under the room's current terms, not its author and not linked to it — the same person joined both, or the two share
 // an owner key or a card (as the pool royalty's ring detector links workspaces). Any member may ask for the draw; it
 // only fills empty seats and never replaces a reviewer. Each reviewer scores the contribution from 0.5 to 1.5 while it
 // is proposed, and once both have, its quality_bps — what the points ledger multiplies its size by — is the median of
-// their counted scores. A review ring is dampened: a reviewer whose own work in the room the author scored counts as
-// 1.0 and earns nothing for it. When the contribution is first decided, each other reviewer whose score agreed with the
-// outcome — at least 1.0 for accepted, under 1.0 for rejected — earns LENS_ROOM_REVIEW_POINTS (a setting Nicolai fills;
-// 0 until he does) in the points ledger, which a later withdrawal takes back with the rest.
+// their counted scores. A review ring is dampened: two members that scored each other's work in the room count as 1.0
+// and earn nothing for it, both ways, on every contribution of theirs still proposed. When a contribution with a size
+// is first decided, each other reviewer whose score agreed with the outcome — at least 1.0 for accepted, under 1.0 for
+// rejected — earns LENS_ROOM_REVIEW_POINTS (a setting Nicolai fills; 0 until he does) in the points ledger, which a
+// later withdrawal takes back with the rest.
 
 // ReviewPointsSetting names the setting for the points a reviewer earns when its score agreed with the outcome.
 const ReviewPointsSetting = "LENS_ROOM_REVIEW_POINTS"
@@ -32,7 +32,7 @@ type Review struct {
 	ReviewerWorkspaceID   string     `json:"reviewer_workspace_id"`
 	ReviewerWorkspaceName string     `json:"reviewer_workspace_name"`
 	ScoreBPS              *int       `json:"score_bps"` // 5000–15000; null until it scores
-	Ring                  bool       `json:"ring"`      // the author scored its work in the room: its score counts as 1.0
+	Ring                  bool       `json:"ring"`      // it and the author scored each other's work: its score counts as 1.0
 	DrawnAt               time.Time  `json:"drawn_at"`
 	ScoredAt              *time.Time `json:"scored_at,omitempty"`
 }
@@ -47,11 +47,12 @@ type Reviews struct {
 // SetReviewPoints sets LENS_ROOM_REVIEW_POINTS.
 func (s *Store) SetReviewPoints(n int64) { s.reviewPoints = n }
 
-// medianBPS is the median of scores, which is not empty.
-func medianBPS(scores []int) int {
-	s := slices.Sorted(slices.Values(scores))
-	n := len(s)
-	return (s[(n-1)/2] + s[n/2]) / 2
+// setQuality sets contribution id's quality_bps to the median of its reviewers' counted scores, once all of them scored.
+func setQuality(ctx context.Context, tx pgx.Tx, id string) error {
+	_, err := tx.Exec(ctx, `UPDATE room_contributions SET quality_bps = (SELECT floor(percentile_cont(0.5) WITHIN GROUP
+		(ORDER BY CASE WHEN ring THEN 10000 ELSE score_bps END))::int FROM room_reviews WHERE contribution_id = $1)
+		WHERE id = $1 AND (SELECT count(score_bps) FROM room_reviews WHERE contribution_id = $1) >= $2`, id, Reviewers)
+	return err
 }
 
 // reviewable reads ws's membership and one of the room's contributions, under the room's lock, while it is proposed.
@@ -117,7 +118,7 @@ func (s *Store) DrawReviewers(ctx context.Context, ws, roomID, id string) (out R
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO room_reviews (contribution_id, room_id, reviewer_workspace_id)
 			SELECT $3, $1, m.workspace_id FROM room_members m JOIN rooms r ON r.id = m.room_id
-			WHERE m.room_id = $1 AND m.removed_at IS NULL AND m.muted_at IS NULL AND m.role <> 'viewer'
+			WHERE m.room_id = $1 AND m.removed_at IS NULL AND m.muted_at IS NULL AND m.role = 'member'
 				AND m.terms_version = r.terms_version AND m.workspace_id <> $2
 				AND NOT EXISTS (SELECT 1 FROM room_reviews v WHERE v.contribution_id = $3 AND v.reviewer_workspace_id = m.workspace_id)
 				AND NOT EXISTS (SELECT 1 FROM room_members a WHERE a.room_id = $1 AND a.workspace_id = $2 AND a.user_id <> ''
@@ -157,33 +158,32 @@ func (s *Store) Review(ctx context.Context, ws, roomID, id string, scoreBPS int)
 		if tag.RowsAffected() == 0 {
 			return forbidden("only the members Lens drew to review the contribution score it")
 		}
-		if out, err = readReviews(ctx, tx, c); err != nil {
+		// The author scored ws's work too: that pair is a ring both ways, on its contributions still proposed.
+		rows, err := tx.Query(ctx, `UPDATE room_reviews v SET ring = true FROM room_contributions o WHERE o.id = v.contribution_id
+			AND o.status = 'proposed' AND v.room_id = $1 AND v.reviewer_workspace_id = $2 AND o.author_workspace_id = $3
+			AND v.score_bps IS NOT NULL AND NOT v.ring RETURNING v.contribution_id`, roomID, c.AuthorWorkspaceID, ws)
+		if err != nil {
 			return err
 		}
-		var counted []int
-		for _, v := range out.Reviews {
-			switch {
-			case v.ScoreBPS == nil:
-			case v.Ring:
-				counted = append(counted, 10_000)
-			default:
-				counted = append(counted, *v.ScoreBPS)
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, id := range append(ids, c.ID) {
+			if err := setQuality(ctx, tx, id); err != nil {
+				return err
 			}
 		}
-		if len(counted) < Reviewers {
-			return nil
-		}
-		out.QualityBPS = medianBPS(counted)
-		_, err = tx.Exec(ctx, `UPDATE room_contributions SET quality_bps = $2 WHERE id = $1`, c.ID, out.QualityBPS)
+		out, err = readReviews(ctx, tx, c)
 		return err
 	})
 	return out, err
 }
 
-// rewardReviewers writes, when c is first decided, LENS_ROOM_REVIEW_POINTS to each reviewer that is not a ring and
+// rewardReviewers writes, when c is first decided with a size at stake, LENS_ROOM_REVIEW_POINTS to each reviewer that is not a ring and
 // whose score agreed with the decision, inside Decide's transaction.
 func (s *Store) rewardReviewers(ctx context.Context, tx pgx.Tx, c Contribution, was, status string) error {
-	if was != ContributionProposed || s.reviewPoints <= 0 {
+	if was != ContributionProposed || s.reviewPoints <= 0 || c.Points <= 0 {
 		return nil
 	}
 	rows, err := tx.Query(ctx, `SELECT reviewer_workspace_id, score_bps FROM room_reviews WHERE contribution_id = $1
