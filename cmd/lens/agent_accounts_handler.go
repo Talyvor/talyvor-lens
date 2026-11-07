@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -746,7 +747,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+		// Some agents frozen, some not, or frozen with revoke calls that could not be built (B54.25): the app shows both,
+		// and a retry freezes the rest.
+		if err == nil && (len(out.Failed) > 0 || out.RevokeCallsOutstanding()) {
 			writeJSONOK(w, http.StatusMultiStatus, out)
 			return
 		}
@@ -1853,4 +1856,52 @@ func ensurePromptKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, w
 		return fmt.Errorf("the agent's key for scheduled prompts: %w", err)
 	}
 	return bank.AttachAgentKey(ctx, wsID, agentID, key.ID)
+}
+
+// retryRevokeCalls builds again, every minute until ctx ends, the revoke calls of frozen agents whose calls could not be
+// built, and alerts the operator (sink nil: only logged) whenever the agents still outstanding change (B54.25).
+func retryRevokeCalls(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	last := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			last = retryRevokeCallsOnce(ctx, store, sink, last)
+		}
+	}
+}
+
+// retryRevokeCallsOnce is one retry; last is what the operator was last told, and it answers what they know now.
+func retryRevokeCallsOnce(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter, last string) string {
+	built, outstanding, err := store.RetryRevokeCalls(ctx)
+	if err != nil {
+		slog.Warn("revoke calls: retry failed", slog.String("err", err.Error()))
+		return last
+	}
+	if built > 0 {
+		slog.Info("revoke calls: built for frozen agents", slog.Int("agents", built))
+	}
+	var lines []string
+	for _, o := range outstanding {
+		lines = append(lines, "workspace "+o.WorkspaceID+", agent "+o.AgentID+": "+o.Error)
+	}
+	now := strings.Join(lines, "\n")
+	if now == last || now == "" {
+		return now
+	}
+	slog.Error("revoke calls: frozen agents whose key is still on chain", slog.Int("agents", len(outstanding)))
+	if sink == nil {
+		slog.Error("revoke calls: no operator alert sink is configured (LENS_OPERATOR_ALERT_WEBHOOK_URL and LENS_OPERATOR_ALERT_WEBHOOK_SECRET); nobody is told")
+		return now
+	}
+	if err := sink.NotifyAs(ctx, "agent_revoke_calls_outstanding", "lens/internal/economy",
+		fmt.Sprintf("%d frozen agents' keys cannot be taken out on chain", len(outstanding)),
+		"Each agent is frozen at Talyvor, but the call that takes its key out of its account cannot be built until its record is fixed. It is retried every minute.\n"+now); err != nil {
+		slog.Error("revoke calls: the operator alert did not send", slog.String("err", err.Error()))
+		return last
+	}
+	return now
 }
