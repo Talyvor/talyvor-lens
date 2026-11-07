@@ -23,6 +23,7 @@ import (
 //	                                          and the passkeys that may sign it
 //	POST /v1/negotiations/{id}/deal/approve   {"statement", "assertion"} — the owner accepts the waiting deal; it is paid
 //	POST /v1/negotiations/{id}/deal/decline   — the waiting deal is declined; nothing is paid
+//	POST /v1/negotiations/{id}/deal/pay       — an accepted deal whose payment failed is paid again, once
 //
 // All of it is the workspace owner's or an admin's. Mounted in the authed group.
 
@@ -31,6 +32,7 @@ type negotiationDealBank interface {
 	PrepareDealApproval(ctx context.Context, workspaceID, id string) (statement, challenge string, credentialIDs []string, err error)
 	ApproveNegotiationDeal(ctx context.Context, workspaceID, id, by, statement string, a *passkey.Assertion) (economy.NegotiationDeal, error)
 	DeclineNegotiationDeal(ctx context.Context, workspaceID, id, by string) (economy.NegotiationDeal, error)
+	PayNegotiationDeal(ctx context.Context, workspaceID, id, by string) (economy.NegotiationDeal, error)
 }
 
 func mountNegotiationDealRoutes(r chi.Router, bank negotiationDealBank) {
@@ -109,6 +111,14 @@ func mountNegotiationDealRoutes(r chi.Router, bank negotiationDealBank) {
 			return
 		}
 		d, err := bank.DeclineNegotiationDeal(req.Context(), ws, chi.URLParam(req, "id"), by)
+		reply(w, http.StatusOK, d, err)
+	})
+	r.Post("/v1/negotiations/{id}/deal/pay", func(w http.ResponseWriter, req *http.Request) {
+		ws, by, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		d, err := bank.PayNegotiationDeal(req.Context(), ws, chi.URLParam(req, "id"), by)
 		reply(w, http.StatusOK, d, err)
 	})
 }

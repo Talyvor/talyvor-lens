@@ -31,7 +31,10 @@ import (
 // Payment goes only through the payment request path (B40.3) as the client "counter", which a permission mandate
 // (B40.2) names to let Counter pay: the agent's rules and the mandate's limits, payee scope and counterparty rules
 // (B45.30) judge it there, and a payment they do not allow waits for the owner's approval (B40.5). The request is
-// prepared only once the deal is accepted, so a deal waiting for the owner has nothing anyone could pay.
+// prepared only once the deal is accepted, so a deal waiting for the owner has nothing anyone could pay. Counter pays on
+// its own only a payee the owner already signed for with the same counterparty; the first payment to a payee for a
+// counterparty is the owner's, and the statement they sign names the payee. An accepted deal whose payment failed
+// after it was kept stays accepted and unpaid: PayNegotiationDeal pays it again, once, under the same key.
 
 // ErrNegotiationDealDecided: the deal was accepted or declined already; deciding it again does nothing.
 var ErrNegotiationDealDecided = errors.New("economy: this deal was already decided")
@@ -53,6 +56,7 @@ type NegotiationDeal struct {
 	Outside       []string         `json:"outside"` // why it is beyond the mandate; empty when Counter accepted it
 	AgentID       string           `json:"agent_id,omitempty"`
 	PayeeID       string           `json:"payee_id,omitempty"`
+	PayeeName     string           `json:"payee_name,omitempty"`
 	Status        string           `json:"status"`               // accepted, awaiting_approval or declined
 	RequestID     string           `json:"request_id,omitempty"` // the payment request that pays it
 	CreatedBy     string           `json:"created_by"`
@@ -89,6 +93,7 @@ type DealApprovalStatement struct {
 	Outside   []string  `json:"outside"`
 	AgentID   string    `json:"agent_id"`
 	PayeeID   string    `json:"payee_id"`
+	PayeeName string    `json:"payee_name"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -111,9 +116,27 @@ func dealOutside(t NegotiationMandateTerms, terms NegotiationTerms) []string {
 }
 
 // dealPayment is the payment request a deal is paid by.
-func dealPayment(t NegotiationMandateTerms, d NegotiationDeal) PaymentRequestIn {
+func dealPayment(d NegotiationDeal) PaymentRequestIn {
 	return PaymentRequestIn{Client: ClientCounter, AgentID: d.AgentID, Items: []PaymentRequestItemIn{{PayeeID: d.PayeeID,
-		Currency: t.Currency, AmountMinor: d.Terms.PriceMinor, Reference: "Counter " + d.ID}}}
+		Currency: d.Currency, AmountMinor: d.Terms.PriceMinor, Reference: "Counter " + d.ID}}}
+}
+
+// lockLiveNegotiation holds mandate id's row until tx ends and refuses it once revoked, closed or past its deadline: a
+// revoke racing a close or an approval is either before it, and refuses it, or waits for it.
+func lockLiveNegotiation(ctx context.Context, tx pgx.Tx, workspaceID, id string) error {
+	var live bool
+	err := tx.QueryRow(ctx, `SELECT ended_at IS NULL AND (canonical::jsonb->>'deadline')::timestamptz > now() FROM negotiation_mandates
+		WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, workspaceID).Scan(&live)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNegotiationNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("economy: negotiation deal: %w", err)
+	}
+	if !live {
+		return fmt.Errorf("%w: the mandate was revoked, closed or is past its deadline", ErrNegotiationMandate)
+	}
+	return nil
 }
 
 // CloseNegotiation accepts in.Counterparty's latest offer under mandate id: at once when it is inside the mandate and
@@ -154,7 +177,7 @@ func (s *DualTokenStore) CloseNegotiation(ctx context.Context, workspaceID, id, 
 	}
 	if d.PayeeID != "" {
 		// Judged as the payment request will be, and nothing kept: blocked refuses the close, needs approval asks the owner.
-		pr := dealPayment(t, d)
+		pr := dealPayment(d)
 		if _, err := pr.normalise(); err != nil {
 			return NegotiationDeal{}, err
 		}
@@ -173,6 +196,14 @@ func (s *DualTokenStore) CloseNegotiation(ctx context.Context, workspaceID, id, 
 		case ItemNeedsApproval:
 			d.Outside = append(d.Outside, fmt.Sprintf("the payment is beyond the agent's limits (%s): %s", cmp.Or(it.Rule, "mandate"), it.Reason))
 		}
+		var tied bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM negotiation_deals WHERE workspace_id = $1 AND counterparty = $2
+			AND payee_id = $3 AND status = 'accepted' AND statement <> '')`, workspaceID, d.Counterparty, d.PayeeID).Scan(&tied); err != nil {
+			return NegotiationDeal{}, fmt.Errorf("economy: negotiation deal: %w", err)
+		}
+		if !tied {
+			d.Outside = append(d.Outside, "the owner has not paid this payee for "+d.Counterparty+" before: the owner confirms who is paid")
+		}
 	}
 	d.Status = "awaiting_approval"
 	if len(d.Outside) == 0 {
@@ -181,6 +212,9 @@ func (s *DualTokenStore) CloseNegotiation(ctx context.Context, workspaceID, id, 
 	terms, _ := json.Marshal(d.Terms)
 	outside, _ := json.Marshal(d.Outside)
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockLiveNegotiation(ctx, tx, workspaceID, id); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO negotiation_deals (id, mandate_id, workspace_id, counterparty, offer_id, terms, outside, agent_id, payee_id,
 			status, created_by, decided_by, decided_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $10 = 'accepted' THEN now() END)`,
 			d.ID, id, workspaceID, d.Counterparty, offer.ID, string(terms), string(outside), d.AgentID, d.PayeeID, d.Status, by, d.DecidedBy)
@@ -199,40 +233,64 @@ func (s *DualTokenStore) CloseNegotiation(ctx context.Context, workspaceID, id, 
 		return NegotiationDeal{}, err
 	}
 	if d.Status == "accepted" {
-		return s.payDeal(ctx, workspaceID, by, t, d)
+		return s.payDeal(ctx, workspaceID, by, d)
 	}
 	s.notifyDealAwaiting(workspaceID, t, d)
 	return s.negotiationDeal(ctx, workspaceID, id)
 }
 
-// closeNegotiation ends mandate id once its deal is accepted: Counter makes no further offer under it.
+// closeNegotiation ends mandate id once its deal is accepted: Counter makes no further offer under it. A mandate that
+// ended meanwhile accepts nothing.
 func closeNegotiation(ctx context.Context, tx pgx.Tx, workspaceID, id string) error {
-	if _, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET ended_at = now(), ended_by = 'deal' WHERE id = $1 AND workspace_id = $2 AND ended_at IS NULL`,
-		id, workspaceID); err != nil {
+	tag, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET ended_at = now(), ended_by = 'deal' WHERE id = $1 AND workspace_id = $2 AND ended_at IS NULL`,
+		id, workspaceID)
+	if err != nil {
 		return fmt.Errorf("economy: close negotiation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: the mandate ended before the deal was accepted", ErrNegotiationMandate)
 	}
 	return nil
 }
 
 // payDeal prepares an accepted deal's payment request, under the deal's own key so it is prepared once, and pays it
-// when the agent's limits allow; otherwise it waits for the owner's approval (B40.5).
-func (s *DualTokenStore) payDeal(ctx context.Context, workspaceID, by string, t NegotiationMandateTerms, d NegotiationDeal) (NegotiationDeal, error) {
+// when the agent's limits allow; otherwise it waits for the owner's approval (B40.5). The deal is kept accepted
+// first, so a payment that fails here leaves it accepted and unpaid for PayNegotiationDeal.
+func (s *DualTokenStore) payDeal(ctx context.Context, workspaceID, by string, d NegotiationDeal) (NegotiationDeal, error) {
 	if d.PayeeID == "" {
 		return s.negotiationDeal(ctx, workspaceID, d.NegotiationID)
 	}
-	r, _, err := s.PreparePaymentRequest(ctx, workspaceID, by, "counter:"+d.ID, dealPayment(t, d))
+	unpaid := func(err error) (NegotiationDeal, error) {
+		return d, fmt.Errorf("%w (the deal is accepted and unpaid: pay it again with deal/pay)", err)
+	}
+	r, _, err := s.PreparePaymentRequest(ctx, workspaceID, by, ClientCounter+":"+d.ID, dealPayment(d))
 	if err != nil {
-		return d, err
+		return unpaid(err)
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE negotiation_deals SET request_id = $2 WHERE id = $1`, d.ID, r.ID); err != nil {
-		return d, fmt.Errorf("economy: negotiation deal: %w", err)
+		return unpaid(fmt.Errorf("economy: negotiation deal: %w", err))
 	}
 	if r.Status == ItemAuto {
 		if _, err := s.PayPaymentRequest(ctx, workspaceID, "", r.ID); err != nil {
-			return d, err
+			return unpaid(err)
 		}
 	}
 	return s.negotiationDeal(ctx, workspaceID, d.NegotiationID)
+}
+
+// PayNegotiationDeal pays mandate id's accepted deal again after its payment failed: the same request under the same
+// key, so a deal is paid once however often this is asked.
+func (s *DualTokenStore) PayNegotiationDeal(ctx context.Context, workspaceID, id, by string) (NegotiationDeal, error) {
+	d, err := s.negotiationDeal(ctx, workspaceID, id)
+	switch {
+	case err != nil:
+		return d, err
+	case d.Status != "accepted":
+		return d, fmt.Errorf("%w: the deal is %s, not accepted", ErrNegotiationMandate, d.Status)
+	case d.PayeeID == "":
+		return d, fmt.Errorf("%w: the deal names no payee: Counter pays nothing for it", ErrNegotiationMandate)
+	}
+	return s.payDeal(ctx, workspaceID, by, d)
 }
 
 // negotiationDeal reads mandate id's deal that is not declined.
@@ -244,12 +302,13 @@ func (s *DualTokenStore) negotiationDeal(ctx context.Context, workspaceID, id st
 const dealOfNegotiation = `SELECT ` + dealCols + ` FROM negotiation_deals d JOIN negotiation_mandates m ON m.id = d.mandate_id
 	WHERE d.mandate_id = $1 AND d.workspace_id = $2 AND d.status <> 'declined'`
 
-const dealCols = `d.id, d.mandate_id, d.counterparty, m.canonical::jsonb->>'currency', d.terms, d.outside, d.agent_id, d.payee_id, d.status,
+const dealCols = `d.id, d.mandate_id, d.counterparty, m.canonical::jsonb->>'currency', d.terms, d.outside, d.agent_id, d.payee_id,
+	COALESCE((SELECT p.name FROM money_payees p WHERE p.id = d.payee_id AND p.workspace_id = d.workspace_id), ''), d.status,
 	d.request_id, d.created_by, d.decided_by, d.created_at, d.decided_at`
 
 func scanNegotiationDeal(row pgx.Row) (NegotiationDeal, error) {
 	var d NegotiationDeal
-	err := row.Scan(&d.ID, &d.NegotiationID, &d.Counterparty, &d.Currency, &d.Terms, &d.Outside, &d.AgentID, &d.PayeeID, &d.Status,
+	err := row.Scan(&d.ID, &d.NegotiationID, &d.Counterparty, &d.Currency, &d.Terms, &d.Outside, &d.AgentID, &d.PayeeID, &d.PayeeName, &d.Status,
 		&d.RequestID, &d.CreatedBy, &d.DecidedBy, &d.CreatedAt, &d.DecidedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, fmt.Errorf("%w: it has no deal waiting or closed", ErrNegotiationNotFound)
@@ -264,7 +323,7 @@ func scanNegotiationDeal(row pgx.Row) (NegotiationDeal, error) {
 func dealStatement(workspaceID string, t NegotiationMandateTerms, d NegotiationDeal, expires time.Time) string {
 	st := DealApprovalStatement{Version: DealApprovalVersion, DealID: d.ID, NegotiationID: d.NegotiationID, WorkspaceID: workspaceID,
 		Task: t.Task, Counterparty: d.Counterparty, Currency: t.Currency, Terms: d.Terms, Outside: d.Outside, AgentID: d.AgentID,
-		PayeeID: d.PayeeID, ExpiresAt: expires}
+		PayeeID: d.PayeeID, PayeeName: d.PayeeName, ExpiresAt: expires}
 	st.Mandate.Side, st.Mandate.TargetMinor, st.Mandate.WalkAwayMinor = t.Side, t.TargetMinor, t.WalkAwayMinor
 	st.Mandate.MustHaves, st.Mandate.Authority = t.MustHaves, t.Authority
 	b, _ := json.Marshal(st)
@@ -336,6 +395,9 @@ func (s *DualTokenStore) ApproveNegotiationDeal(ctx context.Context, workspaceID
 	var d NegotiationDeal
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
+		if err := lockLiveNegotiation(ctx, tx, workspaceID, id); err != nil {
+			return err
+		}
 		// The deal's row is held until the approval is kept: two approvals at once are one, then a replay.
 		if t, d, err = s.awaitingDeal(ctx, tx, workspaceID, id, true); err != nil {
 			return err
@@ -356,7 +418,7 @@ func (s *DualTokenStore) ApproveNegotiationDeal(ctx context.Context, workspaceID
 	if err != nil {
 		return NegotiationDeal{}, err
 	}
-	return s.payDeal(ctx, workspaceID, by, t, d)
+	return s.payDeal(ctx, workspaceID, by, d)
 }
 
 // DeclineNegotiationDeal declines mandate id's waiting deal: nothing is accepted or paid, and Counter may close again.
