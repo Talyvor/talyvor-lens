@@ -26,11 +26,13 @@ import (
 
 // fakeChain is one chain's node and ERC-4337 bundler as a send sees them: the account's code and nonce, a gas price,
 // and a bundler that takes each operation once per nonce — a second at a taken nonce is refused, as the EntryPoint
-// refuses it — refuses any paying refuseTo, and answers each one's receipt with its own transaction.
+// refuses it — refuses any paying refuseTo, takes the first paying hangUpTo and then drops the line before answering,
+// and answers each one's receipt with its own transaction.
 type fakeChain struct {
 	t        *testing.T
 	chainID  int64
 	refuseTo string
+	hangUpTo string
 	mu       sync.Mutex
 	paid     []smartaccount.Payment
 	hashes   map[string]string
@@ -82,6 +84,11 @@ func (f *fakeChain) serve() string {
 			hash := fmt.Sprintf("0x%x", h)
 			f.paid = append(f.paid, pay)
 			f.hashes[hash] = fmt.Sprintf("0x%064x", len(f.paid))
+			if strings.EqualFold(pay.To, f.hangUpTo) {
+				f.hangUpTo = ""
+				http.Error(w, "upstream connection reset", http.StatusBadGateway)
+				return
+			}
 			answer(hash, nil)
 		case "eth_getUserOperationReceipt":
 			var hash string
@@ -108,8 +115,9 @@ func (f *fakeChain) payments() []smartaccount.Payment {
 
 // B48.9 — an agent's smart account sends USDC: to a new address at its owner's command, once however often it is
 // retried; to a new address at the agent's own asking only after the owner approves it, with a test amount sent
-// there first when they ask; to that address again without asking; to another Talyvor agent, named by its trust and
-// in both agents' history. A send over the owner's permission is refused before anything is signed; one the network
+// there first when they ask; to that address again without asking; to another workspace's Talyvor agent, named by its
+// trust, after the owner approves it the first time, and in both agents' history; once when the bundler's answer is
+// lost and it is asked again. A send over the owner's permission is refused before anything is signed; one the network
 // refuses gives its use of the allowance back. Every check is on the rows kept and the operations the bundler took.
 func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -128,9 +136,9 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
 	store.SetSmartAccounts(cdpfake.New(t).Signers(t), "coinbase", smartaccount.CoinbaseV11)
 	const usdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-	const shop, friend, broken = "0x000000000000000000000000000000000000b0b0", "0x000000000000000000000000000000000000F00D",
-		"0x000000000000000000000000000000000000dEaD"
-	chain := &fakeChain{t: t, chainID: 84532, refuseTo: broken}
+	const shop, friend, broken, flaky = "0x000000000000000000000000000000000000b0b0", "0x000000000000000000000000000000000000F00D",
+		"0x000000000000000000000000000000000000dEaD", "0x000000000000000000000000000000000000F1a7"
+	chain := &fakeChain{t: t, chainID: 84532, refuseTo: broken, hangUpTo: flaky}
 	url := chain.serve()
 	store.SetCryptoSendNetworks([]economy.CryptoSendNetwork{{Name: "base-sepolia", USDC: usdc, Funding: economy.FundingTest,
 		Explorer: "https://sepolia.basescan.org", ArrivalSeconds: 6,
@@ -277,11 +285,15 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	}
 	paidTo(3, shop, 5_000_000)
 
-	// 4. To another Talyvor agent: named by its trust only, and in both agents' history.
+	// 4. To another workspace's Talyvor agent: named by its trust only, waiting for the owner the first time — anyone
+	// can make an agent — and in both agents' history.
 	toAgent, err := store.SendAgentCrypto(ctx, ws, agent.ID, "agent:"+agent.ID, false, "pay-seller", economy.CryptoSendRequest{To: otherWallet,
 		Network: "base-sepolia", Token: "USDC", AmountMinor: 7_000_000})
-	if err != nil || toAgent.Status != "landed" || toAgent.ToKind != "agent" || toAgent.ToLabel != "Unverified agent" {
-		t.Fatalf("the agent's send to another agent = %+v %v", toAgent, err)
+	if err != nil || toAgent.Status != "awaiting_owner" || toAgent.ToKind != "agent" || toAgent.ToLabel != "Unverified agent" || len(chain.payments()) != 4 {
+		t.Fatalf("the agent's first send to another workspace's agent = %+v %v", toAgent, err)
+	}
+	if code := call(http.MethodPost, base+"/crypto-sends/"+toAgent.ID+"/approve", "", "", &toAgent); code != http.StatusOK || toAgent.Status != "landed" {
+		t.Fatalf("approved = %d %+v", code, toAgent)
 	}
 	paidTo(4, otherWallet, 7_000_000)
 	got, err := store.AgentCryptoSends(ctx, "ws-b489-other", other.ID)
@@ -293,11 +305,28 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 		t.Fatalf("the sender's history = %d %d sends, want 5", code, len(mine.Sends))
 	}
 
+	// 4b. The bundler takes one and the line drops before it answers: the send is not given up, its use still counts,
+	// and asking again sends nothing new — it reads that very operation's receipt.
+	n0, sum0 := uses()
+	var lost economy.CryptoSend
+	if code := call(http.MethodPost, base+"/crypto-sends", "pay-flaky", send(flaky, 2_000_000), &lost); code != http.StatusAccepted ||
+		lost.Status != "sending" || len(chain.payments()) != 6 {
+		t.Fatalf("a send whose answer was lost = %d %+v, with %d operations taken", code, lost, len(chain.payments()))
+	}
+	if n1, sum1 := uses(); n1 != n0+1 || sum1 != sum0+2_000_000 {
+		t.Fatalf("a send whose answer was lost no longer counts: %d/%d → %d/%d", n0, sum0, n1, sum1)
+	}
+	if code := call(http.MethodPost, base+"/crypto-sends", "pay-flaky", send(flaky, 2_000_000), &lost); code != http.StatusOK ||
+		lost.Status != "landed" || len(chain.payments()) != 6 {
+		t.Fatalf("asked again = %d %+v, with %d operations taken; want it landed, once", code, lost, len(chain.payments()))
+	}
+	paidTo(5, flaky, 2_000_000)
+
 	// 5. Over the owner's permission: refused before anything is signed, and nothing counted.
 	n, sum := uses()
 	var over economy.CryptoSend
 	if code := call(http.MethodPost, base+"/crypto-sends", "too-much", send(shop, 25_000_001), &over); code != http.StatusForbidden ||
-		over.Status != "refused" || !strings.Contains(over.Reason, "cap") || len(chain.payments()) != 5 {
+		over.Status != "refused" || !strings.Contains(over.Reason, "cap") || len(chain.payments()) != 6 {
 		t.Fatalf("a send over the cap = %d %+v, with %d operations taken", code, over, len(chain.payments()))
 	}
 	if n2, sum2 := uses(); n2 != n || sum2 != sum {
@@ -307,7 +336,7 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	// 6. One the network refuses: failed, and its use of the allowance given back.
 	var failed economy.CryptoSend
 	if code := call(http.MethodPost, base+"/crypto-sends", "to-broken", send(broken, 1_000_000), &failed); code != http.StatusBadGateway ||
-		failed.Status != "failed" || len(chain.payments()) != 5 {
+		failed.Status != "failed" || len(chain.payments()) != 6 {
 		t.Fatalf("a send the network refused = %d %+v", code, failed)
 	}
 	if n2, sum2 := uses(); n2 != n || sum2 != sum {
@@ -321,11 +350,11 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 		t.Fatalf("the agent's send to a stranger = %+v %v", declined, err)
 	}
 	if code := call(http.MethodPost, base+"/crypto-sends/"+declined.ID+"/decline", "", "", &declined); code != http.StatusForbidden ||
-		declined.Status != "refused" || len(chain.payments()) != 5 {
+		declined.Status != "refused" || len(chain.payments()) != 6 {
 		t.Fatalf("declined = %d %+v", code, declined)
 	}
 	var kept int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_crypto_sends WHERE agent_id = $1 AND status = 'landed'`, agent.ID).Scan(&kept); err != nil || kept != 5 {
-		t.Fatalf("%d sends landed, %v; want 5", kept, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_crypto_sends WHERE agent_id = $1 AND status = 'landed'`, agent.ID).Scan(&kept); err != nil || kept != 6 {
+		t.Fatalf("%d sends landed, %v; want 6", kept, err)
 	}
 }

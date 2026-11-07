@@ -228,18 +228,22 @@ func (s *DualTokenStore) cryptoDestination(ctx context.Context, workspaceID, age
 		if f.Owner.Name != "" && f.Owner.Level >= LevelIdentity {
 			q.ToLabel = "Verified agent of " + f.Owner.Name
 		}
-		return q, toAgent, nil
 	case !errors.Is(err, pgx.ErrNoRows):
 		return q, "", fmt.Errorf("economy: crypto send: %w", err)
+	default:
+		q.ToKind = "address"
 	}
-	q.ToKind = "address"
+	if toWorkspace == workspaceID {
+		return q, toAgent, nil // one of the workspace's own agents
+	}
+	// Anyone can make a Talyvor agent: another workspace's is new, as any address is, until the workspace has paid it.
 	var paid bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_crypto_sends WHERE workspace_id = $1 AND lower(to_address) = lower($2)
 		AND status = 'landed')`, workspaceID, q.To).Scan(&paid); err != nil {
 		return q, "", fmt.Errorf("economy: crypto send: %w", err)
 	}
 	q.NewAddress = !paid
-	return q, "", nil
+	return q, toAgent, nil
 }
 
 // cryptoSendFee is the most a's send on n can be charged for its network fee, in wei of the chain's coin.
@@ -405,9 +409,11 @@ func (s *DualTokenStore) carryOn(ctx context.Context, workspaceID string, n Cryp
 	if c.Status != "sending" && c.Status != "sent" {
 		return c, nil
 	}
-	// A lease, not a lock held open across the chain's calls: what is kept along the way commits as it goes.
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET carried_until = now() + interval '2 minutes'
-		WHERE id = $1 AND (carried_until IS NULL OR carried_until < now())`, c.ID)
+	// A lease, not a lock held open across the chain's calls: what is kept along the way commits as it goes. Only one
+	// signed operation is ever kept for a send (signAndSend), so the lease is for doing the work once, not for safety.
+	lease := uuid.NewString()
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET carried_until = now() + interval '2 minutes', carried_by = $2
+		WHERE id = $1 AND (carried_until IS NULL OR carried_until < now())`, c.ID, lease)
 	if err != nil {
 		return c, fmt.Errorf("economy: crypto send: %w", err)
 	}
@@ -415,7 +421,8 @@ func (s *DualTokenStore) carryOn(ctx context.Context, workspaceID string, n Cryp
 		return c, nil // another caller is carrying it on
 	}
 	defer func() {
-		_, _ = s.pool.Exec(context.WithoutCancel(ctx), `UPDATE agent_crypto_sends SET carried_until = NULL WHERE id = $1`, c.ID)
+		_, _ = s.pool.Exec(context.WithoutCancel(ctx), `UPDATE agent_crypto_sends SET carried_until = NULL, carried_by = ''
+			WHERE id = $1 AND carried_by = $2`, c.ID, lease)
 	}()
 	if c, err = s.cryptoSend(ctx, workspaceID, c.AgentID, c.ID); err != nil {
 		return c, err
@@ -500,14 +507,27 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 		return s.endCryptoSend(ctx, c, "failed", err.Error())
 	}
 	fee := smartaccount.MaxFee(op)
-	// Kept before the bundler sees it: from here a retry sends this very operation, never a new one.
-	if _, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET signed_op = $2, user_op_hash = $3, max_fee_wei = $4, updated_at = now()
-		WHERE id = $1`, c.ID, string(signed), fmt.Sprintf("0x%x", h), fee.String()); err != nil {
+	// Kept before the bundler sees it, and only if no other operation was kept for the send: from here a retry sends
+	// this very operation, never a new one.
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET signed_op = $2, user_op_hash = $3, max_fee_wei = $4, updated_at = now()
+		WHERE id = $1 AND status = 'sending' AND signed_op = ''`, c.ID, string(signed), fmt.Sprintf("0x%x", h), fee.String())
+	if err != nil {
 		return c, fmt.Errorf("economy: crypto send: %w", err)
+	}
+	if tag.RowsAffected() == 0 { // another caller's operation is the send: this one is never sent, and counts nothing
+		if _, err := s.pool.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`, *c.useID, c.AgentID); err != nil {
+			return c, fmt.Errorf("economy: crypto send: %w", err)
+		}
+		return s.cryptoSend(ctx, workspaceID, c.AgentID, c.ID)
 	}
 	c.UserOpHash = fmt.Sprintf("0x%x", h)
 	if _, err := s.handToBundler(ctx, workspaceID, n, op); err != nil {
-		return s.endCryptoSend(ctx, c, "failed", err.Error())
+		// Only a bundler's own refusal, or a budget that cannot cover the fee, is known not to reach the chain. Any other
+		// error may follow its taking the operation: the send stays to be sent again, as signed, and still counts.
+		if errors.Is(err, smartaccount.ErrRefused) || errors.Is(err, smartaccount.ErrGasBudgetSpent) {
+			return s.endCryptoSend(ctx, c, "failed", err.Error())
+		}
+		return c, nil
 	}
 	return s.markCryptoSent(ctx, workspaceID, n, c)
 }
