@@ -53,6 +53,9 @@ import (
 //	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
 //	                                                                   the two linked as though both paid with one
 //	                                                                   card, so a trust panel's linked buyer is testable
+//	…/scan/reports, …/scan/reports/{id}/approve, …/scan/reports/{id}/outcome, GET …/scan/track-record
+//	                                                                   B52.40: a Scan report rehearsed on recorded data
+//	                                                                   (synthetic_scan_handler.go)
 //
 // Each is refused 403 for a workspace that is not synthetic — read from the database every Lens shares — and
 // nothing changes. Each is also written to synthetic_operations, like create and reset, under its own rate.
@@ -110,6 +113,7 @@ type syntheticDueDeps struct {
 	authorizer syntheticCardAuthorizer
 	moneyCards syntheticMoneyCards
 	schedules  syntheticSchedules
+	scan       syntheticScan // B52.40
 }
 
 func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
@@ -136,6 +140,15 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 			syntheticGuard(key, "schedule-due", limit, d, due.testOnly(due.scheduleDue)))
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
+	if due.scan != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/scan/reports", syntheticGuard(key, "scan-rehearse", limit, d, due.testOnly(due.scanRehearse)))
+		r.Post("/v1/synthetic/workspaces/{wsID}/scan/reports/{id}/approve",
+			syntheticGuard(key, "scan-approve", limit, d, due.testOnly(due.scanApprove)))
+		r.Post("/v1/synthetic/workspaces/{wsID}/scan/reports/{id}/outcome",
+			syntheticGuard(key, "scan-outcome", limit, d, due.testOnly(due.scanOutcome)))
+		r.Get("/v1/synthetic/workspaces/{wsID}/scan/track-record",
+			syntheticGuard(key, "scan-track-record", limit, d, due.testOnly(due.scanTrackRecord)))
+	}
 }
 
 // testOnly runs run for a synthetic workspace, and refuses any other before anything is read or written.
