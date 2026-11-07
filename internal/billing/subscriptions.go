@@ -511,6 +511,15 @@ func (s *Service) handleSubscription(w http.ResponseWriter, ctx context.Context,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// B52.37 — an account being deleted holds its workspace row until it commits: wait for it, first (the order the
+	// deletion locks in), so the deletion check below sees it and no row is written for an account just deleted.
+	if wsID != "" {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM workspaces WHERE id = $1 FOR KEY SHARE`, wsID); err != nil {
+			s.fail(w, "workspace lock", event.ID, err)
+			return
+		}
+	}
+
 	// ⚠ THE IDEMPOTENCY CLAIM COMES FIRST, and it is a real INSERT rather than a
 	// SELECT-then-act: two concurrent deliveries of the same event both reach the
 	// insert, one wins, and the loser sees zero rows affected and stops. A read-first

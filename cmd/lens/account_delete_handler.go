@@ -17,7 +17,7 @@ import (
 
 // B52.37 — a person deletes their account. The suite BFF calls this for one identity on the provision secret,
 // as it calls POST /v1/provision; Lens deletes that identity's workspace (workspace.Manager.DeleteAccount), and,
-// before that commits, what it has outside Postgres: its subscription in Stripe and its cached answers. Then every
+// before that commits, what it has outside Postgres: its cached answers, then its subscription in Stripe. Then every
 // replica drops the workspace's cached keys.
 
 type accountDeleter interface {
@@ -91,15 +91,16 @@ func newAccountDeleteHandler(secret string, d accountDeleteDeps) http.HandlerFun
 				return
 			}
 		}
+		// Stripe goes last: it cannot be undone, so nothing that can still fail comes after it but the commit.
 		outside := func(ctx context.Context) error {
-			if d.billing != nil {
-				if err := d.billing(ctx, wsID); err != nil {
-					return &accountDeleteStepError{"your subscription couldn't be cancelled right now, so your account can't be deleted yet. Try again later.", err}
-				}
-			}
 			if d.answers != nil {
 				if _, err := d.answers.DeleteAllOf(ctx, []string{wsID}); err != nil {
 					return &accountDeleteStepError{"your saved answers couldn't be removed right now, so your account can't be deleted yet. Try again later.", err}
+				}
+			}
+			if d.billing != nil {
+				if err := d.billing(ctx, wsID); err != nil {
+					return &accountDeleteStepError{"your subscription couldn't be cancelled right now, so your account can't be deleted yet. Try again later.", err}
 				}
 			}
 			return nil

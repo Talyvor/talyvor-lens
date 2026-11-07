@@ -1086,6 +1086,7 @@ func run() error {
 		}
 		defer retentionPool.Close()
 	}
+	wsManager.WithUsageEventsPool(retentionPool) // B52.37: a deleted account's token_events go as this role
 	auditRetention := audit.NewRetention(retentionPool, cfg.AuditRetention,
 		cfg.AuditRequireExportBeforePrune, cfg.AuditExportURL != "")
 	go haComps.leader.Run(ctx, "audit-retention", 30*time.Second, func(lctx context.Context) {
