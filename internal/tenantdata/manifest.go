@@ -312,6 +312,7 @@ var Manifest = map[string]Entry{
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
 	"scan_watches":                 {Delete, "B52.27: each Scan agent's watch — the series its owner picked and what counts as unusual"},
 	"scan_watch_alerts":            {Delete, "B52.27: each alert a Scan agent's watch sent, with its report and what the agent paid for it"},
+	"scan_rehearsals":              {Delete, "B52.40: each Scan report a test workspace rehearsed, its review and planted outcome"},
 	"spend_plan_income":            {Delete, "B53.15: the owner's expected income — payday, amount, currency and payer — for the month plan"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},
