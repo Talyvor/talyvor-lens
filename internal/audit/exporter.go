@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -142,7 +143,7 @@ func (e *Exporter) ExportWebhook(ctx context.Context, webhookURL string, filter 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, &buf)
 	if err != nil {
-		return fmt.Errorf("audit: build webhook request: %w", err)
+		return fmt.Errorf("audit: build webhook request: %w", withoutURL(err))
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
 	req.Header.Set("X-Talyvor-Export", "true")
@@ -153,13 +154,23 @@ func (e *Exporter) ExportWebhook(ctx context.Context, webhookURL string, filter 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("audit: webhook POST: %w", err)
+		return fmt.Errorf("audit: webhook POST: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("audit: webhook returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// withoutURL drops the URL a *url.Error quotes, keeping its Op and cause: a webhook URL carries its secret in the
+// path or query, and this error is logged (B50.39).
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 // buildQuery composes the SELECT with only the WHERE arms the filter
