@@ -128,6 +128,16 @@ type fakeSubStripe struct {
 	sessions  int
 	lastPrice string
 	updates   []fakeSubUpdate
+	cancelled []string
+	cancelErr error
+}
+
+func (f *fakeSubStripe) CancelSubscription(_ context.Context, subID string) (*stripe.Subscription, error) {
+	if f.cancelErr != nil {
+		return nil, f.cancelErr
+	}
+	f.cancelled = append(f.cancelled, subID)
+	return &stripe.Subscription{ID: subID, Status: stripe.SubscriptionStatusCanceled}, nil
 }
 
 type fakeSubUpdate struct {
@@ -533,5 +543,53 @@ func TestSubscription_Resume_ClearsCancelAtPeriodEnd(t *testing.T) {
 	}
 	if st.CancelAtPeriodEnd {
 		t.Errorf("resume answer = %+v, want cancel_at_period_end cleared", st)
+	}
+}
+
+// B52.37 — deleting an account cancels in Stripe every subscription not over yet, paused and incomplete ones too,
+// refuses while Stripe does not confirm it, and a later event for the deleted account never brings a row back.
+func TestSubscription_AccountDeletion_CancelsAndIgnoresLaterEvents(t *testing.T) {
+	svc, pool, fss := newSubService(t)
+	ctx := context.Background()
+	seedWS(t, pool, "ws-sub-del")
+	if _, err := pool.Exec(ctx, `DELETE FROM account_deletions WHERE workspace_id = 'ws-sub-del';
+		INSERT INTO subscriptions (workspace_id, stripe_subscription_id, stripe_customer_id, price_id, status, livemode, last_event_at)
+		VALUES ('ws-sub-del', 'sub_del_old', 'cus_del', 'p', 'canceled', true, now() - interval '1 day'),
+		       ('ws-sub-del', 'sub_del_paused', 'cus_del', 'p', 'paused', true, now())`); err != nil {
+		t.Fatal(err)
+	}
+	fss.cancelErr = errors.New("stripe is down")
+	if err := svc.CancelForAccountDeletion(ctx, "ws-sub-del"); err == nil {
+		t.Fatal("a cancellation Stripe refused was reported done")
+	}
+	fss.cancelErr = nil
+	if err := svc.CancelForAccountDeletion(ctx, "ws-sub-del"); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(fss.cancelled) != "[sub_del_paused]" {
+		t.Fatalf("cancelled in Stripe: %v, want only the paused one", fss.cancelled)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM subscriptions WHERE workspace_id = 'ws-sub-del';
+		INSERT INTO account_deletions (workspace_id) VALUES ('ws-sub-del')`); err != nil {
+		t.Fatal(err)
+	}
+	body, sig := signedAt(testWebhookSecret, "evt_sub_del_1", "customer.subscription.updated",
+		time.Now(), subObj("sub_del_paused", "ws-sub-del", "cus_del", "price_test_model2", "active", time.Now().Add(time.Hour), false))
+	if code := postEvent(svc, body, sig); code != http.StatusOK {
+		t.Fatalf("webhook code = %d, want 200", code)
+	}
+	if _, ok := readSub(t, pool, "sub_del_paused"); ok {
+		t.Fatal("an event for a deleted account brought its subscription row back")
+	}
+	if fmt.Sprint(fss.cancelled) != "[sub_del_paused sub_del_paused]" {
+		t.Fatalf("cancelled in Stripe: %v, want the live one the late event named cancelled again", fss.cancelled)
+	}
+	// Stripe answering that it is cancelled already is final: acknowledged, not retried for ever.
+	fss.cancelErr = &stripe.Error{HTTPStatusCode: http.StatusBadRequest}
+	body, sig = signedAt(testWebhookSecret, "evt_sub_del_2", "customer.subscription.updated",
+		time.Now(), subObj("sub_del_paused", "ws-sub-del", "cus_del", "price_test_model2", "active", time.Now().Add(time.Hour), false))
+	if code := postEvent(svc, body, sig); code != http.StatusOK {
+		t.Fatalf("webhook code after Stripe refused the cancel = %d, want 200", code)
 	}
 }

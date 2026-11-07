@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -168,6 +169,21 @@ func (r *Retention) deleteBatch(ctx context.Context, cutoff time.Time, upper *ti
 		return 0, fmt.Errorf("audit retention: commit: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// DeleteWorkspaceEvents deletes every token_events row of workspaceID inside tx, under the same flag, set and then
+// cleared within the statement's reach: the second sanctioned delete, for a person who deletes their account (B52.37).
+func DeleteWorkspaceEvents(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lens.audit_retention = 'on'`); err != nil {
+		return fmt.Errorf("audit: set flag: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM token_events WHERE workspace_id = $1`, workspaceID); err != nil {
+		return fmt.Errorf("audit: delete the workspace's events: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lens.audit_retention = 'off'`); err != nil {
+		return fmt.Errorf("audit: clear flag: %w", err)
+	}
+	return nil
 }
 
 // StartSweeper runs SweepOnce on a fixed interval until ctx is cancelled. A

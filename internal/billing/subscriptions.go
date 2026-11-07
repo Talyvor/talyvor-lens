@@ -57,6 +57,7 @@ type SubscriptionParams struct {
 type subscriptionAPI interface {
 	CreateSubscriptionCheckoutSession(ctx context.Context, p SubscriptionParams) (url string, sessionID string, err error)
 	SetCancelAtPeriodEnd(ctx context.Context, subscriptionID string, cancel bool) (*stripe.Subscription, error)
+	CancelSubscription(ctx context.Context, subscriptionID string) (*stripe.Subscription, error)
 }
 
 // terminalStatuses never move again. A row in one of these is history.
@@ -216,6 +217,33 @@ func (s *Service) SetCancelAtPeriodEnd(ctx context.Context, workspaceID string, 
 		return nil, fmt.Errorf("billing: update subscription %s: %w", subID, err)
 	}
 	return s.statusOf(sub), nil
+}
+
+// CancelForAccountDeletion cancels in Stripe, now, every subscription of workspaceID that is not over yet — paused
+// and incomplete ones too — so nothing bills a deleted account (B52.37). It answers an error, and the deletion is
+// refused, while Stripe does not confirm one. A workspace of the other kind (B25.2) is the other Service's.
+func (s *Service) CancelForAccountDeletion(ctx context.Context, workspaceID string) error {
+	if mine, err := s.takes(ctx, workspaceID, true); err != nil || !mine {
+		return err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT stripe_subscription_id FROM subscriptions
+		WHERE workspace_id = $1 AND status NOT IN ('canceled', 'incomplete_expired')`, workspaceID)
+	if err != nil {
+		return fmt.Errorf("billing: subscriptions to cancel: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("billing: subscriptions to cancel: %w", err)
+	}
+	for _, id := range ids {
+		if s.subStripe == nil {
+			return fmt.Errorf("billing: subscription %s cannot be cancelled: no Stripe client", id)
+		}
+		if _, err := s.subStripe.CancelSubscription(ctx, id); err != nil {
+			return fmt.Errorf("billing: cancel subscription %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // statusOf is the read model of Stripe's answer to an update: what the webhook it provokes will record.
@@ -527,6 +555,32 @@ func (s *Service) handleSubscription(w http.ResponseWriter, ctx context.Context,
 		// will not add the metadata.
 		s.log.Warn("billing webhook: subscription event with no workspace", "event", event.ID, "subscription", sub.ID)
 		applied = false
+	}
+	// B52.37 — a deleted account's subscription was cancelled with it; a later event never brings its row back.
+	if wsID != "" {
+		var deleted bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM account_deletions WHERE workspace_id = $1)`, wsID).Scan(&deleted); err != nil {
+			s.fail(w, "account deletion lookup", event.ID, err)
+			return
+		}
+		if deleted {
+			// One that started after the deletion (a checkout finished late) is cancelled now; Stripe retries until it is.
+			if !terminalStatuses[status] && s.subStripe != nil {
+				// Stripe refusing it (4xx: already cancelled, or gone) is final; only its being unreachable is retried.
+				var se *stripe.Error
+				if _, err := s.subStripe.CancelSubscription(ctx, sub.ID); errors.As(err, &se) && se.HTTPStatusCode >= 400 &&
+					se.HTTPStatusCode < 500 && se.HTTPStatusCode != http.StatusTooManyRequests {
+					s.log.Warn("billing webhook: Stripe refused to cancel a deleted account's subscription", "subscription", sub.ID, "err", err)
+				} else if err != nil {
+					s.fail(w, "cancel a deleted account's subscription", event.ID, err)
+					return
+				}
+			}
+			s.log.Warn("billing webhook: a subscription event for a deleted account — ignored",
+				"event", event.ID, "type", event.Type, "subscription", sub.ID, "workspace", wsID)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 	}
 	// B25.2 — a test workspace's subscription is the test-mode Service's, a real one's the live Service's.
 	// B50.13 — a test-mode event never starts or changes a real workspace's plan, but its end is let through, so a
