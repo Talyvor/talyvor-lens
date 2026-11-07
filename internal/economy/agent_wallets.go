@@ -227,7 +227,8 @@ type moneyLimits struct{ s *DualTokenStore }
 // (money.ErrLimit), and above the agent's approval amount it files an approval for the owner and moves nothing
 // (money.ErrApprovalNeeded) until the owner approves it and the same call is made again. A payment out PayOutside
 // already judged and holds goes (B46.8), as does a card of an approved batch whose cap is held (B46.10) and a reusable card the owner issued (B53.2), and so do
-// earnings PayEarnings holds (B46.11). Other money out that is not an agent's is refused.
+// earnings PayEarnings holds (B46.11), and a move between the owner's own wallets they confirmed (B48.8). Other money out
+// that is not an agent's is refused.
 func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	held, err := l.s.heldOutsidePayment(ctx, op)
 	if err != nil {
@@ -254,6 +255,12 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	if held { // B46.11: earnings owed under a sale, a Room's terms or a royalty, their money held when they were paid out
 		return nil
 	}
+	if held, err = l.s.heldWalletMove(ctx, op); err != nil {
+		return fmt.Errorf("%w: %v", money.ErrLimit, err)
+	}
+	if held { // B48.8: the owner moving money between their own wallets, or to the ramp, exactly as they confirmed it
+		return nil
+	}
 	if op.Agent == "" {
 		return fmt.Errorf("%w: only an agent's wallet moves money through the money layer yet", money.ErrLimit)
 	}
@@ -278,6 +285,9 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 		if errors.Is(err, ErrApprovalRequired) {
 			return fmt.Errorf("%w: %v", money.ErrApprovalNeeded, err)
 		}
+		return fmt.Errorf("%w: %v", money.ErrLimit, err)
+	}
+	if err := gateWalletMove(ctx, tx, op.Workspace, op.Key); err != nil { // B48.8: its replay is this payment, allowed
 		return fmt.Errorf("%w: %v", money.ErrLimit, err)
 	}
 	return tx.Commit(ctx)

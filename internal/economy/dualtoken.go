@@ -350,6 +350,7 @@ type DualTokenStore struct {
 	ownerVerifier OwnerVerifier
 	// cashOutPartner pays cash-outs out as money (B22.9); nil, cash-out is unavailable.
 	cashOutPartner CashOutPartner
+	rampPartner    partners.RampPartner // B48.8: tops agents' wallets up and cashes them out
 	// screener screens who money in or out through a partner is from or to before it moves (B30.6); nil, no such
 	// money moves.
 	screener PaymentScreener
