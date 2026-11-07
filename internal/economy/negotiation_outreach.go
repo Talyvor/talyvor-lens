@@ -91,7 +91,7 @@ func (s *DualTokenStore) SendNegotiationOutreach(ctx context.Context, workspaceI
 		// counterparty never reaches it; a wrong id and a stranger's agent get the same answer, naming nobody.
 		err := s.pool.QueryRow(ctx, `SELECT a.workspace_id FROM agent_accounts a WHERE a.id = $1 AND a.archived_at IS NULL
 			AND EXISTS (SELECT 1 FROM negotiation_domains d WHERE d.workspace_id = a.workspace_id AND d.domain = $2
-			AND d.verified_at IS NOT NULL)`, to, registrableDomain(counterparty)).Scan(&toWorkspace)
+			AND d.verified_at IS NOT NULL)`, to, RegistrableDomain(counterparty)).Scan(&toWorkspace)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refuse("%s has no Talyvor agent with the id %q", counterparty, to)
 		}
