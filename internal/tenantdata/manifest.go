@@ -286,6 +286,7 @@ var Manifest = map[string]Entry{
 	"room_takeovers":               {Delete, "B41.148: keys `noticed_by_workspace_id`: the notices a workspace gave rooms' owners; a room's own notices cascade with it"},
 	"room_takeover_votes":          {Delete, "B41.148: the workspace's votes for a room's lead; a notice's votes cascade with it"},
 	"room_points":                  {Retain, "B41.143: audit-guarded (0350, append-only): the points each workspace earned for accepted contributions to a room — the record a contributor plan is counted from"},
+	"room_agreement_signatures":    {Retain, "B41.150: audit-guarded (0353, append-only): each workspace's e-signature of a room's contributor agreement, with the text version signed — the evidence its IP assignment rests on"},
 	"room_reviews":                 {Delete, "B41.144: keys `reviewer_workspace_id`: the workspace's seats and scores as a reviewer of rooms' contributions; a contribution's reviews cascade with it"},
 	"room_takeover_points":         {Delete, "B41.148: the workspace's points in a room as a notice to its owner found them; a notice's cascade with it"},
 	"market_ip_claims":             {Delete, "B32.47: keys `claimant_workspace_id`: the IP claims a workspace filed, with their evidence and decision; claims against its own listings cascade with them"},

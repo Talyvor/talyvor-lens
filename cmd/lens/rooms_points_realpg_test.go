@@ -58,6 +58,7 @@ func TestRooms_PointsLedgerEarnsSizeTimesQualityAndAForkCreditsItsOriginal(t *te
 	base := "/v1/rooms/" + room.ID
 	for _, ws := range []string{author, forker} {
 		do(http.StatusCreated, nil, ws, http.MethodPost, base+"/join", `{"terms_version":1}`)
+		do(http.StatusCreated, nil, ws, http.MethodPost, base+"/agreement", `{"version":"`+rooms.AgreementVersion+`","signed_name":"Signer"}`) // B41.150: points count once signed
 	}
 	do(http.StatusOK, nil, owner, http.MethodPut, base+"/rate-card", `{"pool_points":10000,"sizes":[{"size":"M","hours":8,"points_per_hour":50}]}`)
 	accept := func(ws string, c rooms.Contribution) {
