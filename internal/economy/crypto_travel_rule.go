@@ -119,11 +119,17 @@ func (s *DualTokenStore) ProveAddressControl(ctx context.Context, workspaceID, p
 // travelRuleBeforeSend is the Travel Rule step before p is sent to payee's address. stop false: p goes on to be sent.
 // stop true: it is not sent now — res and ok are sendOutside's answer: a failed result when a retry screens the
 // address as refused, or once its Travel Rule data has failed TravelRuleMaxAttempts times; else ok false, tried again
-// when p is read.
+// when p is read. Once p was handed to its rail (send_started_at) it may have gone (B54.17): the step is skipped, so
+// the rail is asked under the same key and p never fails on the Travel Rule or screening.
 func (s *DualTokenStore) travelRuleBeforeSend(ctx context.Context, p OutsidePayment, from payingAccount, payee OutsidePayee) (res partners.Result, ok, stop bool) {
 	var attempts int
-	if err := s.pool.QueryRow(ctx, `SELECT travel_rule_attempts FROM money_payments WHERE id = $1`, p.ID).Scan(&attempts); err != nil {
+	var started bool
+	if err := s.pool.QueryRow(ctx, `SELECT travel_rule_attempts, send_started_at IS NOT NULL FROM money_payments WHERE id = $1`,
+		p.ID).Scan(&attempts, &started); err != nil {
 		return partners.Result{}, false, true
+	}
+	if started {
+		return partners.Result{}, false, false
 	}
 	var err error
 	if attempts > 0 { // a retry screens the address again
