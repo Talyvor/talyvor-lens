@@ -110,6 +110,14 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// B54.28: a known passkey is refused now; one still waiting may be registered signed, and its enrolment then 409s.
+	var known bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1)`, r.CredentialID).Scan(&known); err != nil {
+		return Passkey{}, fmt.Errorf("economy: register passkey: %w", err)
+	}
+	if known {
+		return Passkey{}, ErrPasskeyRegistered
+	}
 	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
 		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
 		return Passkey{}, s.waitEnrolment(ctx, tx, workspaceID, "register", challenge, KeyEnrolment{Kind: "passkey", Name: name},

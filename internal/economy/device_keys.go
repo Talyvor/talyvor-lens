@@ -67,7 +67,8 @@ func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, per
 		err = s.waitEnrolment(ctx, tx, workspaceID, "device-register", r.Challenge, KeyEnrolment{Kind: "device", Name: name, Platform: r.Platform},
 			person, "", r.PublicKey, 0, r.Attestation)
 		var waiting *EnrolmentWaiting
-		if errors.As(err, &waiting) || errors.Is(err, ErrTooManyEnrolments) || errors.Is(err, ErrEnrolmentCodeTaken) {
+		if errors.As(err, &waiting) || errors.Is(err, ErrTooManyEnrolments) || errors.Is(err, ErrEnrolmentCodeTaken) ||
+			errors.Is(err, ErrNoLiveKey) {
 			return DeviceKey{}, err
 		}
 		return DeviceKey{}, fmt.Errorf("%w: %v", devicekey.ErrInvalid, err)
