@@ -281,7 +281,7 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 		limit = live // its limits lowered since the owner signed: the lower holds
 	}
 	if a.AmountULXC > limit {
-		return a, fmt.Errorf("%w: %s LXC is above the %s LXC it may approve", ErrAboveApproverLimits, lxcString(a.AmountULXC), lxcString(limit))
+		return a, fmt.Errorf("%w: %s is above the %s it may approve", ErrAboveApproverLimits, LXCMoney(a.AmountULXC), LXCMoney(limit))
 	}
 	if rules.DailyLimitULXC > 0 {
 		tz := rules.Timezone
@@ -294,8 +294,8 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 			return a, fmt.Errorf("economy: approver: %w", err)
 		}
 		if today+a.AmountULXC > rules.DailyLimitULXC {
-			return a, fmt.Errorf("%w: with this, it would have approved %s LXC today, above its daily limit of %s LXC", ErrAboveApproverLimits,
-				lxcString(today+a.AmountULXC), lxcString(rules.DailyLimitULXC))
+			return a, fmt.Errorf("%w: with this, it would have approved %s today, above its daily limit of %s", ErrAboveApproverLimits,
+				LXCMoney(today+a.AmountULXC), LXCMoney(rules.DailyLimitULXC))
 		}
 	}
 	requester, err := agentName(ctx, tx, a.AgentID)

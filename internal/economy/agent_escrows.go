@@ -161,7 +161,7 @@ func (s *DualTokenStore) payIntoEscrowTx(ctx context.Context, tx pgx.Tx, e *Escr
 		return err
 	}
 	if bal < e.AmountULXC {
-		return fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+		return agentHolds(ctx, tx, ErrAgentFunds, e.PayerAgentID, bal, 0)
 	}
 	if err := enforceAgentRules(ctx, tx, e.PayerWorkspaceID, e.PayerAgentID, e.AmountULXC, e.ID); err != nil {
 		return err

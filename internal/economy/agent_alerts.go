@@ -111,7 +111,7 @@ func watchAgentSpend(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		return fmt.Errorf("economy: raise agent alert: %w", err)
 	}
 	if pauseOn {
-		reason := fmt.Sprintf("unusual spend: %s LXC in an hour, against a usual %s LXC an hour", lxcString(lastHour), lxcString(usual))
+		reason := fmt.Sprintf("unusual spend: %s in an hour, against a usual %s an hour", LXCMoney(lastHour), LXCMoney(usual))
 		if _, err := tx.Exec(ctx, `UPDATE agent_accounts SET paused_at = now(), paused_reason = $2 WHERE id = $1 AND paused_at IS NULL`,
 			agentID, reason); err != nil {
 			return fmt.Errorf("economy: pause agent: %w", err)

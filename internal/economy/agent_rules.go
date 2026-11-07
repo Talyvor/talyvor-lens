@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -177,11 +178,11 @@ type ApprovalNeededError struct {
 
 func (e *ApprovalNeededError) Error() string {
 	if e.Expired {
-		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s LXC, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
-			lxcString(e.AmountULXC), e.ApprovalID)
+		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
+			LXCMoney(e.AmountULXC), e.ApprovalID)
 	}
-	return fmt.Sprintf("this request would cost up to %s LXC, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
-		lxcString(e.AmountULXC), e.ApprovalID)
+	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
+		LXCMoney(e.AmountULXC), e.ApprovalID)
 }
 
 func (e *ApprovalNeededError) Unwrap() error { return ErrApprovalRequired }
@@ -721,18 +722,27 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 	if err := r.judgeCommitment(req.Commitment); err != nil {
 		return err
 	}
-	var ids []string // the ids the payee lists and caps name a payment's payee by
+	var ids []string                              // the ids the payee lists and caps name a payment's payee by
+	payee := cmp.Or(req.Payee.Name, req.Payee.ID) // B55.30: the name a refusal gives the payee
 	if req.Payment && len(r.AllowedPayees)+len(r.BlockedPayees)+len(r.PayeeDailyLimitsULXC)+len(r.PayeeMonthlyLimitsULXC)+len(r.PayeeAllowances) > 0 {
 		if ids, err = payeeIDs(ctx, tx, req.Payee); err != nil {
 			return err
 		}
+		// Only the workspace's own agents and marketplace listings are named; another company's agent keeps its id.
+		if req.Payee.Name == "" && (req.Payee.Kind == "listing" || len(ids) > 1 && ids[1] == workspaceID) {
+			named, err := namePayee(ctx, tx, req.Payee)
+			if err != nil {
+				return err
+			}
+			payee = cmp.Or(named.Name, named.ID)
+		}
 	}
 	if req.Payment && len(r.AllowedPayees)+len(r.BlockedPayees) > 0 {
 		if slices.ContainsFunc(ids, func(id string) bool { return slices.Contains(r.BlockedPayees, id) }) {
-			return ruleRefusal("the agent may not pay %s %q", req.Payee.Kind, req.Payee.ID)
+			return ruleRefusal("the agent may not pay %s", payee)
 		}
 		if len(r.AllowedPayees) > 0 && !slices.ContainsFunc(ids, func(id string) bool { return slices.Contains(r.AllowedPayees, id) }) {
-			return ruleRefusal("the agent may pay only the payees its rules name, and %s %q is not one", req.Payee.Kind, req.Payee.ID)
+			return ruleRefusal("the agent may pay only the payees its rules name, and %s is not one", payee)
 		}
 	}
 	if rpm := limitOf(r.RequestsPerMinute); rpm > 0 && !req.Payment {
@@ -746,8 +756,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		}
 	}
 	if r.MaxPerRequestULXC > 0 && amount > r.MaxPerRequestULXC {
-		return ruleRefusal("this %s would cost up to %s LXC; the agent's limit per request is %s LXC",
-			what, lxcString(amount), lxcString(r.MaxPerRequestULXC))
+		return ruleRefusal("this %s would cost up to %s; the agent's limit per request is %s",
+			what, LXCMoney(amount), LXCMoney(r.MaxPerRequestULXC))
 	}
 	for _, limit := range r.periodLimits(now, loc) {
 		if limit.ulxc == 0 {
@@ -758,8 +768,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			return fmt.Errorf("economy: agent spend so far: %w", err)
 		}
 		if spent+amount > limit.ulxc {
-			return ruleRefusal("the agent has spent %s LXC of its %s limit of %s LXC, and this %s would cost up to %s LXC",
-				lxcString(spent), limit.name, lxcString(limit.ulxc), what, lxcString(amount))
+			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
+				LXCMoney(spent), limit.name, LXCMoney(limit.ulxc), what, LXCMoney(amount))
 		}
 	}
 	if limit, since := r.modelDailyLimit(req.Model, now, loc); limit > 0 && !req.Payment {
@@ -768,8 +778,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			return fmt.Errorf("economy: agent spend on the model so far: %w", err)
 		}
 		if spent+amount > limit {
-			return ruleRefusal("the agent has spent %s LXC of its daily limit of %s LXC for the model %q, and this request would cost up to %s LXC",
-				lxcString(spent), lxcString(limit), req.Model, lxcString(amount))
+			return ruleRefusal("the agent has spent %s of its daily limit of %s for the model %q, and this request would cost up to %s",
+				LXCMoney(spent), LXCMoney(limit), req.Model, LXCMoney(amount))
 		}
 	}
 	day, month := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
@@ -787,8 +797,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 				return fmt.Errorf("economy: agent payments to the payee so far: %w", err)
 			}
 			if paid+amount > c.limit {
-				return ruleRefusal("the agent has paid %s LXC %s of its %s limit of %s LXC for %q, and this payment would cost %s LXC",
-					lxcString(paid), c.when, c.name, lxcString(c.limit), id, lxcString(amount))
+				return ruleRefusal("the agent has paid %s %s of its %s limit of %s for %s, and this payment would cost %s",
+					LXCMoney(paid), c.when, c.name, LXCMoney(c.limit), payee, LXCMoney(amount))
 			}
 		}
 	}
@@ -924,15 +934,15 @@ func (r AgentRules) judgeCommitment(c Commitment) error {
 	case !slices.Contains(AgentLicences, c.Licence):
 		return ruleRefusal("an agent may hold only commercial and enterprise licences, and this %s is %s: a personal licence is one person's", c.Kind, c.Licence)
 	case len(r.AllowedLicences) > 0 && !slices.Contains(r.AllowedLicences, c.Licence):
-		return ruleRefusal("the agent may hold only %s licences (allowed_licences), and this %s is %s",
+		return ruleRefusal("the agent may hold only %s licences, and this %s is %s",
 			strings.Join(r.AllowedLicences, " and "), c.Kind, c.Licence)
 	case c.Kind == "subscribe" && (r.MaySubscribe == nil || !*r.MaySubscribe):
-		return ruleRefusal("the agent's rules do not let it subscribe (may_subscribe)")
+		return ruleRefusal("the agent's rules do not let it subscribe")
 	case c.Renews && (r.MaySubscribe == nil || !*r.MaySubscribe): // a rent that renews itself is a subscription
-		return ruleRefusal("the agent's rules do not let it take a %s that renews itself (may_subscribe)", c.Kind)
+		return ruleRefusal("the agent's rules do not let it take a %s that renews itself", c.Kind)
 	case limitOf(r.MaxCommitmentULXC) > 0 && c.ULXC > *r.MaxCommitmentULXC:
-		return ruleRefusal("this %s would commit the agent to %s LXC; the most one licence may commit it to is %s LXC (max_commitment_ulxc)",
-			c.Kind, lxcString(c.ULXC), lxcString(*r.MaxCommitmentULXC))
+		return ruleRefusal("this %s would commit the agent to %s; the most one licence may commit it to is %s",
+			c.Kind, LXCMoney(c.ULXC), LXCMoney(*r.MaxCommitmentULXC))
 	}
 	return nil
 }
