@@ -567,7 +567,7 @@ func (s *Store) admit(ctx context.Context, tx pgx.Tx, r Room, ws, user string, t
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM room_members WHERE room_id = $1 AND removed_at IS NULL`, r.ID).Scan(&members); err != nil {
 			return m, false, err
 		}
-		if err := s.refuse(p, "members_per_room", "the room owner's", members); err != nil {
+		if err := s.refuse(p, "members_per_room", "The room owner’s", members); err != nil {
 			return m, false, err
 		}
 	}
@@ -852,7 +852,7 @@ func (s *Store) AddAgent(ctx context.Context, ws, roomID, agentID string) (a Age
 			if err != nil {
 				return err
 			}
-			if err := s.refuse(p, "agents_per_room", "the room owner's", agents); err != nil {
+			if err := s.refuse(p, "agents_per_room", "The room owner’s", agents); err != nil {
 				return err
 			}
 		}

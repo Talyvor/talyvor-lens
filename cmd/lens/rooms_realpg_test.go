@@ -197,11 +197,11 @@ func TestRooms_PrivateRoomsInviteLinksAndPlanLimits(t *testing.T) {
 		}
 	}
 	if code, body := open(owner, "Four", "public"); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "rooms_plan_limits") || !strings.Contains(body, "free plan allows 3 public rooms") {
+		!strings.Contains(body, `"setting":"rooms_plan_limits"`) || !strings.Contains(body, `"error":"Free allows 3 public rooms, and you have 3 open. Team allows 25."`) {
 		t.Fatalf("free fourth public room = %d %s, want 402 naming rooms_plan_limits and the free plan", code, body)
 	}
 	if code, body := open(owner, "Secret", "private"); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "rooms_plan_limits") || !strings.Contains(body, "free plan allows 0 private rooms") {
+		!strings.Contains(body, `"setting":"rooms_plan_limits"`) || !strings.Contains(body, `"error":"Free allows no private rooms. Team allows 10."`) {
 		t.Fatalf("free private room = %d %s, want 402 naming rooms_plan_limits and the free plan", code, body)
 	}
 	if n := count(`SELECT count(*) FROM rooms WHERE owner_workspace_id = $1`, owner); n != 3 {
@@ -308,7 +308,7 @@ func TestRooms_PrivateRoomsInviteLinksAndPlanLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if code, body := call(late, http.MethodPost, "/v1/rooms/"+crowded.ID+"/join", `{"terms_version":1}`); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "rooms_plan_limits") || !strings.Contains(body, "free plan allows 50 members in a room") {
+		!strings.Contains(body, `"setting":"rooms_plan_limits"`) || !strings.Contains(body, `"error":"The room owner’s plan, Free, allows 50 members in a room."`) {
 		t.Fatalf("the 51st member = %d %s, want 402 naming rooms_plan_limits and the free plan", code, body)
 	}
 	if n := count(`SELECT count(*) FROM room_members WHERE room_id = $1 AND removed_at IS NULL`, crowded.ID); n != 50 {
@@ -325,7 +325,7 @@ func TestRooms_PrivateRoomsInviteLinksAndPlanLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if code, body := call(freeOwner, http.MethodPost, "/v1/rooms/"+crowded.ID+"/agents", `{"agent_id":"agt_b3229_11"}`); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "free plan allows 10 agents in a room") {
+		!strings.Contains(body, `"error":"The room owner’s plan, Free, allows 10 agents in a room."`) {
 		t.Fatalf("the 11th agent = %d %s, want 402 naming the free plan", code, body)
 	}
 }
