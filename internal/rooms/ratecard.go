@@ -140,24 +140,31 @@ func (s *Store) SetRateCard(ctx context.Context, ws, user, roomID string, c Rate
 	return rc, err
 }
 
-// ClaimSize sets one of the room's contributions to a size on the room's rate card, by its author or the room's owner
-// or an editor, and fixes that size's points on it. Once the contribution is accepted its points are never raised.
+// ClaimSize sets one of the room's contributions to a size on the room's rate card and fixes that size's points on it:
+// its author claims a size once, and the room's owner or an editor may change it. Once the contribution is decided its
+// points are never raised.
 func (s *Store) ClaimSize(ctx context.Context, ws, roomID, contributionID, size string) (out Contribution, err error) {
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		m, err := ownershipMember(ctx, tx, roomID, ws)
 		if err != nil {
 			return err
 		}
-		// Under the room's lock, as Decide is, so an acceptance and a claim never cross.
-		if _, err := lockRoomAny(ctx, tx, roomID); err != nil {
+		// Under the room's lock, as Decide is, so a decision and a claim never cross.
+		if r, err := lockRoomAny(ctx, tx, roomID); err != nil {
+			return err
+		} else if err := shut(r); err != nil {
 			return err
 		}
 		c, err := readContribution(ctx, tx, ws, roomID, contributionID)
 		if err != nil {
 			return err
 		}
-		if c.AuthorWorkspaceID != ws && m.Role != RoleOwner && m.Role != RoleEditor {
+		switch decides := m.Role == RoleOwner || m.Role == RoleEditor; {
+		case c.AuthorWorkspaceID != ws && !decides:
 			return forbidden("only the contribution's author or the room's owner or an editor sets its size")
+		case !decides && c.Size != "":
+			// The author claims once, before the work; it never re-sizes it under review.
+			return fmt.Errorf("%w: the contribution is claimed at size %s: the room's owner or an editor changes it", ErrConflict, c.Size)
 		}
 		rc, err := readRateCard(ctx, tx, roomID)
 		if err != nil {
@@ -172,8 +179,9 @@ func (s *Store) ClaimSize(ctx context.Context, ws, roomID, contributionID, size 
 		switch {
 		case z == nil:
 			return invalid("size %q is not on the room's rate card", size)
-		case c.Status == ContributionAccepted && z.Points > c.Points:
-			return fmt.Errorf("%w: the contribution was accepted at %d points, and points are never raised after delivery", ErrConflict, c.Points)
+		case c.DecidedAt != nil && z.Points > c.Points:
+			// Once decided, never raised: rejecting an accepted contribution does not open a raise before accepting it again.
+			return fmt.Errorf("%w: the contribution was decided at %d points, and points are never raised after delivery", ErrConflict, c.Points)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE room_contributions SET size = $2, points = $3 WHERE id = $1`, c.ID, z.Size, z.Points); err != nil {
 			return err

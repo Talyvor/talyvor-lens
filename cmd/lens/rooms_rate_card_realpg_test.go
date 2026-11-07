@@ -74,6 +74,7 @@ func TestRooms_RateCardFixesPointsBeforeTheWorkAndRefusesARaiseAfterDelivery(t *
 	size := "/v1/rooms/" + room.ID + "/contributions/" + c.ID + "/size"
 	do(http.StatusBadRequest, nil, member, http.MethodPut, size, `{"size":"XL"}`)
 	do(http.StatusOK, &c, member, http.MethodPut, size, `{"size":"M"}`)
+	do(http.StatusConflict, nil, member, http.MethodPut, size, `{"size":"L"}`) // the author claims once
 
 	// The owner then makes M worth more; the claim keeps the points fixed when it was made.
 	do(http.StatusOK, nil, owner, http.MethodPut, card, strings.Replace(sizes, `"hours":8`, `"hours":9`, 1))
@@ -84,6 +85,9 @@ func TestRooms_RateCardFixesPointsBeforeTheWorkAndRefusesARaiseAfterDelivery(t *
 
 	// After delivery no one raises its points, not even the owner; the row keeps M's 400.
 	do(http.StatusConflict, nil, member, http.MethodPut, size, `{"size":"L"}`)
+	do(http.StatusConflict, nil, owner, http.MethodPut, size, `{"size":"L"}`)
+	// Rejecting it does not open a raise before accepting it again.
+	do(http.StatusOK, nil, owner, http.MethodPatch, "/v1/rooms/"+room.ID+"/contributions/"+c.ID, `{"status":"rejected"}`)
 	do(http.StatusConflict, nil, owner, http.MethodPut, size, `{"size":"L"}`)
 	var gotSize string
 	var points int64
