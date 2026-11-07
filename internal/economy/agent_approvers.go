@@ -324,8 +324,9 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 
 // DecideAgentApprovalSigned decides approvalID with the owner's signature a: checked, and its challenge spent, as
 // AuthorizeApprovalDecision does, in the same transaction that keeps an approval with the owner's AP2 v0.2 closed Payment
-// Mandate. A workspace with no passkey or device key decides as before, unsigned, and keeps no mandate.
-func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, a passkey.Assertion) (AgentApproval, error) {
+// Mandate; approved with allow, a is over that allowance too (approvalPurpose). A workspace with no passkey or device key
+// decides as before, unsigned, and keeps no mandate.
+func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, allow *PayeeAllowance, a passkey.Assertion) (AgentApproval, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return AgentApproval{}, err
@@ -340,7 +341,7 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 		_ = tx.Rollback(ctx)
 		return s.DecideAgentApproval(ctx, workspaceID, approvalID, approve)
 	}
-	if err := s.spendAssertion(ctx, tx, workspaceID, "approval:"+approvalID, a); err != nil {
+	if err := s.spendAssertion(ctx, tx, workspaceID, approvalPurpose(approvalID, allow), a); err != nil {
 		return AgentApproval{}, err
 	}
 	ap, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, &a)

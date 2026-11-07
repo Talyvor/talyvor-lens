@@ -84,6 +84,7 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 		d, err := bank.RegisterDeviceKey(req.Context(), ws, who, in.Name, devicekey.Registration{Platform: in.Platform,
 			PublicKey: pk, Challenge: in.Challenge, Signature: in.Signature, Attestation: att}, in.Assertion)
 		switch {
+		case writeEnrolmentWaiting(w, err): // B55.1
 		case errors.Is(err, economy.ErrPasskeyRequired):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, devicekey.ErrInvalid), errors.Is(err, passkey.ErrInvalid):

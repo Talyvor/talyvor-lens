@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,8 @@ func (s *DualTokenStore) PasskeyRegistrationChallenge(ctx context.Context, works
 }
 
 // RegisterPasskey verifies a registration against the challenge it answers and keeps the passkey; once the workspace
-// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol).
+// has a passkey or device key, only with a's assertion by one of them over that same challenge (authorizeEnrol), and
+// with none it keeps the passkey waiting (B55.1) and returns *EnrolmentWaiting.
 func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (Passkey, error) {
 	if s.approvalRP == nil {
 		return Passkey{}, errors.New("economy: passkeys are not configured on this server")
@@ -108,7 +110,11 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); err != nil {
+	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
+		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
+		return Passkey{}, s.waitEnrolment(ctx, tx, workspaceID, "register", challenge, KeyEnrolment{Kind: "passkey", Name: name},
+			"", r.CredentialID, r.PublicKey, int64(count), nil)
+	} else if err != nil {
 		return Passkey{}, err
 	}
 	p := Passkey{CredentialID: r.CredentialID, Name: name}
@@ -138,9 +144,18 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 	return out, rows.Err()
 }
 
-// ApprovalChallenge issues the challenge approving or denying approvalID is signed over, and the
-// workspace's passkeys that may sign it.
-func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, approvalID string) (challenge string, credentialIDs []string, err error) {
+// approvalPurpose names a decision on approvalID; approving it with always allow, the allowance too (B54.29), so a
+// signature over the approval alone, or over another amount or period, saves no rule.
+func approvalPurpose(approvalID string, allow *PayeeAllowance) string {
+	if allow == nil {
+		return "approval:" + approvalID
+	}
+	return fmt.Sprintf("approval:%s:always_allow:%d:%s", approvalID, allow.ULXC, allow.Per)
+}
+
+// ApprovalChallenge issues the challenge approving or denying approvalID — with allow, approving it and always
+// allowing its payee that much — is signed over, and the workspace's passkeys that may sign it.
+func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, approvalID string, allow *PayeeAllowance) (challenge string, credentialIDs []string, err error) {
 	var pending bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_approvals WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now())`,
 		approvalID, workspaceID).Scan(&pending); err != nil {
@@ -157,7 +172,7 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 	for _, k := range keys {
 		credentialIDs = append(credentialIDs, k.CredentialID)
 	}
-	c, err := s.newChallenge(ctx, workspaceID, "approval:"+approvalID)
+	c, err := s.newChallenge(ctx, workspaceID, approvalPurpose(approvalID, allow))
 	return c, credentialIDs, err
 }
 
@@ -236,17 +251,30 @@ func (s *DualTokenStore) DecideAgentApprovals(ctx context.Context, workspaceID s
 
 // AuthorizeApprovalDecision lets a decision on approvalID through: at once for a workspace with no
 // passkey or device key, and otherwise only with an assertion by one of its passkeys or device keys over
-// an open challenge naming that approval, which it spends. A revoked device key still counts (B40.4):
-// revoking a lost phone must never leave approvals needing no signature at all.
-func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, a *passkey.Assertion) error {
-	return s.authorizeSigned(ctx, workspaceID, "approval:"+approvalID, a)
+// an open challenge naming that approval, and allow when it is approved with one, which it spends. A revoked device
+// key still counts (B40.4): revoking a lost phone must never leave approvals needing no signature at all.
+func (s *DualTokenStore) AuthorizeApprovalDecision(ctx context.Context, workspaceID, approvalID string, allow *PayeeAllowance, a *passkey.Assertion) error {
+	return s.authorizeSigned(ctx, workspaceID, approvalPurpose(approvalID, allow), a)
 }
 
 // authorizeSigned lets an act for purpose through: at once for a workspace with no passkey or device key, and
 // otherwise only with a's assertion over an open challenge for purpose, which it spends.
 func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpose string, a *passkey.Assertion) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.authorizeSignedTx(ctx, tx, workspaceID, purpose, a, ErrPasskeyRequired); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// authorizeSignedTx is authorizeSigned inside tx; unsigned is the refusal of an act that carried no assertion.
+func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, workspaceID, purpose string, a *passkey.Assertion, unsigned error) error {
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&n); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
 	}
@@ -254,17 +282,9 @@ func (s *DualTokenStore) authorizeSigned(ctx context.Context, workspaceID, purpo
 		return nil
 	}
 	if a == nil {
-		return ErrPasskeyRequired
+		return unsigned
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, purpose, *a); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.spendAssertion(ctx, tx, workspaceID, purpose, *a)
 }
 
 // authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no
@@ -406,8 +426,11 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if to != "" {
 			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
 		}
-		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Data: map[string]string{
-			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID}})
+		// B55.12: the agent_approval category gives the lock screen its Approve button, and the data is what the phone
+		// checks the approval against before it signs; an agent's approval counts in µLXC, LXC's minor unit.
+		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{
+			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID,
+			"agent_name": agentName, "payee_name": payeeName, "currency": "LXC", "amount_minor": strconv.FormatInt(amount, 10)}})
 		s.pushWeb(ctx, workspaceID, payload)
 	}()
 }
