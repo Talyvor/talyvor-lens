@@ -70,9 +70,10 @@ func TestB544_LockdownFreezesEveryAgentEvenWhenOneFails(t *testing.T) {
 	}
 	slices.Sort(ids) // the lockdown freezes in agent order
 	first, second, third := ids[0], ids[1], ids[2]
-	// The second agent's freeze fails: a key it rotated from has no index.
-	if _, err := pool.Exec(ctx, `UPDATE agent_smart_accounts SET rotated_from_signers = ARRAY['0x000000000000000000000000000000000000dead'],
-		rotated_from_indexes = '{}' WHERE agent_id = $1`, second); err != nil {
+	// The second agent's freeze fails: the database refuses its row (B54.9 made unbuildable revoke calls a freeze that holds).
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION b544_refuse_freeze() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.agent_id = '`+second+`' THEN RAISE EXCEPTION 'b544: freeze refused'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER b544_refuse_freeze BEFORE UPDATE ON agent_smart_accounts FOR EACH ROW EXECUTE FUNCTION b544_refuse_freeze()`); err != nil {
 		t.Fatal(err)
 	}
 	gate := func(agent string) error {
@@ -108,7 +109,7 @@ func TestB544_LockdownFreezesEveryAgentEvenWhenOneFails(t *testing.T) {
 	}
 
 	// Fixed, a retry freezes the one still open and answers the others' same freeze.
-	if _, err := pool.Exec(ctx, `UPDATE agent_smart_accounts SET rotated_from_signers = '{}' WHERE agent_id = $1`, second); err != nil {
+	if _, err := pool.Exec(ctx, `DROP TRIGGER b544_refuse_freeze ON agent_smart_accounts`); err != nil {
 		t.Fatal(err)
 	}
 	var again lockdown

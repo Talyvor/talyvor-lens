@@ -4,6 +4,11 @@
 # is NEVER exposed on a machine's public interface. This file is for local dev
 # only — do not run it on a public VM; the internet-facing stack is
 # docker-compose.yaml (fronted by Caddy). See docs/remote-host.md.
+#
+# Postgres starts empty. Apply the schema the same way every other environment
+# does, with the version-tracked migrator, after `up -d`:
+#   LENS_DATABASE_URL=postgres://lens:localdev@127.0.0.1:5432/talyvor_lens?sslmode=disable \
+#     go run ./cmd/lens migrate
 services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
@@ -14,7 +19,6 @@ services:
     ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
 
   redis:
     image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499

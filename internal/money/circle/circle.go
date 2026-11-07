@@ -521,7 +521,7 @@ func (t transfers) Internal(ctx context.Context, req money.Internal) (money.Resu
 }
 
 // Outbound pays USDC out to an address on Base: only one the owner approved for this wallet, and only once screening
-// cleared it.
+// cleared it. A transfer already made under req.Key is answered as it stands.
 func (t transfers) Outbound(ctx context.Context, req money.Outbound) (money.Result, error) {
 	if err := usdcOnly(req.Amount); err != nil {
 		return money.Result{}, err
@@ -531,6 +531,10 @@ func (t transfers) Outbound(ctx context.Context, req money.Outbound) (money.Resu
 	}
 	if _, err := t.c.ours(ctx, req.From); err != nil {
 		return money.Result{}, err
+	}
+	// B54.17: a transfer Circle already made under this key is answered as it stands, never refused by a new check first.
+	if r, ok, err := t.c.made(ctx, req.From, req.Payee.Address, idempotencyKey("outbound", req.Key), req.Amount.Minor); err != nil || ok {
+		return r, err
 	}
 	ok, err := t.c.cfg.Allowlist.Approved(ctx, req.From, Network, req.Payee.Address)
 	if err != nil {

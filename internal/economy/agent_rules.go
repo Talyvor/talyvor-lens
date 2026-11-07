@@ -494,15 +494,19 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 
 // GetAgentRules reads an agent's rules; an agent with none set has none.
 func (s *DualTokenStore) GetAgentRules(ctx context.Context, workspaceID, agentID string) (AgentRules, error) {
+	return getAgentRules(ctx, s.pool, workspaceID, agentID)
+}
+
+func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (AgentRules, error) {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE id = $1 AND workspace_id = $2)`,
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE id = $1 AND workspace_id = $2)`,
 		agentID, workspaceID).Scan(&exists); err != nil {
 		return AgentRules{}, fmt.Errorf("economy: agent rules: %w", err)
 	}
 	if !exists {
 		return AgentRules{}, ErrAgentNotFound
 	}
-	r, err := scanAgentRules(s.pool.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID))
+	r, err := scanAgentRules(q.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var hourly, weekly, rpm, commitment int64
 		var maySubscribe bool
@@ -943,14 +947,38 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if need.Expired, err = s.expireApprovals(ctx, need.agentID, need.req.Fingerprint); err != nil {
 		return err
 	}
+	client, _ := ctx.Value(connectClientKey{}).(string)
 	var filed string
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond')
-		ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
-		"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
-		payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds()).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("economy: file approval: %w", err)
+	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if client != "" {
+			// B54.13: an assistant leaves at most ConnectApprovalsWaiting new approvals waiting; under the agent's lock, so
+			// two at once cannot both be the last. A retry of one already open finds it below.
+			if err := lockAgent(ctx, tx, need.workspaceID, need.agentID); err != nil {
+				return err
+			}
+			var open bool
+			var waiting int
+			if err := tx.QueryRow(ctx, `SELECT
+				EXISTS (SELECT 1 FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2 AND status IN ('pending', 'approved')),
+				(SELECT count(*) FROM agent_approvals WHERE agent_id = $1 AND connect_client_id = $3 AND status = 'pending' AND expires_at > now())`,
+				need.agentID, need.req.Fingerprint, client).Scan(&open, &waiting); err != nil {
+				return fmt.Errorf("economy: approvals waiting: %w", err)
+			}
+			if !open && waiting >= ConnectApprovalsWaiting {
+				return ErrConnectApprovalsWaiting
+			}
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
+			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
+			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
+			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("economy: file approval: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	if filed != "" {
 		s.notifyApproval(need.workspaceID, filed) // B19.16: a retry finds the open one and tells nobody again

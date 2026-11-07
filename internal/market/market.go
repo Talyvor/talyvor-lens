@@ -47,6 +47,8 @@ var requiredField = map[string]string{
 	"skill":      "instructions",
 	"evaluation": "cases", // a non-empty list of test cases
 	"pipeline":   "steps", // a non-empty list of steps
+
+	KindCounterPlaybook: "deal_type", // a Counter negotiation playbook (playbooks.go)
 }
 
 // Listing is one published listing.
@@ -234,6 +236,11 @@ func checkArtifact(kind string, artifact json.RawMessage, words ...string) (cano
 	if kind == "pipeline" && scan.Held == "" {
 		scan.Held = reviewPipeline(obj)
 	}
+	if kind == KindCounterPlaybook {
+		if scan.Gym, err = checkPlaybook(canonical); err != nil {
+			return nil, "", scan, err
+		}
+	}
 	return canonical, hex.EncodeToString(h[:]), scan, nil
 }
 
@@ -279,7 +286,7 @@ func (s *Store) publishedWith(ctx context.Context, workspaceID, key string) (Lis
 
 func (s *Store) publish(ctx context.Context, workspaceID, key string, d Draft) (Listing, error) {
 	if _, ok := requiredField[d.Kind]; !ok {
-		return Listing{}, invalid("kind must be agent, prompt, skill, evaluation or pipeline")
+		return Listing{}, invalid("kind must be agent, prompt, skill, evaluation, pipeline or counter_playbook")
 	}
 	d.Title = strings.TrimSpace(d.Title)
 	if d.Title == "" || len(d.Title) > 200 {
@@ -350,6 +357,9 @@ func (s *Store) publish(ctx context.Context, workspaceID, key string, d Draft) (
 		return Listing{}, fmt.Errorf("market: publish: %w", err)
 	}
 	if err := writeFingerprint(ctx, tx, l.ID, 1, fp); err != nil {
+		return Listing{}, err
+	}
+	if err := writePlaybook(ctx, tx, l.ID, 1, artifact, scan); err != nil {
 		return Listing{}, err
 	}
 	if l.Offers, err = writeOffers(ctx, tx, l.ID, offers); err != nil {
@@ -424,6 +434,9 @@ func (s *Store) PublishVersion(ctx context.Context, workspaceID, listingID strin
 		return Version{}, fmt.Errorf("market: version: %w", err)
 	}
 	if err := writeFingerprint(ctx, tx, listingID, v.Version, fp); err != nil {
+		return Version{}, err
+	}
+	if err := writePlaybook(ctx, tx, listingID, v.Version, canonical, scan); err != nil {
 		return Version{}, err
 	}
 	if v.Parents, err = s.declareParents(ctx, tx, workspaceID, listingID, v.Version, parents); err != nil {
