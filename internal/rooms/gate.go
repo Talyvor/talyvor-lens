@@ -103,19 +103,9 @@ func readGateThresholds(ctx context.Context, tx pgx.Tx, roomID string) (GateThre
 	return t, err
 }
 
-// linkedSQL is true when workspaces a and b in room $1 are linked: the same person joined both, or they share an owner
-// key or a card.
-func linkedSQL(a, b string) string {
-	return fmt.Sprintf(`(EXISTS (SELECT 1 FROM room_members x JOIN room_members y ON y.room_id = x.room_id AND y.user_id = x.user_id
-			WHERE x.room_id = $1 AND x.workspace_id = %[1]s AND y.workspace_id = %[2]s AND x.user_id <> '')
-		OR EXISTS (SELECT 1 FROM workspace_owner_links x JOIN workspace_owner_links y ON y.owner_key = x.owner_key
-			WHERE x.workspace_id = %[1]s AND y.workspace_id = %[2]s)
-		OR EXISTS (SELECT 1 FROM workspace_card_fingerprints x JOIN workspace_card_fingerprints y ON y.fingerprint_hash = x.fingerprint_hash
-			WHERE x.workspace_id = %[1]s AND y.workspace_id = %[2]s))`, a, b)
-}
-
 // gateUsedPeople counts the people not linked to roomID's owner active in the room in at least weeks of the last 8
-// weeks; of active people linked to each other, only the first by workspace id counts.
+// weeks; of active people linked to each other, only the first by workspace id counts. Linked: the same person joined
+// both, or they share an owner key or a card.
 func gateUsedPeople(ctx context.Context, tx pgx.Tx, roomID string, weeks int) (n int, err error) {
 	err = tx.QueryRow(ctx, `WITH active AS (
 			SELECT m.author_workspace_id AS ws FROM room_messages m JOIN rooms r ON r.id = m.room_id
@@ -123,9 +113,18 @@ func gateUsedPeople(ctx context.Context, tx pgx.Tx, roomID string, weeks int) (n
 				AND m.created_at > now() - make_interval(weeks => $3) AND m.author_workspace_id <> r.owner_workspace_id
 			GROUP BY m.author_workspace_id
 			HAVING count(DISTINCT floor(extract(epoch FROM now() - m.created_at) / 604800)) >= $2),
+		people AS (SELECT ws FROM active UNION SELECT owner_workspace_id FROM rooms WHERE id = $1),
+		links AS (
+			SELECT x.workspace_id AS a, y.workspace_id AS b FROM room_members x JOIN room_members y ON y.room_id = x.room_id AND y.user_id = x.user_id
+			WHERE x.room_id = $1 AND x.user_id <> '' AND x.workspace_id IN (SELECT ws FROM people)
+			UNION SELECT x.workspace_id, y.workspace_id FROM workspace_owner_links x JOIN workspace_owner_links y ON y.owner_key = x.owner_key
+			WHERE x.workspace_id IN (SELECT ws FROM people)
+			UNION SELECT x.workspace_id, y.workspace_id FROM workspace_card_fingerprints x
+				JOIN workspace_card_fingerprints y ON y.fingerprint_hash = x.fingerprint_hash WHERE x.workspace_id IN (SELECT ws FROM people)),
 		unlinked AS (
-			SELECT a.ws FROM active a JOIN rooms r ON r.id = $1 WHERE NOT `+linkedSQL("a.ws", "r.owner_workspace_id")+`)
-		SELECT count(*) FROM unlinked e WHERE NOT EXISTS (SELECT 1 FROM unlinked f WHERE f.ws < e.ws AND `+linkedSQL("f.ws", "e.ws")+`)`,
+			SELECT a.ws FROM active a JOIN rooms r ON r.id = $1
+			WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.a = a.ws AND l.b = r.owner_workspace_id))
+		SELECT count(*) FROM unlinked e WHERE NOT EXISTS (SELECT 1 FROM unlinked f JOIN links l ON l.a = f.ws AND l.b = e.ws WHERE f.ws < e.ws)`,
 		roomID, weeks, GateUsedWindowWeeks).Scan(&n)
 	return n, err
 }
