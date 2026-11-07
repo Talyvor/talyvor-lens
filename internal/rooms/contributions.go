@@ -58,6 +58,7 @@ type Contribution struct {
 	Kind                 string          `json:"kind"`
 	Title                string          `json:"title"`
 	AuthorWorkspaceID    string          `json:"author_workspace_id"`
+	AuthorWorkspaceName  string          `json:"author_workspace_name"`
 	ForkedFrom           string          `json:"forked_from,omitempty"` // the contribution this one forked
 	Status               string          `json:"status"`
 	DecidedByWorkspaceID string          `json:"decided_by_workspace_id,omitempty"`
@@ -268,17 +269,18 @@ func contributionErr(op string, err error) error {
 	return fmt.Errorf("rooms: %s: %w", op, err)
 }
 
-const contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.title, c.author_workspace_id, coalesce(c.forked_from, ''),
+var contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.title, c.author_workspace_id, coalesce(c.forked_from, ''),
 	c.status, c.decided_by_workspace_id, c.decided_at, c.message_id, c.created_at,
 	coalesce((SELECT sum(v.value) FROM room_votes v WHERE v.contribution_id = c.id), 0),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = 1),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = -1),
-	coalesce((SELECT v.value FROM room_votes v WHERE v.contribution_id = c.id AND v.workspace_id = $1), 0)`
+	coalesce((SELECT v.value FROM room_votes v WHERE v.contribution_id = c.id AND v.workspace_id = $1), 0), ` +
+	workspaceName("c.author_workspace_id")
 
 func scanContribution(row pgx.Row) (Contribution, error) {
 	var c Contribution
 	err := row.Scan(&c.ID, &c.RoomID, &c.ListingID, &c.Version, &c.Kind, &c.Title, &c.AuthorWorkspaceID, &c.ForkedFrom,
-		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote)
+		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote, &c.AuthorWorkspaceName)
 	return c, err
 }
 
