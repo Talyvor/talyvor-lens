@@ -136,7 +136,7 @@ func (s *DualTokenStore) RevokeDeviceKey(ctx context.Context, workspaceID, id, b
 	case last != nil:
 		return DeviceKey{}, last
 	}
-	if err := refuseAccountOwner(ctx, tx, workspaceID, "owner_device_id", id); err != nil {
+	if err := refuseAccountOwner(ctx, tx, workspaceID, "", id); err != nil {
 		return DeviceKey{}, err
 	}
 	d, err = scanDeviceKey(tx.QueryRow(ctx, `UPDATE workspace_device_keys SET revoked_at = now(), revoked_by = $3

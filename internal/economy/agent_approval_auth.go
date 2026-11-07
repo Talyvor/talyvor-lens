@@ -163,12 +163,13 @@ var ErrKeyOwnsAccount = errors.New("economy: this key owns an agent's smart acco
 // KeyOwnsAccountSentence is what the owner is told when a removal is refused with ErrKeyOwnsAccount.
 const KeyOwnsAccountSentence = "This key owns an agent's account, so it stays. Without it, nobody could sign for that account."
 
-// refuseAccountOwner is ErrKeyOwnsAccount when the key whose id is in column (owner_credential_id or owner_device_id)
+// refuseAccountOwner is ErrKeyOwnsAccount when the passkey credentialID or the device key deviceID (the other one "")
 // owns one of workspaceID's agent smart accounts.
-func refuseAccountOwner(ctx context.Context, tx pgx.Tx, workspaceID, column, id string) error {
+func refuseAccountOwner(ctx context.Context, tx pgx.Tx, workspaceID, credentialID, deviceID string) error {
 	var owns bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_smart_accounts WHERE workspace_id = $1 AND `+column+` = $2)`,
-		workspaceID, id).Scan(&owns); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_smart_accounts WHERE workspace_id = $1
+		AND ((owner_credential_id = $2 AND $2 <> '') OR (owner_device_id = $3 AND $3 <> '')))`,
+		workspaceID, credentialID, deviceID).Scan(&owns); err != nil {
 		return fmt.Errorf("economy: keys: %w", err)
 	}
 	if owns {
@@ -224,7 +225,7 @@ func (s *DualTokenStore) RemovePasskey(ctx context.Context, workspaceID, credent
 	case last != nil:
 		return last
 	}
-	if err := refuseAccountOwner(ctx, tx, workspaceID, "owner_credential_id", credentialID); err != nil {
+	if err := refuseAccountOwner(ctx, tx, workspaceID, credentialID, ""); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET removed_at = now(), removed_by = $3 WHERE credential_id = $1 AND workspace_id = $2`,
