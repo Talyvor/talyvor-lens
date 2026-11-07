@@ -117,13 +117,17 @@ var ErrPlaybookBound = errors.New("market: this negotiation already runs another
 func (s *Store) RunCounterPlaybook(ctx context.Context, deps UseDeps, buyer, mandateID, listingID string, maxPrice *int64) (CounterRun, error) {
 	run := CounterRun{MandateID: mandateID, ListingID: listingID}
 	var mandateKind, dealType string
-	err := s.pool.QueryRow(ctx, `SELECT canonical::jsonb->'task'->>'kind' FROM negotiation_mandates
-		WHERE id = $1 AND workspace_id = $2 AND ended_at IS NULL`, mandateID, buyer).Scan(&mandateKind)
+	var beforeDeadline bool
+	err := s.pool.QueryRow(ctx, `SELECT canonical::jsonb->'task'->>'kind', deadline > now() FROM negotiation_mandates
+		WHERE id = $1 AND workspace_id = $2 AND ended_at IS NULL`, mandateID, buyer).Scan(&mandateKind, &beforeDeadline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return run, fmt.Errorf("%w: no live negotiation %q in this workspace", ErrNotFound, mandateID)
 	}
 	if err != nil {
 		return run, fmt.Errorf("market: playbook run: %w", err)
+	}
+	if !beforeDeadline {
+		return run, invalid("the negotiation's deadline has passed, so no playbook can run on it")
 	}
 	// The version whose deal type is checked is the version run and bound.
 	var version int
@@ -140,39 +144,59 @@ func (s *Store) RunCounterPlaybook(ctx context.Context, deps UseDeps, buyer, man
 	if dealType != mandateKind {
 		return run, invalid("the playbook is for a %s and the negotiation is a %s", dealType, mandateKind)
 	}
-	// The run is claimed before the use, so two asks at once bill one use.
-	tag, err := s.pool.Exec(ctx, `INSERT INTO negotiation_playbook_runs (mandate_id, workspace_id, listing_id) VALUES ($1, $2, $3)
-		ON CONFLICT (mandate_id) DO NOTHING`, mandateID, buyer, listingID)
-	if err != nil {
-		return run, fmt.Errorf("market: playbook run: %w", err)
+	if bound, err := s.boundRun(ctx, mandateID, listingID, &run); bound || err != nil {
+		return run, err
 	}
-	if tag.RowsAffected() == 0 {
-		var bound string
-		if err := s.pool.QueryRow(ctx, `SELECT r.listing_id, coalesce(r.use_id, ''), coalesce(r.version, 0), coalesce(u.charge, ''), coalesce(u.price_ulxc, 0)
-			FROM negotiation_playbook_runs r LEFT JOIN market_uses u ON u.id = r.use_id WHERE r.mandate_id = $1`, mandateID).
-			Scan(&bound, &run.UseID, &run.Version, &run.Charge, &run.PriceULXC); err != nil {
-			return run, fmt.Errorf("market: playbook run: %w", err)
+	// The run is bound in the transaction that marks its use ran, and only a use that ran is billed: a run that fails or
+	// dies before then binds nothing and bills nothing, and asking again runs it again. Of two asks at once, one binds.
+	bind := func(tx pgx.Tx, u Use) error {
+		tag, err := tx.Exec(ctx, `INSERT INTO negotiation_playbook_runs (mandate_id, workspace_id, listing_id, version, use_id, playbook)
+			SELECT $1, $2, $3, $4, $5, artifact FROM market_listing_versions WHERE listing_id = $3 AND version = $4
+			ON CONFLICT (mandate_id) DO UPDATE SET listing_id = $3, version = $4, use_id = $5, playbook = EXCLUDED.playbook
+			WHERE negotiation_playbook_runs.use_id IS NULL`, mandateID, buyer, listingID, u.Version, u.ID)
+		if err == nil && tag.RowsAffected() == 0 {
+			err = errRunBound
 		}
-		if bound != listingID {
-			return run, ErrPlaybookBound
-		}
-		run.Again = true
-		return run, nil
+		return err
 	}
-	u, err := s.Use(ctx, deps, buyer, "", listingID, UseRequest{counterRun: true, Version: version, MaxPriceUSDMicros: maxPrice})
+	u, err := s.Use(ctx, deps, buyer, "", listingID, UseRequest{bindRun: bind, Version: version, MaxPriceUSDMicros: maxPrice})
 	if err != nil {
-		if _, derr := s.pool.Exec(context.WithoutCancel(ctx), `DELETE FROM negotiation_playbook_runs WHERE mandate_id = $1 AND use_id IS NULL`, mandateID); derr != nil {
-			return run, errors.Join(err, derr)
+		// A use recorded but never marked ran was never billed: it goes, as a failed use does.
+		if u.ID != "" {
+			if _, derr := s.pool.Exec(context.WithoutCancel(ctx), `DELETE FROM market_uses WHERE id = $1 AND ran_at IS NULL AND metered_at IS NULL`, u.ID); derr != nil {
+				return run, errors.Join(err, derr)
+			}
+		}
+		if errors.Is(err, errRunBound) {
+			if bound, berr := s.boundRun(ctx, mandateID, listingID, &run); bound || berr != nil {
+				return run, berr
+			}
 		}
 		return run, err
 	}
-	// shortcut: a crash between the use and this update leaves the run claimed with no playbook, so the negotiation is
-	// planned without one; an operator clears the row (use_id IS NULL). Upgrade to one transaction if Use takes a tx.
-	if _, err := s.pool.Exec(ctx, `UPDATE negotiation_playbook_runs SET use_id = $2, version = $3,
-		playbook = (SELECT artifact FROM market_listing_versions WHERE listing_id = $4 AND version = $3) WHERE mandate_id = $1`,
-		mandateID, u.ID, u.Version, listingID); err != nil {
-		return run, fmt.Errorf("market: playbook run: %w", err)
-	}
 	run.UseID, run.Version, run.Charge, run.PriceULXC = u.ID, u.Version, u.Charge, u.PriceULXC
 	return run, nil
+}
+
+// errRunBound: another ask bound the negotiation's run first.
+var errRunBound = errors.New("market: the negotiation's playbook run was bound by another ask")
+
+// boundRun reads the run bound on mandateID into run: the same playbook's run, Again; another's, ErrPlaybookBound. A run
+// never bound (claimed by a run before B54.30 that died) is no run.
+func (s *Store) boundRun(ctx context.Context, mandateID, listingID string, run *CounterRun) (bool, error) {
+	var bound string
+	err := s.pool.QueryRow(ctx, `SELECT r.listing_id, r.use_id, r.version, coalesce(u.charge, ''), coalesce(u.price_ulxc, 0)
+		FROM negotiation_playbook_runs r LEFT JOIN market_uses u ON u.id = r.use_id WHERE r.mandate_id = $1 AND r.use_id IS NOT NULL`, mandateID).
+		Scan(&bound, &run.UseID, &run.Version, &run.Charge, &run.PriceULXC)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("market: playbook run: %w", err)
+	}
+	if bound != listingID {
+		return true, ErrPlaybookBound
+	}
+	run.Again = true
+	return true, nil
 }

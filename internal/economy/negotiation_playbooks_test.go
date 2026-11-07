@@ -45,3 +45,27 @@ func TestB5216_PlaybookGym(t *testing.T) {
 		t.Fatalf("the engine's settings as a playbook plan %+v; the engine plans %+v", got, want)
 	}
 }
+
+// B54.30 — the gym, like Counter (B52.13), treats the walk-away price as outside: an engine that accepted a deal exactly
+// at it fails the playbook.
+func TestB5430_GymWalkAwayIsOutside(t *testing.T) {
+	pb, err := ParseNegotiationPlaybook([]byte(`{"deal_type": "renewal", "rounds": 3, "open_pct": 40, "limit_pct": 80, "wording": {
+		"ask": "Hi. We would like your best price for {what}.", "counter": "Thanks. For {what} we can do {offer}.",
+		"walk_away": "Thanks for your time on {what}. We will leave it there."}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func(f func(NegotiationMandateTerms, NegotiationPlan, map[string][]NegotiationOffer, string) NegotiationMove) {
+		gymMoveFor = f
+	}(gymMoveFor)
+	gymMoveFor = func(mt NegotiationMandateTerms, p NegotiationPlan, sheets map[string][]NegotiationOffer, cp string) NegotiationMove {
+		m := NegotiationMoveFor(mt, p, sheets, cp)
+		if m.Action == MoveAccept || m.Action == MoveWalkAway {
+			m.Action, m.PriceMinor = MoveAccept, mt.WalkAwayMinor
+		}
+		return m
+	}
+	if r := PlayNegotiationGym(pb); !strings.Contains(r.Failed, "past the walk-away") {
+		t.Fatalf("an engine accepting at the walk-away: gym = %+v; want it failed for accepting past the walk-away", r)
+	}
+}

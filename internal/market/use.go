@@ -97,7 +97,9 @@ type UseRequest struct {
 	RoomID           string `json:"-"`
 	ActorWorkspaceID string `json:"-"`
 
-	counterRun bool // B52.16: a playbook's run on a negotiation, by RunCounterPlaybook alone
+	// B52.16: a playbook's run on a negotiation, by RunCounterPlaybook alone. B54.30: it binds the run in the transaction
+	// that marks the use ran, and only a use that ran is billed, so a use is billed exactly when its run is bound.
+	bindRun func(pgx.Tx, Use) error
 }
 
 // CaseResult is one evaluation case's outcome.
@@ -322,6 +324,11 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE market_uses SET ran_at = now() WHERE id = ANY($1)`, ids); err != nil {
 			return err
+		}
+		if req.bindRun != nil {
+			if err := req.bindRun(tx, u); err != nil {
+				return err
+			}
 		}
 		if err := outcome(tx, true); err != nil {
 			return err
@@ -617,7 +624,7 @@ func plan(kind string, artifact map[string]any, req UseRequest) ([]call, string,
 		return nil, "", ErrNotRunnable // a pipeline's steps are planned one at a time (pipeline.go)
 	}
 	if kind == KindCounterPlaybook {
-		if !req.counterRun {
+		if req.bindRun == nil {
 			return nil, "", ErrNotRunnable // a playbook runs on a negotiation: POST /v1/negotiations/{id}/playbook
 		}
 		return nil, "", nil // no model call: Counter plans and words the negotiation by it
