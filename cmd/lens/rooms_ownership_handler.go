@@ -30,9 +30,19 @@ import (
 //	GET /v1/rooms/{roomID}/points   {total_points, holders: [{workspace_id, workspace_name, points, identity_checked}],
 //	                                entries: [...]} to a member that accepted the room's current terms
 //
+// B41.144 — a contribution's quality scored by two random reviewers not linked to its author (internal/rooms/reviews.go):
+//
+//	GET  /v1/rooms/{roomID}/contributions/{contributionID}/reviews     {quality_bps, reviews: [{reviewer_workspace_id,
+//	                                     reviewer_workspace_name, score_bps, ring, drawn_at, scored_at}]} to a member
+//	POST /v1/rooms/{roomID}/contributions/{contributionID}/reviewers   any member: Lens draws members at random into the
+//	                                     proposed contribution's empty seats; nobody picks them
+//	PUT  /v1/rooms/{roomID}/contributions/{contributionID}/review      {score_bps}   a drawn reviewer: 5000–15000 while it
+//	                                     is proposed; once both scored, quality_bps is the median
+//
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
-// mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142) and the points ledger (B41.143).
+// mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143) and
+// its reviewers (B41.144).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -98,6 +108,49 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, p)
 	})
+	r.Get("/v1/rooms/{roomID}/contributions/{contributionID}/reviews", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		v, err := store.ContributionReviews(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "contributionID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, v)
+	})
+	r.Post("/v1/rooms/{roomID}/contributions/{contributionID}/reviewers", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		v, err := store.DrawReviewers(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "contributionID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, v)
+	}))
+	r.Put("/v1/rooms/{roomID}/contributions/{contributionID}/review", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			ScoreBPS int `json:"score_bps"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"score_bps"}: `+err.Error())
+			return
+		}
+		v, err := store.Review(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "contributionID"), in.ScoreBPS)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, v)
+	}))
 	r.Put("/v1/rooms/{roomID}/rate-card", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
 		ws, user, ok := actor(w, req)
 		if !ok {

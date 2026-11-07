@@ -18,7 +18,8 @@ import (
 // claimed size on the rate card fixed (B41.142), less the prizes and royalties its author already received for it: each
 // US dollar received takes LENS_ROOM_POINTS_PER_USD points off, and until Nicolai sets that, any money received takes
 // the whole size, so nobody is paid twice for the same work. Money itself earns no points: only an accepted
-// contribution writes a row. Quality is the contribution's quality_bps, 1.0 until its reviewers score it (B41.144).
+// contribution writes a row. Quality is the contribution's quality_bps: the median of its two reviewers' scores, 1.0
+// until both score it (B41.144).
 // Survival is 100% while the contribution stays accepted: rejected after it was accepted, a withdrawn row takes back
 // what each holder earned from it. A fork passes the room's remix share — the share its room_fork lineage edge locked —
 // of its points to its original's author. An agent contributes as its owner's workspace, so its points are its owner's;
@@ -79,6 +80,9 @@ func (s *Store) earnedSize(size, received int64) int64 {
 
 // recordPoints writes c's rows when Decide moves it from was to status, inside Decide's transaction.
 func (s *Store) recordPoints(ctx context.Context, tx pgx.Tx, c Contribution, was, status string) error {
+	if err := s.rewardReviewers(ctx, tx, c, was, status); err != nil { // B41.144
+		return err
+	}
 	switch {
 	case status == ContributionAccepted && c.Points > 0:
 		return s.award(ctx, tx, c)
