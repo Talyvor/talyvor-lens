@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,7 +22,8 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/send        {to, amount_ulxc, memo} — to any agent on Talyvor
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/requests    {from, amount_ulxc, memo} — ask an agent for credits
 //	GET  /v1/workspaces/{wsID}/money-requests               the requests its agents made and were made
-//	POST /v1/workspaces/{wsID}/money-requests/{id}/accept   pay a request made of one of its agents
+//	POST /v1/workspaces/{wsID}/money-requests/{id}/accept   pay a request made of one of its agents; on a Connect
+//	                                                        token, one made of the token's agent only (B52.41)
 //	POST /v1/workspaces/{wsID}/money-requests/{id}/decline
 //	POST /v1/workspaces/{wsID}/transfers/{id}/refund        give a transfer one of its agents received back
 //	GET  /v1/workspaces/{wsID}/agents/{agentID}/transfers   what the agent sent and received
@@ -37,6 +39,8 @@ type agentTransferBank interface {
 	SendCredits(ctx context.Context, workspaceID, fromAgentID, address string, amount int64, memo string) (economy.AgentTransfer, error)
 	RequestCredits(ctx context.Context, workspaceID, agentID, address string, amount int64, memo string) (economy.MoneyRequest, error)
 	AnswerMoneyRequest(ctx context.Context, workspaceID, requestID string, accept bool) (economy.MoneyRequest, error)
+	AcceptMoneyRequestFor(ctx context.Context, workspaceID, requestID, payerAgentID string) (economy.MoneyRequest, error)
+	ConnectLive(ctx context.Context, workspaceID, agentID, userID, clientID string, issuedAt time.Time) error
 	ListMoneyRequests(ctx context.Context, workspaceID string) ([]economy.MoneyRequest, error)
 	RefundTransfer(ctx context.Context, workspaceID, transferID string) (economy.AgentTransfer, error)
 	ListAgentTransfers(ctx context.Context, workspaceID, agentID string) ([]economy.AgentTransfer, error)
@@ -136,14 +140,46 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 	})
 	for _, answer := range []string{"accept", "decline"} {
 		accept := answer == "accept"
-		r.Post("/v1/workspaces/{wsID}/money-requests/{requestID}/"+answer, ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		byOwner := ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 			m, err := bank.AnswerMoneyRequest(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "requestID"), accept)
 			if err != nil {
 				writeTransferErr(w, err)
 				return
 			}
 			writeJSONOK(w, http.StatusOK, m)
-		}))
+		})
+		r.Post("/v1/workspaces/{wsID}/money-requests/{requestID}/"+answer, func(w http.ResponseWriter, req *http.Request) {
+			connect := auth.GetAuthContext(req.Context())
+			if !accept || connect == nil || connect.AuthMethod != auth.MethodConnect {
+				byOwner(w, req)
+				return
+			}
+			// B52.41: an assistant pays a request made of its own agent, as it pays from it, once per Idempotency-Key.
+			wsID := chi.URLParam(req, "wsID")
+			ctx, ok := connectPayment(w, req, bank, connect, wsID, connect.ConnectAgentID)
+			if !ok {
+				return
+			}
+			key := req.Header.Get("Idempotency-Key")
+			if len(key) > 128 {
+				writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+				return
+			}
+			m, err := bank.AcceptMoneyRequestFor(economy.WithMoveKey(ctx, key), wsID, chi.URLParam(req, "requestID"), connect.ConnectAgentID)
+			var need *economy.ApprovalNeededError
+			switch {
+			case errors.Is(err, economy.ErrRequestNotYours):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
+			case errors.Is(err, economy.ErrConnectApprovalsWaiting):
+				writeJSONErr(w, http.StatusTooManyRequests, err.Error())
+			case errors.As(err, &need):
+				writeConnectPending(w, need)
+			case err != nil:
+				writeTransferErr(w, err)
+			default:
+				writeJSONOK(w, http.StatusOK, m)
+			}
+		})
 	}
 	r.Post("/v1/workspaces/{wsID}/transfers/{transferID}/refund", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		t, err := bank.RefundTransfer(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "transferID"))
