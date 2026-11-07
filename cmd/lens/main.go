@@ -449,6 +449,9 @@ func run() error {
 	if err := rooms.CheckLimits(); err != nil {
 		return err
 	}
+	if err := economy.CheckMoneyOrder(); err != nil {
+		return err
+	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
 	if err != nil {
 		return err

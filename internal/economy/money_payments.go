@@ -236,7 +236,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
 		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: hex.EncodeToString(fp[:]),
 			Payee: Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
-			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
+			Memo:  strings.TrimSuffix(Money(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
 
 	// B50.1: screened before the locks: screening takes a connection of its own, and one held under the locks while

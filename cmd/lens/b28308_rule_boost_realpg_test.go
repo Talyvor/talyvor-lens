@@ -98,7 +98,7 @@ func TestB28308_AfterABoostEndsAHoldAtTheBoostedSizeWritesNothing(t *testing.T) 
 	}
 	// From until on the daily limit is 10 LXC again, with nothing run to revert it: the same hold writes nothing.
 	err = hold("res-expired", until)
-	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "daily limit of 10 LXC") {
+	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "daily limit of $1.00 (10 LXC)") {
 		t.Fatalf("a 30 LXC hold once the boost has ended = %v, want the 10 LXC daily limit's refusal", err)
 	}
 	if p, res := written("res-expired"); p != 0 || res != 0 {
@@ -109,7 +109,7 @@ func TestB28308_AfterABoostEndsAHoldAtTheBoostedSizeWritesNothing(t *testing.T) 
 	if code, body := call(http.MethodPut, base+"/rules", `{"daily_limit_ulxc":5000000}`); code != http.StatusOK {
 		t.Fatalf("PUT rules lowering the daily limit = %d %s", code, body)
 	}
-	if err := hold("res-lowered", until.Add(-time.Minute)); !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "daily limit of 5 LXC") {
+	if err := hold("res-lowered", until.Add(-time.Minute)); !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "daily limit of $0.50 (5 LXC)") {
 		t.Fatalf("a 30 LXC hold once the boosted limit was lowered to 5 LXC = %v, want the 5 LXC daily limit's refusal", err)
 	}
 	if p, res := written("res-lowered"); p != 0 || res != 0 {

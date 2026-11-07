@@ -491,7 +491,7 @@ func alertNotice(a SpendAlert) SpendNotice {
 		title, body = "Agent limit", fmt.Sprintf("An agent has used %d%% of its %s limit", a.Percent, a.Period)
 	}
 	return SpendNotice{Kind: NoticeBudget, Title: title,
-		Body: body + ": " + briefingAmount(a.SpentMinor, a.Currency) + " of " + briefingAmount(a.LimitMinor, a.Currency) + ".",
+		Body: body + ": " + Money(a.SpentMinor, a.Currency) + " of " + Money(a.LimitMinor, a.Currency) + ".",
 		Data: map[string]any{"alert_id": a.ID, "kind": a.Kind, "subject": a.Subject, "percent": a.Percent}}
 }
 
