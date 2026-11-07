@@ -444,7 +444,8 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 	}
 	fp := sha256.Sum256([]byte(key + "\x00" + strconv.FormatInt(inv.DueMinor, 10) + "\x00" + inv.Currency + "\x00" + funding))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Payee: payee,
-		Memo: minorString(inv.DueMinor, inv.Currency) + " for invoice " + inv.Number + " from " + cmp.Or(inv.Issuer, inv.WorkspaceID) + " (" + funding + " money)"})
+		Memo:     minorString(inv.DueMinor, inv.Currency) + " for invoice " + inv.Number + " from " + cmp.Or(inv.Issuer, inv.WorkspaceID) + " (" + funding + " money)",
+		PaidFrom: PaidFrom{Kind: "account", AccountID: from, Currency: inv.Currency, AmountMinor: inv.DueMinor, funding: funding}})
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return PaidInvoice{}, err
 	}

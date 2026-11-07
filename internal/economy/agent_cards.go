@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -193,7 +194,8 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 
 	fp := sha256.Sum256([]byte("card\x00" + a.CardID + "\x00" + a.MerchantID + "\x00" + a.Currency + "\x00" + strconv.FormatInt(a.AmountMinor, 10)))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), At: a.At,
-		Payee: Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName}})
+		Payee:    Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName},
+		PaidFrom: PaidFrom{Kind: "card", AccountID: a.CardID, Currency: strings.ToUpper(a.Currency), AmountMinor: a.AmountMinor}})
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return d, err
