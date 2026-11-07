@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -54,6 +55,10 @@ var accountHoldings = []struct{ what, sql string }{
 		OR EXISTS (SELECT 1 FROM credit_line_invoices WHERE workspace_id = $1 AND paid_at IS NULL)`},
 	{"earnings still being paid out", `SELECT EXISTS (SELECT 1 FROM money_earnings_payouts WHERE $1 IN (workspace_id, recipient_workspace_id)
 		AND status IN ('held', 'pending'))`},
+	{"a payment in held for a compliance check", `SELECT EXISTS (SELECT 1 FROM money_quarantined_deposits WHERE workspace_id = $1
+		AND posted_at IS NULL) OR EXISTS (SELECT 1 FROM chain_movements WHERE workspace_id = $1 AND status = 'quarantined')`},
+	{"a crypto transfer not yet final", `SELECT EXISTS (SELECT 1 FROM chain_movements WHERE workspace_id = $1
+		AND status IN ('seen', 'confirmed'))`},
 }
 
 // holdings is what of accountHoldings workspace id holds, in words.
@@ -101,11 +106,13 @@ GROUP BY c.relname`
 // workspace has outside Postgres (its subscription in Stripe, its cached answers) once everything else is done and
 // still under the lock: its error is returned and nothing is deleted.
 func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit func(context.Context) error) error {
-	txer, ok := m.pool.(interface {
-		BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
-	})
+	txer, ok := m.pool.(txBeginner)
 	if !ok {
 		return fmt.Errorf("workspace: deleting an account needs a database that begins transactions")
+	}
+	events := m.usageEvents
+	if events == nil {
+		events = txer
 	}
 	// Read committed under the workspace's money lock: each check below sees all the money that moved before it.
 	tx, err := txer.BeginTx(ctx, pgx.TxOptions{})
@@ -187,8 +194,14 @@ func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit fun
 	// the others. A table still refused at the end fails the whole deletion: never a partial one reported done.
 	// Only the person's own rows go: a row whose other workspace column names someone else (a mandate paying
 	// them, a message they removed from another's room) is that workspace's record too, and stays.
-	// token_events is append-only (0055) and may hold the person's prompts: it goes the one sanctioned way.
-	if err := audit.DeleteWorkspaceEvents(ctx, tx, id); err != nil {
+	// token_events is append-only (0055) and may hold the person's prompts: it goes the one sanctioned way, as the one
+	// role that may delete it (B39.6), in that role's own transaction, committed just after this one or rolled back.
+	evTx, err := events.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("workspace: begin deleting usage rows: %w", err)
+	}
+	defer func() { _ = evTx.Rollback(ctx) }()
+	if err := audit.DeleteWorkspaceEvents(ctx, evTx, id); err != nil {
 		return err
 	}
 	pending := tenantdata.DeleteOrder()
@@ -239,8 +252,8 @@ func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit fun
 	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("workspace: delete account: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO account_deletions (workspace_id, deleted_at) VALUES ($1, now())
-		ON CONFLICT (workspace_id) DO UPDATE SET deleted_at = now()`, id); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO account_deletions (workspace_id, deleted_at) VALUES ($1, clock_timestamp())
+		ON CONFLICT (workspace_id) DO UPDATE SET deleted_at = clock_timestamp()`, id); err != nil {
 		return fmt.Errorf("workspace: record account deletion: %w", err)
 	}
 	if beforeCommit != nil {
@@ -250,6 +263,11 @@ func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit fun
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("workspace: commit account deletion: %w", err)
+	}
+	// shortcut: the account is gone once tx commits, so a failure here is logged, not returned; the rows are then deleted
+	// by hand (DELETE FROM token_events WHERE workspace_id IN account_deletions, as lens_retention). Make it a job if seen.
+	if err := evTx.Commit(ctx); err != nil {
+		slog.Error("workspace: deleted account's usage rows not deleted", "workspace", id, "err", err)
 	}
 	m.mu.Lock()
 	delete(m.workspaces, id)

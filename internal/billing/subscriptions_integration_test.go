@@ -593,3 +593,47 @@ func TestSubscription_AccountDeletion_CancelsAndIgnoresLaterEvents(t *testing.T)
 		t.Fatalf("webhook code after Stripe refused the cancel = %d, want 200", code)
 	}
 }
+
+// B52.37 — a subscription event that arrives while the account is being deleted (Stripe's answer to the deletion's own
+// cancel, or a checkout finishing then) waits for the deletion, and then writes no row for the deleted account.
+func TestSubscription_AccountDeletion_EventDuringDeletionWaitsForIt(t *testing.T) {
+	svc, pool, fss := newSubService(t)
+	ctx := context.Background()
+	seedWS(t, pool, "ws-sub-race")
+	if _, err := pool.Exec(ctx, `DELETE FROM account_deletions WHERE workspace_id = 'ws-sub-race'`); err != nil {
+		t.Fatal(err)
+	}
+	deleting, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = deleting.Rollback(ctx) }()
+	if _, err := deleting.Exec(ctx, `SELECT id FROM workspaces WHERE id = 'ws-sub-race' FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	body, sig := signedAt(testWebhookSecret, "evt_sub_race", "customer.subscription.created",
+		time.Now(), subObj("sub_race", "ws-sub-race", "cus_race", "price_test_model2", "active", time.Now().Add(time.Hour), false))
+	done := make(chan int, 1)
+	go func() { done <- postEvent(svc, body, sig) }()
+	select {
+	case code := <-done:
+		t.Fatalf("the event did not wait for the deletion: %d", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := deleting.Exec(ctx, `DELETE FROM workspaces WHERE id = 'ws-sub-race';
+		INSERT INTO account_deletions (workspace_id) VALUES ('ws-sub-race')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleting.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("webhook code = %d, want 200", code)
+	}
+	if _, ok := readSub(t, pool, "sub_race"); ok {
+		t.Fatal("an event during the deletion wrote a subscription row for the deleted account")
+	}
+	if fmt.Sprint(fss.cancelled) != "[sub_race]" {
+		t.Fatalf("cancelled in Stripe: %v, want the subscription that started during the deletion", fss.cancelled)
+	}
+}

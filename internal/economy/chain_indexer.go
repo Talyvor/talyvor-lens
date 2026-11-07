@@ -659,13 +659,15 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 	return out, nil
 }
 
-// ErrChainUnread: the workspace's agents have smart accounts and Lens reads none of their networks, so what they hold
+// ErrChainUnread: the workspace's agents have smart accounts on a network Lens does not read, so what they hold there
 // is unknown.
-var ErrChainUnread = errors.New("economy: Lens reads no chain, so what the smart accounts hold is unknown")
+var ErrChainUnread = errors.New("economy: Lens does not read every network, so what the smart accounts hold is unknown")
 
-// SmartAccountsHolding is each smart account of workspaceID's agents that holds anything now — its network's coin or
-// any token ever sent to it — on every network x reads, and each Solana wallet beside one, read by solana: as
-// "<address> on <network>". A wallet with no reader for its network is ErrChainUnread: unknown is not empty.
+// SmartAccountsHolding is each smart account of workspaceID's agents that holds anything now, read on the chain, as
+// "<address> on <network>". An account's address is the same on every EVM network the factory is on, so each is read
+// on every EVM network a wallet holds tokens on (tokens.Networks), and its Solana wallet beside it by solana. Held is the
+// network's coin and each token on the verified list (and the network's USDC): an airdrop nobody can value never stops
+// a deletion. A network with no reader, or a read that fails, is an error: unknown is not empty.
 func (s *DualTokenStore) SmartAccountsHolding(ctx context.Context, x *ChainIndexer, solana tokens.Reader, workspaceID string) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT address, solana_address FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
 	if err != nil {
@@ -679,35 +681,54 @@ func (s *DualTokenStore) SmartAccountsHolding(ctx context.Context, x *ChainIndex
 	if err != nil || len(wallets) == 0 {
 		return nil, err
 	}
-	if x == nil || len(x.nets) == 0 {
-		return nil, ErrChainUnread
-	}
-	names := x.Networks()
-	slices.Sort(names)
-	type probe struct {
-		network, address string
-		r                tokens.Reader
-	}
-	var probes []probe
-	for _, w := range wallets {
-		for _, name := range names {
-			probes = append(probes, probe{name, w.evm, x.nets[name].Chain})
-		}
-		if w.solana != "" {
-			if solana == nil {
-				return nil, ErrChainUnread
-			}
-			probes = append(probes, probe{"solana", w.solana, solana})
+	listed := map[string][]string{} // each network's verified tokens
+	for _, t := range tokens.Verified().Tokens {
+		if t.Address != "" {
+			listed[t.Network] = append(listed[t.Network], t.Address)
 		}
 	}
 	var out []string
-	for _, p := range probes {
-		held, err := p.r.Holdings(ctx, p.address)
-		if err != nil {
-			return nil, err
-		}
-		if slices.ContainsFunc(held, func(h tokens.Held) bool { return h.Amount != nil && h.Amount.Sign() > 0 }) {
-			out = append(out, p.address+" on "+p.network)
+	for _, w := range wallets {
+		for _, n := range tokens.Networks {
+			var held []tokens.Held
+			switch {
+			case n.ChainID != 0:
+				net, ok := ChainNetwork{}, false
+				if x != nil {
+					net, ok = x.nets[n.ID]
+				}
+				if !ok {
+					return nil, fmt.Errorf("%w: %s", ErrChainUnread, n.ID)
+				}
+				toks := listed[n.ID]
+				if net.USDC != "" && !slices.Contains(toks, net.USDC) {
+					toks = append(slices.Clip(toks), net.USDC)
+				}
+				if held, err = net.Chain.Balances(ctx, w.evm, toks); err != nil {
+					return nil, err
+				}
+			case w.solana == "":
+				continue
+			case solana == nil:
+				return nil, fmt.Errorf("%w: solana", ErrChainUnread)
+			default:
+				all, err := solana.Holdings(ctx, w.solana)
+				if err != nil {
+					return nil, err
+				}
+				for _, h := range all {
+					if h.Address == "" || slices.Contains(listed[n.ID], h.Address) {
+						held = append(held, h)
+					}
+				}
+			}
+			address := w.evm
+			if n.ChainID == 0 {
+				address = w.solana
+			}
+			if slices.ContainsFunc(held, func(h tokens.Held) bool { return h.Amount != nil && h.Amount.Sign() > 0 }) {
+				out = append(out, address+" on "+n.ID)
+			}
 		}
 	}
 	return out, nil

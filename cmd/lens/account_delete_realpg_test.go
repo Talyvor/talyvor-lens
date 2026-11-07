@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
@@ -35,12 +37,14 @@ const accountDeleteSecret = "account-delete-test-secret"
 // accountDeleteLens is one Lens process: the provision and deletion routes, and a route behind the real auth.
 func accountDeleteLens(t *testing.T, pool *pgxpool.Pool, jwtKey *ecdsa.PrivateKey, d accountDeleteDeps) (http.Handler, *auth.KeyStore) {
 	t.Helper()
-	wsm := workspace.New(pool)
+	// As it runs: Lens as lens_app, which may not delete token_events, and that one table as lens_retention (B39.6).
+	app := accountDeleteAs(t, pool, dbmigrate.AppRole)
+	wsm := workspace.New(app).WithUsageEventsPool(accountDeleteAs(t, pool, dbmigrate.RetentionRole))
 	if err := wsm.LoadAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	keys := auth.New(pool)
-	am := auth.NewManager("", jwtKey, keys, tenant.NewStore(pool)).WithAccountDeletions(wsm)
+	keys := auth.New(app)
+	am := auth.NewManager("", jwtKey, keys, tenant.NewStore(app)).WithAccountDeletions(wsm)
 	r := chi.NewRouter()
 	mountProvisionRoute(r, accountDeleteSecret, wsm, nil, func(ws, user string, scopes []string, ttl time.Duration) (string, error) {
 		return auth.GenerateToken(ws, user, scopes, am.PrivateKey(), ttl)
@@ -48,7 +52,45 @@ func accountDeleteLens(t *testing.T, pool *pgxpool.Pool, jwtKey *ecdsa.PrivateKe
 	d.accounts, d.keys = wsm, keys.EvictWorkspace
 	mountAccountDeleteRoute(r, accountDeleteSecret, d)
 	r.With(auth.AuthMiddleware(keys, am)).Get("/whoami", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.With(auth.AuthMiddleware(keys, am)).Post("/v1/workspaces/{ws}/agents/{agent}/pay", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	return r, keys
+}
+
+// accountDeleteAs is pool's database as role, with that role's grants applied as a migration applies them.
+func accountDeleteAs(t *testing.T, pool *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	c, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = dbmigrate.ApplyRoles(ctx, c.Conn(), "", "")
+	c.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := pool.Config()
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE "+role)
+		return err
+	}
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
+// accountDeletePay is a Connect token's one route: an agent's pay.
+func accountDeletePay(h http.Handler, ws, agent, credential string) int {
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/"+ws+"/agents/"+agent+"/pay", nil)
+	req.Header.Set("Authorization", "Bearer "+credential)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
 }
 
 func accountDeletePost(t *testing.T, h http.Handler, path, identity string) *httptest.ResponseRecorder {
@@ -77,7 +119,9 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 		t.Fatal(err)
 	}
 	answers := &accountDeleteAnswers{fail: true}
-	lens, keys := accountDeleteLens(t, pool, jwtKey, accountDeleteDeps{answers: answers})
+	billed := 0
+	lens, keys := accountDeleteLens(t, pool, jwtKey, accountDeleteDeps{answers: answers,
+		billing: func(context.Context, string) error { billed++; return nil }})
 	const identity = "https://issuer.example|person-5237"
 
 	rec := accountDeletePost(t, lens, "/v1/provision", identity)
@@ -99,6 +143,13 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 		if code := accountDeleteAuthed(lens, cred); code != http.StatusOK {
 			t.Fatalf("before deletion the %s is refused: %d", name, code)
 		}
+	}
+	connect, err := auth.GenerateConnectToken(ws, "u", "client-5237", "ag-pay", auth.ConnectScopes, jwtKey, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := accountDeletePay(lens, ws, "ag-pay", connect); code != http.StatusOK {
+		t.Fatalf("before deletion the Connect token is refused: %d", code)
 	}
 
 	// A room of someone else's: the person's message in it goes; another's message they removed stays.
@@ -130,18 +181,44 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE lxc_balances SET balance = 0 WHERE workspace_id = $1`, ws); err != nil {
 		t.Fatal(err)
 	}
+	// A payment in held for a compliance check, or a crypto transfer not yet final, is money it holds too.
+	for _, held := range []struct{ what, insert, settle string }{
+		{"compliance check", `INSERT INTO money_quarantined_deposits (workspace_id, partner_ref, case_id, partner, partner_account_ref, payer,
+			reference, amount_minor, currency, funding) VALUES ($1, 'p-5237', 'c-5237', 'test', 'pa', 'payer', 'ref', 5, 'EUR', 'test')`,
+			`UPDATE money_quarantined_deposits SET posted_at = now() WHERE workspace_id = $1`},
+		{"compliance check", `INSERT INTO chain_movements (id, workspace_id, agent_id, network, tx_hash, log_position, direction, wallet,
+			counterparty, token, asset, amount_minor, funding, source, status) VALUES ('cm-5237', $1, 'a', 'base', '0x01', 0, 'in', 'w', 'c',
+			't', 'USDC', 5, 'test', 'poll', 'quarantined')`, `UPDATE chain_movements SET status = 'seen' WHERE id = 'cm-5237'`},
+		{"crypto transfer not yet final", ``, `UPDATE chain_movements SET status = 'final' WHERE id = 'cm-5237'`},
+	} {
+		if held.insert != "" {
+			if _, err := pool.Exec(ctx, held.insert, ws); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), held.what) {
+			t.Fatalf("an account with a %s open: %d %s, want 409 naming it", held.what, rec.Code, rec.Body)
+		}
+		args := []any{ws}
+		if !strings.Contains(held.settle, "$1") {
+			args = nil
+		}
+		if _, err := pool.Exec(ctx, held.settle, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Its cached answers cannot be removed: refused, said plainly, nothing deleted, and the retry does it all.
 	rec = accountDeletePost(t, lens, "/v1/account/delete", identity)
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "saved answers") || strings.Contains(rec.Body.String(), "redis") {
 		t.Fatalf("answers not removable: %d %s, want 503 saying so, without the cause", rec.Code, rec.Body)
 	}
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM workspaces WHERE id = $1`, ws).Scan(&n)
-	if n != 1 {
-		t.Fatalf("a deletion whose answers stayed deleted the workspace")
+	if n != 1 || billed != 0 {
+		t.Fatalf("a deletion whose answers stayed deleted the workspace (%d left) or cancelled its subscription (%d)", n, billed)
 	}
 	answers.fail = false
 	rec = accountDeletePost(t, lens, "/v1/account/delete", identity)
-	if rec.Code != http.StatusOK || fmt.Sprint(answers.removed) != "["+ws+"]" {
+	if rec.Code != http.StatusOK || fmt.Sprint(answers.removed) != "["+ws+"]" || billed != 1 {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
 	}
 	for table, q := range map[string]string{
@@ -181,6 +258,17 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 			}
 		}
 	}
+	// A Connect token is refused too, and so is a token a sign-in racing the deletion minted after it.
+	late, err := auth.GenerateToken(ws, "u", nil, jwtKey, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := accountDeletePay(lens, ws, "ag-pay", connect); code != http.StatusUnauthorized {
+		t.Errorf("the deleted account's Connect token gets %d, want 401", code)
+	}
+	if code := accountDeleteAuthed(lens, late); code != http.StatusUnauthorized {
+		t.Errorf("a token minted for the deleted account after its deletion gets %d, want 401", code)
+	}
 	if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusNotFound {
 		t.Errorf("deleting again: %d, want 404", rec.Code)
 	}
@@ -208,26 +296,30 @@ func (a *accountDeleteAnswers) DeleteAllOf(_ context.Context, ids []string) (sto
 	return storedanswers.Counts{}, nil
 }
 
-// accountDeleteNode is a chain node: every account holds *coin of the network's coin and *token of one token it was
-// sent; with *down set it answers 500.
-func accountDeleteNode(t *testing.T, coin, token *atomic.Int64, down *atomic.Bool) string {
+// accountDeleteNode is a chain node: every account holds *coin of the network's coin and *token of every token; it
+// answers 500 to every call while *down is "all", and to that method's while it names one. It refuses eth_getLogs from
+// the first block, as a live node does.
+func accountDeleteNode(t *testing.T, coin, token *atomic.Int64, down *atomic.Value) string {
 	t.Helper()
+	down.Store("")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if down.Load() {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
 		var in struct {
 			ID     any    `json:"id"`
 			Method string `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if d := down.Load().(string); d == "all" || d == in.Method {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		var result any = "0x10"
 		switch in.Method {
 		case "eth_getBalance":
 			result = fmt.Sprintf("0x%x", coin.Load())
 		case "eth_getLogs":
-			result = []map[string]any{{"address": "0x00000000000000000000000000000000000000bb", "topics": []string{"0x01", "0x02", "0x03"}}}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": in.ID,
+				"error": map[string]any{"code": -32005, "message": "query exceeds max block range 10000"}})
+			return
 		case "eth_call":
 			result = fmt.Sprintf("0x%064x", token.Load())
 		}
@@ -237,11 +329,12 @@ func accountDeleteNode(t *testing.T, coin, token *atomic.Int64, down *atomic.Boo
 	return srv.URL
 }
 
-// accountDeleteSolana is a Solana node whose every wallet holds *amount of one token.
+// accountDeleteSolana is a Solana node whose every wallet holds *amount of USDC, and an airdrop nobody can value.
 type accountDeleteSolana struct{ amount *atomic.Int64 }
 
 func (s accountDeleteSolana) Holdings(context.Context, string) ([]holdings.Held, error) {
-	return []holdings.Held{{Address: "mint", Amount: big.NewInt(s.amount.Load())}}, nil
+	return []holdings.Held{{Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Amount: big.NewInt(s.amount.Load())},
+		{Address: "AirdropMint1111111111111111111111111111111", Amount: big.NewInt(1000)}}, nil
 }
 
 // A person with an agent, its wallet, a mandate, an invoice, a card, a smart account, rooms and listings: what money
@@ -254,20 +347,32 @@ func TestB5237_DeletionKeepsMoneyRecordsAndOthersRooms_RealPG(t *testing.T) {
 		t.Fatal(err)
 	}
 	var coin, token, onSolana atomic.Int64
-	var down atomic.Bool
+	var down atomic.Value
 	node := accountDeleteNode(t, &coin, &token, &down)
 	store := economy.NewDualTokenStore(nil, pool, nil)
-	x, err := store.NewChainIndexer([]economy.ChainNetwork{{Name: "base", USDC: "0x00000000000000000000000000000000000000aa",
-		Confirmations: 1, Funding: economy.FundingTest, Chain: smartaccount.Chain{RPCURL: node}}})
+	// The factory's account has one address on every EVM network: each is read. Lens reading only some is not enough.
+	var nets []economy.ChainNetwork
+	for _, n := range holdings.Networks {
+		if n.ChainID != 0 {
+			nets = append(nets, economy.ChainNetwork{Name: n.ID, USDC: "0x00000000000000000000000000000000000000aa",
+				Confirmations: 1, Funding: economy.FundingTest, Chain: smartaccount.Chain{RPCURL: node}})
+		}
+	}
+	x, err := store.NewChainIndexer(nets)
 	if err != nil {
 		t.Fatal(err)
 	}
+	xBaseOnly, err := store.NewChainIndexer(nets[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	reading := x
 	var solana holdings.Reader = accountDeleteSolana{&onSolana}
 	billingErr := errors.New("stripe: card_error")
 	var cancelled []string
 	lens, _ := accountDeleteLens(t, pool, jwtKey, accountDeleteDeps{
 		chain: func(ctx context.Context, ws string) ([]string, error) {
-			return store.SmartAccountsHolding(ctx, x, solana, ws)
+			return store.SmartAccountsHolding(ctx, reading, solana, ws)
 		},
 		billing: func(_ context.Context, ws string) error {
 			if billingErr != nil {
@@ -333,7 +438,7 @@ func TestB5237_DeletionKeepsMoneyRecordsAndOthersRooms_RealPG(t *testing.T) {
 		what string
 		on   *atomic.Int64
 		at   string
-	}{{"its coin", &coin, "on base"}, {"a token", &token, "on base"}, {"a Solana token", &onSolana, "sol on solana"}} {
+	}{{"its coin", &coin, "on optimism"}, {"a token", &token, "on base"}, {"a Solana token", &onSolana, "sol on solana"}} {
 		held.on.Store(5)
 		rec = accountDeletePost(t, lens, "/v1/account/delete", identity)
 		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), held.at) || !strings.Contains(rec.Body.String(), "Sweep") {
@@ -341,14 +446,21 @@ func TestB5237_DeletionKeepsMoneyRecordsAndOthersRooms_RealPG(t *testing.T) {
 		}
 		held.on.Store(0)
 	}
-	// What cannot be read is not empty: a node that fails, or a Solana wallet with no reader, refuses, and the node's URL
-	// (its key) never reaches the caller.
-	down.Store(true)
-	rec = accountDeletePost(t, lens, "/v1/account/delete", identity)
-	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "127.0.0.1") {
-		t.Fatalf("a node that fails: %d %s, want 503 without its URL", rec.Code, rec.Body)
+	// What cannot be read is not empty: a node that fails, a token's balance it fails to read, a network Lens does not
+	// read, or a Solana wallet with no reader, refuses, and the node's URL (its key) never reaches the caller.
+	for _, d := range []string{"all", "eth_call"} {
+		down.Store(d)
+		rec = accountDeletePost(t, lens, "/v1/account/delete", identity)
+		if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "127.0.0.1") {
+			t.Fatalf("a node failing %s: %d %s, want 503 without its URL", d, rec.Code, rec.Body)
+		}
 	}
-	down.Store(false)
+	down.Store("")
+	reading = xBaseOnly
+	if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("smart accounts on networks Lens does not read: %d %s, want 503", rec.Code, rec.Body)
+	}
+	reading = x
 	solana = nil
 	if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a Solana wallet with nothing to read it: %d %s, want 503", rec.Code, rec.Body)
