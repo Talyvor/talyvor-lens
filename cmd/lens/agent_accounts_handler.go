@@ -280,6 +280,9 @@ type agentBank interface {
 	BoostAgentRule(ctx context.Context, workspaceID, agentID string, b economy.AgentRuleBoost) (economy.AgentRuleBoost, error)
 	RulesChallenge(ctx context.Context, workspaceID, agentID string, p economy.RulesProposal) (economy.RulesJudgement, error)
 	ChangeAgentRules(ctx context.Context, workspaceID, agentID string, p economy.RulesProposal, a *passkey.Assertion) (economy.AgentRules, error)
+	ProposeAgentRules(ctx context.Context, workspaceID, agentID string, rules economy.AgentRules) (economy.FiledRules, error)
+	RulesProposalChallenge(ctx context.Context, workspaceID, agentID, proposalID string) (economy.RulesJudgement, economy.AgentRules, error)
+	ApproveRulesProposal(ctx context.Context, workspaceID, agentID, proposalID string, a *passkey.Assertion) (economy.AgentRules, error)
 	BoostAgentRuleSigned(ctx context.Context, workspaceID, agentID string, b economy.AgentRuleBoost, a *passkey.Assertion) (economy.AgentRuleBoost, error)
 	EndAgentBoost(ctx context.Context, workspaceID, agentID, rule string) error
 	ListAgentApprovals(ctx context.Context, workspaceID string) ([]economy.AgentApproval, error)
@@ -880,6 +883,62 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, map[string]any{"looser": j.Looser, "changes": j.Changes, "challenge": j.Challenge,
 				"allow_credentials": j.AllowCredentials, "user_verification": "required"})
 		}
+	}))
+	// B52.41: rules filed for the owner's passkey. A raise is kept and applies nothing until …/approve carries an
+	// assertion over …/challenge; rules that only tighten apply at once.
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/proposals", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Rules json.RawMessage `json:"rules"`
+		}
+		var rules economy.AgentRules
+		wrapped := json.NewDecoder(req.Body)
+		wrapped.DisallowUnknownFields()
+		err := wrapped.Decode(&in)
+		if err == nil && in.Rules != nil {
+			dec := json.NewDecoder(bytes.NewReader(in.Rules))
+			dec.DisallowUnknownFields() // a misspelt rule must not be silently no rule
+			err = dec.Decode(&rules)
+		}
+		if err != nil || in.Rules == nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"rules": <the agent's rules>}`)
+			return
+		}
+		f, err := bank.ProposeAgentRules(rulesChange(req, "set"), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), rules)
+		if err != nil {
+			writeRules(w, f.Rules, err)
+			return
+		}
+		code := http.StatusOK
+		if f.Status == "pending" {
+			code = http.StatusCreated
+		}
+		writeJSONOK(w, code, f)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/proposals/{proposalID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		j, rules, err := bank.RulesProposalChallenge(rulesChange(req, "set"), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"),
+			chi.URLParam(req, "proposalID"))
+		switch {
+		case errors.Is(err, economy.ErrRulesProposalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeRules(w, rules, err)
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"rules": rules, "looser": j.Looser, "changes": j.Changes, "challenge": j.Challenge,
+				"allow_credentials": j.AllowCredentials, "user_verification": "required"})
+		}
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/proposals/{proposalID}/approve", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&in)
+		rules, err := bank.ApproveRulesProposal(rulesChange(req, "set"), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"),
+			chi.URLParam(req, "proposalID"), in.Assertion)
+		if errors.Is(err, economy.ErrRulesProposalNotFound) {
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeRules(w, rules, err)
 	}))
 	// B28.306: simulating moves nothing, so any of the workspace's credentials may ask, as any may read the rules.
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/simulate", func(w http.ResponseWriter, req *http.Request) {
@@ -1718,18 +1777,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pay", func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
-		connect := auth.GetAuthContext(req.Context())
+		ctx := req.Context()
+		connect := auth.GetAuthContext(ctx)
 		if connect != nil && connect.AuthMethod == auth.MethodConnect { // B52.4: an assistant pays from its own agent only
-			if connect.WorkspaceID != wsID || connect.ConnectAgentID != agentID || !connect.HasScope(auth.ScopePaymentsSend) {
-				writeJSONErr(w, http.StatusForbidden, "this connection may not pay from this agent")
-				return
-			}
-			// B54.13: and only while the person still owns the agent and has not ended the connection.
-			if err := bank.ConnectLive(req.Context(), wsID, agentID, connect.UserID, connect.ConnectClientID, connect.ConnectIssuedAt); errors.Is(err, economy.ErrConnectEnded) {
-				writeJSONErr(w, http.StatusForbidden, err.Error())
-				return
-			} else if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			var ok bool
+			if ctx, ok = connectPayment(w, req, bank, connect, wsID, agentID); !ok {
 				return
 			}
 		} else if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
@@ -1757,15 +1809,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
 			return
 		}
-		ctx := economy.WithMoveKey(req.Context(), key)
-		if connect != nil && connect.AuthMethod == auth.MethodConnect {
-			if key == "" { // B54.13: an assistant that retries without one would pay twice
-				writeJSONErr(w, http.StatusBadRequest, "a payment through a connected assistant needs an Idempotency-Key, so a retry pays once")
-				return
-			}
-			ctx = economy.WithConnectClient(ctx, connect.ConnectClientID)
-		}
-		pay, err := bank.PayAgent(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
+		pay, err := bank.PayAgent(economy.WithMoveKey(ctx, key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
 		switch {
 		case errors.Is(err, economy.ErrConnectApprovalsWaiting):
 			writeJSONErr(w, http.StatusTooManyRequests, err.Error())
