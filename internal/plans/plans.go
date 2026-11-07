@@ -249,9 +249,9 @@ func Thousands(n int64) string {
 // Refusal is something the workspace's plan does not unlock. Its message says, in words, what the plan allows and
 // what the plan that would allow more does; the setting it comes from is Setting.
 type Refusal struct {
-	Setting string `json:"setting"` // LENS_PLAN_GATES
+	Setting string `json:"setting,omitempty"` // LENS_PLAN_GATES; "" where the refusal names no setting
 	Plan    string `json:"plan"`
-	Gate    string `json:"gate"`             // agents, seats, own_provider_keys or live_money
+	Gate    string `json:"gate"`             // agents, seats, own_provider_keys, live_money or audit_export
 	Limit   *int64 `json:"limit,omitempty"`  // for agents and seats
 	Allows  string `json:"allows,omitempty"` // the plan that would allow it; "" when only a contract would
 	Detail  string `json:"detail"`
@@ -342,6 +342,17 @@ func (w Workspace) RefuseLiveMoney(gates map[string]Gates, capability string) *R
 	r.Detail = fmt.Sprintf("On %s, %s takes no real money.", Name(w.Plan), capability)
 	if r.Allows != "" {
 		r.Detail += fmt.Sprintf(" On %s it does, once it is cleared.", Name(r.Allows))
+	}
+	return r
+}
+
+// RefuseAuditExport is the refusal of audit export on a plan without it: "Team does not include audit export. Business
+// includes it." It names no setting (B56.5).
+func (w Workspace) RefuseAuditExport(gates map[string]Gates) *Refusal {
+	r := &Refusal{Plan: w.Plan, Gate: "audit_export", Allows: w.Allowing(gates, func(g Gates) bool { return g.AuditExport })}
+	r.Detail = fmt.Sprintf("%s does not include audit export.", Name(w.Plan))
+	if r.Allows != "" {
+		r.Detail += fmt.Sprintf(" %s includes it.", Name(r.Allows))
 	}
 	return r
 }

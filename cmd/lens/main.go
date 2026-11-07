@@ -5579,42 +5579,9 @@ func run() error {
 		// straight to the http.ResponseWriter so a 100k-record CSV never
 		// materialises in memory. Format defaults to JSON; query params
 		// drive the WHERE filters and the LIMIT cap.
-		authed.Get("/v1/audit/export", newAuditExportHandler(auditExporter))
+		authed.Get("/v1/audit/export", newAuditExportHandler(auditExporter, pool))
 
-		authed.Post("/v1/audit/webhook", func(w http.ResponseWriter, req *http.Request) {
-			var in struct {
-				WebhookURL string             `json:"webhook_url"`
-				Filter     audit.ExportFilter `json:"filter"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-				writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-				return
-			}
-			if in.WebhookURL == "" {
-				writeJSONErr(w, http.StatusBadRequest, "webhook_url required")
-				return
-			}
-			// Authz (#146): non-admin scoped to own workspace; admin honors the
-			// filter (empty workspace = all tenants, admin-only).
-			effWS, _, ok := effectiveWorkspaceID(req, in.Filter.WorkspaceID)
-			if !ok {
-				writeJSONErr(w, http.StatusForbidden, "forbidden: no workspace identity")
-				return
-			}
-			in.Filter.WorkspaceID = effWS
-			// Fire-and-forget so the caller doesn't block on a slow SIEM.
-			// Use a fresh context detached from the request so cancellation
-			// of the HTTP connection doesn't kill the export mid-flight.
-			go func(filter audit.ExportFilter, url string) {
-				if err := auditExporter.ExportWebhook(context.Background(), url, filter); err != nil {
-					logger.Warn("audit: webhook export failed",
-						slog.String("url", url),
-						slog.String("err", err.Error()),
-					)
-				}
-			}(in.Filter, in.WebhookURL)
-			writeJSONOK(w, http.StatusAccepted, map[string]any{"ok": true, "message": "export started"})
-		})
+		authed.Post("/v1/audit/webhook", newAuditWebhookHandler(auditExporter, pool))
 
 		// API-key pool: enterprise customers attach multiple keys per
 		// provider to escape per-key rate limits. Raw key material is
