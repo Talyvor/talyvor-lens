@@ -428,7 +428,8 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		}
 	}
 
-	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do.
+	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do, but for unpaid ones of
+	// an expired request (B55.9).
 	type spentKey struct{ mandate, currency string }
 	type spent struct {
 		day, month int64
@@ -447,8 +448,8 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 			count(*) FILTER (WHERE i.created_at >= now() - interval '1 hour')
 			FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
 			WHERE i.mandate_id = $1 AND i.currency = $2 AND i.decision = 'auto' AND r.workspace_id = $3 AND r.status <> 'cancelled'
-			AND i.created_at >= now() - interval '32 days'`,
-			mandateID, currency, workspaceID).Scan(&sp.day, &sp.month, &sp.lastHour)
+			AND NOT (`+requestExpired4+` AND i.payment_id = '') AND i.created_at >= now() - interval '32 days'`,
+			mandateID, currency, workspaceID, s.approvalLife().Microseconds()).Scan(&sp.day, &sp.month, &sp.lastHour)
 		if err != nil {
 			return nil, fmt.Errorf("economy: spent under mandate: %w", err)
 		}
@@ -568,13 +569,22 @@ func (s *DualTokenStore) resolveListing(ctx context.Context, workspaceID string,
 	return "", nil
 }
 
-const paymentRequestCols = `id, kind, status, client, agent_id, canonical, payload_hash, created_at, cancelled_at, agent_trust`
+// requestExpired2 is true of r, a payment request still pending_approval that nobody answered within an approval's
+// life, by the database's clock (B55.9): the life in microseconds is $2, or $3 and $4 in the others. Constants, as
+// all SQL text is (sqlstatic).
+const (
+	requestExpired2 = `(r.status = 'pending_approval' AND r.created_at <= now() - $2 * interval '1 microsecond')`
+	requestExpired3 = `(r.status = 'pending_approval' AND r.created_at <= now() - $3 * interval '1 microsecond')`
+	requestExpired4 = `(r.status = 'pending_approval' AND r.created_at <= now() - $4 * interval '1 microsecond')`
+)
 
-// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared.
+// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared. One nobody
+// answered within an approval's life reads expired: it can no longer be approved or paid (B55.9).
 func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (PaymentRequest, error) {
 	var r PaymentRequest
-	err := s.pool.QueryRow(ctx, `SELECT `+paymentRequestCols+` FROM payment_requests WHERE id = $1 AND workspace_id = $2
-		AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID).
+	err := s.pool.QueryRow(ctx, `SELECT id, kind, CASE WHEN `+requestExpired4+` THEN 'expired' ELSE status END, client, agent_id,
+		canonical, payload_hash, created_at, cancelled_at, agent_trust FROM payment_requests r WHERE id = $1 AND workspace_id = $2
+		AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID, s.approvalLife().Microseconds()).
 		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.AgentTrust)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrPaymentRequestNotFound
@@ -619,10 +629,10 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 }
 
 // PendingPaymentRequests lists workspaceID's requests waiting for approval, newest first, each as PaymentRequest reads
-// it; agentID, when not "", only that agent's (B40.38).
+// it; agentID, when not "", only that agent's (B40.38). One past an approval's life has expired and is not listed (B55.9).
 func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests WHERE workspace_id = $1 AND status = 'pending_approval'
-		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
+	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests r WHERE workspace_id = $1 AND status = 'pending_approval'
+		AND NOT `+requestExpired3+` AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID, s.approvalLife().Microseconds())
 	if err != nil {
 		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
 	}
@@ -656,6 +666,7 @@ func formatMinor(currency string, minor int64) string {
 
 // CancelPaymentRequest cancels a request not yet cancelled: its auto items stop counting towards the mandates' limits.
 // agentID, when not "", cancels only a request that agent prepared. One approved, or with an item paid, stays (B40.5).
+// One expired is cancelled as one waiting is (B55.9).
 func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (PaymentRequest, error) {
 	if _, err := s.PaymentRequest(ctx, workspaceID, agentID, id); err != nil {
 		return PaymentRequest{}, err
