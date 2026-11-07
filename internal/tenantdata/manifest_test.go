@@ -327,21 +327,24 @@ var w626PopulationDelta = []string{
 	"distill_royalty_basis", "distill_royalty_mints", "distill_serve_attribution",
 	"eval_contribution_mints", "eval_correctness_attestations",
 	"market_earnings",
-	"market_invoices",        // B28.140: keyed buyer_workspace_id, classified in the manifest
-	"market_ip_claims",       // B32.47: keyed claimant_workspace_id, classified in the manifest
-	"market_licences",        // B32.19: keyed buyer_workspace_id, classified in the manifest
-	"market_listing_reports", // B20.2: keyed reporter_workspace_id, classified in the manifest
-	"market_receipts",        // B32.40: keyed buyer_workspace_id, classified in the manifest
-	"market_refunds",         // B20.4: keyed seller_/buyer_workspace_id, classified in the manifest
-	"market_reviews",         // B32.49: keyed buyer_workspace_id, classified in the manifest
-	"market_use_outcomes",    // B41.173: keyed buyer_workspace_id, classified in the manifest
-	"market_uses",            // B20.2: keyed seller_/buyer_workspace_id, classified in the manifest
+	"market_invoices",            // B28.140: keyed buyer_workspace_id, classified in the manifest
+	"market_ip_claims",           // B32.47: keyed claimant_workspace_id, classified in the manifest
+	"market_licence_idle_alerts", // B41.176: keyed buyer_workspace_id, classified in the manifest
+	"market_licences",            // B32.19: keyed buyer_workspace_id, classified in the manifest
+	"market_listing_reports",     // B20.2: keyed reporter_workspace_id, classified in the manifest
+	"market_receipts",            // B32.40: keyed buyer_workspace_id, classified in the manifest
+	"market_refunds",             // B20.4: keyed seller_/buyer_workspace_id, classified in the manifest
+	"market_reviews",             // B32.49: keyed buyer_workspace_id, classified in the manifest
+	"market_use_outcomes",        // B41.173: keyed buyer_workspace_id, classified in the manifest
+	"market_uses",                // B20.2: keyed seller_/buyer_workspace_id, classified in the manifest
 	"node_latency_mints",
 	"pool_royalty_mints",
 	"room_contributions", // B32.31: keyed author_workspace_id, classified in the manifest
 	"room_messages",      // B32.30: keyed author_workspace_id, classified in the manifest
+	"room_objections",    // B41.147: keyed objector_/holder_workspace_id, classified in the manifest
 	"room_prizes",        // B32.35: keyed poster_workspace_id, classified in the manifest
 	"room_reports",       // B32.52: keyed reporter_workspace_id, classified in the manifest
+	"room_reviews",       // B41.144: keyed reviewer_workspace_id, classified in the manifest
 	"room_takeovers",     // B41.148: keyed owner_/noticed_by_/elected_workspace_id, classified in the manifest
 	"rooms",              // B32.28: keyed owner_workspace_id, classified in the manifest
 	"routing_prediction_mints", "royalty_detector_findings",
