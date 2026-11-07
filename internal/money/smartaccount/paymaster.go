@@ -76,6 +76,11 @@ func (c Chain) paymasterData(ctx context.Context, method string, op UserOp, pmCo
 
 const tokenPaymasterHead = 20 + 4*32
 
+// LayoutSignedPrice names the paymasterAndData layout above, which scripts/devnet-contracts.sh's TokenPaymaster reads.
+// B54.12: a chain whose ERC-20 paymaster carries its price any other way is refused by its layout's name until Lens
+// reads that one too.
+const LayoutSignedPrice = "signed-price"
+
 // tokenPrice reads the paymaster and its price in token from pm, refusing a price in any other token.
 func tokenPrice(pm []byte, token string) (string, *big.Int, error) {
 	if len(pm) < tokenPaymasterHead || !strings.EqualFold(checksum(pm[20+2*32+12:20+3*32]), token) {
@@ -100,6 +105,12 @@ func (c Chain) SponsorInToken(ctx context.Context, op *UserOp, token string) (*b
 	if c.PaymasterURL == "" || c.TokenPaymaster == "" {
 		return nil, fmt.Errorf("%w: chain %d has no ERC-20 paymaster", ErrInvalid, c.ID)
 	}
+	if c.TokenPaymasterLayout != LayoutSignedPrice {
+		return nil, fmt.Errorf("%w: chain %d's paymaster carries its price in the layout %q, which Lens does not read", ErrInvalid, c.ID, c.TokenPaymasterLayout)
+	}
+	if c.CoinPrice == nil {
+		return nil, fmt.Errorf("%w: chain %d has no independent price to bound its paymaster's", ErrInvalid, c.ID)
+	}
 	pay, err := PaymentOf(op.CallData)
 	if err != nil || pay.Fee != nil || !strings.EqualFold(pay.Token, token) || Checksum(token) == Checksum(Native) {
 		return nil, fmt.Errorf("%w: the operation is not one payment in %s", ErrInvalid, token)
@@ -119,6 +130,16 @@ func (c Chain) SponsorInToken(ctx context.Context, op *UserOp, token string) (*b
 	}
 	if strings.EqualFold(pay.To, paymaster) {
 		return nil, fmt.Errorf("%w: a payment to the paymaster itself", ErrInvalid)
+	}
+	independent, err := c.CoinPrice(ctx, Checksum(token))
+	if err != nil {
+		return nil, err
+	}
+	// price ≤ independent × (1 + spread): the price the final data carries is no more than this one.
+	most := new(big.Rat).Mul(independent, big.NewRat(10_000+max(c.TokenPriceSpreadBps, 0), 10_000))
+	if independent.Sign() <= 0 || new(big.Rat).SetInt(price).Cmp(most) > 0 {
+		return nil, fmt.Errorf("smartaccount: the paymaster's price %s in %s is beyond the spread of %d basis points over the independent %s",
+			price, token, c.TokenPriceSpreadBps, independent.FloatString(0))
 	}
 	op.PaymasterAndData = stub // MaxFee counts the paymaster's verification three times
 	fee := new(big.Int).Mul(MaxFee(*op), price)
@@ -167,6 +188,22 @@ func (c Chain) TokenFeeCharged(ctx context.Context, op UserOp, hash string) (*bi
 		}
 	}
 	return took, nil
+}
+
+// FeeApprovalLeft is what op's account still approves op's ERC-20 paymaster in its fee's token now: what the paymaster
+// did not take of the approval op made, or of a later one that replaced it, and could still take.
+func (c Chain) FeeApprovalLeft(ctx context.Context, op UserOp) (*big.Int, error) {
+	pay, err := PaymentOf(op.CallData)
+	if err != nil || pay.Fee == nil {
+		return nil, fmt.Errorf("%w: the operation's fee is not paid in a token", ErrInvalid)
+	}
+	owner, err := addressW(op.Sender)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	spender, _ := addressW(pay.Paymaster)
+	data := call("allowance(address,address)", owner, spender)
+	return c.quantity(ctx, "eth_call", []any{map[string]string{"to": pay.Token, "data": hexBytes(data)}, "latest"})
 }
 
 // MaxFee is the most the EntryPoint can take for op's network fee, in wei: v0.6's required prefund, whose

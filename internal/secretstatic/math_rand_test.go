@@ -12,12 +12,14 @@ import (
 )
 
 // mathRandAllowed are the only non-test files that may import math/rand: each draws a
-// timing or load-spreading number, never an id, key, nonce, token or challenge.
+// timing or load-spreading number, or a seeded simulation's, never an id, key, nonce, token or challenge.
 var mathRandAllowed = map[string]string{
 	"internal/localrouter/multi.go":       "spreads load across local nodes",
 	"internal/economy/agent_subbudget.go": "jitters a lock retry wait",
 	"internal/retry/retry.go":             "backoff jitter",
 	"internal/retry/policy.go":            "backoff jitter",
+	// B52.16: the gym's seeded counterparts, so a playbook scores the same every time; it draws no id or secret.
+	"internal/economy/negotiation_playbooks.go": "plays Counter's gym from a fixed seed",
 }
 
 func moduleRoot(t *testing.T) string {
