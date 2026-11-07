@@ -25,9 +25,14 @@ import (
 //	PUT /v1/rooms/{roomID}/contributions/{contributionID}/size   {size}   its author or the room's owner or an editor:
 //	                                     fixes the size's points on it; 409 for a raise once it is accepted
 //
+// B41.143 — the room's points ledger, size × quality × survival, append-only (internal/rooms/points.go):
+//
+//	GET /v1/rooms/{roomID}/points   {total_points, holders: [{workspace_id, workspace_name, points, identity_checked}],
+//	                                entries: [...]} to a member that accepted the room's current terms
+//
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
-// mountRoomOwnershipRoutes mounts shared ownership (B41.141) and the rate card (B41.142).
+// mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142) and the points ledger (B41.143).
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -80,6 +85,18 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, rc)
+	})
+	r.Get("/v1/rooms/{roomID}/points", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		p, err := store.Points(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, p)
 	})
 	r.Put("/v1/rooms/{roomID}/rate-card", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
 		ws, user, ok := actor(w, req)

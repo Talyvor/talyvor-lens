@@ -435,6 +435,9 @@ func (s *Store) Decide(ctx context.Context, ws, user, roomID, id, status string)
 			id, status, ws); err != nil {
 			return err
 		}
+		if err := s.recordPoints(ctx, tx, c, c.Status, status); err != nil { // B41.143
+			return err
+		}
 		msgID := "rmsg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		body := fmt.Sprintf("%s %s “%s”", status, article(c.Kind), c.Title)
 		refs, _ := json.Marshal(map[string]any{"contribution_id": id, "listing_id": c.ListingID, "status": status})
