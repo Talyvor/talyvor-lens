@@ -374,8 +374,9 @@ func TestB41116_LockdownEndsEveryOtherSession(t *testing.T) {
 	}
 }
 
-// B41.116 second review (2) and (3): the thief, still signed in on the stolen phone, ran the lockdown and polls the
-// lift while Ada passes her re-check on a new sign-in. The phone never gets the lift or its challenge and enrols
+// B41.116 second review (2) and (3): the thief, still signed in on the stolen phone, passed an identity check as
+// themself, ran the lockdown and polls the lift while Ada passes her re-check on a new sign-in. A re-check of the thief
+// lifts nothing. The phone never gets the lift or its challenge and enrols
 // nothing; a re-check with Ada's name and country but another date of birth lifts nothing; Ada's own session lifts and
 // enrols exactly one key.
 func TestB41116_TheLiftGoesOnlyToTheSessionThatPassedTheCheck(t *testing.T) {
@@ -435,9 +436,20 @@ func TestB41116_TheLiftGoesOnlyToTheSessionThatPassedTheCheck(t *testing.T) {
 		t.Fatalf("registering Ada's passkey = %d %v", code, out)
 	}
 
-	// The thief locks down from the phone, revoking every key.
+	// The thief, signed in on the phone, passes an identity check as themself, then locks down, revoking every key.
+	mallory := map[string]string{"name": "Mallory Thief", "country": "GB", "date_of_birth": "1991-01-01"}
+	if code, out := phone(verification+"/identity", mallory); code != http.StatusCreated {
+		t.Fatalf("the thief's identity check = %d %v", code, out)
+	}
 	if code, out := phone("/v1/money/lockdown", map[string]string{}); code != http.StatusOK {
 		t.Fatalf("lockdown from the phone = %d %v", code, out)
+	}
+	// Re-checked as themself, the thief still lifts nothing: the re-check is of the workspace's first person, Ada.
+	if code, out := phone(verification+"/identity", mallory); code != http.StatusCreated {
+		t.Fatalf("the thief's re-check = %d %v", code, out)
+	}
+	if code, out := phone("/v1/money/lockdown/lift", nil); code != http.StatusForbidden || out["enrol_challenge"] != nil {
+		t.Fatalf("lift from the phone after the thief's own re-check = %d %v; want 403 and no challenge", code, out)
 	}
 	// Ada signs in again and passes a re-check with her name and country but another date of birth: nothing lifts.
 	ada2 := as("ada-again")

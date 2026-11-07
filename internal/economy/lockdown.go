@@ -208,20 +208,19 @@ func (s *DualTokenStore) LiftLockdown(ctx context.Context, workspaceID, session 
 	if err != nil {
 		return "", err
 	}
-	// The re-check is of the person checked before the lockdown, when there was one: a thief passes only as themself.
-	var before []VerificationCheck
-	for _, c := range checks {
-		if c.Level == LevelIdentity && c.Status == "completed" && !c.StartedAt.After(started) {
-			before = append(before, c)
+	// The re-check is of the workspace's first person checked, when there was one: a thief passes only as themself, and
+	// a check the thief passed as themself before locking down is not the first (checks are newest first).
+	var first *VerificationCheck
+	for i := range checks {
+		if c := checks[i]; c.Level == LevelIdentity && c.Status == "completed" && !c.StartedAt.After(started) && (!c.Test || synthetic) {
+			first = &checks[i]
 		}
 	}
-	// A date of birth is matched when the earlier check kept one; checks from before B41.116 kept none.
+	// A date of birth is matched when the first check kept one; checks from before B41.116 kept none.
 	passed := func(c VerificationCheck) bool {
 		return c.Level == LevelIdentity && c.Status == "completed" && c.StartedAt.After(started) && (!c.Test || synthetic) &&
-			(len(before) == 0 || slices.ContainsFunc(before, func(b VerificationCheck) bool {
-				return strings.EqualFold(b.VerifiedName, c.VerifiedName) && b.Country == c.Country &&
-					(b.DateOfBirthDigest == "" || b.DateOfBirthDigest == c.DateOfBirthDigest)
-			}))
+			(first == nil || strings.EqualFold(first.VerifiedName, c.VerifiedName) && first.Country == c.Country &&
+				(first.DateOfBirthDigest == "" || first.DateOfBirthDigest == c.DateOfBirthDigest))
 	}
 	if !slices.ContainsFunc(checks, passed) {
 		return "", ErrIdentityRecheck
@@ -230,7 +229,7 @@ func (s *DualTokenStore) LiftLockdown(ctx context.Context, workspaceID, session 
 		return "", ErrLiftOtherSession
 	}
 	// A re-check with no earlier check to match proves only that someone has an identity: it lifts, but enrols nothing.
-	if len(before) > 0 {
+	if first != nil {
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {
 			return "", err
