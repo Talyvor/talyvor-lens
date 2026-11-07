@@ -11,6 +11,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
@@ -22,6 +23,11 @@ import (
 //	                          currency, or account_id; an agent's key pays from its own account, judged by its rules. An
 //	                          approval it needs is filed and the payment refused (403) until the owner approves it.
 //	                          With quote_id it is an international payment at that quote (B30.22), its fee on top.
+//	                          B54.33: the owner's or an admin's payment, once the workspace has a passkey or device key,
+//	                          also takes "assertion", that key's signature over the challenge below for exactly this
+//	                          payment; without it, or signed for another, it pays nothing (403).
+//	POST /v1/money/payments/challenge {the payment, as it will be sent} — B54.33: {challenge, allow_credentials}, the
+//	                          challenge it is signed over (a passkey's, or the phone's device key's).
 //	POST /v1/money/payments/quote {payee_id, amount_minor, currency, account_id, funding} — B30.22: prices a payment
 //	                          to a payee whose account is in another currency: the partner's cost, Talyvor's fee, the
 //	                          total that leaves the account, the rate and what arrives, good until expires_at.
@@ -34,6 +40,8 @@ import (
 type moneyPaymentBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
+	PayOutsideSigned(ctx context.Context, workspaceID string, in economy.OutsidePayment, a *passkey.Assertion) (economy.OutsidePayment, error)
+	PaymentChallenge(ctx context.Context, workspaceID string, in economy.OutsidePayment) (string, []string, error)
 	QuoteInternational(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.InternationalQuote, error)
 	OutsidePayments(ctx context.Context, workspaceID, agentID string) ([]economy.OutsidePayment, error)
 	RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (economy.OutsidePayment, error)
@@ -69,7 +77,10 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		if !ok {
 			return
 		}
-		var in economy.OutsidePayment
+		var in struct {
+			economy.OutsidePayment
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"payee_id", "amount_minor", "currency", "reference", "idempotency_key"}`)
 			return
@@ -77,14 +88,47 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		if k := req.Header.Get("Idempotency-Key"); k != "" {
 			in.IdempotencyKey = k
 		}
-		p, err := bank.PayOutside(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
+		pay := economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
+			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey,
+			QuoteID: in.QuoteID}
+		var p economy.OutsidePayment
+		var err error
+		if agentID == "" { // a person paying signs it (B54.33); an agent's own key is judged by its rules
+			p, err = bank.PayOutsideSigned(req.Context(), ws, pay, in.Assertion)
+		} else {
+			p, err = bank.PayOutside(req.Context(), ws, pay)
+		}
+		if err != nil {
+			writePaymentErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusCreated, p)
+	})
+	r.Post("/v1/money/payments/challenge", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req)
+		if !ok {
+			return
+		}
+		if agentID != "" {
+			writeJSONErr(w, http.StatusForbidden, "an agent's own key pays by its rules and signs nothing: only the owner or an admin signs a payment")
+			return
+		}
+		var in economy.OutsidePayment
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be the payment: {"payee_id", "amount_minor", "currency", "reference", "idempotency_key"}`)
+			return
+		}
+		if k := req.Header.Get("Idempotency-Key"); k != "" {
+			in.IdempotencyKey = k
+		}
+		c, creds, err := bank.PaymentChallenge(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, PayeeID: in.PayeeID,
 			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey,
 			QuoteID: in.QuoteID})
 		if err != nil {
 			writePaymentErr(w, err)
 			return
 		}
-		writeJSONOK(w, http.StatusCreated, p)
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
 	})
 	r.Post("/v1/money/payments/quote", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
@@ -144,7 +188,7 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
-		errors.As(err, new(*screening.Refusal)):
+		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, passkey.ErrInvalid), errors.As(err, new(*screening.Refusal)):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, partners.ErrScreeningUnavailable), errors.Is(err, economy.ErrAccountNotOpened):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())

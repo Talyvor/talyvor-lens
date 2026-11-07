@@ -291,6 +291,12 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 
+	// B54.10: an outside agent does not ask a paused agent's owner at all.
+	if in.AgentTrust != nil && in.AgentID != "" {
+		if err := refuseIfPaused(ctx, tx, in.AgentID); err != nil {
+			return r, false, err
+		}
+	}
 	id = "preq_" + uuid.NewString()
 	items, err := s.judgePaymentItems(ctx, tx, workspaceID, in)
 	if err != nil {
@@ -570,11 +576,12 @@ func (s *DualTokenStore) resolveListing(ctx context.Context, workspaceID string,
 
 const paymentRequestCols = `id, kind, status, client, agent_id, canonical, payload_hash, created_at, cancelled_at, agent_trust`
 
-// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared.
+// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared. An outside
+// agent's request to the agent is its owner's alone to read, approve, cancel or pay (B54.10).
 func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (PaymentRequest, error) {
 	var r PaymentRequest
 	err := s.pool.QueryRow(ctx, `SELECT `+paymentRequestCols+` FROM payment_requests WHERE id = $1 AND workspace_id = $2
-		AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID).
+		AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL))`, id, workspaceID, agentID).
 		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.AgentTrust)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrPaymentRequestNotFound
@@ -622,7 +629,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 // it; agentID, when not "", only that agent's (B40.38).
 func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests WHERE workspace_id = $1 AND status = 'pending_approval'
-		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
+		AND ($2 = '' OR (agent_id = $2 AND agent_trust IS NULL)) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
 	}

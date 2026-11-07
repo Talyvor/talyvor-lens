@@ -119,11 +119,23 @@ func (s *DualTokenStore) RollbackAgentRules(ctx context.Context, workspaceID, ag
 		return AgentRules{}, fmt.Errorf("economy: roll back agent rules: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	r, err := s.rollbackAgentRulesTx(ctx, tx, workspaceID, agentID, version)
+	if err != nil {
+		return r, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return r, fmt.Errorf("economy: roll back agent rules: %w", err)
+	}
+	return r, nil
+}
+
+// rollbackAgentRulesTx is RollbackAgentRules in tx.
+func (s *DualTokenStore) rollbackAgentRulesTx(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, version int) (AgentRules, error) {
 	if err := agentExists(ctx, tx, workspaceID, agentID); err != nil {
 		return AgentRules{}, err
 	}
 	var snapshot string
-	err = tx.QueryRow(ctx, `SELECT rules::text FROM agent_rules_versions WHERE agent_id = $1 AND version = $2`, agentID, version).Scan(&snapshot)
+	err := tx.QueryRow(ctx, `SELECT rules::text FROM agent_rules_versions WHERE agent_id = $1 AND version = $2`, agentID, version).Scan(&snapshot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AgentRules{}, ErrRulesVersionNotFound
 	}
@@ -150,11 +162,5 @@ func (s *DualTokenStore) RollbackAgentRules(ctx context.Context, workspaceID, ag
 		return r, fmt.Errorf("economy: roll back agent rules: %w", err)
 	}
 	// B32.32: an earlier version of a room wallet's rules is judged as the rules saved now are.
-	if err := s.checkRoomBudget(ctx, tx, workspaceID, agentID, r.MonthlyLimitULXC); err != nil {
-		return r, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return r, fmt.Errorf("economy: roll back agent rules: %w", err)
-	}
-	return r, nil
+	return r, s.checkRoomBudget(ctx, tx, workspaceID, agentID, r.MonthlyLimitULXC)
 }

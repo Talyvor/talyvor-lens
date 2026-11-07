@@ -66,9 +66,9 @@ func TestPayeeDetailsChange_NeedsAPasskeyAndHoldsPaymentsFor24Hours(t *testing.T
 		t.Fatalf("the payment before any change posted %q, want %q", got, want)
 	}
 
-	// A payment made to the old details that the partner never answered: it waits, its money held, to be sent again.
+	// A payment made to the old details that never reached the partner: it waits, its money held, to be sent again.
 	unsent := b.pay(t, "unsent", 2015)
-	if _, err := pool.Exec(ctx, `UPDATE money_payments SET status = 'pending', partner_ref = '' WHERE id = $1`, unsent.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE money_payments SET status = 'pending', partner_ref = '', send_started_at = NULL WHERE id = $1`, unsent.ID); err != nil {
 		t.Fatal(err)
 	}
 
