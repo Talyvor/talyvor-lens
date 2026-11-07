@@ -103,8 +103,9 @@ type Config struct {
 	Clearances partners.Clearances
 	Limits     Limits
 	Audit      Audit
-	Ledger     Ledger  // where a verified webhook's money is posted
-	Replays    Replays // the webhook ids already taken
+	Ledger     Ledger   // where a verified webhook's money is posted
+	Replays    Replays  // the webhook ids already taken
+	Issuer     *Adapter // B53.19: the card issuer for physical cards while the sandbox serves cards (the fake, while LENS_PHYSICAL_CARDS is on)
 }
 
 // Registry routes every call to the adapter switched on for it, or the sandbox.
@@ -239,6 +240,24 @@ func (r *Registry) Cards(ctx context.Context, rt Route) (Cards, error) {
 		return nil, err
 	}
 	return gatedCards{r.gate(a, rt, CapCards), a.Cards}, nil
+}
+
+// CardIssuer is a card partner's whole card life for rt (B53.19), and the partner's name: the adapter serving cards on
+// rt when its cards are a CardIssuer, or the registry's Issuer while the sandbox serves them.
+func (r *Registry) CardIssuer(ctx context.Context, rt Route) (CardIssuer, string, error) {
+	a, err := r.pick(ctx, CapCards, rt)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, ok := a.Cards.(CardIssuer); !ok && a == r.cfg.Sandbox && r.cfg.Issuer != nil {
+		a = r.cfg.Issuer
+	}
+	ci, ok := a.Cards.(CardIssuer)
+	if !ok {
+		return nil, "", fmt.Errorf("%w: %s issues no physical card", ErrInvalid, a.Name)
+	}
+	g := r.gate(a, rt, CapCards)
+	return gatedIssuer{gatedCards{g, ci}, ci}, a.Name, nil
 }
 
 // Payouts is the payouts capability for rt.

@@ -7,10 +7,13 @@ package issuerfake
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strconv"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/talyvor/lens/internal/money"
 )
@@ -51,6 +54,13 @@ func (i *Issuer) Card(ref string) (money.Card, bool) {
 		return money.Card{}, false
 	}
 	return *c, true
+}
+
+// Issued is how many cards the issuer has issued.
+func (i *Issuer) Issued() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.cards)
 }
 
 // Details is what the issuer reports about a charge at merchant.
@@ -108,8 +118,10 @@ func once[T any](i *Issuer, key string, fn func() (T, error)) (T, error) {
 // or physical and inactive until it arrives and is activated.
 func (i *Issuer) Issue(_ context.Context, req money.IssueCard) (money.Card, error) {
 	return once(i, "issue:"+req.Key, func() (money.Card, error) {
-		ref := fmt.Sprintf("ic_%04d", len(i.cards)+1)
-		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: ref[len(ref)-4:], Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive,
+		// A ref never repeats, even across restarts, as a real issuer's never do: Lens keeps the refs it was given.
+		u := uuid.New()
+		ref := "ic_" + u.String()
+		c := &money.Card{Ref: ref, Wallet: req.Wallet, Last4: fmt.Sprintf("%04d", binary.BigEndian.Uint32(u[:4])%10000), Merchant: req.Merchant, Cap: req.Cap, State: money.CardActive,
 			FormFactor: money.CardVirtual}
 		if req.FormFactor == money.CardPhysical {
 			c.State, c.FormFactor = money.CardInactive, money.CardPhysical

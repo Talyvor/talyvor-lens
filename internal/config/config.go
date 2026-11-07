@@ -1093,6 +1093,9 @@ type Config struct {
 	// SpendDuplicateMinutes is how close two payments to one merchant for one amount must be to read as a likely
 	// duplicate (B53.5). Env: LENS_SPEND_DUPLICATE_MINUTES, default 10 — a setting for Nicolai.
 	SpendDuplicateMinutes int
+	// PhysicalCards serves the owner's physical card on the fake card issuer (B53.19). Env: LENS_PHYSICAL_CARDS,
+	// default false: it stays off until a live card partner serves cards, and off every physical-card route is 404.
+	PhysicalCards bool
 	// CoachModel is the model that words the Coach's sentences (B53.6). Env: LENS_COACH_MODEL, default empty: every
 	// sentence is its fixed template.
 	CoachModel string
@@ -1475,6 +1478,7 @@ func Load() (*Config, error) {
 		SupplierAddress:            getEnv("LENS_SUPPLIER_ADDRESS", "71-75 Shelton Street, Covent Garden, London, United Kingdom, WC2H 9JQ"),
 		SupplierVATNumber:          getEnv("LENS_SUPPLIER_VAT_NUMBER", ""),
 		SelfBillingVAT:             parseBoolEnv("LENS_SELF_BILLING_VAT"),
+		PhysicalCards:              parseBoolEnv("LENS_PHYSICAL_CARDS"), // B53.19
 		MarketPayoutReturnURL:      getEnv("LENS_MARKET_PAYOUT_RETURN_URL", "https://app.talyvor.com/marketplace/selling?payouts=connected"),
 		MarketPayoutRefreshURL:     getEnv("LENS_MARKET_PAYOUT_REFRESH_URL", "https://app.talyvor.com/marketplace/selling?payouts=expired"),
 		BillingSuccessURL:          getEnv("LENS_BILLING_SUCCESS_URL", "https://app.talyvor.com/billing/success?session_id={CHECKOUT_SESSION_ID}"),
