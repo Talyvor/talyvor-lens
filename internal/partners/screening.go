@@ -72,7 +72,7 @@ type ScreeningList interface {
 // TESTPENDING is held for review, TESTFAIL makes the provider unavailable. An exact match on a listed name or a good
 // alias is a hit; a close match, or an exact one on a low-quality alias, is held for review; anything else is clear.
 // With no List it screens the test words alone. B48.7: a crypto address in Addresses is a hit, whatever it is flagged
-// for.
+// for, and TestMixerAddress always is (B48.31).
 type TestScreeningProvider struct {
 	List      ScreeningList
 	Addresses map[string]string // lower-case address → why it is flagged: AddressSanctioned, AddressMixer, …
@@ -86,6 +86,10 @@ const (
 	AddressPrivacyBridge = "privacy_bridge" // a bridge into a privacy coin
 	AddressRussiaBelarus = "russia_belarus" // linked to Russia or Belarus
 )
+
+// TestMixerAddress is the address the Test screening provider always flags, as a mixer, as TESTSANCTION is for names
+// (B48.31): what a nightly pays to see a flagged address refused.
+const TestMixerAddress = "0x7e57000000000000000000000000000000000001"
 
 // Name is "test".
 func (TestScreeningProvider) Name() string { return "test" }
@@ -126,7 +130,12 @@ func (p TestScreeningProvider) ScreenPayment(ctx context.Context, req PaymentScr
 // screen is one name against the test words and then the list.
 func (p TestScreeningProvider) screen(ctx context.Context, name string) (Screening, error) {
 	out, err := testScreen(name)
-	if why, ok := p.Addresses[strings.ToLower(strings.TrimSpace(name))]; ok && err == nil {
+	addr := strings.ToLower(strings.TrimSpace(name))
+	why, ok := p.Addresses[addr]
+	if !ok && addr == TestMixerAddress {
+		why, ok = AddressMixer, true
+	}
+	if ok && err == nil {
 		out = Screening{Outcome: ScreenHit, Matches: []ScreeningMatch{{Name: name, List: why, Entry: name, ScoreBPS: 10_000}},
 			Detail: fmt.Sprintf("%s is flagged: %s", name, why)}
 	}

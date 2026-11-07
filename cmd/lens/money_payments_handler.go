@@ -33,6 +33,8 @@ import (
 //	                          total that leaves the account, the rate and what arrives, good until expires_at.
 //	GET  /v1/money/payments   ?agent_id= — the payments out, newest first
 //	GET  /v1/money/payments/{id} — one payment, after asking the partner where it stands now
+//	                          B48.31: both carry, for a payment to a USDC address, travel_rule {status: off, self_hosted,
+//	                          pending or sent, and sent's vasp and provider_ref}
 //
 // The workspace is the key's. Its owner or an admin pays from and reads any of its accounts; an agent's own key only
 // its own. Mounted in the authed group.
