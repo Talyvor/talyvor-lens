@@ -34,7 +34,7 @@ func (st Statement) ByDay(loc *time.Location, zone string) Statement {
 	lines := []StatementLine{}
 	for _, l := range st.Lines {
 		fee := l.Kind == LXCTypePlatformFee
-		if l.Model == "" || !(fee || questionKinds[l.Kind]) {
+		if l.Model == "" || !fee && !questionKinds[l.Kind] {
 			lines = append(lines, l)
 			continue
 		}
