@@ -51,6 +51,8 @@ var (
 	ErrMandateShort = errors.New("economy: the account does not hold enough to pay this pull")
 	// ErrMandatePayerPaused: the agent is paused or archived, so its mandates pull nothing.
 	ErrMandatePayerPaused = errors.New("economy: the agent is paused or archived, so its mandates pull nothing")
+	// ErrMandateWorkspacePaused: the payer's workspace has every agent paused (B55.23).
+	ErrMandateWorkspacePaused = errors.New("economy: the payer has paused its agents, so this mandate pulls nothing until they are started again")
 	// ErrMandatePayeeAccount: the payee company has no open account in the mandate's currency to be paid into.
 	ErrMandatePayeeAccount = errors.New("economy: the payee has no open account in this currency to be paid into")
 )
@@ -312,12 +314,20 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		return MandatePull{}, fmt.Errorf("%w: %d more would take this month's pulls to %d, over the maximum per month of %d %s",
 			ErrMandateOverLimit, amountMinor, m.PulledThisMonthMinor+amountMinor, m.MaxPerMonthMinor, m.Currency)
 	}
-	var paused bool
-	if err := tx.QueryRow(ctx, `SELECT paused_at IS NOT NULL OR archived_at IS NOT NULL FROM agent_accounts WHERE id = $1`, m.AgentID).Scan(&paused); err != nil {
+	// The agent's row is held too, as every movement of its money holds it, and Pause every agent is read after the lock.
+	var paused, allPaused bool
+	if err := tx.QueryRow(ctx, `SELECT paused_at IS NOT NULL OR archived_at IS NOT NULL FROM agent_accounts WHERE id = $1 FOR UPDATE`,
+		m.AgentID).Scan(&paused); err != nil {
 		return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
 	}
 	if paused {
 		return MandatePull{}, ErrMandatePayerPaused
+	}
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_workspace_pauses WHERE workspace_id = $1)`, m.WorkspaceID).Scan(&allPaused); err != nil {
+		return MandatePull{}, fmt.Errorf("economy: pull mandate: %w", err)
+	}
+	if allPaused {
+		return MandatePull{}, ErrMandateWorkspacePaused
 	}
 	// The account is held too, so no other movement spends the same money while this one is judged, and its balance is
 	// read after the lock, as the mandate is.

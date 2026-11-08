@@ -27,12 +27,13 @@ func planGatesOnPlan(t *testing.T, pool *pgxpool.Pool, ws, plan string, addOn bo
 	}
 }
 
-// planRefusal reports whether err is a plan's refusal naming LENS_PLAN_GATES, plan, and the plan that would allow it.
+// planRefusal reports whether err is a plan's refusal of plan, with the plan that would allow it, in words naming both
+// plans and never the setting, which is a field of its own (B55.29).
 func planRefusal(err error, plan, allows string) bool {
 	var r *plans.Refusal
 	return errors.As(err, &r) && errors.Is(err, plans.ErrRefused) && r.Plan == plan && r.Allows == allows &&
-		strings.Contains(err.Error(), plans.Setting) && strings.Contains(err.Error(), "the "+plan+" plan") &&
-		strings.Contains(err.Error(), "the "+allows+" plan")
+		r.Setting == plans.Setting && !strings.Contains(err.Error(), "LENS_") &&
+		strings.Contains(err.Error(), plans.Name(plan)) && strings.Contains(err.Error(), plans.Name(allows))
 }
 
 // B32.12 — with Nicolai's values: a Free workspace's fourth agent and second member are refused naming the plan;
@@ -64,8 +65,9 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	if err := agents("ws-b3212-free", 3); err != nil {
 		t.Fatalf("free's first three agents: %v", err)
 	}
-	if _, err := s.CreateAgent(ctx, "ws-b3212-free", "agent 4", "user_owner"); !planRefusal(err, "free", "team") {
-		t.Fatalf("free's fourth agent = %v, want refused naming LENS_PLAN_GATES, the free plan and the team plan", err)
+	if _, err := s.CreateAgent(ctx, "ws-b3212-free", "agent 4", "user_owner"); !planRefusal(err, "free", "team") ||
+		err.Error() != "Free allows 3 agents, and all 3 are in use. Team allows 25." {
+		t.Fatalf("free's fourth agent = %v, want refused in words naming the free plan and the team plan", err)
 	}
 	if n := count("ws-b3212-free"); n != 3 {
 		t.Fatalf("free has %d agents after the refusal, want 3", n)
@@ -77,8 +79,8 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	if err := free.CheckSeats(1); err != nil {
 		t.Fatalf("free's first member = %v, want allowed", err)
 	}
-	if err := free.CheckSeats(2); !planRefusal(err, "free", "team") {
-		t.Fatalf("free's second member = %v, want refused naming LENS_PLAN_GATES, the free plan and the team plan", err)
+	if err := free.CheckSeats(2); !planRefusal(err, "free", "team") || err.Error() != "Free allows 1 seat, and it is taken. Team allows 5." {
+		t.Fatalf("free's second member = %v, want refused in words naming the free plan and the team plan", err)
 	}
 
 	// Team: 25 agents, then the 26th is refused naming Business.
@@ -86,8 +88,9 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	if err := agents("ws-b3212-team", 25); err != nil {
 		t.Fatalf("team's first 25 agents: %v", err)
 	}
-	if _, err := s.CreateAgent(ctx, "ws-b3212-team", "agent 26", "user_owner"); !planRefusal(err, "team", "business") {
-		t.Fatalf("team's 26th agent = %v, want refused naming LENS_PLAN_GATES, the team plan and the business plan", err)
+	if _, err := s.CreateAgent(ctx, "ws-b3212-team", "agent 26", "user_owner"); !planRefusal(err, "team", "business") ||
+		err.Error() != "Team allows 25 agents, and all 25 are in use. Business allows unlimited agents." {
+		t.Fatalf("team's 26th agent = %v, want refused in words naming the team plan and the business plan", err)
 	}
 	if n := count("ws-b3212-team"); n != 25 {
 		t.Fatalf("team has %d agents after the refusal, want 25", n)
@@ -109,7 +112,7 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	}
 	keys := byok.New(pool, ring)
 	if _, err := keys.Put(ctx, "ws-b3212-team", "openai", "sk-team-key-0001"); !planRefusal(err, "team", "business") ||
-		!strings.Contains(err.Error(), "BYOK add-on") {
+		err.Error() != "Team has your own provider keys only with the BYOK add-on. Business includes them." {
 		t.Fatalf("a provider key on team without the BYOK add-on = %v, want refused naming the add-on and the business plan", err)
 	}
 	planGatesOnPlan(t, pool, "ws-b3212-team-byok", "team", true)
@@ -148,8 +151,9 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	}
 	var refusal *CapabilityRefusal
 	if _, err := spend("ws-b3212-free", FundingLive); !planRefusal(err, "free", "team") || !errors.As(err, &refusal) ||
-		!errors.Is(err, ErrCapabilityNotCleared) {
-		t.Fatalf("live money for a cleared B30 capability on free = %v, want refused naming LENS_PLAN_GATES, the free plan and the team plan", err)
+		!errors.Is(err, ErrCapabilityNotCleared) || !strings.HasPrefix(err.Error(), "On Free, ") ||
+		!strings.HasSuffix(err.Error(), " takes no real money. On Team it does, once it is cleared.") {
+		t.Fatalf("live money for a cleared B30 capability on free = %v, want refused in words naming the free plan and the team plan", err)
 	}
 	if took, err := spend("ws-b3212-free-test", FundingTest); err != nil || took != 10_000_000 {
 		t.Fatalf("test money for a cleared B30 capability on free took %d test-funded µLXC, %v; want all 10 LXC of it", took, err)

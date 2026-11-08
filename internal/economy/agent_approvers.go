@@ -355,9 +355,10 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 // v0.2 closed Payment Mandate. ErrApprovalNotFound when it is not pending.
 func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (AgentApproval, error) {
 	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
-		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
+		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
+			deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
 			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
-			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds()))
+			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ap, ErrApprovalNotFound
 		}

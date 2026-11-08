@@ -107,14 +107,14 @@ import (
 // changing members, inviting, bringing an agent — takes the workspace's owner or an admin, as publishing a listing
 // does; reading takes any of its credentials.
 
-// writeRoomPlanLimit writes a refusal under rooms_plan_limits as 402 naming the setting, the plan, the limit and the plan
-// that allows more, and answers whether err was one. A room wallet's rules are refused with it too (B32.32).
+// writeRoomPlanLimit writes a refusal under rooms_plan_limits as 402: the refusal in words, with the setting, the plan,
+// the limit and the plan that allows more in fields of their own, and answers whether err was one. A room wallet's rules are refused with it too (B32.32).
 func writeRoomPlanLimit(w http.ResponseWriter, err error) bool {
 	var limit *rooms.PlanLimitError
 	if !errors.As(err, &limit) {
 		return false
 	}
-	writeJSONOK(w, http.StatusPaymentRequired, map[string]any{"error": limit.Detail, "setting": rooms.LimitsSetting,
+	writeJSONOK(w, http.StatusPaymentRequired, map[string]any{"error": limit.Detail, "setting": limit.Setting,
 		"plan": limit.Plan, "limit": limit.Limit, "max": limit.Max, "allows": limit.Allows})
 	return true
 }
