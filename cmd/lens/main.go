@@ -1593,6 +1593,8 @@ func run() error {
 	computeMiner := mining.NewComputeMiner(tokenLedger, pool)
 	computeMiner.SetHTTPClient(newNodeHTTPClient(cfg.NodeTLSSkipVerify, 5*time.Second, nodeCIDRAllow))
 	computeMiner.SetHoldbackWindow(cfg.PoolHoldbackWindow) // Phase-3 Item 1: node mint lands HELD, finalizes after this window (mirrors cache/royalty)
+	// B56.20: Talyvor keeps its compute fee out of every node earning.
+	computeMiner.SetComputeFee(fees.Current().ComputeTakeBPS, economy.TalyvorWorkspace)
 	localRouterMulti.SetOnRequestServed(func(nodeID, requesterWS, requestID string, tokens int, latencyMs int64) {
 		// RETIREMENT SWITCH (PoVI Part 3): the LEGACY trust-based mint (mints LENS
 		// per served request, no receipt). U6: now DEFAULT OFF — an unprotected

@@ -134,6 +134,8 @@ var rules = map[string]Rule{
 	// bucket is what catches a SIXTH.
 	"marketplace_buy":           {NotEarnings, NotIncome, "LENS bought on the marketplace — a transfer of existing LENS, and W6.3.2 records that this path takes no payment at all"},
 	"marketplace_fee":           {NotEarnings, NotIncome, "Talyvor's marketplace fee; not the workspace's income"},
+	"compute_fee":               {NotEarnings, NotIncome, "Talyvor's compute fee on a node earning (B56.20); not the workspace's income"},
+	"compute_fee_held":          {NotEarnings, NotIncome, "Talyvor's compute fee while the node mint it came from is held"},
 	"marketplace_unsold_refund": {NotEarnings, NotIncome, "escrow returned on an unsold listing — the seller's own LENS coming back"},
 	"stake":                     {NotEarnings, NotIncome, "principal locked into a stake position"},
 	"marketplace_listing":       {NotEarnings, NotIncome, "escrow debit when a seller lists LENS — the workspace's own LENS, immobilised, not income"},
