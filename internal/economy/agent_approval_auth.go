@@ -29,7 +29,7 @@ import (
 // subscription of the workspace one encrypted push naming the agent, the amount and the reason.
 
 // ErrPasskeyRequired: the workspace approves with a passkey and the decision carried no assertion.
-var ErrPasskeyRequired = errors.New("This workspace approves with a passkey or the phone's key, so this needs one of them.")
+var ErrPasskeyRequired = errors.New("This workspace approves with a passkey or the phone's key, so this needs one of them.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrPushNotConfigured: Lens has no VAPID key (LENS_VAPID_PRIVATE_KEY), so it sends no pushes.
 var ErrPushNotConfigured = errors.New("economy: web push is not configured on this server")
