@@ -1890,6 +1890,10 @@ func run() error {
 	dualToken.SetPlatformFee(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, error) {
 		return billing.PlatformFeeBPS(ctx, q, workspaceID, fees.Current())
 	})
+	// B56.23: every currency conversion carries its plan's FX margin (LENS_FX_MARGIN_BPS), or its contract's.
+	dualToken.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, error) {
+		return billing.FXMarginBPS(ctx, q, workspaceID, fees.Current())
+	})
 	// MODEL 2 (W4.6.1 step 1). Subscriptions are a SECOND gate on top of billing: a
 	// deployment selling one-off top-ups does not start selling a subscription because
 	// it has a Stripe key. With no price configured the routes below are not registered
@@ -4972,6 +4976,7 @@ func run() error {
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2

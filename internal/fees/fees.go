@@ -44,7 +44,7 @@ type Settings struct {
 // reads that fee.
 var Charged = map[string]bool{
 	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": true, "lending_fee_bps": false,
-	"platform_fee_bps": true, "fx_margin_bps": false, "intl_payment_fee_minor": true,
+	"platform_fee_bps": true, "fx_margin_bps": true, "intl_payment_fee_minor": true,
 	"merchant_fee_bps": false, "merchant_a2a_fee_bps": false, "scan_alert_ulxc": true,
 }
 
