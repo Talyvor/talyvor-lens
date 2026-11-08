@@ -150,6 +150,9 @@ type AgentRequest struct {
 	Payee       Payee     // who a payment goes to, and Memo why: the approval it files names both (B23.5)
 	Memo        string
 	Commitment  Commitment // the marketplace licence a payment takes, if it takes one (B32.22)
+	// Approved: the owner signed for this payment in advance — a pull within the mandate they approved (B55.24) — so
+	// it needs no approval of its own. Every other rule still judges it.
+	Approved bool
 }
 
 // Payee is who a payment goes to. Name is the one it had when the approval was filed; empty until then
@@ -589,8 +592,8 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 	// What it paid other agents counts (B19.3), and its card purchases (B19.12); what they paid it does not raise its limit. What it
 	// used of paid marketplace listings counts too (B20.2), though it is billed to its company. Its questions' platform fees count (B32.11).
 	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
-	// invoices it paid from its currency account (B30.131), recorded under their entry key as the rules let them through,
-	// and the charges on its reusable cards (B54.6).
+	// invoices it paid from its currency account (B30.131) and what payees pulled under its mandates (B55.24), recorded
+	// under their entry key as the rules let them through, and the charges on its reusable cards (B54.6).
 	err := tx.QueryRow(ctx, `SELECT (
 		(SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
@@ -600,7 +603,7 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_payments
 		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned'))
 		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_payee_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND ref LIKE 'invoice_agent:%' AND created_at >= $3)
+		   WHERE workspace_id = $1 AND agent_id = $4 AND (ref LIKE 'invoice_agent:%' OR ref LIKE 'mandate_pull:%') AND created_at >= $3)
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_card_authorizations
 		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3))::bigint`,
 		workspaceID, agentAccount(agentID), since, agentID).Scan(&spent)
@@ -840,7 +843,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			}
 		}
 	}
-	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC {
+	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved {
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
