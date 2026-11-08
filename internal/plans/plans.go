@@ -1,7 +1,7 @@
 // Package plans is what each plan unlocks — Nicolai's decision of 5 Oct 2026 (B32.12): agents, seats, own
 // provider keys and live money. One setting, LENS_PLAN_GATES, whose default in lens.env.example is his values;
 // every feature a plan gates asks For which gates a workspace has, and a refusal says in words what the plan allows
-// and the plan that would allow more, with the setting in a field of its own (B55.29). A gate whose feature does not exist yet is enforced by the item that builds it.
+// and the plan that would allow more, with the setting in a field of its own (B55.29). A gate whose feature does not exist yet is enforced by the item that builds it, which flips its entry in Built.
 package plans
 
 import (
@@ -54,6 +54,14 @@ type Gates struct {
 	SSO                 bool `json:"sso"`
 	AuditExport         bool `json:"audit_export"`
 	Edge                bool `json:"edge"` // Talyvor Edge
+}
+
+// Built is, by each gate's name in GET /v1/public/plan-gates, whether Lens enforces it today (B56.8). The item that
+// builds a switch flips its entry in the same change; a test holds each entry to whether code outside this package
+// reads that gate, itself or through a method of this package it calls.
+var Built = map[string]bool{
+	"agents": true, "seats": true, "own_provider_keys": true, "live_money": true,
+	"slack_teams_approvals": false, "sso": false, "audit_export": true, "edge": false,
 }
 
 // Defaults are Nicolai's values.
