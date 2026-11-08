@@ -176,15 +176,15 @@ func currencyAccountErr(err error, which string) error {
 	return fmt.Errorf("economy: open currency account: %w", err)
 }
 
-// CurrencyAccounts is workspaceID's company and agent accounts, or with agentID that agent's only, and what each
-// holds: the company's first, then by currency.
+// CurrencyAccounts is workspaceID's company and agent accounts, and its suspense accounts for money in that matched
+// none (B30.15), or with agentID that agent's only, and what each holds: the company's first, then by currency.
 func (s *DualTokenStore) CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]CurrencyAccount, error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.id, a.workspace_id, COALESCE(a.agent_id, ''), a.currency, a.purpose, a.status, a.name,
 		a.partner_account_ref, COALESCE(a.parent_account_id, ''), a.created_at,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'test'), 0)::bigint,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'live'), 0)::bigint
 		FROM money_accounts a LEFT JOIN money_account_balances b ON b.account_id = a.id
-		WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') AND ($2 = '' OR a.agent_id = $2)
+		WHERE a.workspace_id = $1 AND (a.purpose IN ('company', 'agent') OR ($2 = '' AND a.purpose = 'suspense')) AND ($2 = '' OR a.agent_id = $2)
 		GROUP BY a.id ORDER BY a.agent_id NULLS FIRST, a.currency, a.created_at`, workspaceID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: currency accounts: %w", err)
