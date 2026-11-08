@@ -39,8 +39,8 @@ func TestRenderHTML_SelfContainedAndComplete(t *testing.T) {
 	}
 }
 
-// The report wears brand v4: the tokens, the light theme on paper, and the
-// flat mark — and none of the colours it wore before.
+// The report wears Pocket (B57.14): the tokens, the light theme on paper, and the
+// symbol — and none of the colours it wore before.
 func TestRenderHTML_WearsTheBrand(t *testing.T) {
 	rep, _ := newReporter(fullMock(), Config{}).GenerateReport(context.Background(), "ws1", "monthly")
 	html, err := RenderHTML(rep)
@@ -52,8 +52,12 @@ func TestRenderHTML_WearsTheBrand(t *testing.T) {
 			t.Errorf("HTML missing the brand %s", name)
 		}
 	}
-	for _, old := range []string{"#1a1a2e", "#e0e0ea", "#137333", "#a06000", "#c5221f", "#f0d000", "#fef7e0"} {
-		if strings.Contains(html, old) {
+	if !strings.Contains(html, "#FF7A1A") || !strings.Contains(html, `"Bricolage Grotesque"`) {
+		t.Error("HTML is not in Pocket's colours and type")
+	}
+	for _, old := range []string{"#060a12", "#0f7a6c", "#1a1a2e", "#e0e0ea", "#137333", "#a06000", "#c5221f", "#f0d000", "#fef7e0"} {
+		// The symbol's own file carries the logo kit's colours (B57.81).
+		if strings.Contains(strings.ToLower(strings.Replace(html, brand.Mark, "", 1)), old) {
 			t.Errorf("HTML still carries the pre-brand colour %s", old)
 		}
 	}

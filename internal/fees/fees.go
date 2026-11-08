@@ -1,7 +1,7 @@
 // Package fees holds Talyvor's fees — Nicolai's decisions of 5 Oct 2026 (B32.8). Each is a setting in
 // lens.env.example whose default is his value, and nothing else in the code holds a fee: every feature that
 // charges one reads it from Current. A setting for a feature not built yet is read only by the item that
-// builds it.
+// builds it, which flips its entry in Charged.
 package fees
 
 import (
@@ -36,6 +36,15 @@ type Settings struct {
 	MerchantA2AFeeBPS   int64            `json:"merchant_a2a_fee_bps"` // accepting a payment from an account
 	// What a Scan agent's wallet pays, in µLXC of credits, for each alert its watch sends (B52.27).
 	ScanAlertULXC int64 `json:"scan_alert_ulxc"`
+}
+
+// Charged is, by each fee's name in GET /v1/public/fees, whether Lens charges it today (B56.8). The item that
+// builds a fee flips its entry in the same change; a test holds each entry to whether code outside this package
+// reads that fee.
+var Charged = map[string]bool{
+	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": false, "lending_fee_bps": false,
+	"platform_fee_bps": true, "fx_margin_bps": false, "intl_payment_fee_minor": true,
+	"merchant_fee_bps": false, "merchant_a2a_fee_bps": false, "scan_alert_ulxc": true,
 }
 
 // Defaults are Nicolai's values.

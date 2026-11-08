@@ -155,7 +155,8 @@ func (s *Store) renew(ctx context.Context, d dueLicence, judge economy.LicenceJu
 		// B32.22: a renewal commits the agent to another period, judged as the licence was: it renews itself, so it
 		// needs may_subscribe still, and an owner who turns that off stops the agent's licences renewing.
 		c := economy.Commitment{Kind: d.kind, Licence: d.licence, Renews: true, ULXC: ulxc}
-		err = judge.JudgeAgentPurchase(ctx, d.buyer, d.agentID, l.ID, ulxc, c, what, record)
+		memo := fmt.Sprintf("%s renews: %s on your monthly marketplace bill", l.Title, economy.LXCMoney(ulxc))
+		err = judge.JudgeAgentPurchase(ctx, d.buyer, d.agentID, l.ID, ulxc, c, what, memo, record)
 	} else {
 		err = pgx.BeginFunc(ctx, s.pool, record)
 	}

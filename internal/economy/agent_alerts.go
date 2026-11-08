@@ -111,7 +111,7 @@ func watchAgentSpend(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		return fmt.Errorf("economy: raise agent alert: %w", err)
 	}
 	if pauseOn {
-		reason := fmt.Sprintf("unusual spend: %s LXC in an hour, against a usual %s LXC an hour", lxcString(lastHour), lxcString(usual))
+		reason := fmt.Sprintf("unusual spend: %s in an hour, against a usual %s an hour", LXCMoney(lastHour), LXCMoney(usual))
 		if _, err := tx.Exec(ctx, `UPDATE agent_accounts SET paused_at = now(), paused_reason = $2 WHERE id = $1 AND paused_at IS NULL`,
 			agentID, reason); err != nil {
 			return fmt.Errorf("economy: pause agent: %w", err)
@@ -267,8 +267,14 @@ func (s *DualTokenStore) ListAgentSpendAlerts(ctx context.Context, workspaceID s
 type AgentForecast struct {
 	AgentID      string `json:"agent_id"`
 	Name         string `json:"name"`
+	Colour       string `json:"colour"` // B57.10: its face, as the book has it
+	Face         string `json:"face"`
 	SpentULXC    int64  `json:"spent_ulxc"`
 	ForecastULXC int64  `json:"forecast_ulxc"`
+	BalanceULXC  int64  `json:"balance_ulxc"` // what it holds now
+	// RunsOutAt (B28.94) is when BalanceULXC is gone at its pace so far this month, in the agent's own time zone so
+	// its date is the agent's date; nil when it spends nothing at that pace.
+	RunsOutAt *time.Time `json:"runs_out_at"`
 }
 
 // SpendForecast is a workspace's month-end forecast, as of At.
@@ -290,6 +296,21 @@ func runOn(spent int64, elapsed, length time.Duration) int64 {
 	return v.Quo(v, big.NewInt(int64(elapsed))).Int64()
 }
 
+// runsOut is when balance is gone at spent per elapsed, from at; nil when nothing is spent.
+func runsOut(balance, spent int64, at time.Time, elapsed time.Duration) *time.Time {
+	if spent <= 0 || elapsed <= 0 {
+		return nil
+	}
+	v := new(big.Int).Mul(big.NewInt(max(balance, 0)), big.NewInt(int64(elapsed)))
+	v.Quo(v, big.NewInt(spent))
+	// shortcut: beyond ~292 years (a Duration's range) reads as never, upgrade if anyone forecasts further.
+	if !v.IsInt64() {
+		return nil
+	}
+	t := at.Add(time.Duration(v.Int64()))
+	return &t
+}
+
 // AgentSpendForecast forecasts each of a workspace's agents' month-end spend, and the workspace's, from
 // the month so far as of at.
 func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID string, at time.Time) (SpendForecast, error) {
@@ -297,9 +318,11 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 	start := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
 	f := SpendForecast{At: at, MonthStart: start, MonthEnd: start.AddDate(0, 1, 0), Agents: []AgentForecast{}}
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.id, a.name, COALESCE((SELECT -sum(p.amount_ulxc) FROM agent_postings p
+		SELECT a.id, a.name, a.colour, a.face, COALESCE((SELECT -sum(p.amount_ulxc) FROM agent_postings p
 		         WHERE p.workspace_id = a.workspace_id AND p.account = 'agent:' || a.id
-		           AND p.created_at >= $2 AND p.created_at < $3 AND `+agentSpendPostings+`), 0)::bigint
+		           AND p.created_at >= $2 AND p.created_at < $3 AND `+agentSpendPostings+`), 0)::bigint,
+		       COALESCE((SELECT b.balance_ulxc FROM agent_account_balances b WHERE b.workspace_id = a.workspace_id AND b.account = 'agent:' || a.id), 0)::bigint,
+		       COALESCE((SELECT r.timezone FROM agent_rules r WHERE r.agent_id = a.id), '')
 		  FROM agent_accounts a WHERE a.workspace_id = $1 ORDER BY a.created_at, a.id`, workspaceID, start, at)
 	if err != nil {
 		return f, fmt.Errorf("economy: forecast: %w", err)
@@ -308,10 +331,19 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 	elapsed, length := at.Sub(start), f.MonthEnd.Sub(start)
 	for rows.Next() {
 		var a AgentForecast
-		if err := rows.Scan(&a.AgentID, &a.Name, &a.SpentULXC); err != nil {
+		var tz string
+		if err := rows.Scan(&a.AgentID, &a.Name, &a.Colour, &a.Face, &a.SpentULXC, &a.BalanceULXC, &tz); err != nil {
 			return f, err
 		}
+		loc, err := AgentRules{Timezone: tz}.location()
+		if err != nil {
+			return f, fmt.Errorf("economy: forecast: %w", err)
+		}
 		a.ForecastULXC = runOn(a.SpentULXC, elapsed, length)
+		if t := runsOut(a.BalanceULXC, a.SpentULXC, at, elapsed); t != nil {
+			*t = t.In(loc)
+			a.RunsOutAt = t
+		}
 		f.SpentULXC += a.SpentULXC
 		f.Agents = append(f.Agents, a)
 	}

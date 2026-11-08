@@ -2,11 +2,10 @@ package dashboard
 
 // statusHTML is the whole page: one card, four rows, no dependencies.
 //
-// THE DESIGN IS THE BRAND'S — brand-v4 (the 4 Oct 2026 board), via
-// internal/brand: Obsidian canvas, Surface card, Frost ink, one Teal accent;
-// Space Grotesk for the UI and IBM Plex Mono for every number, both named first
-// over the system stack and never fetched. Dark is primary, light follows the
-// viewer's preference. The flat mark sits beside the name; it is the brand's own
+// THE DESIGN IS POCKET'S (B57.14), via internal/brand: white page, cloud card,
+// ink text, one tangerine rule; Bricolage Grotesque for the heading and Figtree
+// for the UI and every number, both named first over the system stack and never
+// fetched. Light is primary, dark follows the viewer's preference. The symbol sits beside the name; it is the brand's own
 // file, inlined, never redrawn. The layout is a dense stack of hairline-separated
 // rows, label left and value right. status_test.go pins the hexes, so a drift
 // from the brand fails the build rather than quietly diverging.
@@ -25,7 +24,7 @@ const statusHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="light dark">
 <title>Talyvor Lens</title>
 <style>
 {{BRAND_CSS}}
@@ -38,12 +37,12 @@ body{
   display:flex; align-items:flex-start; justify-content:center; padding:48px 16px;
 }
 main{width:100%; max-width:560px}
-.num{font-family:var(--tv-font-mono); font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums}
 .card{background:var(--tv-surface); border:1px solid var(--tv-line); border-radius:var(--tv-radius-md); overflow:hidden}
 .head{display:flex; align-items:flex-start; gap:14px; padding:20px 16px 18px; border-bottom:1px solid var(--tv-line)}
 .head .tv-mark{width:32px; height:32px; margin-top:2px}
 .title{flex:1; min-width:0}
-h1{margin:0; font-size:20px; line-height:26px; font-weight:600; letter-spacing:-.01em; color:var(--tv-ink)}
+h1{margin:0; font-size:22px; line-height:26px; font-weight:750; letter-spacing:-.015em; color:var(--tv-ink)}
 .sub{margin:2px 0 12px; font-size:13px; line-height:20px; color:var(--tv-ink-muted)}
 .ver{font-size:12px; line-height:1; font-weight:500; color:var(--tv-ink-muted); margin-top:4px;
      border:1px solid var(--tv-line-strong); border-radius:var(--tv-radius-pill); padding:5px 9px; white-space:nowrap}
@@ -59,9 +58,9 @@ h1{margin:0; font-size:20px; line-height:26px; font-weight:600; letter-spacing:-
 .note p{margin:0; font-size:14px; line-height:22px; color:var(--tv-ink-muted)}
 .note p + p{margin-top:8px}
 a.row{text-decoration:none; color:inherit}
-a.row:hover{background:var(--tv-accent-tint)}
-a.row .go{font-size:18px; color:var(--tv-accent)}
-a.row:focus-visible{outline:2px solid var(--tv-accent); outline-offset:-2px}
+a.row:hover{background:var(--tv-raised)}
+a.row .go{font-size:18px; color:var(--tv-ink)}
+a.row:focus-visible{outline:2px solid var(--tv-ink); outline-offset:-2px}
 footer{margin-top:14px; text-align:center; font-size:13px; color:var(--tv-ink-muted)}
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.001ms!important; transition-duration:.001ms!important}
@@ -130,10 +129,10 @@ footer{margin-top:14px; text-align:center; font-size:13px; color:var(--tv-ink-mu
       <span class="go" aria-hidden="true">&rsaquo;</span>
     </a>
 
-    <a class="row" href="https://docs.talyvor.com">
+    <a class="row" href="https://app.talyvor.com/documentation">
       <div>
         <div class="label">Documentation</div>
-        <div class="hint">docs.talyvor.com</div>
+        <div class="hint">app.talyvor.com/documentation</div>
       </div>
       <span class="go" aria-hidden="true">&rsaquo;</span>
     </a>

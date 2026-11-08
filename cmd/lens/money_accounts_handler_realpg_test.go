@@ -245,3 +245,65 @@ func TestMoneyAccountRoutes_TheOwnerAddsTestMoneyToTheCompanyAccountOnce(t *test
 		t.Errorf("the company's GBP balance = %+v; want 5000 test pence and no live money", b)
 	}
 }
+
+// B56.14 — GET /v1/money/accounts/{id}/statement: the owner reads any of the workspace's accounts, as JSON or CSV, and an
+// agent's key only its own: another agent's account is not found, and its statement is never written to the key.
+func TestMoneyAccountRoutes_AStatementIsTheOwnersAndOnlyItsOwnAgentsKey(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5614-statement-route"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetAccountPartners(partners.NewRegistry(nil))
+	store.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
+	company, err := store.OpenCurrencyAccount(ctx, ws, "", "GBP", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accounts [2]economy.CurrencyAccount
+	for i, name := range []string{"Buyer", "Seller"} {
+		a, err := store.CreateAgent(ctx, ws, name, "owner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AttachAgentKey(ctx, ws, a.ID, "key-b5614-"+name); err != nil {
+			t.Fatal(err)
+		}
+		if accounts[i], err = store.OpenCurrencyAccount(ctx, ws, a.ID, "GBP", "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.AddTestMoney(ctx, ws, company.ID, 4_200, "b5614-in"); err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountMoneyAccountRoutes(r, store)
+	get := func(who *auth.AuthContext, id, query string) (int, http.Header, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/money/accounts/"+id+"/statement"+query, nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code, w.Header(), w.Body.String()
+	}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	buyerKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-b5614-Buyer"}
+
+	code, _, body := get(owner, company.ID, "")
+	var st economy.MoneyStatement
+	if err := json.Unmarshal([]byte(body), &st); code != http.StatusOK || err != nil || st.InMinor != 4_200 || st.ClosingMinor != 4_200 || len(st.Lines) != 1 {
+		t.Fatalf("the owner's statement of the company account = %d %s; want 200, £42.00 in, one line", code, body)
+	}
+	code, h, body := get(owner, company.ID, "?format=csv")
+	if code != http.StatusOK || !strings.HasPrefix(h.Get("Content-Type"), "text/csv") || !strings.Contains(body, ",opening,") ||
+		!strings.Contains(body, ",payment_in,4200,GBP,test,") || !strings.Contains(body, ",closing,,GBP,,,,,4200") {
+		t.Fatalf("the CSV = %d %s %q; want the opening, the payment in and the closing", code, h.Get("Content-Type"), body)
+	}
+	if code, _, body := get(buyerKey, accounts[0].ID, ""); code != http.StatusOK || !strings.Contains(body, `"currency":"GBP"`) {
+		t.Errorf("the buyer's key on its own account = %d %s; want 200", code, body)
+	}
+	for name, id := range map[string]string{"the seller's account": accounts[1].ID, "the company's account": company.ID} {
+		if code, _, body := get(buyerKey, id, ""); code != http.StatusNotFound || strings.Contains(body, "opening_minor") {
+			t.Errorf("the buyer's key on %s = %d %s; want 404 and no statement", name, code, body)
+		}
+	}
+}

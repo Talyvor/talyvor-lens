@@ -248,16 +248,24 @@ func (s *DualTokenStore) SpendPlan(ctx context.Context, workspaceID string, now 
 		plan.ProposedIncome = proposeIncome(moneyIn, now)
 	}
 
-	// The plan's currency: its income's, else the one the owner holds most of.
+	// The plan's currency: its income's, else the one the owner holds most of — by value, each currency's minor units
+	// scaled by its own decimals, so 2 USDC (2,000,000 millionths) never outweighs $5,000.00 (500,000 cents).
 	switch {
 	case plan.Income != nil:
 		plan.Currency = plan.Income.Currency
 	case plan.ProposedIncome != nil:
 		plan.Currency = plan.ProposedIncome.Currency
 	default:
+		var currencies []string
+		var places []int32
+		for c, d := range MoneyCurrencies {
+			currencies, places = append(currencies, c), append(places, int32(d))
+		}
 		err := s.pool.QueryRow(ctx, `SELECT b.currency FROM money_account_balances b JOIN money_accounts a ON a.id = b.account_id
-			WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') GROUP BY b.currency ORDER BY sum(b.balance_minor) DESC, b.currency LIMIT 1`,
-			workspaceID).Scan(&plan.Currency)
+			JOIN unnest($2::text[], $3::int[]) AS d(currency, places) ON d.currency = b.currency
+			WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') GROUP BY b.currency, d.places
+			ORDER BY sum(b.balance_minor) / 10::numeric ^ d.places DESC, b.currency LIMIT 1`,
+			workspaceID, currencies, places).Scan(&plan.Currency)
 		if errors.Is(err, pgx.ErrNoRows) {
 			plan.Currency, err = CurrencyGBP, nil
 		}

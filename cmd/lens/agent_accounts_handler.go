@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -58,7 +60,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/approvals/{id}/approve   let that request through, once; with
 //	                                                           {"always_allow": {"amount_ulxc", "per": "day"|"month"}} (B41.104)
 //	                                                           also let the agent pay that payee up to it without approval
-//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it
+//	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it; {"reason"} (up to 200 characters, B55.18) is
+//	                                                           told to the agent, whose identical request is refused
+//	                                                           without asking again for the approval life (24 hours)
 //
 // B19.3 — one company's agents pay each other, inside the closed loop:
 //
@@ -74,7 +78,10 @@ import (
 //
 // from and to are RFC 3339 times or YYYY-MM-DD dates (midnight UTC); from defaults to the start of the
 // current month and to to now, so September is from=2026-09-01&to=2026-10-01. On an agent's route any of
-// the three asks for the period statement; with none it is the newest-first list above.
+// the three, group or cursor asks for the period statement; with none it is the newest-first list above.
+// B57.13: group=day makes each model's questions on a day one line, its fees the line under it (the agent's
+// rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
+// first page's to with every cursor. The CSV is always one row per posting.
 //
 // B19.6 — unusual spend is flagged, an agent can be paused, and the month-end is forecast
 // (internal/economy/agent_alerts.go states the rule):
@@ -120,7 +127,8 @@ import (
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
-//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion}   decides them all, or none
+//	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion, reason?}   decides them all, or
+//	                                                       none; a decline's reason as on .../deny (B55.18)
 //	GET    /v1/workspaces/{wsID}/agents/push/public-key              the VAPID key a browser subscribes with
 //	POST   /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint, keys: {p256dh, auth}}   a device to tell
 //	DELETE /v1/workspaces/{wsID}/agents/push/subscriptions  {endpoint}
@@ -207,7 +215,8 @@ import (
 //
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
-//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?}   rename it, describe it; returns the agent
+//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?}   rename it, describe it,
+//	                                          change its face (B57.10); returns the agent
 //	POST  /v1/workspaces/{wsID}/agents/{id}/archive   retire it: its whole balance back to the workspace in one
 //	                                                  withdraw entry, its keys revoked, its top-up and schedules
 //	                                                  stopped; it is listed with archived_at from then on
@@ -216,7 +225,7 @@ import (
 // agents and issuing keys take the workspace's owner or an admin; reading takes any of its credentials.
 
 type agentBank interface {
-	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string) (economy.Agent, error)
+	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (economy.Agent, error)
 	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
 	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
@@ -240,7 +249,7 @@ type agentBank interface {
 	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
-	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (economy.Agent, error)
+	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description, colour, face *string) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
 	AttachAgentKey(ctx context.Context, workspaceID, agentID, scopedKeyID string) error
@@ -344,6 +353,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			// B48.1: fiat, crypto (the default) or both, and the currency of its fiat wallet.
 			WalletKind   string `json:"wallet_kind"`
 			FiatCurrency string `json:"fiat_currency"`
+			// B57.10: its face; Lens picks whichever is left out.
+			Colour string `json:"colour"`
+			Face   string `json:"face"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.Name == "" {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<agent name>"}`)
@@ -364,8 +376,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if in.WalletKind == "" {
 			in.WalletKind = economy.WalletKindCrypto
 		}
-		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency)
-		if errors.Is(err, economy.ErrWalletKind) {
+		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency, in.Colour, in.Face)
+		if errors.Is(err, economy.ErrWalletKind) || errors.Is(err, economy.ErrAgentDetails) {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -402,14 +414,16 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		var in struct {
 			Name        *string `json:"name"`
 			Description *string `json:"description"`
+			Colour      *string `json:"colour"`
+			Face        *string `json:"face"`
 		}
 		dec := json.NewDecoder(req.Body)
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil) {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>"}, either or both`)
+		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil && in.Colour == nil && in.Face == nil) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>", "colour": "<colour>", "face": "<face>"}, any of them`)
 			return
 		}
-		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Name, in.Description)
+		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Name, in.Description, in.Colour, in.Face)
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
@@ -995,8 +1009,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			var in struct {
 				Assertion   *passkey.Assertion      `json:"assertion"`
 				AlwaysAllow *economy.PayeeAllowance `json:"always_allow"` // B41.104: approve, and make it a rule
+				Reason      string                  `json:"reason"`       // B55.18: why the owner declined; the agent is told
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
+			ctx, ok := declineReason(w, req, in.Reason, approve)
+			if !ok {
+				return
+			}
 			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.ULXC <= 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
 				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
 				return
@@ -1006,9 +1025,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			if in.Assertion != nil {
 				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
 				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
-				a, err = bank.DecideAgentApprovalSigned(req.Context(), wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
+				a, err = bank.DecideAgentApprovalSigned(ctx, wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
 			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.AlwaysAllow, nil); err == nil {
-				a, err = bank.DecideAgentApproval(req.Context(), wsID, approvalID, approve)
+				a, err = bank.DecideAgentApproval(ctx, wsID, approvalID, approve)
 			}
 			switch {
 			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
@@ -1051,10 +1070,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeStatement(w, st, csv)
+		// A workspace's agents may keep different zones: its days are UTC's.
+		writeStatementView(w, req, st, csv, func() (*time.Location, error) { return time.UTC, nil })
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
-		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") {
+		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") {
 			from, to, csv, err := statementPeriod(req, time.Now())
 			if err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
@@ -1067,7 +1087,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
-				writeStatement(w, st, csv)
+				// B57.13: an agent's days are its rules' time zone's, else UTC's.
+				writeStatementView(w, req, st, csv, func() (*time.Location, error) {
+					rules, err := bank.GetAgentRules(req.Context(), st.WorkspaceID, st.AgentID)
+					if err != nil {
+						return nil, err
+					}
+					return time.LoadLocation(rules.Timezone)
+				})
 			}
 			return
 		}
@@ -1529,6 +1556,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		IDs       []string           `json:"approval_ids"`
 		Decision  string             `json:"decision"`
 		Assertion *passkey.Assertion `json:"assertion"`
+		Reason    string             `json:"reason"` // B55.18: why the owner declined them all; each agent is told
 	}
 	readBatch := func(w http.ResponseWriter, req *http.Request) (batchDecision, bool) {
 		var in batchDecision
@@ -1558,7 +1586,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if !ok {
 			return
 		}
-		list, err := bank.DecideAgentApprovals(req.Context(), chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
+		ctx, ok := declineReason(w, req, in.Reason, in.Decision == "approve")
+		if !ok {
+			return
+		}
+		list, err := bank.DecideAgentApprovals(ctx, chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
 		switch {
 		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
@@ -1705,6 +1737,16 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	})
 }
 
+// declineReason carries what the owner wrote when declining (B55.18) on req's context; false, after a 400, when it goes
+// with approve or is over 200 characters.
+func declineReason(w http.ResponseWriter, req *http.Request, reason string, approve bool) (context.Context, bool) {
+	if reason = strings.TrimSpace(reason); reason != "" && (approve || utf8.RuneCountInString(reason) > 200) {
+		writeJSONErr(w, http.StatusBadRequest, `reason goes with deny, up to 200 characters`)
+		return nil, false
+	}
+	return economy.WithDenyReason(req.Context(), reason), true
+}
+
 func writePaused(w http.ResponseWriter, agentID string, paused bool, err error) {
 	switch {
 	case errors.Is(err, economy.ErrAgentNotFound):
@@ -1807,6 +1849,47 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv 
 	return from, to, csv, nil
 }
 
+// writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
+// a day of zone's into one line, and ?limit= and ?cursor= page its lines newest first. The CSV is never grouped or
+// paged: it is one row per posting, the audit file.
+func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, asCSV bool, zone func() (*time.Location, error)) {
+	q := req.URL.Query()
+	if asCSV {
+		writeStatement(w, st, true)
+		return
+	}
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			writeJSONErr(w, http.StatusBadRequest, "limit must be between 1 and 1000")
+			return
+		}
+		limit = n
+	}
+	switch q.Get("group") {
+	case "":
+	case "day":
+		loc, err := zone()
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		st = st.ByDay(loc, loc.String())
+	default:
+		writeJSONErr(w, http.StatusBadRequest, "group must be day")
+		return
+	}
+	if limit > 0 || q.Has("cursor") {
+		var err error
+		if st, err = st.Page(limit, q.Get("cursor")); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "cursor must be the next_cursor of a page of this statement")
+			return
+		}
+	}
+	writeStatement(w, st, false)
+}
+
 // writeStatement answers with the statement as JSON, or as CSV: a header, each account's opening
 // balance, every line, then each account's closing balance.
 func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
@@ -1830,6 +1913,10 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 	}
 	for _, a := range st.Accounts {
 		_ = cw.Write([]string{"", "", at(st.To), a.Account, "closing", "", "", "", i64(a.ClosingULXC)})
+	}
+	// B56.14: what the agent put on the company's marketplace bill, which moves no balance here.
+	for _, l := range st.MarketplaceBill {
+		_ = cw.Write([]string{"", l.UseID, at(l.At), economy.OnMarketplaceBill, l.Kind, i64(l.AmountULXC), cmp.Or(l.PayeeAgentID, l.ListingID), csvText(l.Memo), ""})
 	}
 	cw.Flush()
 }
