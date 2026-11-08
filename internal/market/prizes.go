@@ -109,7 +109,8 @@ func (s *Store) AwardPrize(ctx context.Context, deps LicenceDeps, buyerWorkspace
 			what = fmt.Sprintf("prize:%s:%s:%d:%d", agentID, l.ID, version, lic.PriceULXC)
 		}
 		c := economy.Commitment{Kind: UseKindPrize, Licence: LicenceCommercial, ULXC: lic.PriceULXC}
-		err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, lic.PriceULXC, c, what, record)
+		memo := fmt.Sprintf("A prize for %s, %s on your monthly marketplace bill", l.Title, economy.LXCMoney(lic.PriceULXC))
+		err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, lic.PriceULXC, c, what, memo, record)
 	} else {
 		err = pgx.BeginFunc(ctx, s.pool, record)
 	}

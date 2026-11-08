@@ -30,6 +30,8 @@ type SafeToSpendFigure struct {
 type AgentSafeToSpend struct {
 	AgentID string              `json:"agent_id"`
 	Name    string              `json:"name"`
+	Colour  string              `json:"colour"` // B57.10: its face, as the book has it
+	Face    string              `json:"face"`
 	Figures []SafeToSpendFigure `json:"figures"`
 }
 
@@ -99,7 +101,7 @@ func (s *DualTokenStore) SafeToSpend(ctx context.Context, workspaceID string, at
 		return fail(err)
 	}
 	book.at("", "LXC").Balance = wsBalance
-	rows, err := s.pool.Query(ctx, `SELECT a.id, a.name, COALESCE(b.balance_ulxc, 0)::bigint FROM agent_accounts a
+	rows, err := s.pool.Query(ctx, `SELECT a.id, a.name, a.colour, a.face, COALESCE(b.balance_ulxc, 0)::bigint FROM agent_accounts a
 		LEFT JOIN agent_account_balances b ON b.workspace_id = a.workspace_id AND b.account = 'agent:' || a.id
 		WHERE a.workspace_id = $1 ORDER BY a.created_at, a.id`, workspaceID)
 	if err != nil {
@@ -108,7 +110,7 @@ func (s *DualTokenStore) SafeToSpend(ctx context.Context, workspaceID string, at
 	for rows.Next() {
 		var a AgentSafeToSpend
 		var balance int64
-		if err := rows.Scan(&a.AgentID, &a.Name, &balance); err != nil {
+		if err := rows.Scan(&a.AgentID, &a.Name, &a.Colour, &a.Face, &balance); err != nil {
 			rows.Close()
 			return fail(err)
 		}

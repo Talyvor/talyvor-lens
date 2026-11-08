@@ -154,7 +154,8 @@ type streamOps interface {
 	// updating u in place. No-op for lines that carry no usage.
 	extractUsage(line []byte, u *streamUsage)
 	// synthesizeCachePayload produces the JSON to cache once the stream
-	// has fully been consumed.
+	// has fully been consumed. Only a finished answer is kept, so it carries
+	// the provider's normal stop reason (B17.384).
 	synthesizeCachePayload(accumulated string) []byte
 }
 
@@ -261,7 +262,7 @@ func (openAIStreamOps) processLine(line []byte, acc *strings.Builder) bool {
 func (openAIStreamOps) synthesizeCachePayload(accumulated string) []byte {
 	out, _ := json.Marshal(map[string]any{
 		"choices": []map[string]any{
-			{"message": map[string]any{"role": "assistant", "content": accumulated}},
+			{"message": map[string]any{"role": "assistant", "content": accumulated}, "finish_reason": "stop"},
 		},
 	})
 	return out
@@ -360,6 +361,7 @@ func (anthropicStreamOps) synthesizeCachePayload(accumulated string) []byte {
 		"content": []map[string]any{
 			{"type": "text", "text": accumulated},
 		},
+		"stop_reason": "end_turn",
 	})
 	return out
 }
@@ -470,6 +472,7 @@ func (s *StreamHandler) serve(
 	var accumulated strings.Builder
 	var usage streamUsage
 	ended := false // the provider sent its end-of-answer event
+	cut := false   // B17.184: the provider stopped it at the length limit
 	// B18.7: the upstream's lines (Bedrock's are decoded from its binary event stream), and what the
 	// client is sent for each (Google and Bedrock are translated to OpenAI chunks).
 	src := upstreamLines(ops, resp.Body)
@@ -521,6 +524,9 @@ func (s *StreamHandler) serve(
 		if ops.endsAnswer(line) {
 			ended = true
 		}
+		if bytes.HasPrefix(line, []byte("data:")) && cutOff(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))) {
+			cut = true
+		}
 		if ops.processLine(line, &accumulated) {
 			break
 		}
@@ -556,7 +562,8 @@ func (s *StreamHandler) serve(
 	// workspace's output guardrails are on, only if the finished text passes them. They cannot run
 	// while a stream is in flight, so this client already has the text — but an answer that fails
 	// them must never be served to the next asker, in this workspace or through the pool.
-	shouldCache := !piiDetected && ended
+	// B17.184: nor is one the provider cut off at the length limit — it would be replayed as finished.
+	shouldCache := !piiDetected && ended && !cut
 	if shouldCache && s.proxy.guardrails != nil && s.proxy.guardrails.OutputEnabled() {
 		if ogr := s.proxy.guardrails.CheckOutput(storeCtx, sc.wsID, accumulated.String()); !ogr.Passed || len(ogr.Violations) > 0 {
 			shouldCache = false

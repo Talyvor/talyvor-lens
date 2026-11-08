@@ -76,7 +76,7 @@ func TestAgentRoutes_OneSwitchPausesEveryAgent(t *testing.T) {
 		Payer: "Owner Ltd", Reference: details.PaymentReference, AmountMinor: 10000, Currency: "GBP"}); err != nil {
 		t.Fatal(err)
 	}
-	mandate, err := store.GrantMandate(ctx, ws, ids[0], economy.MandateGrant{AccountID: payerGBP.ID, PayeeWorkspaceID: "ws-agents-payee",
+	mandate, err := store.GrantMandate(ctx, ws, "", economy.MandateGrant{AccountID: payerGBP.ID, PayeeWorkspaceID: "ws-agents-payee",
 		MaxPerPullMinor: 1000, MaxPerMonthMinor: 5000, ExpiresAt: time.Now().Add(24 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)

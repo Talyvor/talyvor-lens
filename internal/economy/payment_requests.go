@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -629,16 +630,46 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 		return r, err
 	}
 	r.ApprovalURL, r.DeepLink = ApprovalURLBase+r.ID, ApprovalDeepURL+r.ID
+	r.Summary = paymentRequestSummary(r, counts)
+	return r, nil
+}
+
+// paymentRequestSummary heads the request for a person: "Pay Acme Hosting $340.00", or "Pay 3 payments, $1,240.00: 2
+// wait for you, 1 inside a permission you signed" when not every payment waits (B55.32).
+func paymentRequestSummary(r PaymentRequest, counts map[string]int) string {
+	if counts[ItemBlocked] == len(r.Items) {
+		return "Nothing to pay: every payment was blocked"
+	}
 	totals := []string{}
 	for _, c := range slices.Sorted(maps.Keys(r.Totals)) {
-		totals = append(totals, formatMinor(c, r.Totals[c]))
+		totals = append(totals, Money(r.Totals[c], c))
 	}
-	if len(totals) == 0 {
-		totals = []string{"nothing payable"}
+	s := fmt.Sprintf("Pay %d payments, %s", len(r.Items), strings.Join(totals, " and "))
+	if len(r.Items) == 1 {
+		// a listing's title is the seller's: no control or bidi character may reorder or break the heading's amount.
+		s = "Pay " + strings.Map(func(c rune) rune {
+			if unicode.IsControl(c) || unicode.Is(unicode.Bidi_Control, c) {
+				return -1
+			}
+			return c
+		}, r.Items[0].PayeeName) + " " + totals[0]
 	}
-	r.Summary = fmt.Sprintf("%d item(s), %s: %d need approval, %d auto, %d blocked", len(r.Items), strings.Join(totals, " + "),
-		counts[ItemNeedsApproval], counts[ItemAuto], counts[ItemBlocked])
-	return r, nil
+	if w := counts[ItemNeedsApproval]; w < len(r.Items) {
+		parts := []string{}
+		for _, p := range []struct {
+			n    int
+			text string
+		}{{w, "wait for you"}, {counts[ItemAuto], "inside a permission you signed"}, {counts[ItemBlocked], "blocked"}} {
+			if p.n > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", p.n, p.text))
+			}
+		}
+		if w == 1 {
+			parts[0] = "1 waits for you"
+		}
+		s += ": " + strings.Join(parts, ", ")
+	}
+	return s
 }
 
 // PendingPaymentRequests lists workspaceID's requests waiting for approval, newest first, each as PaymentRequest reads
