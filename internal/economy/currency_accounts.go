@@ -179,13 +179,29 @@ func currencyAccountErr(err error, which string) error {
 // CurrencyAccounts is workspaceID's company and agent accounts, or with agentID that agent's only, and what each
 // holds: the company's first, then by currency.
 func (s *DualTokenStore) CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]CurrencyAccount, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.id, a.workspace_id, COALESCE(a.agent_id, ''), a.currency, a.purpose, a.status, a.name,
+	return currencyAccounts(ctx, s.pool, workspaceID, agentID, "")
+}
+
+// currencyAccount is workspaceID's company or agent account accountID, and what it holds.
+func currencyAccount(ctx context.Context, q pgxDB, workspaceID, accountID string) (CurrencyAccount, error) {
+	out, err := currencyAccounts(ctx, q, workspaceID, "", accountID)
+	if err != nil {
+		return CurrencyAccount{}, err
+	}
+	if len(out) == 0 {
+		return CurrencyAccount{}, fmt.Errorf("%w: %s", ErrMoneyAccountNotFound, accountID)
+	}
+	return out[0], nil
+}
+
+func currencyAccounts(ctx context.Context, q pgxDB, workspaceID, agentID, accountID string) ([]CurrencyAccount, error) {
+	rows, err := q.Query(ctx, `SELECT a.id, a.workspace_id, COALESCE(a.agent_id, ''), a.currency, a.purpose, a.status, a.name,
 		a.partner_account_ref, COALESCE(a.parent_account_id, ''), a.created_at,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'test'), 0)::bigint,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'live'), 0)::bigint
 		FROM money_accounts a LEFT JOIN money_account_balances b ON b.account_id = a.id
-		WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') AND ($2 = '' OR a.agent_id = $2)
-		GROUP BY a.id ORDER BY a.agent_id NULLS FIRST, a.currency, a.created_at`, workspaceID, agentID)
+		WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') AND ($2 = '' OR a.agent_id = $2) AND ($3 = '' OR a.id = $3)
+		GROUP BY a.id ORDER BY a.agent_id NULLS FIRST, a.currency, a.created_at`, workspaceID, agentID, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: currency accounts: %w", err)
 	}
