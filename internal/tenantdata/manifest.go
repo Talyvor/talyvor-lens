@@ -332,6 +332,7 @@ var Manifest = map[string]Entry{
 	"billing_customers":            {Delete, ""},
 	"budgets":                      {Delete, ""},
 	"cache_nodes":                  {Delete, ""},
+	"chat_shares":                  {Delete, "B28.452: a chat a workspace member shared as a link — its title and each turn's text; turning the link off deletes it too"},
 	"compression_measurements":     {Delete, "per-request prompt lengths for one workspace; a byte count is not content, but it is still that customer's traffic"},
 	"embedding_nodes":              {Delete, ""},
 	"eval_datasets":                {Delete, ""},
