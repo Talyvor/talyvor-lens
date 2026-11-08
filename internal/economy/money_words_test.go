@@ -78,7 +78,7 @@ func TestPaymentRequestSummary_ReadsAsASentence(t *testing.T) {
 		{[]PaymentRequestItem{item("Acme", ItemNeedsApproval), item("Kite", ItemNeedsApproval)}, map[string]int64{"USD": 10000, "GBP": 5000},
 			"Pay 2 payments, £50.00 and $100.00"},
 		{[]PaymentRequestItem{item("Kite Accounting", ItemAuto)}, map[string]int64{"USD": 45000}, "Pay Kite Accounting $450.00: 1 inside a permission you signed"},
-		{[]PaymentRequestItem{item("Acme‮00.1$ \nData", ItemNeedsApproval)}, map[string]int64{"USD": 34000}, "Pay Acme00.1$ Data $340.00"},
+		{[]PaymentRequestItem{item("Acme\u202e00.1$ \nData", ItemNeedsApproval)}, map[string]int64{"USD": 34000}, "Pay Acme00.1$ Data $340.00"},
 		{[]PaymentRequestItem{item("Acme", ItemNeedsApproval), item("Kite", ItemBlocked)}, map[string]int64{"USD": 34000}, "Pay 2 payments, $340.00: 1 waits for you, 1 blocked"},
 	} {
 		counts := map[string]int{}
