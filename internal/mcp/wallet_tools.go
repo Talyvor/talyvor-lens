@@ -54,6 +54,7 @@ type WalletBank interface {
 	CreateInvoice(ctx context.Context, workspaceID, agentID string, r economy.InvoiceRequest) (economy.Invoice, error)
 	Invoices(ctx context.Context, workspaceID, agentID string) ([]economy.Invoice, error)
 	PayInvoiceByAgent(ctx context.Context, token, workspaceID, agentID, funding string) (economy.PaidInvoice, error)
+	PayCheckout(ctx context.Context, id, workspaceID, agentID, funding string) (economy.PaidCheckout, error)
 	OpenPortfolio(ctx context.Context, workspaceID, agentID, name string, cashUUSD int64) (economy.Portfolio, error)
 	ListPortfolios(ctx context.Context, workspaceID, agentID string) ([]economy.Portfolio, error)
 	PlaceSimOrder(ctx context.Context, workspaceID, agentID, portfolioID string, in economy.SimOrderInput) (economy.SimOrder, error)
@@ -81,6 +82,7 @@ var walletRefusals = []error{
 	economy.ErrOutsidePayment, economy.ErrPayeeNotFound, economy.ErrPayeeUnconfirmed, economy.ErrIdempotencyKeyReused,
 	screening.ErrBlocked, screening.ErrHeld, screening.ErrListsStale, screening.ErrRefused, screening.ErrNotWhatWasReleased,
 	economy.ErrInvoice, economy.ErrInvoiceNotFound, economy.ErrInvoiceState, economy.ErrInvoiceShort, economy.ErrInvoicePayerPaused,
+	economy.ErrCheckout, economy.ErrCheckoutNotFound, economy.ErrCheckoutState, economy.ErrCheckoutShort,
 	workspace.ErrMoneyWall,
 }
 
@@ -174,6 +176,9 @@ func walletToolDefinitions() []map[string]any {
 		tool("wallet_invoices", "The invoices you issued: draft, sent, overdue, paid or void, what is paid and due, and the reminders sent.", none),
 		tool("wallet_invoice_pay", "Pay an invoice from your account in its currency, with its pay link or the token at its end.",
 			map[string]any{"pay_token": str("the invoice's pay link, or its token"), "funding": str("test (the default) or live")}, "pay_token"),
+		tool("wallet_pay_merchant", "Pay a business's Talyvor Pay checkout from your account in its currency, within your spending rules: "+
+			"one above your approval amount waits for your owner's approval, then ask again. Paying it again answers the same payment.",
+			map[string]any{"checkout_id": str("the checkout the business gave you (chk_…)"), "funding": str("test (the default) or live")}, "checkout_id"),
 		tool("wallet_credential", "Your Know Your Agent credential: a signed token any platform can check against Talyvor's published keys. "+
 			"It says who you are, who answers for you and how far they are verified, what you may do with live money and your limits.", none),
 	}
@@ -218,6 +223,7 @@ type walletArgs struct {
 	Reference      string `json:"reference"`
 	IdempotencyKey string `json:"idempotency_key"`
 	PayToken       string `json:"pay_token"`
+	CheckoutID     string `json:"checkout_id"`
 
 	raw json.RawMessage // the arguments as sent, for a tool that reads its own
 }
@@ -421,6 +427,8 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 		return map[string]any{"invoices": invoices}, err
 	case "wallet_invoice_pay":
 		return bank.PayInvoiceByAgent(ctx, a.PayToken[strings.LastIndex(a.PayToken, "/")+1:], ws, agent, a.Funding)
+	case "wallet_pay_merchant": // B30.38
+		return bank.PayCheckout(ctx, a.CheckoutID, ws, agent, a.Funding)
 	case "wallet_credential": // B30.5
 		if s.credentials == nil {
 			return nil, errors.New("the Know Your Agent credentials are not configured")
