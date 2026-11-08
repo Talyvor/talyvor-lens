@@ -103,6 +103,9 @@ func TestMerchantCheckouts_AnAgentPaysTheMerchantAndARefundReversesIt(t *testing
 		}
 	}
 	entry := paid["entry"].(map[string]any)["id"].(string)
+	if lines := paid["entry"].(map[string]any)["postings"].([]any); len(lines) != 1 || paid["checkout"].(map[string]any)["account_id"] != nil {
+		t.Fatalf("the payer sees %v and the merchant's account %v; want its own line only", lines, paid["checkout"].(map[string]any)["account_id"])
+	}
 
 	// The ledger: the buyer −5000, the merchant +4950 and Talyvor's revenue +50, test money, summing to zero.
 	ledger := func(entryID string) map[string]int64 {
@@ -165,5 +168,19 @@ func TestMerchantCheckouts_AnAgentPaysTheMerchantAndARefundReversesIt(t *testing
 	}
 	if code, list := call(ws, http.MethodGet, "/v1/merchant/checkouts", ``); code != http.StatusOK || len(list["checkouts"].([]any)) != 1 {
 		t.Errorf("the merchant's checkouts = %d %v", code, list)
+	}
+
+	// The entry is the merchant's, yet the payer's own money is still asked of currency_accounts: a payer that has not
+	// accepted its latest terms pays nothing, as it would pay no invoice.
+	if _, err := store.PublishTerms(ctx, economy.CapabilityCurrencyAccounts, "nicolai", economy.TermsText{Path: "docs/terms/currency_accounts.md",
+		Body: "Terms for currency accounts."}); err != nil {
+		t.Fatal(err)
+	}
+	_, second := call(ws, http.MethodPost, "/v1/merchant/checkouts", `{"amount_minor":1000,"currency":"GBP","order_id":"order-2"}`)
+	if code, out := call(payerWS, http.MethodPost, "/v1/merchant/checkouts/"+second["id"].(string)+"/pay", `{"agent_id":"`+buyer.ID+`"}`); code != http.StatusForbidden {
+		t.Fatalf("a payer that has not accepted the currency accounts terms pays = %d %v; want 403", code, out)
+	}
+	if b := held(payerWS, buyerGBP.ID); b != 10000 {
+		t.Fatalf("the buyer holds %d after the refusal; want 10000", b)
 	}
 }

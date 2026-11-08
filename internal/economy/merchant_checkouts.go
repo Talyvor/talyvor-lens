@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -217,7 +218,7 @@ func (s *DualTokenStore) PayCheckout(ctx context.Context, id, workspaceID, agent
 	if co.Status != CheckoutOpen {
 		if co.PayerWorkspaceID == workspaceID && co.PayerAgentID == agentID {
 			if paid, err := readMoneyEntry(ctx, tx, `e.id = $1`, co.PaymentEntryID); err == nil {
-				return PaidCheckout{Checkout: co, Entry: paid}, nil
+				return forPayer(PaidCheckout{Checkout: co, Entry: paid}, from), nil
 			}
 		}
 		return PaidCheckout{}, fmt.Errorf("%w: it is %s", ErrCheckoutState, co.Status)
@@ -227,6 +228,29 @@ func (s *DualTokenStore) PayCheckout(ctx context.Context, id, workspaceID, agent
 	}
 	if s.accountPartners == nil {
 		return PaidCheckout{}, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)
+	}
+	// The entry is the merchant's, so PostMoney asks merchant_acceptance of the merchant; the payer's own money is asked
+	// of currency_accounts here, as PostMoney would ask it of an invoice's payer: its terms, and for live money its
+	// clearance and its level's limit.
+	pc, _ := CapabilityByKey(CapabilityCurrencyAccounts)
+	if err := refuseUnaccepted(ctx, tx, workspaceID, pc); err != nil {
+		return PaidCheckout{}, err
+	}
+	if funding == FundingLive {
+		refusal, err := capabilityLive(ctx, tx, workspaceID, pc)
+		if err != nil {
+			return PaidCheckout{}, err
+		}
+		if refusal != nil {
+			return PaidCheckout{}, refusal
+		}
+		over, err := overLevelLimit(ctx, tx, workspaceID, pc, []MoneyPosting{{AccountID: from, AmountMinor: co.AmountMinor, Currency: co.Currency}})
+		if err != nil {
+			return PaidCheckout{}, err
+		}
+		if over != nil {
+			return PaidCheckout{}, &CapabilityRefusal{Capability: pc, Level: over}
+		}
 	}
 	// The payer's rules judge it as a payment to the merchant, at what it is worth in LXC, exactly as an invoice's
 	// (B30.131). The agent is locked first, then the account, so no other movement spends the same money or limit.
@@ -274,7 +298,14 @@ func (s *DualTokenStore) PayCheckout(ctx context.Context, id, workspaceID, agent
 		return PaidCheckout{}, err
 	}
 	out.Checkout, err = readCheckout(ctx, s.pool, co.ID, "")
-	return out, err
+	return forPayer(out, from), err
+}
+
+// forPayer is what the payer sees of its payment: its own line, not the merchant's account or Talyvor's revenue.
+func forPayer(p PaidCheckout, from string) PaidCheckout {
+	p.Checkout.WorkspaceID, p.Checkout.AccountID, p.Entry.WorkspaceID = "", "", ""
+	p.Entry.Postings = slices.DeleteFunc(p.Entry.Postings, func(l MoneyPosting) bool { return l.AccountID != from })
+	return p
 }
 
 // RefundCheckout reverses workspaceID's paid checkout id in full: the agent gets back what it paid, from the merchant's
