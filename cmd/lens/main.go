@@ -2230,6 +2230,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("money: held payments paid", slog.Int("requests", n))
 				}
+				// B55.21: covered payments not paid when prepared, or that failed, paid within a day; refused after it.
+				if n, err := dualToken.RunCoveredPayments(ctx); err != nil {
+					slog.Warn("money: covered payments failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: covered payments paid", slog.Int("requests", n))
+				}
 				// B41.205: the morning briefing pushed to the owners' devices, once a workspace a day, from the push hour.
 				if n, err := dualToken.RunBriefingPushes(ctx, now, cfg.BriefingPushHour); err != nil {
 					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
