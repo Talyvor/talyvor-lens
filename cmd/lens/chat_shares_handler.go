@@ -87,7 +87,7 @@ func mountChatShareRoutes(r chi.Router, pool *pgxpool.Pool) {
 		err := pool.QueryRow(req.Context(), `
 			INSERT INTO chat_shares (id, workspace_id, token, conversation_id, title, messages)
 			VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at`,
-			s.ID, chi.URLParam(req, "wsID"), s.Token, s.ConversationID, s.Title, messages).Scan(&s.CreatedAt)
+			s.ID, chi.URLParam(req, "wsID"), s.Token, s.ConversationID, s.Title, string(messages)).Scan(&s.CreatedAt)
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, "the link could not be made")
 			return
