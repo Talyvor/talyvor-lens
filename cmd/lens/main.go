@@ -4907,6 +4907,7 @@ func run() error {
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
+		mountMerchantCheckoutRoutes(authed, dualToken)                                  // B30.38
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38

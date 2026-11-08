@@ -68,6 +68,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"wallet_invoice_create":  {"Issue an invoice", moves},
 	"wallet_invoices":        {"Invoices", reads},
 	"wallet_invoice_pay":     {"Pay an invoice", moves},
+	"wallet_pay_merchant":    {"Pay a business", moves},
 	"wallet_credential":      {"Know Your Agent credential", reads},
 
 	"market_search":   {"Search the marketplace", reads},
