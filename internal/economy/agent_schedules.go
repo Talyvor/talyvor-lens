@@ -256,7 +256,7 @@ func (s *DualTokenStore) CreateAgentListingSchedule(ctx context.Context, workspa
 		amount = price
 	}
 	if amount < price {
-		return AgentSchedule{}, fmt.Errorf("%w: the listing costs %s LXC a use, more than %s LXC", ErrListingPayee, lxcString(price), lxcString(amount))
+		return AgentSchedule{}, fmt.Errorf("%w: the listing costs %s a use, more than %s", ErrListingPayee, LXCMoney(price), LXCMoney(amount))
 	}
 	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `
 		INSERT INTO agent_payment_schedules (id, workspace_id, from_agent_id, to_listing_id, amount_ulxc, memo, every, next_run_at)

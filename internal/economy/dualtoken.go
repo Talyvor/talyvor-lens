@@ -378,6 +378,8 @@ type DualTokenStore struct {
 	payeeScreener PayeeScreener
 	// unusual is when a payment request item's amount is far above its payee's usual (B41.103); zero, never.
 	unusual unusualAmount
+	// started is when this store was made: RunCoveredPayments tries only what this Lens prepared (B55.21).
+	started time.Time
 	// B19.17: the marketplace a schedule pays a listing through.
 	listings ListingCharger
 	// B19.15: the marketplace a payment to another company's agent goes through.
@@ -404,7 +406,7 @@ func NewDualTokenStore(lens *mining.LedgerStore, pool *pgxpool.Pool, engine *Rat
 }
 
 func newDualTokenStore(lens *mining.LedgerStore, db pgxDB, engine *RateEngine) *DualTokenStore {
-	return &DualTokenStore{lens: lens, pool: db, engine: engine}
+	return &DualTokenStore{lens: lens, pool: db, engine: engine, started: time.Now()}
 }
 
 // ConvertLENStoLXC mints LXC by spending LENS at the current

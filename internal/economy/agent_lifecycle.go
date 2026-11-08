@@ -115,7 +115,7 @@ func (s *DualTokenStore) ArchiveAgent(ctx context.Context, workspaceID, agentID 
 		return out, fmt.Errorf("economy: agent pots: %w", err)
 	}
 	if pots != 0 {
-		return out, fmt.Errorf("%w (%d µLXC)", ErrAgentPotsHeld, pots)
+		return out, fmt.Errorf("%w (%s)", ErrAgentPotsHeld, LXCMoney(pots))
 	}
 	bal, err := accountBalance(ctx, tx, workspaceID, agentAccount(agentID))
 	if err != nil {

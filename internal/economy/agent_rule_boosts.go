@@ -107,7 +107,7 @@ func ruleAmount(rule string, v int64) string {
 	if rule == "requests_per_minute" {
 		return strconv.FormatInt(v, 10) + " requests a minute"
 	}
-	return lxcString(v) + " LXC"
+	return LXCMoney(v)
 }
 
 // AgentBoosts lists the agent's boosts in force now, the soonest to end first.

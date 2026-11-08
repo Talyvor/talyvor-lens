@@ -449,6 +449,9 @@ func run() error {
 	if err := rooms.CheckLimits(); err != nil {
 		return err
 	}
+	if err := economy.CheckMoneyOrder(); err != nil {
+		return err
+	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
 	if err != nil {
 		return err
@@ -2232,6 +2235,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("money: held payments paid", slog.Int("requests", n))
 				}
+				// B55.21: covered payments not paid when prepared, or that failed, paid within a day; refused after it.
+				if n, err := dualToken.RunCoveredPayments(ctx); err != nil {
+					slog.Warn("money: covered payments failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: covered payments paid", slog.Int("requests", n))
+				}
 				// B41.205: the morning briefing pushed to the owners' devices, once a workspace a day, from the push hour.
 				if n, err := dualToken.RunBriefingPushes(ctx, now, cfg.BriefingPushHour); err != nil {
 					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
@@ -2957,6 +2966,9 @@ func run() error {
 		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
 		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
 
+		// B28.452 — a shared chat, read by anyone holding its link; the token is the whole credential.
+		pub.Get("/v1/public/chat-shares/{token}", publicChatShareHandler(pool))
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -3602,6 +3614,9 @@ func run() error {
 
 		// B46.15: the workspace's owner names the workspace.
 		mountWorkspaceNameRoutes(authed, pool, wsManager)
+
+		// B28.452: a chat shared from Chat as a link, kept until the link is turned off.
+		mountChatShareRoutes(authed, pool)
 
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider

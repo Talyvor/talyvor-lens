@@ -234,7 +234,7 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	}
 	if bal < d.AmountULXC {
 		_ = tx.Rollback(ctx)
-		return s.declineCard(ctx, a, d, fmt.Sprintf("the agent holds %s LXC and this purchase costs %s LXC", lxcString(bal), lxcString(d.AmountULXC)))
+		return s.declineCard(ctx, a, d, fmt.Sprintf("the agent holds %s and this purchase costs %s", LXCMoney(bal), LXCMoney(d.AmountULXC)))
 	}
 	// B22.1: cards are RED — test-funded credits only, until the operator clears them for real money.
 	if d.testFunded, err = spendForCapability(ctx, tx, d.WorkspaceID, CapabilityAgentCard, d.AmountULXC); err != nil {
