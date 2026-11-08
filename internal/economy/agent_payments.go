@@ -221,7 +221,7 @@ func payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPay
 		return pay, err
 	}
 	if bal < amount {
-		return pay, fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+		return pay, agentHolds(ctx, tx, ErrAgentFunds, fromAgentID, bal, 0)
 	}
 	pay.EntryID = entry.String()
 	if err := enforceAgentRules(ctx, tx, workspaceID, fromAgentID, amount, pay.EntryID); err != nil {

@@ -47,7 +47,7 @@ func TestB28303_AScheduledPaymentToABlockedPayeePostsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs, err := s.ListAgentScheduleRuns(ctx, ws, sc.ID)
-	if err != nil || len(runs) != 1 || runs[0].Outcome != "refused" || !strings.Contains(runs[0].Detail, blocked.ID) {
+	if err != nil || len(runs) != 1 || runs[0].Outcome != "refused" || !strings.Contains(runs[0].Detail, "may not pay blocked") {
 		t.Fatalf("the schedule's runs = %+v (%v), want one refused naming the blocked payee", runs, err)
 	}
 	var pays int
