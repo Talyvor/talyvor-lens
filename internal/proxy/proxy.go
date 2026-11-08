@@ -672,6 +672,43 @@ func emptyAnswer(body []byte) bool {
 	return false
 }
 
+// cutOff reports an answer the provider stopped at the length limit (B17.184): OpenAI's finish_reason "length",
+// Anthropic's stop_reason "max_tokens", Gemini's finishReason "MAX_TOKENS", or a Responses API answer left
+// "incomplete". It reads a whole answer or one streamed event (Anthropic's message_delta carries it under delta).
+func cutOff(body []byte) bool {
+	var r struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		StopReason string `json:"stop_reason"`
+		Delta      struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+		Status   string `json:"status"`
+		Response struct {
+			Status string `json:"status"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return false
+	}
+	for _, c := range r.Choices {
+		if c.FinishReason == "length" {
+			return true
+		}
+	}
+	for _, c := range r.Candidates {
+		if c.FinishReason == "MAX_TOKENS" {
+			return true
+		}
+	}
+	return r.StopReason == "max_tokens" || r.Delta.StopReason == "max_tokens" ||
+		r.Status == "incomplete" || r.Response.Status == "incomplete"
+}
+
 // replaceResponseContent rewrites the first choice's message content (used to
 // re-inject redacted output). Returns the body unchanged when the shape
 // doesn't match, so a redaction can never corrupt the response envelope.
@@ -1347,7 +1384,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
 		// request goes upstream and its fresh answer replaces the stored one.
 		// B17.246: with Run code on, nor is one stored without the runs that worked it out — it would show no code.
-		if cached != nil && (emptyAnswer(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
+		// B17.184: nor is a buffered answer kept before cut-off ones were refused.
+		if cached != nil && (emptyAnswer(cached) || cutOff(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
 			runCodeAnswerOf(ctx) != nil && len(codeRunsIn(cached)) == 0) {
 			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
 			metrics.RecordCacheMiss("cache_miss")
@@ -3071,6 +3109,10 @@ func (p *Proxy) storeCaches(ctx context.Context, provider, model, cachePrompt, r
 	}
 	// B17.178: an answer that says nothing is passed to its asker, never stored for the next one.
 	if emptyAnswer(response) {
+		return false
+	}
+	// B17.184: nor is one cut off at the length limit — the next asker would get it as a finished answer.
+	if cutOff(response) {
 		return false
 	}
 	// B17.238: nor is an answer that gets its question's sum wrong.
