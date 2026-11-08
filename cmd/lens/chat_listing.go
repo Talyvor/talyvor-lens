@@ -23,7 +23,7 @@ import (
 // itself is billed to the buyer as any request is, and the use is charged as POST …/marketplace/listings/{id}/use
 // charges it (internal/market/use.go) — a paid listing's price on the buyer's marketplace bill. The answer says how
 // in X-Talyvor-Listing-Charge (billed, free, own, linked, licensed or trial). A request whose model call fails is not
-// charged. Only a skill or an agent can be asked in Chat.
+// charged. Only a skill, an agent or a prompt can be asked.
 //
 // Each request is one use: a question whose model calls a tool takes a request for each round, and each is charged.
 //
