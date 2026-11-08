@@ -253,6 +253,9 @@ func (brokerCleared) WalletCapabilities(context.Context) ([]economy.CapabilitySt
 	return out, nil
 }
 
+// Labels names no capability, so every rail reads Sandbox.
+func (brokerCleared) Labels(context.Context) (map[string]string, error) { return nil, nil }
+
 // B56.6: the public page names no trading while no trade_ capability has a clearance in force, and the Trading rail
 // comes back once one has.
 func TestStatus_NoTradingUntilCleared(t *testing.T) {

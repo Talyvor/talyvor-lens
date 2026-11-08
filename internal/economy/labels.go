@@ -28,8 +28,8 @@ const RailCards = "cards"
 func partnerRail(s partners.Service) string { return "partner:" + string(s) }
 func moneyRail(c money.Capability) string   { return "money:" + string(c) }
 
-// capabilityRails names every rail each capability's money moves on. rules_approvals_statements_pots moves no money,
-// so it has none and no label.
+// capabilityRails names every rail each capability's money moves on. rules_approvals_statements_pots and room_equity
+// (intent only) move no money, so they have none and no label.
 var capabilityRails = map[string][]string{
 	"spend_on_talyvor":                {RailCards},
 	CapabilityBuyListings:             {RailCards},
@@ -65,6 +65,7 @@ var capabilityRails = map[string][]string{
 	CapabilityPriceLock:               {RailCards},
 	CapabilityCover:                   {partnerRail(partners.ServiceInsurer)},
 	CapabilityPayoutsToPeople:         {partnerRail(partners.ServiceAccount), moneyRail(money.CapPayouts)},
+	CapabilityRoomEquity:              nil,
 }
 
 // LabelFacts is what a label is worked out from: the capabilities with a clearance in force, and the rails that are

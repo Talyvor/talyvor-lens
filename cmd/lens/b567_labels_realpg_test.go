@@ -90,7 +90,7 @@ func TestB567_LabelsFollowTheFacts(t *testing.T) {
 	store.SetLabelRails("test", b567Rails{})
 	page := public("test")
 	labels := page["labels"].(map[string]any)
-	if len(labels) != len(economy.Capabilities)-1 || page["card_payments"] != "test" {
+	if len(labels) != len(economy.Capabilities)-2 || page["card_payments"] != "test" {
 		t.Fatalf("public labels = %v; want every money capability and card_payments test", page)
 	}
 	for key, l := range labels {
@@ -98,8 +98,10 @@ func TestB567_LabelsFollowTheFacts(t *testing.T) {
 			t.Errorf("%s = %v today; want sandbox", key, l)
 		}
 	}
-	if _, ok := labels["rules_approvals_statements_pots"]; ok {
-		t.Error("rules_approvals_statements_pots moves no money and has a label")
+	for _, key := range []string{"rules_approvals_statements_pots", economy.CapabilityRoomEquity} {
+		if _, ok := labels[key]; ok {
+			t.Errorf("%s moves no money and has a label", key)
+		}
 	}
 	if _, err := time.Parse(time.RFC3339Nano, page["updated_at"].(string)); err != nil {
 		t.Errorf("updated_at = %v: %v", page["updated_at"], err)
