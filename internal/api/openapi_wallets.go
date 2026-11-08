@@ -256,6 +256,8 @@ func openAPIWalletPaths() map[string]any {
 		{"name": "from", "in": "query", "required": false, "description": "RFC 3339 time or YYYY-MM-DD (midnight UTC); defaults to the start of this month", "schema": str},
 		{"name": "to", "in": "query", "required": false, "description": "exclusive; RFC 3339 time or YYYY-MM-DD; defaults to now", "schema": str},
 		{"name": "format", "in": "query", "required": false, "schema": map[string]any{"type": "string", "enum": []string{"json", "csv"}}},
+		{"name": "group", "in": "query", "required": false, "description": "day: each model's questions on a day one line (model, requests, total), its platform fee the line under it; days in the agent's rules' time_zone, else UTC (the workspace's: UTC). The CSV is never grouped", "schema": map[string]any{"type": "string", "enum": []string{"day"}}},
+		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to; pages are newest first", "schema": str},
 	}
 
 	return map[string]any{
@@ -453,7 +455,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/statement": map[string]any{
 			"get": op("Read the agent's statement",
-				"With none of from, to or format: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV.",
+				"With none of from, to, format, group or cursor: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV; then limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
@@ -462,8 +464,8 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/statement": map[string]any{
 			"get": op("Read the statement of every agent wallet in the workspace",
-				"For the period [from, to), as JSON or CSV — the statement an auditor can open.",
-				periodParams,
+				"For the period [from, to), as JSON or CSV — the statement an auditor can open. limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				append([]map[string]any{{"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{"200": map[string]any{"description": "the period statement"}}),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/pause": map[string]any{

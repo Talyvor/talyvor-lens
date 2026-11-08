@@ -35,6 +35,14 @@ type StatementLine struct {
 	Label string `json:"label,omitempty"`
 	// Memo is what the posting was for, in words: on a room's wallet, the room and the member who spent (B32.32).
 	Memo string `json:"memo,omitempty"`
+	// Model is the model a question's posting was for, as its caps know it (B28.301). Empty on every other posting.
+	Model string `json:"model,omitempty"`
+	// Day, Requests and Postings are set on a line of a statement read by day (B57.13): the day it covers in the
+	// statement's time zone, how many questions it is, and how many postings it sums. PostingID, At and
+	// BalanceAfterULXC are then its newest posting's.
+	Day      string `json:"day,omitempty"`
+	Requests int64  `json:"requests,omitempty"`
+	Postings int    `json:"postings,omitempty"`
 }
 
 // StatementAccount is one account's totals over the period: Opening + In − Out = Closing.
@@ -66,6 +74,11 @@ type Statement struct {
 	// MarketplaceBill is, on an agent's statement, what it used on the marketplace and paid another company's agents in
 	// the period (B56.14). Each is a line on the company's monthly marketplace bill, and moves no balance here.
 	MarketplaceBill []MarketplaceBillLine `json:"marketplace_bill,omitempty"`
+	// Group is "day" when the lines are read by day, TimeZone the zone those days are counted in (B57.13).
+	Group    string `json:"group,omitempty"`
+	TimeZone string `json:"time_zone,omitempty"`
+	// NextCursor reads the page after this one; empty on the last.
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // OnMarketplaceBill is how a statement names a line billed to the company rather than taken from the agent's balance.
@@ -229,7 +242,8 @@ func (s *DualTokenStore) periodStatement(ctx context.Context, workspaceID, accou
 		SELECT p.id, p.entry_id::text, p.created_at, p.account, p.kind, p.amount_ulxc,
 		       COALESCE((SELECT o.account FROM agent_postings o WHERE o.entry_id = p.entry_id AND o.id <> p.id ORDER BY o.id LIMIT 1), ''),
 		       p.ref,
-		       sum(p.amount_ulxc) OVER (PARTITION BY p.account ORDER BY p.created_at, p.id)::bigint, p.fee_bps, COALESCE(p.memo, '')
+		       sum(p.amount_ulxc) OVER (PARTITION BY p.account ORDER BY p.created_at, p.id)::bigint, p.fee_bps, COALESCE(p.memo, ''),
+		       COALESCE(p.model, '')
 		  FROM agent_postings p
 		 WHERE p.workspace_id = $1 AND ($2 = '' OR p.account = $2) AND p.created_at >= $3 AND p.created_at < $4
 		 ORDER BY p.created_at, p.id`, workspaceID, account, from, to)
@@ -241,7 +255,7 @@ func (s *DualTokenStore) periodStatement(ctx context.Context, workspaceID, accou
 		var l StatementLine
 		var running int64
 		var feeBPS *int64
-		if err := rows.Scan(&l.PostingID, &l.EntryID, &l.At, &l.Account, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &running, &feeBPS, &l.Memo); err != nil {
+		if err := rows.Scan(&l.PostingID, &l.EntryID, &l.At, &l.Account, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &running, &feeBPS, &l.Memo, &l.Model); err != nil {
 			return st, err
 		}
 		if l.Kind == LXCTypePlatformFee && feeBPS != nil {
