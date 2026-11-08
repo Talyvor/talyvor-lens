@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -635,7 +636,13 @@ func paymentRequestSummary(r PaymentRequest, counts map[string]int) string {
 	}
 	s := fmt.Sprintf("Pay %d payments, %s", len(r.Items), strings.Join(totals, " and "))
 	if len(r.Items) == 1 {
-		s = "Pay " + r.Items[0].PayeeName + " " + totals[0]
+		// a listing's title is the seller's: no control or bidi character may reorder or break the heading's amount.
+		s = "Pay " + strings.Map(func(c rune) rune {
+			if unicode.IsControl(c) || unicode.Is(unicode.Bidi_Control, c) {
+				return -1
+			}
+			return c
+		}, r.Items[0].PayeeName) + " " + totals[0]
 	}
 	if w := counts[ItemNeedsApproval]; w < len(r.Items) {
 		parts := []string{}
