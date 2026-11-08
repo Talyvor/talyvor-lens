@@ -709,6 +709,30 @@ func cutOff(body []byte) bool {
 		r.Status == "incomplete" || r.Response.Status == "incomplete"
 }
 
+// unfinished reports an answer the stream path kept before B17.384, as its text alone (B17.384): nothing in it
+// shows the provider finished, so it may be one cut off at the length limit before B17.184 refused those.
+func unfinished(body []byte) bool {
+	var r map[string]json.RawMessage
+	if json.Unmarshal(body, &r) != nil || len(r) != 1 {
+		return false
+	}
+	if r["content"] != nil {
+		return true
+	}
+	var choices []struct {
+		FinishReason *string `json:"finish_reason"`
+	}
+	if json.Unmarshal(r["choices"], &choices) != nil || len(choices) == 0 {
+		return false
+	}
+	for _, c := range choices {
+		if c.FinishReason != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // replaceResponseContent rewrites the first choice's message content (used to
 // re-inject redacted output). Returns the body unchanged when the shape
 // doesn't match, so a redaction can never corrupt the response envelope.
@@ -1384,8 +1408,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
 		// request goes upstream and its fresh answer replaces the stored one.
 		// B17.246: with Run code on, nor is one stored without the runs that worked it out — it would show no code.
-		// B17.184: nor is a buffered answer kept before cut-off ones were refused.
-		if cached != nil && (emptyAnswer(cached) || cutOff(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
+		// B17.184: nor is a buffered answer kept before cut-off ones were refused. B17.384: nor a streamed one kept
+		// before then, which cannot show it finished.
+		if cached != nil && (emptyAnswer(cached) || cutOff(cached) || unfinished(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
 			runCodeAnswerOf(ctx) != nil && len(codeRunsIn(cached)) == 0) {
 			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
 			metrics.RecordCacheMiss("cache_miss")
