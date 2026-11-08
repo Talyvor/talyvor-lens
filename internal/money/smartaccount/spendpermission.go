@@ -226,15 +226,17 @@ func (c Chain) SendSpendAsAgent(ctx context.Context, s money.Spenders, key, spen
 
 // ProviderPolicy is the provider's policy for the agent's key that holds what the chain cannot: p's cap on one payment
 // and its counterparties allowed and blocked. Its key's user operations may call the chain's manager, pay the chain's
-// coin up to the cap and transfer an allowed token up to its cap; a blocked counterparty, or one not allowed when p
-// names those allowed, is refused, and so is every other call.
+// coin up to the cap and transfer an allowed token up to its cap; a call to spender itself (whose executeBatch would
+// make calls the engine never reads), a blocked counterparty, or one not allowed when p names those allowed, is
+// refused, and so is every other call.
 //
 // shortcut: the cap is on each call that pays, so one user operation with several payments can pay more than the cap
 // in all, up to the period's allowance the chain holds. Upgrade with a criterion on an operation's total, if the
 // provider offers one.
-func (c Chain) ProviderPolicy(p Permission) money.Policy {
+func (c Chain) ProviderPolicy(p Permission, spender string) money.Policy {
 	const op = "sendUserOperation"
-	pol := money.Policy{Scope: "account", Description: "Talyvor: the owner's spend permission"}
+	pol := money.Policy{Scope: "account", Description: "Talyvor: the owner's spend permission", Rules: []money.PolicyRule{{Action: "reject",
+		Operation: op, Criteria: []money.PolicyCriterion{{Type: "evmAddress", Operator: "in", Addresses: []string{Checksum(spender)}}}}}}
 	if len(p.Blocked) > 0 {
 		pol.Rules = append(pol.Rules,
 			money.PolicyRule{Action: "reject", Operation: op, Criteria: []money.PolicyCriterion{{Type: "evmAddress", Operator: "in", Addresses: p.Blocked}}},

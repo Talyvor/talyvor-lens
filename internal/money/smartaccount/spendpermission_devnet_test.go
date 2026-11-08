@@ -153,7 +153,7 @@ func TestAgentSmartAccountOnDevnetSpendPermission(t *testing.T) {
 	if ok, err := landed(op); err != nil || !ok {
 		t.Fatalf("the owner's grant: %v %v", ok, err)
 	}
-	if err := spenders.SetSpendPolicy(ctx, "policy:agt_spend:1", agentKey, c.ProviderPolicy(perm)); err != nil {
+	if err := spenders.SetSpendPolicy(ctx, "policy:agt_spend:1", agentKey, c.ProviderPolicy(perm, spender)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,8 +211,11 @@ func TestAgentSmartAccountOnDevnetSpendPermission(t *testing.T) {
 
 	// The gate bypassed: the provider's policy engine refuses a payment over the cap or to a blocked counterparty.
 	refused := cdp.Refused()
+	bw, _ := addressW(banned)
+	nested, _ := executeBatch(batchItem{usdc, nil, call("transfer(address,uint256)", bw, uintW(10))})
 	for name, calls := range map[string][]money.Call{"over the cap on one payment": pay(usdc, payee, 3001), "to a blocked counterparty": pay(usdc, banned, 10),
-		"of the coin over its cap": pay(Native, payee, 3001)} {
+		"of the coin over its cap": pay(Native, payee, 3001), "hidden in a call to the agent's own account": append(pay(usdc, payee, 10)[:1],
+			money.Call{To: spender, Value: "1", Data: hexBytes(nested)})} {
 		if _, err := spenders.SendCalls(ctx, key(), spender, calls); !errors.Is(err, money.ErrRefused) {
 			t.Fatalf("a payment %s: %v, want refused by the provider", name, err)
 		}

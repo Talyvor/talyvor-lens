@@ -411,9 +411,8 @@ func (c *client) sendCalls(ctx context.Context, kind, key, from string, calls []
 	// Asked even when the wallet holds too little: only CDP knows whether this key already sent, and it refuses a
 	// transfer the account cannot make when it simulates it.
 	if _, err := c.do(ctx, http.MethodPost, "/v2/evm/smart-accounts/"+from+"/user-operations/prepare-and-send", idempotencyKey(kind, key), body, &op); err != nil {
-		err = refused(err)
 		if errors.Is(err, money.ErrRefused) || errors.Is(err, money.ErrInvalid) || errors.Is(err, money.ErrKeyReused) || errors.Is(err, money.ErrNotFound) {
-			return money.Result{}, release(err)
+			return money.Result{}, release(refused(err))
 		}
 		return money.Result{}, err // it may have been sent: the hold stands until the retry, under the same key, says
 	}
