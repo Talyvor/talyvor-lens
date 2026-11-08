@@ -78,7 +78,10 @@ import (
 //
 // from and to are RFC 3339 times or YYYY-MM-DD dates (midnight UTC); from defaults to the start of the
 // current month and to to now, so September is from=2026-09-01&to=2026-10-01. On an agent's route any of
-// the three asks for the period statement; with none it is the newest-first list above.
+// the three, group or cursor asks for the period statement; with none it is the newest-first list above.
+// B57.13: group=day makes each model's questions on a day one line, its fees the line under it (the agent's
+// rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
+// first page's to with every cursor. The CSV is always one row per posting.
 //
 // B19.6 — unusual spend is flagged, an agent can be paused, and the month-end is forecast
 // (internal/economy/agent_alerts.go states the rule):
@@ -1061,10 +1064,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeStatement(w, st, csv)
+		// A workspace's agents may keep different zones: its days are UTC's.
+		writeStatementView(w, req, st, csv, func() (*time.Location, error) { return time.UTC, nil })
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
-		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") {
+		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") {
 			from, to, csv, err := statementPeriod(req, time.Now())
 			if err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
@@ -1077,7 +1081,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
-				writeStatement(w, st, csv)
+				// B57.13: an agent's days are its rules' time zone's, else UTC's.
+				writeStatementView(w, req, st, csv, func() (*time.Location, error) {
+					rules, err := bank.GetAgentRules(req.Context(), st.WorkspaceID, st.AgentID)
+					if err != nil {
+						return nil, err
+					}
+					return time.LoadLocation(rules.Timezone)
+				})
 			}
 			return
 		}
@@ -1830,6 +1841,47 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv 
 		return from, to, false, errors.New("from must be before to")
 	}
 	return from, to, csv, nil
+}
+
+// writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
+// a day of zone's into one line, and ?limit= and ?cursor= page its lines newest first. The CSV is never grouped or
+// paged: it is one row per posting, the audit file.
+func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, asCSV bool, zone func() (*time.Location, error)) {
+	q := req.URL.Query()
+	if asCSV {
+		writeStatement(w, st, true)
+		return
+	}
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			writeJSONErr(w, http.StatusBadRequest, "limit must be between 1 and 1000")
+			return
+		}
+		limit = n
+	}
+	switch q.Get("group") {
+	case "":
+	case "day":
+		loc, err := zone()
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		st = st.ByDay(loc, loc.String())
+	default:
+		writeJSONErr(w, http.StatusBadRequest, "group must be day")
+		return
+	}
+	if limit > 0 || q.Has("cursor") {
+		var err error
+		if st, err = st.Page(limit, q.Get("cursor")); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "cursor must be the next_cursor of a page of this statement")
+			return
+		}
+	}
+	writeStatement(w, st, false)
 }
 
 // writeStatement answers with the statement as JSON, or as CSV: a header, each account's opening
