@@ -89,9 +89,10 @@ func spendWithin(gross, bps int64) int64 {
 }
 
 // FeeLabel is how a statement names the fee: "Platform fee 3%", "Platform fee 5.5%".
-func FeeLabel(bps int64) string {
-	return "Platform fee " + strconv.FormatFloat(float64(bps)/100, 'f', -1, 64) + "%"
-}
+func FeeLabel(bps int64) string { return "Platform fee " + percent(bps) }
+
+// percent writes basis points as a percentage: 300 is "3%", 550 is "5.5%".
+func percent(bps int64) string { return strconv.FormatFloat(float64(bps)/100, 'f', -1, 64) + "%" }
 
 type chargeRequestKey struct{}
 

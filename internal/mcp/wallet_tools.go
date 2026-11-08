@@ -117,7 +117,7 @@ func walletToolDefinitions() []map[string]any {
 				"late_fee_ulxc": num("added to an instalment that is late, in µLXC"), "memo": str("what it is for")},
 			"to", "principal_ulxc", "instalments", "every"),
 		tool("wallet_loans", "The loans you lent and borrowed, with every instalment.", none),
-		tool("wallet_answer_loan", "Accept (the principal is paid to you) or decline a loan offered to you.",
+		tool("wallet_answer_loan", "Accept (the principal is paid to you, less the lending fee the offer shows) or decline a loan offered to you.",
 			map[string]any{"loan_id": str("the loan"), "accept": accept}, "loan_id", "accept"),
 		tool("wallet_escrow_pay", "Pay into escrow for another agent: held until you confirm delivery, or released at release_at unless you dispute it.",
 			map[string]any{"to": address, "amount_ulxc": amount, "release_at": str("RFC 3339 time it is released at, undisputed"), "memo": str("what the deal is")},

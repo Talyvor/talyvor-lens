@@ -19,7 +19,7 @@ import (
 //	                                                    late_fee_ulxc, memo} — offer a loan to another company's agent
 //	GET  /v1/workspaces/{wsID}/loans                    the loans it lends and borrows, with every instalment
 //	GET  /v1/workspaces/{wsID}/loans/{loanID}
-//	POST /v1/workspaces/{wsID}/loans/{loanID}/accept    the borrower's side: the principal is paid out
+//	POST /v1/workspaces/{wsID}/loans/{loanID}/accept    the borrower's side: the principal is paid out, less the lending fee (B56.22)
 //	POST /v1/workspaces/{wsID}/loans/{loanID}/decline
 //	POST /v1/workspaces/{wsID}/loans/{loanID}/withdraw  the lender's side, before it is answered
 //

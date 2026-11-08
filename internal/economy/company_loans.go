@@ -27,9 +27,23 @@ import (
 // clears loans_between_companies; with live money and no clearance the offer itself is refused naming the
 // class. Every movement is an agent_transfers row naming the loan, so both statements carry it; the loan and
 // its events (agent_loan_events) are on both statements too.
+//
+// B56.22: Talyvor keeps the lending fee (fees.LendingFeeBPS, wired by SetLendingFee) of the principal. The offer
+// records the rate and the fee, so the borrower sees it before answering; accepting takes that fee from what
+// the borrower received, as its own lxc_ledger row and agent posting (kind lending_fee), and the payout event
+// names it. Unwired, the fee is 0.
 
 // CapabilityCompanyLoans is the wallet capability a loan moves money as.
 const CapabilityCompanyLoans = "loans_between_companies"
+
+// LXCTypeLendingFee marks the lending fee's lxc_ledger row and agent postings — Talyvor's fee on a loan arranged.
+const LXCTypeLendingFee = "lending_fee"
+
+// SetLendingFee wires the lending fee's rate, in basis points of the principal. nil, the fee is 0.
+func (s *DualTokenStore) SetLendingFee(bps func() int64) { s.lendingFee = bps }
+
+// LendingFeeLabel is how a statement names the fee: "Lending fee 1%".
+func LendingFeeLabel(bps int64) string { return "Lending fee " + percent(bps) }
 
 // ErrLoanCompaniesOnly: a private user's workspace cannot lend or borrow.
 var ErrLoanCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED — both sides of a loan must be companies")
@@ -57,6 +71,7 @@ type LoanEvent struct {
 	PrincipalULXC int64     `json:"principal_ulxc,omitempty"`
 	InterestULXC  int64     `json:"interest_ulxc,omitempty"`
 	LateFeeULXC   int64     `json:"late_fee_ulxc,omitempty"`
+	FeeULXC       int64     `json:"fee_ulxc,omitempty"` // on the payout: the lending fee taken from what was paid out
 	TransferID    string    `json:"transfer_id,omitempty"`
 	Detail        string    `json:"detail,omitempty"`
 	At            time.Time `json:"at"`
@@ -70,6 +85,9 @@ type Loan struct {
 	BorrowerWorkspaceID string `json:"borrower_workspace_id"`
 	BorrowerAgentID     string `json:"borrower_agent_id"`
 	LoanTerms
+	// FeeBPS and FeeULXC are the lending fee, set when it is offered: accepting takes FeeULXC from the payout.
+	FeeBPS          int64       `json:"fee_bps"`
+	FeeULXC         int64       `json:"fee_ulxc"`
 	Status          string      `json:"status"` // offered | declined | withdrawn | active | late | defaulted | repaid
 	PaidInstalments int         `json:"paid_instalments"`
 	NextDueAt       *time.Time  `json:"next_due_at,omitempty"`
@@ -132,12 +150,12 @@ func requireCompanies(ctx context.Context, q pgxDB, workspaceIDs ...string) erro
 }
 
 const loanColumns = `id, lender_workspace_id, lender_agent_id, borrower_workspace_id, borrower_agent_id, principal_ulxc, interest_bps,
-	instalments, every, late_fee_ulxc, memo, status, paid_instalments, next_due_at, offered_at, decided_at`
+	instalments, every, late_fee_ulxc, memo, fee_bps, fee_ulxc, status, paid_instalments, next_due_at, offered_at, decided_at`
 
 func scanLoan(row pgx.Row) (Loan, error) {
 	var l Loan
 	err := row.Scan(&l.ID, &l.LenderWorkspaceID, &l.LenderAgentID, &l.BorrowerWorkspaceID, &l.BorrowerAgentID, &l.PrincipalULXC,
-		&l.InterestBPS, &l.Instalments, &l.Every, &l.LateFeeULXC, &l.Memo, &l.Status, &l.PaidInstalments, &l.NextDueAt, &l.OfferedAt, &l.DecidedAt)
+		&l.InterestBPS, &l.Instalments, &l.Every, &l.LateFeeULXC, &l.Memo, &l.FeeBPS, &l.FeeULXC, &l.Status, &l.PaidInstalments, &l.NextDueAt, &l.OfferedAt, &l.DecidedAt)
 	l.Events = []LoanEvent{}
 	return l, err
 }
@@ -209,11 +227,15 @@ func (s *DualTokenStore) OfferLoan(ctx context.Context, workspaceID, lenderAgent
 			}
 		}
 	}
+	var feeBPS int64
+	if s.lendingFee != nil {
+		feeBPS = s.lendingFee()
+	}
 	l, err := scanLoan(tx.QueryRow(ctx, `INSERT INTO agent_loans (id, lender_workspace_id, lender_agent_id, borrower_workspace_id,
-		borrower_agent_id, principal_ulxc, interest_bps, instalments, every, late_fee_ulxc, memo)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING `+loanColumns,
+		borrower_agent_id, principal_ulxc, interest_bps, instalments, every, late_fee_ulxc, memo, fee_bps, fee_ulxc)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING `+loanColumns,
 		"loan_"+uuid.NewString(), workspaceID, lenderAgentID, to.WorkspaceID, to.WalletID, terms.PrincipalULXC, terms.InterestBPS,
-		terms.Instalments, terms.Every, terms.LateFeeULXC, terms.Memo))
+		terms.Instalments, terms.Every, terms.LateFeeULXC, terms.Memo, feeBPS, PlatformFee(terms.PrincipalULXC, feeBPS)))
 	if err != nil {
 		return Loan{}, fmt.Errorf("economy: offer loan: %w", err)
 	}
@@ -221,7 +243,7 @@ func (s *DualTokenStore) OfferLoan(ctx context.Context, workspaceID, lenderAgent
 }
 
 // AnswerLoan accepts or declines a loan offered to one of workspaceID's agents. Accepting pays the principal
-// out from the lender's agent, judged by its rules, and starts the instalments.
+// out from the lender's agent, judged by its rules, takes the lending fee from it and starts the instalments.
 func (s *DualTokenStore) AnswerLoan(ctx context.Context, workspaceID, loanID string, accept bool) (Loan, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -260,7 +282,10 @@ func (s *DualTokenStore) AnswerLoan(ctx context.Context, workspaceID, loanID str
 		loanID, t.CreatedAt, dueOf(t.CreatedAt, l.Every, 1)); err != nil {
 		return Loan{}, err
 	}
-	if err := loanEvent(ctx, tx, l.ID, LoanEvent{Kind: "payout", PrincipalULXC: l.PrincipalULXC, TransferID: t.ID}); err != nil {
+	if err := takeLendingFee(ctx, tx, l); err != nil {
+		return Loan{}, err
+	}
+	if err := loanEvent(ctx, tx, l.ID, LoanEvent{Kind: "payout", PrincipalULXC: l.PrincipalULXC, FeeULXC: l.FeeULXC, TransferID: t.ID}); err != nil {
 		return Loan{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -282,9 +307,37 @@ func (s *DualTokenStore) WithdrawLoan(ctx context.Context, workspaceID, loanID s
 	return nil
 }
 
+// takeLendingFee takes a just-paid-out loan's fee from the borrower's agent, which has just received the principal:
+// its workspace's balance and ledger, and an entry from the agent to the spend side naming the loan and the rate.
+// It judges nothing — the fee is Talyvor's, agreed with the offer, and comes out of the payout.
+func takeLendingFee(ctx context.Context, tx pgx.Tx, l Loan) error {
+	if l.FeeULXC == 0 {
+		return nil
+	}
+	bal, minted, spent, err := readLXCBalance(ctx, tx, l.BorrowerWorkspaceID)
+	if err != nil {
+		return err
+	}
+	if err := insertLXCLedger(ctx, tx, l.BorrowerWorkspaceID, -l.FeeULXC, bal-l.FeeULXC, LXCTypeLendingFee, LendingFeeLabel(l.FeeBPS)+" on loan "+l.ID,
+		map[string]interface{}{"loan_id": l.ID, "lending_fee_bps": l.FeeBPS, "principal_ulxc": l.PrincipalULXC}); err != nil {
+		return err
+	}
+	if err := writeLXCBalance(ctx, tx, l.BorrowerWorkspaceID, bal-l.FeeULXC, minted, spent+l.FeeULXC); err != nil {
+		return err
+	}
+	entry := uuid.New()
+	for _, p := range []leg{{agentAccount(l.BorrowerAgentID), -l.FeeULXC}, {"spend", l.FeeULXC}} {
+		if err := insertPosting(ctx, tx, `entry_id, workspace_id, account, amount_ulxc, kind, ref, fee_bps`,
+			entry, l.BorrowerWorkspaceID, p.account, p.amount, LXCTypeLendingFee, l.ID, l.FeeBPS); err != nil {
+			return fmt.Errorf("economy: post %s: %w", LXCTypeLendingFee, err)
+		}
+	}
+	return nil
+}
+
 func loanEvent(ctx context.Context, tx pgx.Tx, loanID string, e LoanEvent) error {
-	_, err := tx.Exec(ctx, `INSERT INTO agent_loan_events (loan_id, kind, instalment, principal_ulxc, interest_ulxc, late_fee_ulxc, transfer_id, detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, loanID, e.Kind, e.Instalment, e.PrincipalULXC, e.InterestULXC, e.LateFeeULXC, e.TransferID, e.Detail)
+	_, err := tx.Exec(ctx, `INSERT INTO agent_loan_events (loan_id, kind, instalment, principal_ulxc, interest_ulxc, late_fee_ulxc, fee_ulxc, transfer_id, detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, loanID, e.Kind, e.Instalment, e.PrincipalULXC, e.InterestULXC, e.LateFeeULXC, e.FeeULXC, e.TransferID, e.Detail)
 	if err != nil {
 		return fmt.Errorf("economy: loan event: %w", err)
 	}
@@ -349,7 +402,7 @@ func (s *DualTokenStore) loans(ctx context.Context, where string, args ...any) (
 	for id := range byID {
 		ids = append(ids, id)
 	}
-	rows, err = s.pool.Query(ctx, `SELECT loan_id, kind, instalment, principal_ulxc, interest_ulxc, late_fee_ulxc, transfer_id, detail, at
+	rows, err = s.pool.Query(ctx, `SELECT loan_id, kind, instalment, principal_ulxc, interest_ulxc, late_fee_ulxc, fee_ulxc, transfer_id, detail, at
 		FROM agent_loan_events WHERE loan_id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("economy: loan events: %w", err)
@@ -358,7 +411,7 @@ func (s *DualTokenStore) loans(ctx context.Context, where string, args ...any) (
 	for rows.Next() {
 		var id string
 		var e LoanEvent
-		if err := rows.Scan(&id, &e.Kind, &e.Instalment, &e.PrincipalULXC, &e.InterestULXC, &e.LateFeeULXC, &e.TransferID, &e.Detail, &e.At); err != nil {
+		if err := rows.Scan(&id, &e.Kind, &e.Instalment, &e.PrincipalULXC, &e.InterestULXC, &e.LateFeeULXC, &e.FeeULXC, &e.TransferID, &e.Detail, &e.At); err != nil {
 			return nil, err
 		}
 		out[byID[id]].Events = append(out[byID[id]].Events, e)

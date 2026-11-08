@@ -210,3 +210,113 @@ func TestCompanyLoans_OneRunTakesEveryDueLoanAndCountsTheMiss(t *testing.T) {
 		t.Fatalf("the short loan after its retry = %+v, %v; want defaulted", l, err)
 	}
 }
+
+// B56.22 — at the lending fee (1%), company A offers company B a 100 LXC loan: the offer shows the 1 LXC fee
+// before B answers; accepting pays the principal out and takes the fee from what B received, as its own row on
+// B's ledger and its own posting on B's agent; a retried accept takes nothing more; a declined offer takes nothing.
+func TestCompanyLoans_LendingFeeTakenOnceFromTheBorrowerOnAccept(t *testing.T) {
+	pool := supplyPool(t)
+	ctx := context.Background()
+	s := NewDualTokenStore(nil, pool, nil)
+	s.SetOwnerVerifier(earnVerified{})
+	s.SetLendingFee(func() int64 { return 100 })
+	const lxc = int64(1_000_000)
+	for _, ws := range []string{"co-a", "co-b"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, earn_verified, company) VALUES ($1, $1, $1, true, true)`, ws); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := func(ws, handle string, credits int64) Agent {
+		t.Helper()
+		a, err := s.CreateAgent(ctx, ws, handle, "owner-"+ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SetAgentHandle(ctx, ws, a.ID, handle); err != nil {
+			t.Fatal(err)
+		}
+		if credits > 0 {
+			if _, err := s.CreditLXC(ctx, ws, credits, "stripe top-up", map[string]interface{}{"funding": FundingTest}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.FundAgent(ctx, ws, a.ID, credits); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return a
+	}
+	lender := agent("co-a", "lender", 500*lxc)
+	borrower := agent("co-b", "borrower", 0)
+	terms := LoanTerms{PrincipalULXC: 100 * lxc, InterestBPS: 1000, Instalments: 3, Every: "day"}
+	fees := func() (ledger, postings int64) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount), 0)::bigint FROM lxc_ledger WHERE workspace_id = 'co-b' AND type = $1`,
+			LXCTypeLendingFee).Scan(&ledger); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_ulxc), 0)::bigint FROM agent_postings WHERE workspace_id = 'co-b' AND account = $1 AND kind = $2`,
+			agentAccount(borrower.ID), LXCTypeLendingFee).Scan(&postings); err != nil {
+			t.Fatal(err)
+		}
+		return ledger, postings
+	}
+
+	// Declined: nothing is taken.
+	declined, err := s.OfferLoan(ctx, "co-a", lender.ID, "@borrower", terms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AnswerLoan(ctx, "co-b", declined.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if l, p := fees(); l != 0 || p != 0 {
+		t.Fatalf("after a declined offer the fee rows sum to %d on the ledger and %d on the agent, want none", l, p)
+	}
+
+	// The offer shows the fee before the borrower answers, on both sides.
+	offer, err := s.OfferLoan(ctx, "co-a", lender.ID, "@borrower", terms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ws := range []string{"co-a", "co-b"} {
+		if l, err := s.GetLoan(ctx, ws, offer.ID); err != nil || l.Status != "offered" || l.FeeBPS != 100 || l.FeeULXC != lxc {
+			t.Fatalf("%s sees the offer as %+v, %v; want offered with a 1 LXC fee at 100 bps", ws, l, err)
+		}
+	}
+
+	// Accepted: the fee is taken from what the borrower received, once.
+	loan, err := s.AnswerLoan(ctx, "co-b", offer.ID, true)
+	if err != nil || loan.Status != "active" || len(loan.Events) != 1 || loan.Events[0].FeeULXC != lxc {
+		t.Fatalf("accept = %+v, %v; want active with the payout event naming the 1 LXC fee", loan, err)
+	}
+	if _, err := s.AnswerLoan(ctx, "co-b", offer.ID, true); !errors.Is(err, ErrLoanNotFound) {
+		t.Fatalf("a retried accept = %v, want ErrLoanNotFound", err)
+	}
+	if l, p := fees(); l != -lxc || p != -lxc {
+		t.Fatalf("the fee rows sum to %d on the ledger and %d on the agent, want −1 LXC on each", l, p)
+	}
+	var bal, held int64
+	if err := pool.QueryRow(ctx, `SELECT balance FROM lxc_balances WHERE workspace_id = 'co-b'`).Scan(&bal); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_ulxc), 0)::bigint FROM agent_postings WHERE workspace_id = 'co-b' AND account = $1`,
+		agentAccount(borrower.ID)).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if bal != 99*lxc || held != 99*lxc {
+		t.Fatalf("the borrower's workspace holds %d and its agent %d, want 99 LXC each", bal, held)
+	}
+	st, err := s.WorkspaceAgentStatement(ctx, "co-b", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels []string
+	for _, l := range st.Lines {
+		if l.Kind == LXCTypeLendingFee {
+			labels = append(labels, l.Label)
+		}
+	}
+	if strings.Join(labels, ",") != "Lending fee 1%,Lending fee 1%" {
+		t.Errorf("the borrower's statement fee lines are %q, want the agent's and the spend side's, each \"Lending fee 1%%\"", labels)
+	}
+}

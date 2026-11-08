@@ -26,12 +26,12 @@ type StatementLine struct {
 	EntryID          string    `json:"entry_id"`
 	At               time.Time `json:"at"`
 	Account          string    `json:"account"` // workspace | spend | agent:<id>
-	Kind             string    `json:"kind"`    // fund | withdraw | spend | hold | settle | release | pay | card | platform_fee
+	Kind             string    `json:"kind"`    // fund | withdraw | spend | hold | settle | release | pay | card | platform_fee | lending_fee
 	AmountULXC       int64     `json:"amount_ulxc"`
 	Counterparty     string    `json:"counterparty"`
 	Ref              string    `json:"ref,omitempty"`
 	BalanceAfterULXC int64     `json:"balance_after_ulxc"`
-	// Label names a platform fee line, with its rate: "Platform fee 3%" (B32.11). Empty on every other kind.
+	// Label names a fee line with its rate: "Platform fee 3%" (B32.11), "Lending fee 1%" (B56.22). Empty on every other kind.
 	Label string `json:"label,omitempty"`
 	// Memo is what the posting was for, in words: on a room's wallet, the room and the member who spent (B32.32).
 	Memo string `json:"memo,omitempty"`
@@ -260,6 +260,9 @@ func (s *DualTokenStore) periodStatement(ctx context.Context, workspaceID, accou
 		}
 		if l.Kind == LXCTypePlatformFee && feeBPS != nil {
 			l.Label = FeeLabel(*feeBPS)
+		}
+		if l.Kind == LXCTypeLendingFee && feeBPS != nil {
+			l.Label = LendingFeeLabel(*feeBPS)
 		}
 		l.At = l.At.UTC()
 		l.BalanceAfterULXC = opening[l.Account] + running
