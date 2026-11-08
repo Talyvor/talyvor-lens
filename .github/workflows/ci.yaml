@@ -220,7 +220,17 @@ jobs:
         with:
           go-version: "1.26.10"
           cache: false
-      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+      # B43.27: foundryup downloads from github.com releases and gives up after ~30s of 5xx; on 8 Nov a GitHub
+      # outage (502/504) failed this install on main and two PRs. One more attempt a minute later rides that out.
+      - id: foundry
+        continue-on-error: true
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v1.5.1
+      - if: steps.foundry.outcome == 'failure'
+        run: sleep 60
+      - if: steps.foundry.outcome == 'failure'
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: v1.5.1
       - name: build the smart account's contracts at their pinned audited sources
