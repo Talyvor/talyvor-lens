@@ -2961,6 +2961,9 @@ func run() error {
 		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
 		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
 
+		// B28.452 — a shared chat, read by anyone holding its link; the token is the whole credential.
+		pub.Get("/v1/public/chat-shares/{token}", publicChatShareHandler(pool))
+
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 	})
@@ -3606,6 +3609,9 @@ func run() error {
 
 		// B46.15: the workspace's owner names the workspace.
 		mountWorkspaceNameRoutes(authed, pool, wsManager)
+
+		// B28.452: a chat shared from Chat as a link, kept until the link is turned off.
+		mountChatShareRoutes(authed, pool)
 
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider
