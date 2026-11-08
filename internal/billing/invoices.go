@@ -3,6 +3,7 @@ package billing
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -18,11 +19,13 @@ import (
 //
 // The pay link's card button opens a Checkout Session for what is due, stamped with the invoice's id; the session's
 // checkout.session.completed (or async_payment_succeeded) posts the payment into the issuing agent's account through
-// economy.PayInvoiceByCard, once per session.
+// economy.PayInvoiceByCard, once per session, with what Stripe kept for processing it (B56.21). A charge.refunded of
+// that payment returns it through economy.ReturnInvoiceCardPayment.
 
-// InvoicePayer posts a card payment onto an invoice. *economy.DualTokenStore satisfies it.
+// InvoicePayer posts a card payment onto an invoice, and its refund. *economy.DualTokenStore satisfies it.
 type InvoicePayer interface {
 	PayInvoiceByCard(ctx context.Context, c economy.InvoiceCardPayment) (economy.Invoice, error)
+	ReturnInvoiceCardPayment(ctx context.Context, paymentIntent string, refundedMinor int64) (economy.Invoice, error)
 }
 
 // WithInvoices posts invoices' card payments from the webhook. Unset, they are acked and logged.
@@ -99,6 +102,20 @@ func (s *Service) handleInvoiceCard(w http.ResponseWriter, ctx context.Context, 
 	if d := sess.CustomerDetails; d != nil {
 		c.Payer = cmp.Or(d.Name, d.Email)
 	}
+	// B56.21 — Stripe's processing fee is charged on at cost, so the payment posts only once it is known.
+	if sess.PaymentIntent == nil || sess.PaymentIntent.ID == "" || s.stripe == nil {
+		s.log.Error("billing webhook: an invoice's card payment names no payment intent, so its processing fee cannot be read; not posted",
+			"event", event.ID, "invoice", invoiceID, "session", sess.ID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	c.PaymentIntent = sess.PaymentIntent.ID
+	fee, err := s.stripe.ProcessingFee(ctx, c.PaymentIntent)
+	if err != nil {
+		s.fail(w, "invoice card processing fee", event.ID, err)
+		return
+	}
+	c.ProcessorFeeMinor = fee
 	inv, err := s.invoices.PayInvoiceByCard(ctx, c)
 	var refusal *screening.Refusal
 	var capRefusal *economy.CapabilityRefusal
@@ -113,4 +130,33 @@ func (s *Service) handleInvoiceCard(w http.ResponseWriter, ctx context.Context, 
 		s.log.Info("billing webhook: an invoice was paid by card", "event", event.ID, "invoice", inv.ID, "status", inv.Status)
 		w.WriteHeader(http.StatusOK)
 	}
+}
+
+// returnInvoiceCard books a charge.refunded of an invoice's card payment, and answers whether the event is still to be
+// handled as another kind of charge.
+func (s *Service) returnInvoiceCard(w http.ResponseWriter, ctx context.Context, event *stripe.Event) bool {
+	var ch stripe.Charge
+	if s.invoices == nil || json.Unmarshal(event.Data.Raw, &ch) != nil || ch.PaymentIntent == nil {
+		return true
+	}
+	// As handleRefund reads it: an event that does not say how much was refunded refunded all of it.
+	refunded := ch.AmountRefunded
+	if ch.Refunded || refunded == 0 {
+		refunded = ch.Amount
+	}
+	inv, err := s.invoices.ReturnInvoiceCardPayment(ctx, ch.PaymentIntent.ID, refunded)
+	var capRefusal *economy.CapabilityRefusal
+	switch {
+	case errors.Is(err, economy.ErrInvoiceNotFound):
+		return true
+	case errors.As(err, &capRefusal):
+		s.log.Error("billing webhook: an invoice's card refund did not post", "event", event.ID, "payment_intent", ch.PaymentIntent.ID, "err", err)
+		w.WriteHeader(http.StatusOK)
+	case err != nil:
+		s.fail(w, "invoice card refund", event.ID, err)
+	default:
+		s.log.Info("billing webhook: an invoice's card payment was refunded", "event", event.ID, "invoice", inv.ID, "refunded_minor", refunded)
+		w.WriteHeader(http.StatusOK)
+	}
+	return false
 }

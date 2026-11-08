@@ -29,6 +29,10 @@ func (p *invoicePayerCalls) PayInvoiceByCard(context.Context, economy.InvoiceCar
 	return economy.Invoice{}, nil
 }
 
+func (p *invoicePayerCalls) ReturnInvoiceCardPayment(context.Context, string, int64) (economy.Invoice, error) {
+	return economy.Invoice{}, economy.ErrInvoiceNotFound
+}
+
 // B50.13 — money Stripe confirms in test mode never becomes credit in a real workspace. On the main key's webhook, a
 // test-mode event naming a real workspace is acknowledged (200, so Stripe stops retrying) and moves nothing: no top-up
 // credit, no plan, no credit line repaid, no invoice paid. The same top-up and repayment for a synthetic workspace land.
