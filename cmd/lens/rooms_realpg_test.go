@@ -497,3 +497,73 @@ func TestRooms_MessagesScannedStreamedEditedDeletedAndLimited(t *testing.T) {
 		t.Fatalf("the joiner's rows = %d, want 20", n)
 	}
 }
+
+// B55.34 — a room's members, its messages' authors and its named invites carry their workspace's name, read from
+// workspaces.name; a workspace whose name is still its id reads "A workspace not named yet". A named invite carries the
+// name only once its workspace has been a member: naming an id must not tell the owner whose it is.
+func TestRooms_MembersAuthorsAndInvitesCarryWorkspaceNames(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ana, ben, cy, dee = "ws-b5534-ana", "ws-b5534-ben", "ws-b5534-cy", "ws-b5534-dee"
+	for id, name := range map[string]string{ana: "Ana's studio", ben: "Ben's lab", cy: cy, dee: "Dee's desk"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $2, $1)`, id, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO subscriptions (workspace_id, stripe_subscription_id, stripe_customer_id, price_id,
+		status, livemode, last_event_at, plan, byok) VALUES ($1, 'sub_b5534', 'cus_b5534', 'price_team', 'active', false, NOW(), 'team', false)`,
+		ana); err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountRoomRoutes(r, rooms.NewStore(pool, 3000))
+	call := func(ws, method, path, body string, want int, into any) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(),
+			&auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "user-" + ws, Scopes: []string{auth.ScopeKeys}}))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != want || (into != nil && json.Unmarshal(w.Body.Bytes(), into) != nil) {
+			t.Fatalf("%s %s as %s = %d %s, want %d", method, path, ws, w.Code, w.Body.String(), want)
+		}
+	}
+	var room rooms.Detail
+	call(ana, http.MethodPost, "/v1/workspaces/"+ana+"/rooms", `{"title":"Names","visibility":"private"}`, http.StatusCreated, &room)
+	for _, ws := range []string{ben, cy, dee} {
+		call(ana, http.MethodPost, "/v1/rooms/"+room.ID+"/invites", `{"workspace_id":"`+ws+`"}`, http.StatusCreated, nil)
+	}
+	for _, ws := range []string{ben, cy} {
+		call(ws, http.MethodPost, "/v1/rooms/"+room.ID+"/join", `{"terms_version":1}`, http.StatusCreated, nil)
+	}
+
+	// A member reads every member by its workspace's name.
+	var seen rooms.Detail
+	call(ben, http.MethodGet, "/v1/rooms/"+room.ID, "", http.StatusOK, &seen)
+	names := map[string]string{}
+	for _, m := range seen.Members {
+		names[m.WorkspaceID] = m.WorkspaceName
+	}
+	if want := map[string]string{ana: "Ana's studio", ben: "Ben's lab", cy: "A workspace not named yet"}; fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("members by name = %v, want %v", names, want)
+	}
+
+	// Ana's message carries her workspace's name.
+	call(ana, http.MethodPost, "/v1/rooms/"+room.ID+"/messages", `{"body":"Welcome in."}`, http.StatusCreated, nil)
+	var page rooms.Page
+	call(ben, http.MethodGet, "/v1/rooms/"+room.ID+"/messages", "", http.StatusOK, &page)
+	if len(page.Messages) != 1 || page.Messages[0].AuthorWorkspaceName != "Ana's studio" {
+		t.Fatalf("messages = %+v, want Ana's carrying \"Ana's studio\"", page.Messages)
+	}
+
+	// Ben's invite, used, names Ben's workspace; Dee's, still waiting, does not name Dee's.
+	var invites struct{ Invites []rooms.Invite }
+	call(ana, http.MethodGet, "/v1/rooms/"+room.ID+"/invites", "", http.StatusOK, &invites)
+	named := map[string]string{}
+	for _, i := range invites.Invites {
+		named[i.WorkspaceID] = i.WorkspaceName
+	}
+	if want := map[string]string{ben: "Ben's lab", cy: "A workspace not named yet", dee: ""}; fmt.Sprint(named) != fmt.Sprint(want) {
+		t.Fatalf("invites by name = %v, want %v", named, want)
+	}
+}

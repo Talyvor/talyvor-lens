@@ -157,10 +157,10 @@ func TestRooms_TheRoomsWalletItsBudgetAndWhoMaySpendIt(t *testing.T) {
 	if code, body := call(member, http.MethodPost, "/v1/rooms/"+room.ID+"/join", `{"terms_version":1}`); code != http.StatusCreated {
 		t.Fatalf("join = %d %s", code, body)
 	}
-	if _, err := store.MaySpend(ctx, member, room.ID); !errors.Is(err, rooms.ErrForbidden) || !strings.Contains(err.Error(), "may_spend") {
-		t.Fatalf("a member without may_spend spends the room's budget: %v, want refused naming may_spend", err)
+	if _, err := store.MaySpend(ctx, member, room.ID); !errors.Is(err, rooms.ErrForbidden) || !strings.Contains(err.Error(), "The room’s owner has not let you spend its budget.") {
+		t.Fatalf("a member without may_spend spends the room's budget: %v, want refused in plain words", err)
 	}
-	if _, body := call(member, http.MethodGet, "/v1/rooms/"+room.ID, ""); !strings.Contains(body, `"may_spend":false,"why_not":"the room's owner has not given you may_spend`) ||
+	if _, body := call(member, http.MethodGet, "/v1/rooms/"+room.ID, ""); !strings.Contains(body, `"may_spend":false,"why_not":"The room’s owner has not let you spend its budget. Ask the owner or an editor."`) ||
 		!strings.Contains(body, `"monthly_limit_ulxc":1000000000`) || !strings.Contains(body, `"budget_max_ulxc":1000000000`) {
 		t.Fatalf("the member's view of the room = %s, want the budget and why it may not spend it", body)
 	}

@@ -30,18 +30,19 @@ const tokenPrefix = "rinvtok_"
 
 // Invite is a room invite as its room's owner and editors see it. Token is set only in the answer that made it.
 type Invite struct {
-	ID          string     `json:"id"`
-	RoomID      string     `json:"room_id"`
-	Kind        string     `json:"kind"`                   // link or named
-	WorkspaceID string     `json:"workspace_id,omitempty"` // the workspace a named invite names
-	Token       string     `json:"token,omitempty"`
-	MaxUses     int        `json:"max_uses"`
-	Uses        int        `json:"uses"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
-	Live        bool       `json:"live"` // not revoked, expired or used up
-	CreatedBy   string     `json:"created_by_workspace_id"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID            string     `json:"id"`
+	RoomID        string     `json:"room_id"`
+	Kind          string     `json:"kind"`                   // link or named
+	WorkspaceID   string     `json:"workspace_id,omitempty"` // the workspace a named invite names
+	WorkspaceName string     `json:"workspace_name,omitempty"`
+	Token         string     `json:"token,omitempty"`
+	MaxUses       int        `json:"max_uses"`
+	Uses          int        `json:"uses"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
+	Live          bool       `json:"live"` // not revoked, expired or used up
+	CreatedBy     string     `json:"created_by_workspace_id"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // InviteDraft is POST /v1/rooms/{id}/invites: either workspace_id, naming one workspace, or a link's max_uses and
@@ -67,12 +68,14 @@ func hashToken(token string) string {
 
 const inviteCols = `i.id, i.room_id, i.workspace_id, i.max_uses, i.uses, i.expires_at, i.revoked_at,
 	i.revoked_at IS NULL AND i.uses < i.max_uses AND (i.expires_at IS NULL OR i.expires_at > now()),
-	i.created_by_workspace_id, i.created_at`
+	i.created_by_workspace_id, i.created_at,
+	CASE WHEN EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = i.room_id AND rm.workspace_id = i.workspace_id)
+		THEN ` + workspaceNameOf + `i.workspace_id` + workspaceNameEnd + ` ELSE '' END` // named only once it has been a member: an id typed in is not looked up
 
 func scanInvite(row pgx.Row) (Invite, error) {
 	var i Invite
 	err := row.Scan(&i.ID, &i.RoomID, &i.WorkspaceID, &i.MaxUses, &i.Uses, &i.ExpiresAt, &i.RevokedAt, &i.Live,
-		&i.CreatedBy, &i.CreatedAt)
+		&i.CreatedBy, &i.CreatedAt, &i.WorkspaceName)
 	i.Kind = "link"
 	if i.WorkspaceID != "" {
 		i.Kind = "named"

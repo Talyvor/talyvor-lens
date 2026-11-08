@@ -83,8 +83,12 @@ func TestPagePointsAtTheDashboardAndTheDocs(t *testing.T) {
 	if !strings.Contains(body, "app.talyvor.com") {
 		t.Error("the page must point at where the dashboard actually is")
 	}
-	if !strings.Contains(body, "docs.talyvor.com") {
-		t.Error("the page must point at the docs")
+	// B56.6: docs.talyvor.com has no DNS record; the documentation lives on the web app.
+	if !strings.Contains(body, `href="https://app.talyvor.com/documentation"`) || !strings.Contains(body, "app.talyvor.com/documentation</div>") {
+		t.Error("the page must link and show https://app.talyvor.com/documentation")
+	}
+	if strings.Contains(body, "docs.talyvor.com") {
+		t.Error("the page must not point at docs.talyvor.com, which does not resolve")
 	}
 }
 

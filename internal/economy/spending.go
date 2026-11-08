@@ -48,6 +48,12 @@ const (
 var SpendCategories = []string{SpendGroceries, SpendEatingOut, SpendTransport, SpendTravel, SpendBills, SpendSubscriptions,
 	SpendShopping, SpendHealth, SpendEntertainment, SpendCash, SpendTransfers, SpendAISoftware, SpendOther}
 
+// spendCategoryNames is each category's name as a person reads it, the same names as the suite's (B55.46).
+var spendCategoryNames = map[string]string{SpendGroceries: "Groceries", SpendEatingOut: "Eating out", SpendTransport: "Transport",
+	SpendTravel: "Travel", SpendBills: "Bills", SpendSubscriptions: "Subscriptions", SpendShopping: "Shopping",
+	SpendHealth: "Health", SpendEntertainment: "Entertainment", SpendCash: "Cash", SpendTransfers: "Transfers to people",
+	SpendAISoftware: "AI and software", SpendOther: "Other"}
+
 // Where a payment's category came from.
 const (
 	SpendFromCorrection = "correction"

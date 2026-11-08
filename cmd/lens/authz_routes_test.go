@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/audit"
 	"github.com/talyvor/lens/internal/auth"
@@ -65,9 +66,18 @@ func (f *fakeAuditExporter) Export(_ context.Context, filter audit.ExportFilter,
 	return 0, nil
 }
 
+// businessPlan answers plans.Of for any workspace as a Business subscription, which has audit export (B56.5).
+type businessPlan struct{}
+
+func (businessPlan) QueryRow(context.Context, string, ...any) pgx.Row { return businessPlan{} }
+func (businessPlan) Scan(dest ...any) error {
+	*dest[0].(*string) = "business"
+	return nil
+}
+
 func TestAuthz_AuditExport_Wiring(t *testing.T) {
 	fake := &fakeAuditExporter{}
-	h := newAuditExportHandler(fake)
+	h := newAuditExportHandler(fake, businessPlan{})
 
 	// ATTACK 1: no workspace_id → must scope to ws-A, NEVER all-tenants ("").
 	serveAuthed(t, http.MethodGet, "/v1/audit/export", "/v1/audit/export", "", "ws-A", false, h)
