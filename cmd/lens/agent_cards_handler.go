@@ -20,6 +20,8 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/card   the card and its authorisations, newest first (approved and declined)
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/freeze, …/card/unfreeze   (B17.111) the card, frozen or not: every
 //	     purchase on a frozen card is declined and nothing leaves the agent
+//	POST /v1/workspaces/{wsID}/agents/{id}/card/draws-on   {draws_on: "credits" | "account"}   (B30.30) what the card
+//	     spends: the agent's credits, or its currency account in the card's currency, which must be open
 //
 // Each purchase is decided by Stripe's call to POST /v1/agent-cards/authorizations (agentcard.Handler), by
 // the agent's rules and balance; the decision and the ECB rate it was priced at are on each authorisation.
@@ -30,6 +32,7 @@ type agentCardBank interface {
 	GetAgentCard(ctx context.Context, workspaceID, agentID string) (economy.AgentCard, error)
 	SaveAgentCard(ctx context.Context, workspaceID string, c economy.AgentCard) (economy.AgentCard, error)
 	SetAgentCardFrozen(ctx context.Context, workspaceID, agentID string, frozen bool) (economy.AgentCard, error)
+	SetAgentCardDrawsOn(ctx context.Context, workspaceID, agentID, drawsOn string) (economy.AgentCard, error)
 	ListAgentCardAuthorizations(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.CardAuthorizationRecord, error)
 }
 
@@ -127,4 +130,26 @@ func mountAgentCardRoutes(r chi.Router, bank agentCardBank, issuer agentcard.Iss
 	}
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/card/freeze", freeze(true))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/card/unfreeze", freeze(false))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/card/draws-on", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var body struct {
+			DrawsOn string `json:"draws_on"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"draws_on": "credits" | "account"}`)
+			return
+		}
+		card, err := bank.SetAgentCardDrawsOn(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), body.DrawsOn)
+		switch {
+		case errors.Is(err, economy.ErrCardDrawsOn):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrNoAgentCard):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrMoneyAccountNotOpen):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, card)
+		}
+	}))
 }

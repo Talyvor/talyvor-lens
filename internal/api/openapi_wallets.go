@@ -560,5 +560,13 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent},
 				map[string]any{"200": map[string]any{"description": "the card, unfrozen"}, "404": map[string]any{"description": "no such agent, or it holds no card"}}),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/card/draws-on": map[string]any{
+			"post": withBody(op("Choose what the agent's card spends",
+				"Owner or admin. credits: the agent's credits. account: the agent's currency account in the card's currency, which must be open; each purchase is judged by the agent's rules and held on the account until it is captured, reversed or refunded.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": map[string]any{"description": "the card"}, "400": map[string]any{"description": "draws_on is neither credits nor account"},
+					"404": map[string]any{"description": "no such agent, or it holds no card"}, "409": map[string]any{"description": "the agent has no open account in the card's currency"}}),
+				body(obj([]string{"draws_on"}, map[string]any{"draws_on": str}))),
+		},
 	}
 }

@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,9 @@ import (
 // Captures and closes arrive in either order; both orders end on the same balance. Amounts convert at the ECB
 // rate recorded on the authorisation's row, and a hold released in full is credited exactly what it debited.
 // Test mode only, like the cards: a live-mode event moves nothing.
+//
+// B30.30: a purchase held on the agent's currency account settles there instead, on the money ledger in the card's
+// currency (settleCardOnAccount), and moves no credits.
 
 // The kinds of settlement.
 const (
@@ -55,7 +59,9 @@ type CardSettled struct {
 	Recorded   bool   `json:"recorded"` // false when there was nothing to settle
 	AgentID    string `json:"agent_id,omitempty"`
 	AmountULXC int64  `json:"amount_ulxc"` // + credited the agent, − debited it
-	Reason     string `json:"reason"`
+	// B30.30: for a purchase held on a currency account, what came back to it (+) or left it (−) beyond the hold.
+	AmountMinor int64  `json:"amount_minor,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 // cardRate is the ECB rate an authorisation was priced at.
@@ -115,6 +121,13 @@ func (s *DualTokenStore) SettleAgentCard(ctx context.Context, st CardSettlement)
 	}
 	if rate.currency == "" {
 		rate.currency = st.Currency
+	}
+	account, err := s.cardAccount(ctx, tx, ws, agentID, st.AuthorizationID, st.CardID)
+	if err != nil {
+		return out, err
+	}
+	if account != "" {
+		return s.settleCardOnAccount(ctx, tx, st, ws, account, heldMinor, rate, out)
 	}
 
 	var holdMinor, holdULXC int64 // how much of the hold this settles
@@ -212,6 +225,105 @@ func (s *DualTokenStore) SettleAgentCard(ctx context.Context, st CardSettlement)
 		}
 	}
 	out.Recorded, out.Reason = true, why
+	return s.recordCardSettlement(ctx, tx, st, ws, holdMinor, holdULXC, rate, testMoved, out)
+}
+
+// cardAccount is the currency account a settlement of st's authorisation settles on (B30.30): the one its approved
+// request was held on, or none for credits. With no approved request (a refund Stripe did not link, a capture Lens approved
+// nothing for), the card's latest approved purchase decides, and with none yet the card's own setting.
+func (s *DualTokenStore) cardAccount(ctx context.Context, tx pgx.Tx, ws, agentID, authorizationID, cardID string) (string, error) {
+	var account string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(money_account_id, '') FROM agent_card_authorizations WHERE agent_id = $1 AND approved
+		AND (($2 <> '' AND authorization_id = $2) OR ($2 = '' AND card_id = $3)) ORDER BY created_at DESC, id DESC LIMIT 1`,
+		agentID, authorizationID, cardID).Scan(&account)
+	if err == nil || !errors.Is(err, pgx.ErrNoRows) {
+		return account, err
+	}
+	var drawsOn, currency string
+	if err := tx.QueryRow(ctx, `SELECT draws_on, currency FROM agent_cards WHERE id = $1`, cardID).Scan(&drawsOn, &currency); err != nil {
+		return "", fmt.Errorf("economy: card draws on: %w", err)
+	}
+	if drawsOn != CardDrawsOnAccount {
+		return "", nil
+	}
+	from, err := s.payingAccount(ctx, ws, OutsidePayment{AgentID: agentID, Currency: strings.ToUpper(currency)})
+	return from.id, err
+}
+
+// settleCardOnAccount settles st in tx on account, the agent's currency account its purchase was held on (B30.30), in
+// the card's currency: a capture pays the merchant, through the partner, what it captured — out of the hold, and out of
+// the account for anything above it — and gives the account the rest of the hold there and then, so a purchase held at
+// $25.00 and captured at $24.00 releases $1.00; a release gives the account what the authorisation no longer holds; a
+// refund pays the account back. Each is what the card network says happened, screened when the purchase was
+// approved, so it is not screened again.
+func (s *DualTokenStore) settleCardOnAccount(ctx context.Context, tx pgx.Tx, st CardSettlement, ws, account string, heldMinor int64,
+	rate cardRate, out CardSettled) (CardSettled, error) {
+	currency := strings.ToUpper(rate.currency)
+	from, err := s.payingAccount(ctx, ws, OutsidePayment{AccountID: account, Currency: currency})
+	if err != nil {
+		return out, err
+	}
+	hold, err := holdAccount(ctx, tx, ws, currency)
+	if err != nil {
+		return out, err
+	}
+	var holdMinor, partner int64 // what this takes off the hold, and what goes to (+) or comes back from (−) the merchant
+	var why string
+	switch st.Kind {
+	case CardCapture:
+		partner = abs64(st.AmountMinor)
+		holdMinor, out.AmountMinor = heldMinor, heldMinor-partner
+		why = "captured at the amount held"
+		switch {
+		case heldMinor == 0:
+			why = "captured with nothing held"
+		case partner > heldMinor:
+			why = "captured above the amount held"
+		case partner < heldMinor:
+			why = "captured below the amount held; the rest is released to the account"
+		}
+	case CardRelease:
+		stillHeld := int64(0)
+		if st.Status == "pending" {
+			stillHeld = min(max(st.AmountMinor, 0), heldMinor)
+		}
+		holdMinor = heldMinor - stillHeld
+		out.AmountMinor = holdMinor
+		why = "the authorisation is " + st.Status + ": its hold is released"
+		if st.Status == "pending" {
+			why = "part of the authorisation was reversed: that much of its hold is released"
+		}
+	case CardRefund:
+		partner = -abs64(st.AmountMinor)
+		out.AmountMinor = -partner
+		why = "refunded by the merchant"
+	default:
+		return out, fmt.Errorf("economy: unknown card settlement %q", st.Kind)
+	}
+	if holdMinor == 0 && partner == 0 {
+		out.Reason = "nothing to settle: the authorisation holds nothing more"
+		return out, nil
+	}
+	kind := "card_" + st.Kind
+	if st.Kind == CardCapture {
+		kind = "card_charge" // a card payment, as the money layer's cards record theirs
+	}
+	merchant := cmp.Or(rate.merchant, "card merchant")
+	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsOut, Kind: kind,
+		IdempotencyKey: "agent_card_" + st.Kind + ":" + st.EventID, Funding: FundingTest, Memo: merchant, Counterparty: merchant,
+		PartnerRef: st.TransactionID, Postings: []MoneyPosting{{AccountID: hold, AmountMinor: -holdMinor},
+			{AccountID: from.partnerID, AmountMinor: partner}, {AccountID: account, AmountMinor: out.AmountMinor}}}, screenedBeforeLocks{}); err != nil {
+		return out, err
+	}
+	out.Recorded, out.Reason = true, why
+	return s.recordCardSettlement(ctx, tx, st, ws, holdMinor, 0, rate, 0, out)
+}
+
+// recordCardSettlement records settlement st of out in tx — holdMinor and holdULXC off the hold, testMoved test-funded
+// credits — and commits it with what it moved.
+func (s *DualTokenStore) recordCardSettlement(ctx context.Context, tx pgx.Tx, st CardSettlement, ws string, holdMinor, holdULXC int64,
+	rate cardRate, testMoved int64, out CardSettled) (CardSettled, error) {
+	agentID := out.AgentID
 	if _, err := tx.Exec(ctx, `INSERT INTO agent_card_settlements (id, kind, authorization_id, transaction_id, card_id, workspace_id,
 		agent_id, status, amount_minor, currency, hold_minor, hold_ulxc, amount_ulxc, rate_date, ecb_usd_per_eur, ecb_currency_per_eur, created_at,
 		test_funded_ulxc)
