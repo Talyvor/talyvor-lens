@@ -1876,6 +1876,8 @@ func run() error {
 	dualToken.SetPlatformFee(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, error) {
 		return billing.PlatformFeeBPS(ctx, q, workspaceID, fees.Current())
 	})
+	// B56.22: a loan between companies carries the lending fee, taken from what the borrower receives (LENS_LENDING_FEE_BPS).
+	dualToken.SetLendingFee(func() int64 { return fees.Current().LendingFeeBPS })
 	// MODEL 2 (W4.6.1 step 1). Subscriptions are a SECOND gate on top of billing: a
 	// deployment selling one-off top-ups does not start selling a subscription because
 	// it has a Stripe key. With no price configured the routes below are not registered

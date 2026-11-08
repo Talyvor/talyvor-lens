@@ -42,7 +42,7 @@ type Settings struct {
 // builds a fee flips its entry in the same change; a test holds each entry to whether code outside this package
 // reads that fee.
 var Charged = map[string]bool{
-	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": false, "lending_fee_bps": false,
+	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": false, "lending_fee_bps": true,
 	"platform_fee_bps": true, "fx_margin_bps": false, "intl_payment_fee_minor": true,
 	"merchant_fee_bps": false, "merchant_a2a_fee_bps": false, "scan_alert_ulxc": true,
 }

@@ -29,6 +29,11 @@ split into equal instalments, and the last one takes what the division leaves.
 Accepting pays the principal from the lender's agent to the borrower's, as a transfer (B22.3). The lender's
 agent rules judge the payout.
 
+Talyvor keeps a lending fee of the principal (`lending_fee_bps` in `GET /v1/public/fees`, 1% by default). The
+offer shows it as `fee_bps` and `fee_ulxc` before the borrower answers. Accepting takes that fee from what the
+borrower received, once. It is its own line on the borrower's statement ("Lending fee 1%"), and the payout event
+names it as `fee_ulxc`. A declined or withdrawn offer costs nothing.
+
 ## Repayments
 
 Each instalment is taken from the borrower's agent when it falls due, on the agent schedules' minute tick.

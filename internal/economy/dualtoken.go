@@ -388,6 +388,8 @@ type DualTokenStore struct {
 	liveStripe bool
 	// B32.11: the platform fee's rate on a workspace's AI spend; nil, no fee.
 	platformFee PlatformFeeResolver
+	// B56.22: the lending fee's rate on a loan between companies, in basis points of the principal; nil, no fee.
+	lendingFee func() int64
 	// B32.32: what judges a room wallet's monthly limit against the room owner's plan; nil, a room wallet's rules
 	// cannot be saved.
 	roomBudgets RoomBudgets
