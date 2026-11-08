@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -80,9 +81,22 @@ func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from
 			return res, ok
 		}
 	}
+	// B54.17: from here p may have gone. Once it was handed to its rail before this call, only the rail's answer under
+	// the same key may fail it: any error — the gate re-judging the agent, a refusal before the rail looks — keeps it held.
+	var resend bool
+	if err := s.pool.QueryRow(ctx, `WITH was AS (SELECT send_started_at FROM money_payments WHERE id = $1 FOR UPDATE)
+		UPDATE money_payments m SET send_started_at = COALESCE(was.send_started_at, now()) FROM was WHERE m.id = $1
+		RETURNING was.send_started_at IS NOT NULL`, p.ID).Scan(&resend); err != nil {
+		return partners.Result{}, false
+	}
 	r, err := t.Outbound(partners.WithWorkspace(ctx, p.WorkspaceID), money.Outbound{Key: p.ID, From: from.partnerRef, Reference: p.Reference,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, Payee: money.Payee{Name: payee.Name, IBAN: payee.IBAN, BIC: payee.BIC,
 			SortCode: payee.SortCode, AccountNumber: payee.AccountNumber, RoutingNumber: payee.RoutingNumber, Network: payee.Network, Address: payee.Address}})
+	if err != nil && resend {
+		slog.Error("economy: a payment that may have paid was not answered on its resend; its money stays held and it is asked again",
+			slog.String("payment_id", p.ID), slog.String("err", err.Error()))
+		return partners.Result{}, false
+	}
 	for _, refused := range []error{money.ErrRefused, money.ErrInvalid, money.ErrNotFound, money.ErrKeyReused, money.ErrInsufficientFunds,
 		money.ErrLimit, money.ErrApprovalNeeded} {
 		if errors.Is(err, refused) {

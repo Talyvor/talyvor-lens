@@ -125,6 +125,7 @@ func openAPIWalletSchemas() map[string]any {
 				"amount_ulxc":          ulxc,
 				"model":                str,
 				"reason":               str,
+				"deny_reason":          map[string]any{"type": "string", "description": "what the owner wrote when declining it, up to 200 characters (B55.18); absent when none"},
 				"approved_by_agent_id": map[string]any{"type": "string", "description": "the approver agent that approved it within its own limits (B45.28); absent when the owner did"},
 				"payee": map[string]any{
 					"type":     "object",
@@ -397,7 +398,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/approve": map[string]any{
 			"post": withBody(op("Approve a request, once — or approve it and always allow its payee",
-				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body carries {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge. With always_allow, a payment's approval also saves that allowance for its payee on the agent's rules (payee_allowances), and the answer adds the rules as saved.`,
+				`Owner or admin. The agent's retry of the same request then goes through. Once the workspace has a passkey, the body carries {"assertion": {credential_id, client_data_json, authenticator_data, signature}} over the approval's challenge; approving with always_allow, over the challenge asked for with that same always_allow, which the signature covers. With always_allow, a payment's approval also saves that allowance for its payee on the agent's rules (payee_allowances), and the answer adds the rules as saved.`,
 				[]map[string]any{ws, approval},
 				map[string]any{"200": ok("the approval, approved", ref("AgentApproval")), "400": map[string]any{"description": "always_allow without an amount above 0 and per day or month"},
 					"403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"},
@@ -405,10 +406,12 @@ func openAPIWalletPaths() map[string]any {
 				body(obj(nil, map[string]any{"assertion": map[string]any{"type": "object"}, "always_allow": ref("PayeeAllowance")}))),
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/deny": map[string]any{
-			"post": op("Deny a request",
-				"Owner or admin; signed with a passkey the same way as approve.",
+			"post": withBody(op("Deny a request",
+				"Owner or admin; signed with a passkey the same way as approve. reason, optional and up to 200 characters, is kept on the approval as deny_reason and told to the agent. Until the approval life (24 hours) after the decline, the agent's identical request is refused naming the decline and its reason, without filing a new approval or telling the owner again; a different request asks at once.",
 				[]map[string]any{ws, approval},
-				map[string]any{"200": ok("the approval, denied", ref("AgentApproval")), "403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"}}),
+				map[string]any{"200": ok("the approval, denied", ref("AgentApproval")), "400": map[string]any{"description": "a reason over 200 characters"},
+					"403": map[string]any{"description": "a passkey assertion is required, or it is invalid"}, "404": map[string]any{"description": "no such approval"}}),
+				body(obj(nil, map[string]any{"assertion": map[string]any{"type": "object"}, "reason": map[string]any{"type": "string", "maxLength": 200}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/approvals/{approvalID}/evidence": map[string]any{
 			"get": op("Read what proves an approval",

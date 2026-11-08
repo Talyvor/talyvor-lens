@@ -599,7 +599,7 @@ func (pp pooledPrice) setSavingHeaders(w http.ResponseWriter) {
 // before writing anything, so nothing has been flushed when it errors.
 func clearSavingHeaders(w http.ResponseWriter) {
 	for _, h := range []string{"X-Talyvor-Pool-List-ULXC", "X-Talyvor-Pool-Charged-ULXC",
-		"X-Talyvor-Pool-Saved-ULXC", "X-Talyvor-Pool-Discount-Rate", "X-Talyvor-Cache-Replay"} {
+		"X-Talyvor-Pool-Saved-ULXC", "X-Talyvor-Pool-Discount-Rate", "X-Talyvor-Cache-Replay", "X-Talyvor-Cache-Saved-ULXC"} {
 		w.Header().Del(h)
 	}
 }
@@ -943,6 +943,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				tareMeter = alerts.TareMeter{Kind: string(kind), TokensIn: tin, TokensOut: tout,
 					WorkItemID: attribution.ExtractFromRequest(r).IssueID}
 				w.Header().Set("X-Talyvor-Tare", "applied")
+				w.Header().Set("X-Talyvor-Tare-Tokens-Saved", strconv.Itoa(max(tin-tout, 0))) // B28.95
 			}
 		}
 	}
@@ -1395,6 +1396,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
 			if price.ChargedULXC == 0 {
 				w.Header().Set("X-Talyvor-Cache-Replay", "true")
+				// B28.95 — and what it saved: the answer's list price, priced exactly as a pooled serve's.
+				listed := p.pricePooledServe(&poolroyalty.ServedHit{Provider: cfg.ProviderName(), Model: servedModel}, prompt, answered, holdMaxOut)
+				w.Header().Set("X-Talyvor-Cache-Saved-ULXC", strconv.FormatInt(listed.ListULXC, 10))
 			}
 			if streaming {
 				// SSE replay: synthesises the provider's streaming wire

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -490,18 +491,31 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	if s.screener == nil {
 		return p, fmt.Errorf("%w: no screener is set, so no money moves out", partners.ErrScreeningUnavailable)
 	}
-	var refusal *screening.Refusal
-	err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID, Capability: CapabilityPaymentsOut,
-		Direction: "out", Counterparty: d.Holder, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
-	if err == nil && d.Address != "" { // B48.7: and the address it goes to
-		err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID + ":address",
-			Capability: CapabilityPaymentsOut, Direction: "out", Counterparty: d.Address, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
+	// B54.17: once p was handed to its partner it may have gone, so a resend to the same details is not screened or
+	// Travel-Ruled again and never fails before the partner is asked under the same key; never sent to other details.
+	to := strings.Join([]string{d.Holder, d.IBAN, d.BIC, d.Network, strings.ToLower(d.Address)}, "|")
+	var sentTo *string
+	if err := s.pool.QueryRow(ctx, `SELECT sent_to FROM money_earnings_payouts WHERE id = $1`, p.ID).Scan(&sentTo); err != nil {
+		return p, fmt.Errorf("economy: earnings payout: %w", err)
 	}
-	switch {
-	case errors.As(err, &refusal):
-		return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed, Detail: err.Error()})
-	case err != nil:
-		return p, err
+	started := sentTo != nil
+	if started && *sentTo != to {
+		return s.setEarningsPayout(ctx, p, PaymentPending, "", "", "the payout details changed after it was sent: it waits for the partner's answer to that send")
+	}
+	if !started {
+		var refusal *screening.Refusal
+		err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID, Capability: CapabilityPaymentsOut,
+			Direction: "out", Counterparty: d.Holder, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
+		if err == nil && d.Address != "" { // B48.7: and the address it goes to
+			err = s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: p.WorkspaceID, ID: "earnings_payout:" + p.ID + ":address",
+				Capability: CapabilityPaymentsOut, Direction: "out", Counterparty: d.Address, AmountMinor: p.AmountMinor, Currency: p.Currency, Funding: p.Funding})
+		}
+		switch {
+		case errors.As(err, &refusal):
+			return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed, Detail: err.Error()})
+		case err != nil:
+			return p, err
+		}
 	}
 	rt := earningsRoute(p.WorkspaceID, p.AgentID)
 	partner, err := s.moneyLayer.Partner(ctx, money.CapPayouts, rt)
@@ -520,14 +534,34 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 		WHERE a.id = $1`, p.accountID).Scan(&from); err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
 	}
-	if d.Address != "" && s.travelRule != nil { // B48.7: the Travel Rule, as an agent's send takes it
+	if d.Address != "" && s.travelRule != nil && !started { // B48.7: the Travel Rule, as an agent's send takes it
 		held, err := s.earningsTravelRule(ctx, p, d, from)
 		switch {
-		case err != nil: // its identity data did not go: the payout is not made
-			return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed, Detail: "the identity data the Travel Rule needs was not sent: " + err.Error()})
+		case err != nil: // its identity data did not go: the payout waits, and fails after TravelRuleMaxAttempts (B54.17)
+			var attempts int
+			if qerr := s.pool.QueryRow(ctx, `UPDATE money_earnings_payouts SET travel_rule_attempts = travel_rule_attempts + 1 WHERE id = $1
+				RETURNING travel_rule_attempts`, p.ID).Scan(&attempts); qerr != nil {
+				return p, fmt.Errorf("economy: earnings payout: %w", qerr)
+			}
+			slog.Warn("economy: the Travel Rule data was not sent; the payout waits and is sent again", "payout_id", p.ID, "attempt", attempts, "err", err)
+			if attempts < TravelRuleMaxAttempts {
+				return p, nil
+			}
+			return s.applyEarningsResult(ctx, p, money.Result{Status: money.StatusFailed,
+				Detail: fmt.Sprintf("the identity data the Travel Rule needs could not be sent to the payout's provider after %d tries: %v", attempts, err)})
 		case held != "":
 			return s.setEarningsPayout(ctx, p, PayoutHeld, "", "", held)
 		}
+	}
+	var was *string
+	var sent string
+	if err := s.pool.QueryRow(ctx, `WITH was AS (SELECT sent_to FROM money_earnings_payouts WHERE id = $1 FOR UPDATE)
+		UPDATE money_earnings_payouts m SET sent_to = COALESCE(was.sent_to, $2) FROM was WHERE m.id = $1 RETURNING was.sent_to, m.sent_to`,
+		p.ID, to).Scan(&was, &sent); err != nil {
+		return p, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	if sent != to { // another send of p, to other details, got to the partner first
+		return s.setEarningsPayout(ctx, p, PaymentPending, "", "", "the payout details changed after it was sent: it waits for the partner's answer to that send")
 	}
 	recipient := money.PayoutSeller
 	if p.Kind == EarningsRoomSplit {
@@ -536,6 +570,11 @@ func (s *DualTokenStore) sendEarningsPayout(ctx context.Context, p EarningsPayou
 	res, err := payouts.Pay(partners.WithWorkspace(ctx, p.WorkspaceID), money.Payout{Key: p.ID, From: from, Recipient: recipient,
 		Amount: money.Amount{Minor: p.AmountMinor, Asset: p.Currency}, To: money.Payee{Name: d.Holder, IBAN: d.IBAN, BIC: d.BIC,
 			Network: d.Network, Address: d.Address}})
+	if err != nil && was != nil { // B54.17: it may have gone, so only the partner's answer under the same key may fail it
+		slog.Error("economy: an earnings payout that may have gone was not answered on its resend; its money stays held and it is asked again",
+			slog.String("payout_id", p.ID), slog.String("err", err.Error()))
+		return p, nil
+	}
 	for _, refused := range []error{money.ErrRefused, money.ErrInvalid, money.ErrNotFound, money.ErrKeyReused, money.ErrInsufficientFunds,
 		money.ErrLimit, money.ErrApprovalNeeded} {
 		if errors.Is(err, refused) {

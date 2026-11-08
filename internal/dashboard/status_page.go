@@ -130,10 +130,10 @@ footer{margin-top:14px; text-align:center; font-size:13px; color:var(--tv-ink-mu
       <span class="go" aria-hidden="true">&rsaquo;</span>
     </a>
 
-    <a class="row" href="https://docs.talyvor.com">
+    <a class="row" href="https://app.talyvor.com/documentation">
       <div>
         <div class="label">Documentation</div>
-        <div class="hint">docs.talyvor.com</div>
+        <div class="hint">app.talyvor.com/documentation</div>
       </div>
       <span class="go" aria-hidden="true">&rsaquo;</span>
     </a>

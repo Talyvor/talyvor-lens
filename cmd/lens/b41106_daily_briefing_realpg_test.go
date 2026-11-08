@@ -95,8 +95,8 @@ func TestDailyBriefing_NamesYesterdaysPaymentsTheApprovalAndTheBillDue(t *testin
 		t.Fatalf("the briefing lists\n  %s\nwant the approval first, then the bill due this week, then yesterday's two payments:\n  %s",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
-	for i, text := range []string{"30 LXC waits for your approval, to writer", "A bill from Acme for 30.00 GBP is due on",
-		"3 LXC was paid to writer for a logo", "4.5 LXC was paid to writer for the copy"} {
+	for i, text := range []string{"$3.00 (30 LXC) waits for your approval, to writer", "A bill from Acme for £30.00 is due on",
+		"$0.30 (3 LXC) was paid to writer for a logo", "$0.45 (4.5 LXC) was paid to writer for the copy"} {
 		if !strings.HasPrefix(b.Items[i].Text, text) {
 			t.Errorf("item %d reads %q, want it to start %q", i, b.Items[i].Text, text)
 		}
@@ -104,7 +104,7 @@ func TestDailyBriefing_NamesYesterdaysPaymentsTheApprovalAndTheBillDue(t *testin
 	if len(b.SpentYesterday) != 1 || b.SpentYesterday[0] != (economy.BriefingTotal{Currency: "LXC", Amount: 7_500_000}) {
 		t.Errorf("spent yesterday = %+v, want 7.5 LXC", b.SpentYesterday)
 	}
-	if b.Quiet || b.Line != "1 approval waiting, 1 bill due this week, 2 payments yesterday, spent yesterday 7.5 LXC." {
+	if b.Quiet || b.Line != "1 approval waiting, 1 bill due this week, 2 payments yesterday, spent yesterday $0.75 (7.5 LXC)." {
 		t.Errorf("quiet = %v, line = %q", b.Quiet, b.Line)
 	}
 

@@ -55,6 +55,20 @@ func TestCatalog_RetiredGPT41NanoLeavesThePickerAndKeepsItsPrice(t *testing.T) {
 	}
 }
 
+// B38.12 — OpenAI shut GPT-4.1 nano down on 2026-10-23 and names gpt-5.6-luna as its replacement
+// (developers.openai.com/api/docs/deprecations, read 2026-11-07); its dated snapshot id retires with it.
+func TestCatalog_RetiredGPT41NanoNamesGPT56LunaUnderBothIDs(t *testing.T) {
+	for _, id := range []string{"gpt-4.1-nano", "gpt-4.1-nano-2025-04-14"} {
+		m, ok := Get(id)
+		if !ok || m.ID != "gpt-4.1-nano" || !Retired(m) || m.RetiredSuccessor != "gpt-5.6-luna" {
+			t.Errorf("%s resolves to %q (ok=%v) retired=%v successor=%q, want gpt-4.1-nano retired in favour of gpt-5.6-luna", id, m.ID, ok, Retired(m), m.RetiredSuccessor)
+		}
+	}
+	if s, ok := Get("gpt-5.6-luna"); !ok || s.Deprecated || s.RetiredSuccessor != "" {
+		t.Errorf("successor gpt-5.6-luna is not an offered model (ok=%v, %+v)", ok, s)
+	}
+}
+
 // B38.11 — Anthropic retires Claude Sonnet 4.5 at 2026-11-30T17:00Z: until then the listing offers it with
 // "retiring on 30 Nov 2026" beside its name; from then it is deprecated (out of the picker) and retired in
 // favour of claude-sonnet-5-5, an offered model. Its stored row never changes, so model watch reads it raw.

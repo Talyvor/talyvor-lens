@@ -112,6 +112,15 @@ func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// B54.12: the paymaster's price is taken only within the chain's spread of an independent price of its coin.
+	c.TokenPaymasterLayout = LayoutSignedPrice
+	c.CoinPrice = func(context.Context, string) (*big.Rat, error) { return big.NewRat(2_900_000_000, 1), nil }
+	c.TokenPriceSpreadBps = 300
+	if _, err := c.SponsorInToken(ctx, &op, usdc); err == nil || !strings.Contains(err.Error(), "spread") {
+		t.Fatalf("a paymaster's price beyond the spread: %v, want refused", err)
+	}
+	c.TokenPriceSpreadBps = 400 // 3,000 is 3.4% over 2,900
+	op.CallData = data
 	quote, err := c.SponsorInToken(ctx, &op, usdc)
 	if err != nil {
 		t.Fatal(err)
@@ -159,5 +168,9 @@ func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
 	if tokens(payee) != 250_000 || fee.Int64() != took || took <= 0 || fee.Cmp(quote) > 0 || tokens(acct.Address) != 100_000_000-250_000-took {
 		t.Fatalf("the payee holds %d, the paymaster took %d, the agent holds %d; the fee read back is %s, the quote %s",
 			tokens(payee), took, tokens(acct.Address), fee, quote)
+	}
+	// B54.12: what the paymaster did not take stays approved to it, and the allowance counts it until it is replaced.
+	if left, err := c.FeeApprovalLeft(ctx, op); err != nil || left.Int64() != quote.Int64()-took {
+		t.Fatalf("still approved to the paymaster: %v, %v; want the quote %s less the %d taken", left, err, quote, took)
 	}
 }

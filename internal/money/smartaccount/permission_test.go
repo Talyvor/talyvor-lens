@@ -127,6 +127,15 @@ func TestPermissionGateCountsTheTokenFee(t *testing.T) {
 	if err := p.Check(got, 0, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("a fee to a blocked paymaster: %v", err)
 	}
+	// B54.12: with only some counterparties allowed, the paymaster the fee goes to must be one of them in its own right.
+	p.Blocked, p.Allowed = nil, []string{payee}
+	if err := p.Check(got, 0, now); !errors.Is(err, ErrPermission) || !strings.Contains(err.Error(), "the paymaster") {
+		t.Errorf("a fee to a paymaster not allowed: %v", err)
+	}
+	p.Allowed = []string{payee, paymaster}
+	if err := p.Check(got, 0, now); err != nil {
+		t.Errorf("a fee to an allowed paymaster: %v", err)
+	}
 
 	// The agent's key approves a fee only to the chain's own paymaster, the one paying the operation: refused before
 	// anything is signed, so no signer is needed.

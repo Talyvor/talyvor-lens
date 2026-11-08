@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -32,7 +33,7 @@ var ErrAgentOwnerless = errors.New("economy: this agent has no owner — a perso
 
 // ErrAgentFunds: the workspace's unallocated LXC (its balance less what its agents hold), or for a
 // withdrawal the agent's balance, does not cover the amount.
-var ErrAgentFunds = errors.New("economy: not enough funds for this movement")
+var ErrAgentFunds = errors.New("economy: not enough for this move")
 
 // Agent is one agent account, its balance derived from its postings.
 type Agent struct {
@@ -155,6 +156,20 @@ func accountBalance(ctx context.Context, tx pgx.Tx, workspaceID, account string)
 const allocatedSQL = `SELECT COALESCE(sum(balance_ulxc), 0)::bigint FROM agent_account_balances
   WHERE workspace_id = $1 AND (account LIKE 'agent:%' OR account LIKE 'pot:%')`
 
+// agentHolds is the refusal for an agent short of what a move needs (B55.30): "Research holds $4.00 (40 LXC)", and
+// with need ", and this needs $1.20 (12 LXC)".
+func agentHolds(ctx context.Context, q pgxDB, sentinel error, agentID string, bal, need int64) error {
+	name, err := agentName(ctx, q, agentID)
+	if err != nil {
+		return err
+	}
+	msg := cmp.Or(name, "the agent") + " holds " + LXCMoney(bal)
+	if need > 0 {
+		msg += ", and this needs " + LXCMoney(need)
+	}
+	return fmt.Errorf("%w: %s", sentinel, msg)
+}
+
 // requireUnallocated refuses a debit of the workspace's OWN spending — anything not made with an agent's
 // key — that would reach into the LXC its agents hold (B19.13). bal is the lxc_balances balance the
 // caller has locked, so a concurrent funding waits on the same row.
@@ -164,7 +179,7 @@ func requireUnallocated(ctx context.Context, tx pgx.Tx, workspaceID string, bal,
 		return fmt.Errorf("economy: allocated LXC: %w", err)
 	}
 	if bal-allocated < amount {
-		return fmt.Errorf("%w: %d µLXC is not held by the workspace's agents", ErrInsufficientLXC, bal-allocated)
+		return fmt.Errorf("%w: the workspace has %s that is not with an agent", ErrInsufficientLXC, LXCMoney(bal-allocated))
 	}
 	return nil
 }
@@ -436,7 +451,7 @@ func (s *DualTokenStore) moveAgentFunds(ctx context.Context, workspaceID, agentI
 			return 0, fmt.Errorf("economy: allocated LXC: %w", err)
 		}
 		if unallocated := wsBal - allocated; unallocated < amount {
-			return 0, fmt.Errorf("%w: the workspace has %d µLXC not held by its agents", ErrAgentFunds, unallocated)
+			return 0, fmt.Errorf("%w: the workspace has %s that is not with an agent", ErrAgentFunds, LXCMoney(unallocated))
 		}
 		err = postEntry(ctx, tx, workspaceID, kind, ref, leg{"workspace", -amount}, leg{agentAccount(agentID), amount})
 		if err != nil {
@@ -445,7 +460,7 @@ func (s *DualTokenStore) moveAgentFunds(ctx context.Context, workspaceID, agentI
 		bal += amount
 	} else {
 		if bal < amount {
-			return 0, fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+			return 0, agentHolds(ctx, tx, ErrAgentFunds, agentID, bal, 0)
 		}
 		if err := postEntry(ctx, tx, workspaceID, kind, ref, leg{agentAccount(agentID), -amount}, leg{"workspace", amount}); err != nil {
 			return 0, err
@@ -498,7 +513,7 @@ func agentMovementFee(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta,
 			}
 		}
 		if bal < need {
-			return true, fmt.Errorf("%w: agent %s holds %d µLXC, this needs %d", ErrSubBudgetExceeded, agentID, bal, need)
+			return true, agentHolds(ctx, tx, ErrSubBudgetExceeded, agentID, bal, need)
 		}
 		// B19.2: the agent's spending rules, under the same lock, before anything is held or debited.
 		if err := enforceAgentRules(ctx, tx, workspaceID, agentID, need, ref); err != nil {

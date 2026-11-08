@@ -236,7 +236,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
 		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: hex.EncodeToString(fp[:]),
 			Payee: Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
-			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
+			Memo:  strings.TrimSuffix(Money(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
 
 	// B50.1: screened before the locks: screening takes a connection of its own, and one held under the locks while
@@ -518,6 +518,14 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 			return p, err
 		}
 		if payee.DetailsChangedAt != nil && payee.DetailsChangedAt.After(p.CreatedAt) { // B41.112: never resent to details changed since
+			var started bool
+			if err := s.pool.QueryRow(ctx, `SELECT send_started_at IS NOT NULL FROM money_payments WHERE id = $1`, p.ID).Scan(&started); err != nil {
+				return p, fmt.Errorf("economy: payment: %w", err)
+			}
+			if started { // B54.17: it may have gone to the details it was sent to, so it stays held for that send's answer
+				return scanOutsidePayment(s.pool.QueryRow(ctx, `UPDATE money_payments SET detail = $2, updated_at = now() WHERE id = $1
+					RETURNING `+outsidePaymentCols, p.ID, "the payee's details changed after this payment was sent: it waits for the answer to that send"))
+			}
 			return s.applyPartnerResult(ctx, p, from.partnerID, partners.Result{Status: partners.StatusFailed,
 				Detail: "the payee's bank details changed after this payment was made, so it was not sent"})
 		}

@@ -71,8 +71,24 @@ type b487Payer struct {
 
 func newB487Payer(t *testing.T, pool *pgxpool.Pool, ws string, flagged b487Screening, travel partners.TravelRuleProvider) b487Payer {
 	t.Helper()
+	return newB487PayerWith(t, pool, ws, flagged, travel, nil, nil)
+}
+
+// newB487PayerWith is newB487Payer reaching Circle at via(the fake's URL) when via is set, with payouts switched on
+// for earnings payouts when it is set.
+func newB487PayerWith(t *testing.T, pool *pgxpool.Pool, ws string, flagged b487Screening, travel partners.TravelRuleProvider,
+	via func(string) string, payouts money.Payouts) b487Payer {
+	t.Helper()
 	ctx := context.Background()
 	f := circlefake.New(t)
+	circleURL := f.URL
+	if via != nil {
+		circleURL = via(f.URL)
+	}
+	switches := money.SwitchSet{{Capability: money.CapWallets, Partner: circle.Name}: true, {Capability: money.CapTransfers, Partner: circle.Name}: true}
+	if payouts != nil {
+		switches[money.Switch{Capability: money.CapPayouts, Partner: "fakepay"}] = true
+	}
 	reg := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, flagged)
 	store := economy.NewDualTokenStore(nil, pool, nil)
@@ -87,12 +103,16 @@ func newB487Payer(t *testing.T, pool *pgxpool.Pool, ws string, flagged b487Scree
 		t.Fatal(err)
 	}
 	layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, ""), Clearances: b468Cleared{}, Limits: store.MoneyLimits(),
-		Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool), Switches: money.SwitchSet{
-			{Capability: money.CapWallets, Partner: circle.Name}: true, {Capability: money.CapTransfers, Partner: circle.Name}: true}})
+		Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool), Switches: switches})
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := circle.New(circle.Config{BaseURL: f.URL, APIKey: f.APIKey, EntitySecret: f.EntitySecret, WalletSetID: f.WalletSetID,
+	if payouts != nil {
+		if err := layer.Register(&money.Adapter{Name: "fakepay", Payouts: payouts}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := circle.New(circle.Config{BaseURL: circleURL, APIKey: f.APIKey, EntitySecret: f.EntitySecret, WalletSetID: f.WalletSetID,
 		Blockchain: circlefake.Blockchain, Allowlist: store.AddressAllowlist()})
 	if err != nil {
 		t.Fatal(err)

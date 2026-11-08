@@ -154,7 +154,8 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 		t.Errorf("bank details in the arguments = %d %v, want 400", code, out)
 	}
 
-	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+chat["id"].(string)+"/cancel", "", ""); code != http.StatusOK || out["status"] != "cancelled" {
+	// B55.21: chat's covered £90 was refused for want of an account, so nothing in it waits; the voice one does.
+	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+voice["id"].(string)+"/cancel", "", ""); code != http.StatusOK || out["status"] != "cancelled" {
 		t.Errorf("cancel = %d %v", code, out)
 	}
 	if code, out := call(http.MethodGet, "/v1/money/payment-requests/"+id, "", ""); code != http.StatusOK || out["payload_hash"] != first["payload_hash"] {

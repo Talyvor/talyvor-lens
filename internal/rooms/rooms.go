@@ -109,16 +109,17 @@ type Room struct {
 
 // Member is a workspace's membership of a room.
 type Member struct {
-	WorkspaceID  string     `json:"workspace_id"`
-	UserID       string     `json:"user_id,omitempty"` // shown to its own workspace (and an admin) only
-	Role         string     `json:"role"`
-	MaySpend     bool       `json:"may_spend"`
-	TermsVersion int        `json:"terms_version"`
-	TermsCurrent bool       `json:"terms_current"` // false: the room's terms changed since it accepted them
-	JoinedAt     time.Time  `json:"joined_at"`
-	RemovedAt    *time.Time `json:"removed_at,omitempty"`
-	MutedAt      *time.Time `json:"muted_at,omitempty"`  // muted: it reads the room and posts nothing (B32.52)
-	BannedAt     *time.Time `json:"banned_at,omitempty"` // banned: removed, and does not join again until unbanned
+	WorkspaceID   string     `json:"workspace_id"`
+	WorkspaceName string     `json:"workspace_name"`
+	UserID        string     `json:"user_id,omitempty"` // shown to its own workspace (and an admin) only
+	Role          string     `json:"role"`
+	MaySpend      bool       `json:"may_spend"`
+	TermsVersion  int        `json:"terms_version"`
+	TermsCurrent  bool       `json:"terms_current"` // false: the room's terms changed since it accepted them
+	JoinedAt      time.Time  `json:"joined_at"`
+	RemovedAt     *time.Time `json:"removed_at,omitempty"`
+	MutedAt       *time.Time `json:"muted_at,omitempty"`  // muted: it reads the room and posts nothing (B32.52)
+	BannedAt      *time.Time `json:"banned_at,omitempty"` // banned: removed, and does not join again until unbanned
 }
 
 // Agent is an agent in a room, there as its workspace's.
@@ -180,8 +181,10 @@ type Store struct {
 	market    *market.Store // where contributions are published (contributions.go)
 	keys      Keys          // issues each room wallet's key (wallet.go); nil, rooms have no wallet
 
-	contextMessages int // LENS_ROOM_CONTEXT_MESSAGES (runs.go)
-	reportsHideAt   int // LENS_ROOM_REPORTS_HIDE (reports.go)
+	contextMessages int   // LENS_ROOM_CONTEXT_MESSAGES (runs.go)
+	reportsHideAt   int   // LENS_ROOM_REPORTS_HIDE (reports.go)
+	pointsPerUSD    int64 // LENS_ROOM_POINTS_PER_USD (points.go)
+	reviewPoints    int64 // LENS_ROOM_REVIEW_POINTS (reviews.go)
 }
 
 // NewStore answers a Store whose rooms may ask a fork for at most maxShareBPS of its sales (LENS_LINEAGE_MAX_SHARE_BPS),
@@ -354,12 +357,19 @@ func (s *Store) Joined(ctx context.Context, ws string) ([]Room, error) {
 }
 
 const memberCols = `m.workspace_id, m.user_id, m.role, m.may_spend, m.terms_version, m.terms_version = r.terms_version, m.joined_at, m.removed_at,
-	m.muted_at, m.banned_at`
+	m.muted_at, m.banned_at, ` + workspaceNameOf + `m.workspace_id` + workspaceNameEnd
+
+// workspaceNameOf + an id column + workspaceNameEnd is the SQL for that workspace's name (B55.34): its workspaces.name,
+// "A workspace not named yet" while that is still its id, and "" for no workspace (a system message).
+const (
+	workspaceNameOf  = `coalesce((SELECT coalesce(nullif(nullif(w.name, w.id), ''), 'A workspace not named yet') FROM workspaces w WHERE w.id = `
+	workspaceNameEnd = `), '')`
+)
 
 func scanMember(row pgx.Row) (Member, error) {
 	var m Member
 	err := row.Scan(&m.WorkspaceID, &m.UserID, &m.Role, &m.MaySpend, &m.TermsVersion, &m.TermsCurrent, &m.JoinedAt, &m.RemovedAt,
-		&m.MutedAt, &m.BannedAt)
+		&m.MutedAt, &m.BannedAt, &m.WorkspaceName)
 	return m, err
 }
 
@@ -567,7 +577,7 @@ func (s *Store) admit(ctx context.Context, tx pgx.Tx, r Room, ws, user string, t
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM room_members WHERE room_id = $1 AND removed_at IS NULL`, r.ID).Scan(&members); err != nil {
 			return m, false, err
 		}
-		if err := s.refuse(p, "members_per_room", "the room owner's", members); err != nil {
+		if err := s.refuse(p, "members_per_room", "The room owner’s", members); err != nil {
 			return m, false, err
 		}
 	}
@@ -852,7 +862,7 @@ func (s *Store) AddAgent(ctx context.Context, ws, roomID, agentID string) (a Age
 			if err != nil {
 				return err
 			}
-			if err := s.refuse(p, "agents_per_room", "the room owner's", agents); err != nil {
+			if err := s.refuse(p, "agents_per_room", "The room owner’s", agents); err != nil {
 				return err
 			}
 		}
