@@ -145,14 +145,10 @@ func (s *Service) returnInvoiceCard(w http.ResponseWriter, ctx context.Context, 
 		refunded = ch.Amount
 	}
 	inv, err := s.invoices.ReturnInvoiceCardPayment(ctx, ch.PaymentIntent.ID, refunded)
-	var capRefusal *economy.CapabilityRefusal
 	switch {
 	case errors.Is(err, economy.ErrInvoiceNotFound):
 		return true
-	case errors.As(err, &capRefusal):
-		s.log.Error("billing webhook: an invoice's card refund did not post", "event", event.ID, "payment_intent", ch.PaymentIntent.ID, "err", err)
-		w.WriteHeader(http.StatusOK)
-	case err != nil:
+	case err != nil: // a refusal too: the money has already gone back, so Stripe is asked again rather than the refund dropped
 		s.fail(w, "invoice card refund", event.ID, err)
 	default:
 		s.log.Info("billing webhook: an invoice's card payment was refunded", "event", event.ID, "invoice", inv.ID, "refunded_minor", refunded)

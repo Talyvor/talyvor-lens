@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/bits"
 	"strconv"
@@ -685,8 +686,8 @@ func (s *DualTokenStore) ReturnInvoiceCardPayment(ctx context.Context, paymentIn
 // customer's email; send it by email too once Lens has a mailer.
 func (s *DualTokenStore) SweepInvoices(ctx context.Context, now time.Time) ([]InvoiceReminder, error) {
 	// A payment in to the invoice's account whose reference, as typed, holds the invoice's, each accepted with its fee in
-	// a transaction of its own. A live one refused while merchant_acceptance is uncleared stays in the account unmatched,
-	// and is asked again at the next sweep.
+	// a transaction of its own. One that fails — a live one while merchant_acceptance is uncleared, say — stays in the
+	// account unmatched and is asked again at the next sweep, and the rest are matched.
 	type transfer struct {
 		invoiceID, entryID, funding string
 		amount                      int64
@@ -715,9 +716,9 @@ func (s *DualTokenStore) SweepInvoices(ctx context.Context, now time.Time) ([]In
 			}
 			return acceptInvoicePayment(ctx, tx, inv, t.entryID, "transfer", t.funding, "", t.amount, 0)
 		})
-		var refusal *CapabilityRefusal
-		if err != nil && !errors.As(err, &refusal) {
-			return nil, fmt.Errorf("economy: match invoice transfers: %w", err)
+		if err != nil {
+			slog.Info("economy: a transfer quoting an invoice was not matched; the next sweep asks again", "invoice_id", t.invoiceID,
+				"entry_id", t.entryID, "err", err)
 		}
 	}
 
