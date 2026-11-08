@@ -273,11 +273,21 @@ func (w *Writer) Run(ctx context.Context) {
 
 // write drafts, checks and queues one report. An error leaves nothing stored, so the next run tries again.
 func (w *Writer) write(ctx context.Context, b backtestRow) (QueuedReport, error) {
-	q := QueuedReport{Series: b.series, FindingAt: b.finding.At, Writer: WrittenByTemplate, ModelCheck: noSecondModel}
 	d, err := w.template(ctx, b)
+	q, err := w.checked(ctx, b, d, err, "")
+	if err != nil {
+		return q, err
+	}
+	return q, w.insert(ctx, b.id, &q)
+}
+
+// checked is the template's draft d (or its error) worded by the writer model, with plant appended to "why it may
+// matter" (a rehearsal's planted line, B52.40), then checked by the code rules and the second model: refused or pending.
+func (w *Writer) checked(ctx context.Context, b backtestRow, d Draft, err error, plant string) (QueuedReport, error) {
+	q := QueuedReport{Series: b.series, FindingAt: b.finding.At, Writer: WrittenByTemplate, ModelCheck: noSecondModel}
 	if errors.Is(err, ErrNotDisplayable) {
 		q.Status, q.Refusal, q.ModelCheck, q.Draft = ReportRefused, err.Error(), "not run: refused by the code rules", d
-		return q, w.insert(ctx, b.id, &q)
+		return q, nil
 	}
 	if err != nil {
 		return q, err
@@ -287,10 +297,13 @@ func (w *Writer) write(ctx context.Context, b backtestRow) (QueuedReport, error)
 	if md, ok := w.worded(mctx, d, b); ok {
 		d, q.Writer = md, WrittenByModel
 	}
+	if plant = strings.TrimSpace(plant); plant != "" {
+		d.WhyItMatters = strings.TrimSpace(d.WhyItMatters + " " + plant)
+	}
 	q.Draft = d
 	if problems := Check(d); len(problems) > 0 {
 		q.Status, q.Refusal, q.ModelCheck = ReportRefused, strings.Join(problems, "; "), "not run: refused by the code rules"
-		return q, w.insert(ctx, b.id, &q)
+		return q, nil
 	}
 	q.Status = ReportPending
 	if w.ai != nil && w.checkModel != "" {
@@ -308,7 +321,7 @@ func (w *Writer) write(ctx context.Context, b backtestRow) (QueuedReport, error)
 			q.Status, q.Refusal = ReportRefused, "the second model: "+q.ModelCheck
 		}
 	}
-	return q, w.insert(ctx, b.id, &q)
+	return q, nil
 }
 
 func firstLine(s string) string {

@@ -495,6 +495,13 @@ func TestSecurityHeadersMiddleware_SetsAllHeaders(t *testing.T) {
 	if csp == "" {
 		t.Fatal("Content-Security-Policy must be set")
 	}
+	// B57.14: the dashboard's status page and the ROI report are served under this policy; pinned whole, as it was
+	// before they took Pocket's colours.
+	if want := "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+		"font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; " +
+		"form-action 'self'"; csp != want {
+		t.Errorf("Content-Security-Policy = %q, want %q", csp, want)
+	}
 	for _, directive := range []string{
 		"default-src 'self'",
 		"frame-ancestors 'none'",

@@ -281,7 +281,7 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 		limit = live // its limits lowered since the owner signed: the lower holds
 	}
 	if a.AmountULXC > limit {
-		return a, fmt.Errorf("%w: %s LXC is above the %s LXC it may approve", ErrAboveApproverLimits, lxcString(a.AmountULXC), lxcString(limit))
+		return a, fmt.Errorf("%w: %s is above the %s it may approve", ErrAboveApproverLimits, LXCMoney(a.AmountULXC), LXCMoney(limit))
 	}
 	if rules.DailyLimitULXC > 0 {
 		tz := rules.Timezone
@@ -294,8 +294,8 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 			return a, fmt.Errorf("economy: approver: %w", err)
 		}
 		if today+a.AmountULXC > rules.DailyLimitULXC {
-			return a, fmt.Errorf("%w: with this, it would have approved %s LXC today, above its daily limit of %s LXC", ErrAboveApproverLimits,
-				lxcString(today+a.AmountULXC), lxcString(rules.DailyLimitULXC))
+			return a, fmt.Errorf("%w: with this, it would have approved %s today, above its daily limit of %s", ErrAboveApproverLimits,
+				LXCMoney(today+a.AmountULXC), LXCMoney(rules.DailyLimitULXC))
 		}
 	}
 	requester, err := agentName(ctx, tx, a.AgentID)
@@ -355,9 +355,10 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 // v0.2 closed Payment Mandate. ErrApprovalNotFound when it is not pending.
 func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (AgentApproval, error) {
 	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
-		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
+		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
+			deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
 			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
-			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds()))
+			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ap, ErrApprovalNotFound
 		}

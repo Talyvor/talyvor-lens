@@ -121,8 +121,8 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 		out.Verdict = "allowed"
 	case errors.As(err, &need):
 		out.Verdict = "approval_required"
-		out.Reason = fmt.Sprintf("this %s would cost up to %s LXC, above the agent's approval amount: it would wait for the workspace's owner to approve it",
-			what, lxcString(in.AmountULXC))
+		out.Reason = fmt.Sprintf("this %s would cost up to %s, above the agent's approval amount: it would wait for the workspace's owner to approve it",
+			what, LXCMoney(in.AmountULXC))
 	case errors.Is(err, ErrAgentRule):
 		out.Verdict = "refused"
 		out.Reason = strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": ")

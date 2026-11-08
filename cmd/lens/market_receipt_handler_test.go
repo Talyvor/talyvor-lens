@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/talyvor/lens/internal/brand"
+
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
@@ -69,5 +71,83 @@ func TestMarketReceiptRoutes_AnswerJSONHTMLAndPDF(t *testing.T) {
 	caller = &auth.AuthContext{WorkspaceID: "ws-1", AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "agent"}
 	if w := get(one, ""); w.Code != http.StatusForbidden {
 		t.Fatalf("an agent's key reading a receipt = %d; want 403", w.Code)
+	}
+}
+
+// B57.14 — a receipt's page and its PDF are in Pocket's colours, with none of today's, and the page keeps the policy
+// it had before.
+func TestMarketReceipt_WearsPocket(t *testing.T) {
+	r := chi.NewRouter()
+	rc := market.Receipt{ID: "rcpt_1", Number: "2026-000001", BuyerWorkspaceID: "ws-1", IssuedAt: time.Now(), PaidAt: time.Now(),
+		Supplier: market.Supplier{LegalName: "TALYVOR LTD"}, Preview: true, PreviewReason: "Sandbox",
+		Lines: []market.ReceiptLine{{Description: "Adder — rental", NetUSDMicros: 10_000_000}}, NetUSDMicros: 10_000_000, GrossUSDMicros: 10_000_000}
+	mountMarketReceiptRoutes(r, fakeReceipts{rc})
+	get := func(q string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws-1/marketplace/receipts/rcpt_1?format="+q, nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: "ws-1", AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	page := get("html")
+	if got, want := page.Header().Get("Content-Security-Policy"), "default-src 'none'; style-src 'unsafe-inline'; img-src data:"; got != want {
+		t.Errorf("receipt page policy = %q, want %q", got, want)
+	}
+	// The symbol's own file carries the logo kit's colours (B57.81); everything else on the receipt is Pocket's.
+	body := strings.ToUpper(strings.Replace(page.Body.String(), brand.Mark, "", 1))
+	for _, want := range []string{"#111216", "#FF7A1A", "#0F1013", `"FIGTREE"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("receipt page is missing Pocket's %s", want)
+		}
+	}
+	for _, old := range []string{"#060A12", "#0F7A6C"} {
+		if strings.Contains(body, old) {
+			t.Errorf("the receipt page still carries today's %s", old)
+		}
+	}
+	// The PDF's text and rules; the symbol is an image (B57.81).
+	pdf := get("pdf").Body.String()
+	for old, colour := range map[string]string{"#060A12": "Tf 0.024 0.039 0.071 rg", "#0F7A6C": "0.059 0.478 0.424", "#8A6A12": "0.541 0.416 0.071"} {
+		if strings.Contains(pdf, colour) {
+			t.Errorf("the receipt PDF still draws today's %s", old)
+		}
+	}
+	if !strings.Contains(pdf, "0.067 0.071 0.086 rg") { // Pocket ink, #111216
+		t.Error("the receipt PDF is not drawn in Pocket's ink")
+	}
+}
+
+// B57.81 — a receipt carries the chosen logo: the page draws the kit's symbol in light and dark, the PDF draws the
+// kit's light PNG, and neither draws the flat mark it replaced.
+func TestMarketReceipt_CarriesTheChosenLogo(t *testing.T) {
+	r := chi.NewRouter()
+	rc := market.Receipt{ID: "rcpt_1", Number: "2026-000001", BuyerWorkspaceID: "ws-1", IssuedAt: time.Now(), PaidAt: time.Now(),
+		Supplier: market.Supplier{LegalName: "TALYVOR LTD"}, Lines: []market.ReceiptLine{{Description: "Adder — rental", NetUSDMicros: 10_000_000}},
+		NetUSDMicros: 10_000_000, GrossUSDMicros: 10_000_000}
+	mountMarketReceiptRoutes(r, fakeReceipts{rc})
+	get := func(q string) string {
+		req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws-1/marketplace/receipts/rcpt_1?format="+q, nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: "ws-1", AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Body.String()
+	}
+	page := get("html")
+	for _, want := range []string{`id="tslf-top"`, `id="tsdf-top"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the receipt page is missing the symbol's %s", want)
+		}
+	}
+	pdf := get("pdf")
+	for _, want := range []string{"/Subtype /Image /Width 256 /Height 184", "/SMask", "/XObject << /Im1", "/Im1 Do"} {
+		if !strings.Contains(pdf, want) {
+			t.Errorf("the receipt PDF is missing %q", want)
+		}
+	}
+	// The flat mark's teal arrow and its ink, as the PDF drew them.
+	for _, old := range []string{"0.227 0.839 0.753 rg", "0.024 0.039 0.071 rg"} {
+		if strings.Contains(page+pdf, old) {
+			t.Errorf("the receipt still draws the flat mark (%s)", old)
+		}
 	}
 }

@@ -20,7 +20,8 @@ import (
 // by the name the owner's verification confirmed (EU AI Act Art. 50, California's BOT Act), and every message says the
 // owner reads every reply and can be dealt with directly. Every message goes on the deal's timeline.
 //
-//   - agent: to a Talyvor agent with a live Know Your Agent credential, in another workspace. It lands in that
+//   - agent: to a Talyvor agent with a live Know Your Agent credential, in another workspace that proved it trades as
+//     the counterparty named (B54.23). It lands in that
 //     workspace's negotiation inbox, and its reply threads into the deal of the message it answers.
 //   - web_form: to a form on a site the mandate names and the refused-sites list does not. Lens fills no form: it
 //     answers the text, and the owner's agent submits it there.
@@ -86,9 +87,13 @@ func (s *DualTokenStore) SendNegotiationOutreach(ctx context.Context, workspaceI
 	var toWorkspace string
 	switch channel {
 	case ChannelAgent:
-		err := s.pool.QueryRow(ctx, `SELECT workspace_id FROM agent_accounts WHERE id = $1 AND archived_at IS NULL`, to).Scan(&toWorkspace)
+		// An agent is reached only as the counterparty its workspace proved it trades as, so naming another
+		// counterparty never reaches it; a wrong id and a stranger's agent get the same answer, naming nobody.
+		err := s.pool.QueryRow(ctx, `SELECT a.workspace_id FROM agent_accounts a WHERE a.id = $1 AND a.archived_at IS NULL
+			AND EXISTS (SELECT 1 FROM negotiation_domains d WHERE d.workspace_id = a.workspace_id AND d.domain = $2
+			AND d.verified_at IS NOT NULL)`, to, RegistrableDomain(counterparty)).Scan(&toWorkspace)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return refuse("no Talyvor agent has the id %q", to)
+			return refuse("%s has no Talyvor agent with the id %q", counterparty, to)
 		}
 		if err != nil {
 			return NegotiationOutreach{}, fmt.Errorf("economy: negotiation outreach: %w", err)
@@ -130,6 +135,15 @@ func (s *DualTokenStore) SendNegotiationOutreach(ctx context.Context, workspaceI
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM negotiation_messages WHERE mandate_id = $1 AND counterparty = $2
 		AND address = $3 AND direction = 'out')`, id, counterparty, to).Scan(&contacted); err != nil {
 		return NegotiationOutreach{}, fmt.Errorf("economy: negotiation outreach: %w", err)
+	}
+	// A held deal refuses before the model is asked, so a refused ask costs nothing; it is checked again under the lock.
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if held, err := dealHeld(ctx, tx, workspaceID, t, []string{counterparty}); err != nil || held {
+			return cmp.Or(err, errHeldElsewhere)
+		}
+		return nil
+	}); err != nil {
+		return out, err
 	}
 	// shortcut: a counter is on the term sheet before its message is stored, so a failed insert leaves it unsent and
 	// the next move waits; move both into one transaction if that is ever seen.

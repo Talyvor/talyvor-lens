@@ -64,7 +64,9 @@ type Contribution struct {
 	DecidedByWorkspaceID string          `json:"decided_by_workspace_id,omitempty"`
 	DecidedAt            *time.Time      `json:"decided_at,omitempty"`
 	MessageID            string          `json:"message_id"`
-	Tally                int             `json:"tally"` // the sum of the members' latest votes
+	Size                 string          `json:"size,omitempty"` // B41.142: the size claimed on the room's rate card
+	Points               int64           `json:"points"`         // that size's points, fixed when it was claimed
+	Tally                int             `json:"tally"`          // the sum of the members' latest votes
 	Up                   int             `json:"up"`
 	Down                 int             `json:"down"`
 	MyVote               int             `json:"my_vote"` // the caller's: 1, -1, or 0 for none
@@ -270,7 +272,7 @@ func contributionErr(op string, err error) error {
 }
 
 const contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.title, c.author_workspace_id, coalesce(c.forked_from, ''),
-	c.status, c.decided_by_workspace_id, c.decided_at, c.message_id, c.created_at,
+	c.status, c.decided_by_workspace_id, c.decided_at, c.message_id, c.size, c.points, c.created_at,
 	coalesce((SELECT sum(v.value) FROM room_votes v WHERE v.contribution_id = c.id), 0),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = 1),
 	(SELECT count(*) FROM room_votes v WHERE v.contribution_id = c.id AND v.value = -1),
@@ -280,7 +282,7 @@ const contributionCols = `c.id, c.room_id, c.listing_id, c.version, l.kind, l.ti
 func scanContribution(row pgx.Row) (Contribution, error) {
 	var c Contribution
 	err := row.Scan(&c.ID, &c.RoomID, &c.ListingID, &c.Version, &c.Kind, &c.Title, &c.AuthorWorkspaceID, &c.ForkedFrom,
-		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote, &c.AuthorWorkspaceName)
+		&c.Status, &c.DecidedByWorkspaceID, &c.DecidedAt, &c.MessageID, &c.Size, &c.Points, &c.CreatedAt, &c.Tally, &c.Up, &c.Down, &c.MyVote, &c.AuthorWorkspaceName)
 	return c, err
 }
 
@@ -431,6 +433,9 @@ func (s *Store) Decide(ctx context.Context, ws, user, roomID, id, status string)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE room_contributions SET status = $2, decided_by_workspace_id = $3, decided_at = now() WHERE id = $1`,
 			id, status, ws); err != nil {
+			return err
+		}
+		if err := s.recordPoints(ctx, tx, c, c.Status, status); err != nil { // B41.143
 			return err
 		}
 		msgID := "rmsg_" + strings.ReplaceAll(uuid.NewString(), "-", "")

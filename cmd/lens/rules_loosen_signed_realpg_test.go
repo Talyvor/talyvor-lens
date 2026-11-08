@@ -119,7 +119,7 @@ func TestB5513_LooseningRulesIsSignedTighteningIsNot(t *testing.T) {
 	}
 	// The challenge says what changes, in rules history's words.
 	if code, c := call(http.MethodPost, base+"/rules/challenge", `{"rules":{"daily_limit_ulxc":9000000}}`); code != http.StatusOK ||
-		jsonOf(c["changes"]) != `["Daily limit: was 5 LXC, now 9 LXC"]` {
+		jsonOf(c["changes"]) != `["Daily limit: was $0.50 (5 LXC), now $0.90 (9 LXC)"]` {
 		t.Fatalf("challenge = %d %v, want the daily limit's change in words", code, c)
 	}
 	// A signature over raising it to 9 does not save raising it to 20.

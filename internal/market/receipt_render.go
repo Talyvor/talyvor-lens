@@ -2,9 +2,11 @@ package market
 
 import (
 	"bytes"
+	"compress/zlib"
 	"fmt"
 	"html/template"
-	"regexp"
+	"image/color"
+	"image/png"
 	"strconv"
 	"strings"
 
@@ -12,8 +14,8 @@ import (
 )
 
 // receipt_render.go — B32.40: a marketplace receipt as a page (HTML) and as a document (PDF), both in the brand: the
-// flat mark, Space Grotesk for words and IBM Plex Mono for figures on the page; on paper the light theme, the mark's
-// own vectors, Helvetica for words and Courier for figures (the PDF's built-in faces, so it embeds no font).
+// symbol, Space Grotesk for words and IBM Plex Mono for figures on the page; on paper the light theme, the symbol's
+// PNG, Helvetica for words and Courier for figures (the PDF's built-in faces, so it embeds no font).
 
 // usdText prints µUSD as US dollars: to the cent when it is whole cents, otherwise to as many places as it needs.
 func usdText(micros int64) string {
@@ -114,11 +116,11 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
   body{margin:0;padding:40px 24px;background:var(--tv-canvas);color:var(--tv-ink);
        font-family:var(--tv-font-sans);font-size:15px;line-height:24px;-webkit-font-smoothing:antialiased}
   main{max-width:880px;margin:0 auto}
-  .num{font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums}
+  .num{font-variant-numeric:tabular-nums}
   header{display:flex;align-items:flex-start;gap:16px;margin-bottom:24px}
   header .tv-mark{width:40px;height:40px;margin-top:4px}
-  .eyebrow{font-size:12px;line-height:16px;font-weight:500;letter-spacing:.22em;text-transform:uppercase;color:var(--tv-label);margin:0}
-  h1{margin:4px 0 6px;font-size:28px;line-height:34px;font-weight:500;letter-spacing:-.01em}
+  .eyebrow{font-family:var(--tv-font-sans);font-size:12px;line-height:16px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--tv-label);margin:0}
+  h1{margin:4px 0 6px;font-size:30px;line-height:34px;font-weight:750;letter-spacing:-.015em}
   header .tv-rule{margin-top:14px}
   .meta{color:var(--tv-ink-muted);font-size:13px;line-height:20px}
   .meta .num{overflow-wrap:anywhere}
@@ -136,7 +138,7 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
   table{border-collapse:collapse;width:100%;font-size:14px;line-height:20px}
   th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--tv-line);vertical-align:top}
   tbody tr:last-child td{border-bottom:0}
-  th{color:var(--tv-label);font-weight:500;font-size:12px;letter-spacing:.08em;text-transform:uppercase}
+  th{color:var(--tv-label);font-weight:600}
   td.num,th.num{text-align:right;white-space:nowrap}
   .totals{margin:12px 0 0 auto;max-width:320px}
   .totals div{display:flex;justify-content:space-between;gap:16px;padding:4px 8px}
@@ -152,7 +154,6 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
     section{padding:14px 12px}
     table{font-size:13px}
     th,td{padding:8px 4px}
-    th{letter-spacing:.04em}
     .hide-narrow{display:none}
     .totals{max-width:none}
     .local{text-align:left}
@@ -223,14 +224,14 @@ func (r Receipt) HTML() ([]byte, error) {
 
 // ── the PDF ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Paper colours: the light column of brand-v4/tokens/tokens.css, as PDF RGB.
+// Paper colours: the light column of design/pocket/pocket.css (B57.14), as PDF RGB.
 const (
-	pdfInk     = "0.024 0.039 0.071" // #060A12
-	pdfMuted   = "0.275 0.345 0.431" // #46586E
-	pdfLabel   = "0.392 0.420 0.475" // #646B79
-	pdfAccent  = "0.059 0.478 0.424" // #0F7A6C
-	pdfCaution = "0.541 0.416 0.071" // #8A6A12
-	pdfLine    = "0.898 0.910 0.925" // rgba(6,10,18,.10) on white
+	pdfInk     = "0.067 0.071 0.086" // #111216
+	pdfMuted   = "0.290 0.314 0.380" // #4A5061
+	pdfLabel   = "0.392 0.420 0.482" // #646B7B
+	pdfAccent  = "1.000 0.478 0.102" // #FF7A1A
+	pdfCaution = "0.659 0.255 0.000" // #A84100
+	pdfLine    = "0.894 0.902 0.922" // #E4E6EB
 )
 
 // pdfPage is one A4 page's content stream as it is drawn.
@@ -301,60 +302,46 @@ func wrap(s string, n int) []string {
 	return append(lines, s)
 }
 
-var (
-	svgViewBox = regexp.MustCompile(`viewBox="([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)"`)
-	svgPath    = regexp.MustCompile(`<path fill="#([0-9A-Fa-f]{6})" d="([^"]+)"`)
-	svgToken   = regexp.MustCompile(`[MLQCZ]|-?\d+(?:\.\d+)?`)
-)
-
-// mark draws the brand's flat mark (brand.MarkLightSVG, its own vectors) in a size×size box whose top left is (x, y).
-// The file's paths use M, L, Q, C and Z only; a quadratic segment is drawn as the cubic that is exactly it.
+// mark draws the brand's symbol (brand.MarkLightPNG) size wide, its top left at (x, y), as the image XObject /Im1.
 func (p *pdfPage) mark(x, y, size float64) {
-	svg := brand.MarkLightSVG()
-	vb := svgViewBox.FindStringSubmatch(svg)
-	if vb == nil {
-		return
+	h := size * float64(pdfMark.h) / float64(pdfMark.w)
+	fmt.Fprintf(&p.b, "q %.3f 0 0 %.3f %.3f %.3f cm /Im1 Do Q\n", size, h, x, y-h)
+}
+
+// pdfMark is brand.MarkLightPNG split for a PDF: its colour and its alpha, each zlib-compressed (FlateDecode).
+var pdfMark = func() (m struct {
+	w, h       int
+	rgb, alpha []byte
+}) {
+	img, err := png.Decode(bytes.NewReader(brand.MarkLightPNG))
+	if err != nil {
+		panic("brand.MarkLightPNG: " + err.Error())
 	}
-	minX, _ := strconv.ParseFloat(vb[1], 64)
-	minY, _ := strconv.ParseFloat(vb[2], 64)
-	w, _ := strconv.ParseFloat(vb[3], 64)
-	s := size / w
-	fmt.Fprintf(&p.b, "q %.5f 0 0 %.5f %.3f %.3f cm\n", s, -s, x-minX*s, y+minY*s)
-	for _, m := range svgPath.FindAllStringSubmatch(svg, -1) {
-		rgb, _ := strconv.ParseUint(m[1], 16, 32)
-		fmt.Fprintf(&p.b, "%.3f %.3f %.3f rg\n", float64(rgb>>16)/255, float64(rgb>>8&0xFF)/255, float64(rgb&0xFF)/255)
-		toks := svgToken.FindAllString(m[2], -1)
-		var cx, cy float64
-		num := func(i int) float64 { v, _ := strconv.ParseFloat(toks[i], 64); return v }
-		for i := 0; i < len(toks); {
-			switch toks[i] {
-			case "M":
-				cx, cy = num(i+1), num(i+2)
-				fmt.Fprintf(&p.b, "%g %g m\n", cx, cy)
-				i += 3
-			case "L":
-				cx, cy = num(i+1), num(i+2)
-				fmt.Fprintf(&p.b, "%g %g l\n", cx, cy)
-				i += 3
-			case "C":
-				fmt.Fprintf(&p.b, "%g %g %g %g %g %g c\n", num(i+1), num(i+2), num(i+3), num(i+4), num(i+5), num(i+6))
-				cx, cy = num(i+5), num(i+6)
-				i += 7
-			case "Q":
-				qx, qy, ex, ey := num(i+1), num(i+2), num(i+3), num(i+4)
-				fmt.Fprintf(&p.b, "%.4f %.4f %.4f %.4f %g %g c\n", cx+2*(qx-cx)/3, cy+2*(qy-cy)/3, ex+2*(qx-ex)/3, ey+2*(qy-ey)/3, ex, ey)
-				cx, cy = ex, ey
-				i += 5
-			case "Z":
-				p.b.WriteString("h\n")
-				i++
-			default:
-				i++
-			}
+	b := img.Bounds()
+	m.w, m.h = b.Dx(), b.Dy()
+	var rgb, alpha []byte
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+			rgb = append(rgb, c.R, c.G, c.B)
+			alpha = append(alpha, c.A)
 		}
-		p.b.WriteString("f\n")
 	}
-	p.b.WriteString("Q\n")
+	m.rgb, m.alpha = deflate(rgb), deflate(alpha)
+	return m
+}()
+
+// deflate is b zlib-compressed, as a PDF's FlateDecode reads it.
+func deflate(b []byte) []byte {
+	var out bytes.Buffer
+	z := zlib.NewWriter(&out)
+	if _, err := z.Write(b); err != nil {
+		panic(err)
+	}
+	if err := z.Close(); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
 }
 
 // PDF renders the receipt as an A4 document.
@@ -482,8 +469,8 @@ func (r Receipt) PDF() []byte {
 	return pdfDocument(width, height, pages)
 }
 
-// pdfDocument writes the pages as a PDF 1.4 file: a catalogue, the page tree, the three built-in fonts, and each page
-// with its content stream.
+// pdfDocument writes the pages as a PDF 1.4 file: a catalogue, the page tree, the three built-in fonts, the mark's
+// alpha and colour images, and each page with its content stream.
 func pdfDocument(width, height float64, pages []*pdfPage) []byte {
 	var out bytes.Buffer
 	var offsets []int
@@ -494,16 +481,20 @@ func pdfDocument(width, height float64, pages []*pdfPage) []byte {
 	out.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
 	kids := make([]string, len(pages))
 	for i := range pages {
-		kids[i] = fmt.Sprintf("%d 0 R", 6+2*i)
+		kids[i] = fmt.Sprintf("%d 0 R", 8+2*i)
 	}
 	obj("<< /Type /Catalog /Pages 2 0 R >>")
 	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(pages)))
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>")
+	obj(fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length %d >>\nstream\n%s\nendstream",
+		pdfMark.w, pdfMark.h, len(pdfMark.alpha), pdfMark.alpha))
+	obj(fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /SMask 6 0 R /Length %d >>\nstream\n%s\nendstream",
+		pdfMark.w, pdfMark.h, len(pdfMark.rgb), pdfMark.rgb))
 	for i, p := range pages {
-		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents %d 0 R >>",
-			width, height, 7+2*i))
+		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> /XObject << /Im1 7 0 R >> >> /Contents %d 0 R >>",
+			width, height, 9+2*i))
 		obj(fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", p.b.Len(), p.b.String()))
 	}
 	xref := out.Len()

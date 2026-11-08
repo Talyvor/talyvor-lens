@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -137,10 +138,16 @@ func newAuditWebhookHandler(exporter auditWebhookExporter, db plans.Querier) htt
 		// Fire-and-forget so the caller doesn't block on a slow SIEM.
 		// Use a fresh context detached from the request so cancellation
 		// of the HTTP connection doesn't kill the export mid-flight.
-		go func(filter audit.ExportFilter, url string) {
-			if err := exporter.ExportWebhook(context.Background(), url, filter); err != nil {
+		go func(filter audit.ExportFilter, hook string) {
+			if err := exporter.ExportWebhook(context.Background(), hook, filter); err != nil {
+				// Scheme and host only: a SIEM or chat webhook keeps its secret in the path or query (B50.39).
+				var host string
+				if u, perr := url.Parse(hook); perr == nil {
+					host = u.Scheme + "://" + u.Host
+				}
 				slog.Warn("audit: webhook export failed",
-					slog.String("url", url),
+					slog.String("workspace_id", filter.WorkspaceID),
+					slog.String("webhook_host", host),
 					slog.String("err", err.Error()),
 				)
 			}
