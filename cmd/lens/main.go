@@ -241,6 +241,14 @@ func main() {
 		}
 		return
 	}
+	// `lens credit-scores` (B30.39): companies' requests for a person to review their credit score, and the answer.
+	if len(os.Args) > 1 && os.Args[1] == "credit-scores" {
+		if err := runCreditScores(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `lens escrows` (B22.6): the disputed escrows, and the operator's decision on each.
 	if len(os.Args) > 1 && os.Args[1] == "escrows" {
 		if err := runEscrows(os.Args[2:]); err != nil {
@@ -4868,6 +4876,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
+		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
 		mountAgentEscrowRoutes(authed, dualToken)                                       // B22.6
 		mountAgentPotRoutes(authed, dualToken)                                          // B22.7
