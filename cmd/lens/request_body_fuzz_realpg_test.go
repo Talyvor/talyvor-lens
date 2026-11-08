@@ -94,6 +94,7 @@ func fuzzBodiesRouter(tb testing.TB) (http.Handler, []string) {
 	mountSimTradingRoutes(r, bank)
 	mountCashOutRoutes(r, bank)
 	mountMoneyAccountRoutes(r, bank)
+	mountTreasurySweepRoutes(r, bank)
 	mountMoneyPayeeRoutes(r, bank)
 	mountMandateRoutes(r, bank)
 	mountPermissionMandateRoutes(r, bank)

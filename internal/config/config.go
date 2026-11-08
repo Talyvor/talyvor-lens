@@ -1111,6 +1111,9 @@ type Config struct {
 	// BankConsentRemindDays is how many days before an open-banking consent runs out its connection says its renewal is
 	// due (B53.13). Env: LENS_BANK_CONSENT_REMIND_DAYS, default 7 — a setting for Nicolai.
 	BankConsentRemindDays int
+	// SimTreasuryRateBPS is the yearly return, in basis points, the Test broker's money-market fund is shown to make,
+	// labelled simulated and never posted (B30.59). Env: LENS_SIM_TREASURY_RATE_BPS, default 0 — a setting for Nicolai.
+	SimTreasuryRateBPS int64
 	// MarketPayoutWeekday is the day of the week, UTC, sellers are paid on (B32.42). Env: LENS_MARKET_PAYOUT_WEEKDAY,
 	// MON to SUN, default MON.
 	MarketPayoutWeekday time.Weekday
@@ -2471,6 +2474,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_BANK_CONSENT_REMIND_DAYS must be a positive integer, got %q", v)
 		}
 		c.BankConsentRemindDays = n
+	}
+	// B30.59 — the Test fund's simulated return. A malformed value is refused.
+	if v := os.Getenv("LENS_SIM_TREASURY_RATE_BPS"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 || n > 10_000 {
+			return nil, fmt.Errorf("config: LENS_SIM_TREASURY_RATE_BPS must be an integer from 0 to 10000, got %q", v)
+		}
+		c.SimTreasuryRateBPS = n
 	}
 	// B32.42 — the day of the week sellers are paid on. A malformed value is refused.
 	c.MarketPayoutWeekday = time.Monday

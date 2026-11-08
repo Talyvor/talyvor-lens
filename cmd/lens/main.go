@@ -2047,6 +2047,10 @@ func run() error {
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
 	dualToken.SetAccountPartners(partnerRegistry)
+	// B30.59 — a company account's money-market fund opens at the broker partner (the Test broker until treasury_sweep is
+	// cleared); its return there is simulated at LENS_SIM_TREASURY_RATE_BPS.
+	dualToken.SetTreasuryPartners(partnerRegistry)
+	economy.SimTreasuryRateBPS = cfg.SimTreasuryRateBPS
 	dualToken.SetBankInfo(partnerRegistry.AccountInfo)                                          // B53.13
 	economy.BankConsentRemindBefore = time.Duration(cfg.BankConsentRemindDays) * 24 * time.Hour // B53.13
 	// B30.9 — each capability's terms, accepted before first use: version 1 of every text Lens carries
@@ -2370,6 +2374,10 @@ func run() error {
 	// /v1/admin/reconciliation and /v1/admin/safeguarding.
 	go haComps.leader.Run(ctx, "reconciliation", 30*time.Second, func(lctx context.Context) {
 		reconcileDaily(lctx, dualToken, partnerRegistry, sanctionsAlert.sink)
+	})
+	// B30.59 — each day what a company account holds above its sweep's target moves into its money-market fund.
+	go haComps.leader.Run(ctx, "treasury-sweep", 30*time.Second, func(lctx context.Context) {
+		sweepTreasuryDaily(lctx, dualToken)
 	})
 	// B30.8 — the compliance case file: the operator reviews a case, freezes or unfreezes the workspace's money
 	// capabilities, closes it with a reason and exports a report draft; every action behind step-up (a code from the
@@ -4883,6 +4891,7 @@ func run() error {
 		mountSimTradingRoutes(authed, dualToken)                                        // B22.8
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
+		mountTreasurySweepRoutes(authed, dualToken)                                     // B30.59
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
