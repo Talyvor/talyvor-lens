@@ -12,10 +12,10 @@ import (
 
 // B32.12 — what each plan unlocks (internal/plans, LENS_PLAN_GATES).
 
-// publicPlanGatesHandler is GET /v1/public/plan-gates: every plan's gates, as lens.env sets them, for /pricing.
-// -1 is unlimited.
+// publicPlanGatesHandler is GET /v1/public/plan-gates: every plan's gates, as lens.env sets them, for /pricing,
+// and which of them Lens enforces today (B56.8). -1 is unlimited.
 func publicPlanGatesHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONOK(w, http.StatusOK, map[string]any{"order": plans.Order, "plans": plans.Current()})
+	writeJSONOK(w, http.StatusOK, map[string]any{"order": plans.Order, "plans": plans.Current(), "built": plans.Built})
 }
 
 // writePlanRefusal answers a plan's refusal with 402 and the refusal itself — in words in "error", with the setting
