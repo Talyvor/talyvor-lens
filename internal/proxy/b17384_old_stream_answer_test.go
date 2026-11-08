@@ -70,7 +70,9 @@ func TestServe_AnOldStreamAnswerWithNoStopReasonIsNeverServed(t *testing.T) {
 		}
 		for _, k := range keys {
 			if !strings.HasSuffix(k, ":owner") {
-				mr.Set(k, c.old) // the answer as the stream path kept it before B17.184
+				if err := mr.Set(k, c.old); err != nil { // the answer as the stream path kept it before B17.184
+					t.Fatal(err)
+				}
 			}
 		}
 		if body := ask("old answer"); strings.Contains(body, "8") {
