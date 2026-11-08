@@ -168,25 +168,25 @@ func TestMandate_NeedsTheOwnersSignedSayAndKeepsTheAgentsRules(t *testing.T) {
 	}
 
 	// Each pull keeps the agent's rules, at its LXC value: $5.00 pulled and $8.00 more is over a daily limit of $10.00.
+	// Over the approval amount, the owner's signed mandate is the approval: $2.00 more is pulled. (The rules only
+	// tighten here: loosening them is signed once the workspace has a key.)
 	dollar := 100 * 10_000 * economy.ULXCPerUSDMicro
-	if _, err := store.SetAgentRules(ctx, ws, agent.ID, economy.AgentRules{DailyLimitULXC: 10 * dollar}); err != nil {
+	rules := economy.AgentRules{DailyLimitULXC: 10 * dollar, ApprovalAboveULXC: dollar}
+	if _, err := store.SetAgentRules(ctx, ws, agent.ID, rules); err != nil {
 		t.Fatal(err)
 	}
 	if code := pull(id, 800); code != http.StatusForbidden || pulled() != 500 {
 		t.Fatalf("a pull over the agent's daily limit = %d, %d cents pulled; want 403 and still 500", code, pulled())
 	}
-	if _, err := store.SetAgentRules(ctx, ws, agent.ID, economy.AgentRules{BlockedPayees: []string{payeeWS}}); err != nil {
-		t.Fatal(err)
-	}
-	if code := pull(id, 100); code != http.StatusForbidden || pulled() != 500 {
-		t.Fatalf("a pull to a payee the agent may not pay = %d, %d cents pulled; want 403 and still 500", code, pulled())
-	}
-	// Over the approval amount, the owner's signed mandate is the approval.
-	if _, err := store.SetAgentRules(ctx, ws, agent.ID, economy.AgentRules{ApprovalAboveULXC: dollar}); err != nil {
-		t.Fatal(err)
-	}
 	if code := pull(id, 200); code != http.StatusCreated || pulled() != 700 {
 		t.Fatalf("a $2.00 pull over a $1.00 approval amount = %d, %d cents pulled; want 201 and 700", code, pulled())
+	}
+	rules.BlockedPayees = []string{payeeWS}
+	if _, err := store.SetAgentRules(ctx, ws, agent.ID, rules); err != nil {
+		t.Fatal(err)
+	}
+	if code := pull(id, 100); code != http.StatusForbidden || pulled() != 700 {
+		t.Fatalf("a pull to a payee the agent may not pay = %d, %d cents pulled; want 403 and still 700", code, pulled())
 	}
 
 	// The owner's own grant is signed too, over exactly that grant.
