@@ -319,20 +319,30 @@ var pdfMark = func() (m struct {
 	}
 	b := img.Bounds()
 	m.w, m.h = b.Dx(), b.Dy()
-	var rgb, alpha bytes.Buffer
-	zr, za := zlib.NewWriter(&rgb), zlib.NewWriter(&alpha)
+	var rgb, alpha []byte
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
 			c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
-			zr.Write([]byte{c.R, c.G, c.B})
-			za.Write([]byte{c.A})
+			rgb = append(rgb, c.R, c.G, c.B)
+			alpha = append(alpha, c.A)
 		}
 	}
-	zr.Close()
-	za.Close()
-	m.rgb, m.alpha = rgb.Bytes(), alpha.Bytes()
+	m.rgb, m.alpha = deflate(rgb), deflate(alpha)
 	return m
 }()
+
+// deflate is b zlib-compressed, as a PDF's FlateDecode reads it.
+func deflate(b []byte) []byte {
+	var out bytes.Buffer
+	z := zlib.NewWriter(&out)
+	if _, err := z.Write(b); err != nil {
+		panic(err)
+	}
+	if err := z.Close(); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
+}
 
 // PDF renders the receipt as an A4 document.
 func (r Receipt) PDF() []byte {
