@@ -43,8 +43,8 @@ func TestB568_PublicRoutesSayWhatIsBuiltAndCharged(t *testing.T) {
 			t.Errorf("GET %s %s = %s, want %v", c.path, c.key, got[c.key], c.want)
 		}
 	}
-	if !plans.Built["audit_export"] || plans.Built["sso"] || !fees.Charged["compute_take_bps"] || fees.Charged["lending_fee_bps"] {
-		t.Errorf("plans.Built = %v, fees.Charged = %v: audit_export is enforced (B56.5), sso is not; the compute take is charged (B56.20), the lending fee is not", plans.Built, fees.Charged)
+	if !plans.Built["audit_export"] || !plans.Built["sso"] || !fees.Charged["compute_take_bps"] || fees.Charged["lending_fee_bps"] {
+		t.Errorf("plans.Built = %v, fees.Charged = %v: audit_export (B56.5) and sso (B56.18) are enforced; the compute take is charged (B56.20), the lending fee is not", plans.Built, fees.Charged)
 	}
 }
 

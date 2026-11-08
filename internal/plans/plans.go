@@ -61,7 +61,7 @@ type Gates struct {
 // reads that gate, itself or through a method of this package it calls.
 var Built = map[string]bool{
 	"agents": true, "seats": true, "own_provider_keys": true, "live_money": true,
-	"slack_teams_approvals": false, "sso": false, "audit_export": true, "edge": false,
+	"slack_teams_approvals": false, "sso": true, "audit_export": true, "edge": false,
 }
 
 // Defaults are Nicolai's values.
@@ -259,7 +259,7 @@ func Thousands(n int64) string {
 type Refusal struct {
 	Setting string `json:"setting,omitempty"` // LENS_PLAN_GATES; "" where the refusal names no setting
 	Plan    string `json:"plan"`
-	Gate    string `json:"gate"`             // agents, seats, own_provider_keys, live_money or audit_export
+	Gate    string `json:"gate"`             // agents, seats, own_provider_keys, live_money, audit_export or sso
 	Limit   *int64 `json:"limit,omitempty"`  // for agents and seats
 	Allows  string `json:"allows,omitempty"` // the plan that would allow it; "" when only a contract would
 	Detail  string `json:"detail"`
@@ -359,6 +359,17 @@ func (w Workspace) RefuseLiveMoney(gates map[string]Gates, capability string) *R
 func (w Workspace) RefuseAuditExport(gates map[string]Gates) *Refusal {
 	r := &Refusal{Plan: w.Plan, Gate: "audit_export", Allows: w.Allowing(gates, func(g Gates) bool { return g.AuditExport })}
 	r.Detail = fmt.Sprintf("%s does not include audit export.", Name(w.Plan))
+	if r.Allows != "" {
+		r.Detail += fmt.Sprintf(" %s includes it.", Name(r.Allows))
+	}
+	return r
+}
+
+// RefuseSSO is the refusal of single sign-on on a plan without it: "Team does not include single sign-on. Business
+// includes it." It names no setting, like RefuseAuditExport.
+func (w Workspace) RefuseSSO(gates map[string]Gates) *Refusal {
+	r := &Refusal{Plan: w.Plan, Gate: "sso", Allows: w.Allowing(gates, func(g Gates) bool { return g.SSO })}
+	r.Detail = fmt.Sprintf("%s does not include single sign-on.", Name(w.Plan))
 	if r.Allows != "" {
 		r.Detail += fmt.Sprintf(" %s includes it.", Name(r.Allows))
 	}

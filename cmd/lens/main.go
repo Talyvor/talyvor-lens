@@ -143,6 +143,7 @@ import (
 	"github.com/talyvor/lens/internal/session"
 	"github.com/talyvor/lens/internal/sessionkey"
 	"github.com/talyvor/lens/internal/shadowmint"
+	"github.com/talyvor/lens/internal/sso"
 	"github.com/talyvor/lens/internal/status"
 	"github.com/talyvor/lens/internal/stepup"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -2168,9 +2169,12 @@ func run() error {
 	// B27.26 — BYOK: a workspace on the BYOK plan is served on its own provider keys, sealed under
 	// LENS_PROVIDER_SECRET_KEK. Without the KEK there is no custody: no key routes and no own-key serving.
 	var byokStore *byok.Store
+	var ssoStore *sso.Store
 	if cfg.ProviderSecretsEnabled() {
 		byokStore = byok.New(pool, cfg.ProviderSecretKeyring)
 		p.SetOwnKeys(byokStore)
+		// B56.18 — a workspace's single sign-on connection, its client secret sealed under the same KEK.
+		ssoStore = sso.New(pool, cfg.ProviderSecretKeyring)
 	}
 	bill := billReg{on: cfg.BillingEnabled}
 	subs := billReg{on: cfg.BillingEnabled && billRoute.sellsSubscriptions()}
@@ -3127,6 +3131,8 @@ func run() error {
 		})
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
+	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
+	mountSSOSignInRoute(limited, cfg.ProvisionSecret, ssoStore)
 	// B26.1 — synthetic workspaces older than seven days are deleted, by the leader alone.
 	if cfg.SyntheticKey != "" {
 		go haComps.leader.Run(ctx, "synthetic-purge", 30*time.Second, func(lctx context.Context) {
@@ -4133,6 +4139,14 @@ func run() error {
 			authed.Get("/v1/workspaces/{wsID}/provider-keys", newProviderKeysListHandler(byokStore))
 			authed.Put("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyPutHandler(byokStore))
 			authed.Delete("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyDeleteHandler(byokStore))
+		}
+
+		// B56.18 — single sign-on (sso_routes.go): the owner's connection, only while custody is armed.
+		if ssoStore != nil {
+			authed.Get("/v1/workspaces/{wsID}/sso", newSSOGetHandler(ssoStore))
+			authed.Put("/v1/workspaces/{wsID}/sso", newSSOPutHandler(ssoStore))
+			authed.Delete("/v1/workspaces/{wsID}/sso", newSSODeleteHandler(ssoStore))
+			authed.Post("/v1/workspaces/{wsID}/sso/domains/{domain}/check", newSSOCheckHandler(ssoStore))
 		}
 
 		// B1.6 — the subscriber's plan this period: the allowance, what has been used
