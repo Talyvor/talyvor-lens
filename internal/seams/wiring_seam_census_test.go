@@ -161,6 +161,12 @@ var unwiredSeams = map[string]string{
 		"no agent has a smart account to read until Nick adds CDP's keys. Until then " +
 		"GET …/agents/{id}/crypto-balances answers 503.",
 
+	"internal/money/coinbase:spenders.SetSpendPolicy": "OFF WITH SetSmartAccounts, and says so (B48.24). " +
+		"It sets the provider's policy for an agent's key: the cap on one payment and the counterparties, " +
+		"while the chain holds the allowance, token and expiry. Coinbase's adapter is built nowhere in " +
+		"cmd/lens until Nick adds CDP's keys, and the owner's grant is wired into the app by B48.37; " +
+		"until then no agent's key spends, and Talyvor's gate (B48.3) holds every rule.",
+
 	"internal/economy:DualTokenStore.SetSmartAccounts": "OFF UNTIL CDP'S KEYS ARE ON THE SERVER, and " +
 		"says so (B48.2). It takes the wallet provider that holds agents' keys — Coinbase's adapter, " +
 		"which cmd/lens builds nowhere yet because real crypto stays off until Nick adds CDP's keys. " +
