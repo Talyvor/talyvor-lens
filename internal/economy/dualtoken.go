@@ -360,6 +360,8 @@ type DualTokenStore struct {
 	monitor MoneyMonitor
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
+	// treasuryPartners is where a company's money-market fund is opened (B30.59); nil, none opens.
+	treasuryPartners TreasuryPartners
 	// bankInfo is the open-banking partner for a workspace, by whether it is a tester's (B53.13); nil, none connects.
 	bankInfo func(synthetic bool) partners.AccountInfoPartner
 	// moneyLayer opens and reads every agent's wallet (B46.4); nil, no agent has one.
