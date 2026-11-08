@@ -163,7 +163,10 @@ func (s *DualTokenStore) movePot(ctx context.Context, workspaceID, agentID, potI
 		return Pot{}, err
 	}
 	if have < amount {
-		return Pot{}, fmt.Errorf("%w: %d µLXC there", ErrAgentFunds, have)
+		if in {
+			return Pot{}, agentHolds(ctx, tx, ErrAgentFunds, agentID, have, 0)
+		}
+		return Pot{}, fmt.Errorf("%w: the pot holds %s", ErrAgentFunds, LXCMoney(have))
 	}
 	if err := postEntry(ctx, tx, workspaceID, kind, ref, leg{from, -amount}, leg{to, amount}); err != nil {
 		return Pot{}, err

@@ -304,7 +304,7 @@ func findingFact(f SpendFinding) CoachFact {
 	case FindingDuplicate:
 		c.MinutesApart = f.MinutesApart
 	case FindingAgentUnusualSpend:
-		c.Agent, c.Amount, c.Usual = true, briefingAmount(f.LastHourULXC, "LXC"), briefingAmount(f.UsualPerHourULXC, "LXC")
+		c.Agent, c.Amount, c.Usual = true, Money(f.LastHourULXC, "LXC"), Money(f.UsualPerHourULXC, "LXC")
 	}
 	return c
 }

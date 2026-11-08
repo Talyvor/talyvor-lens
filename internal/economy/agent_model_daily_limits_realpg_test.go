@@ -65,7 +65,7 @@ func TestB28301_AnOpusHoldOverItsCapWritesNothing_AHaikuHoldWritesOnePosting(t *
 		return n
 	}
 	refused := func(err error) bool {
-		return errors.Is(err, ErrAgentRule) && strings.Contains(err.Error(), "daily limit of 5 LXC for the model")
+		return errors.Is(err, ErrAgentRule) && strings.Contains(err.Error(), "daily limit of $0.50 (5 LXC) for the model")
 	}
 
 	// 3 LXC of Opus is under its cap: one posting on the agent's account, naming Opus.
