@@ -163,7 +163,7 @@ func TestRoomTools_AnAgentTakesPartInARoomWithinItsRules(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM market_uses WHERE listing_id = $1`, dear.ListingID).Scan(&dearUses); err != nil || dearUses != 0 {
 		t.Fatalf("the refused run wrote %d rows, %v; want none", dearUses, err)
 	}
-	if _, why := call("room_run", `{`+in+`,"target":"`+cheap.ID+`","variables":{"change":"v3"},"pay":"room"}`, true); !strings.Contains(why, "may_spend") {
+	if _, why := call("room_run", `{`+in+`,"target":"`+cheap.ID+`","variables":{"change":"v3"},"pay":"room"}`, true); !strings.Contains(why, "The room’s owner has not let you spend its budget.") {
 		t.Fatalf("paying room without may_spend answered %q; want it refused", why)
 	}
 

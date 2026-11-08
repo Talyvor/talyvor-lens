@@ -61,8 +61,9 @@ func TestStatus_MoneyRails(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Rails) != len(partners.Services) {
-		t.Fatalf("%d rails, want one per partner service (%d)", len(got.Rails), len(partners.Services))
+	// B56.6: every partner service but the broker, whose trade_ capabilities have no clearance here.
+	if len(got.Rails) != len(partners.Services)-1 {
+		t.Fatalf("%d rails, want one per partner service but the broker (%d)", len(got.Rails), len(partners.Services)-1)
 	}
 	rails := map[partners.Service]MoneyRail{}
 	for _, r := range got.Rails {
@@ -98,10 +99,10 @@ func TestStatus_MoneyRails(t *testing.T) {
 	if got.Status != StatusOperational {
 		t.Fatalf("a Test partner that is down moved the banner to %s", got.Status)
 	}
-	if s := got.RailsSummary; s.Down != 1 || s.Up != 1 || s.Idle != len(partners.Services)-2 || len(s.DownNames) != 1 || s.DownNames[0] != "Sanctions screening" {
+	if s := got.RailsSummary; s.Down != 1 || s.Up != 1 || s.Idle != len(partners.Services)-3 || len(s.DownNames) != 1 || s.DownNames[0] != "Sanctions screening" {
 		t.Fatalf("rails_summary %+v, want 1 down (Sanctions screening), 1 up, the rest idle", s)
 	}
-	if want := `<span class="pill bad">Money rails: 1 of 10 down: Sanctions screening (test partner)</span>`; !strings.Contains(html, want) {
+	if want := `<span class="pill bad">Money rails: 1 of 9 down: Sanctions screening (test partner)</span>`; !strings.Contains(html, want) {
 		t.Fatalf("the status page lacks %q", want)
 	}
 }
@@ -121,7 +122,7 @@ func TestStatus_RailsLine(t *testing.T) {
 	page := newStatusPage(&fakePinger{}, nil, nil, "test")
 	page.UseMoneyRails(up, nil)
 	got := page.Check(ctx)
-	if got.RailsSummary.Up != len(partners.Services) || !strings.Contains(renderHTML(&got), "Money rails: all answering") {
+	if got.RailsSummary.Up != len(partners.Services)-1 || !strings.Contains(renderHTML(&got), "Money rails: all answering") {
 		t.Fatalf("every rail up reads %+v, want all answering", got.RailsSummary)
 	}
 
@@ -133,7 +134,7 @@ func TestStatus_RailsLine(t *testing.T) {
 	if got.Status != StatusDegraded {
 		t.Fatalf("a live rail that is down left the banner %s, want degraded", got.Status)
 	}
-	if !strings.Contains(renderHTML(&got), "Money rails: 1 of 10 down: Accounts and payments (live partner)") {
+	if !strings.Contains(renderHTML(&got), "Money rails: 1 of 9 down: Accounts and payments (live partner)") {
 		t.Fatal("the status page does not name the live rail that is down")
 	}
 }
@@ -212,7 +213,7 @@ func TestStatus_StaleSanctionsListsTurnTheScreeningRailDown(t *testing.T) {
 	rec = httptest.NewRecorder()
 	page.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
 	if body := rec.Body.String(); !strings.Contains(body, `lists <span class="num">52 h</span> old`) ||
-		!strings.Contains(body, "Money rails: 1 of 10 down: Sanctions screening (test partner, lists 52 h old)") {
+		!strings.Contains(body, "Money rails: 1 of 9 down: Sanctions screening (test partner, lists 52 h old)") {
 		t.Fatal("the status page does not show the screening rail down with its lists' age")
 	}
 
@@ -222,6 +223,51 @@ func TestStatus_StaleSanctionsListsTurnTheScreeningRailDown(t *testing.T) {
 	for _, r := range fresh.Rails {
 		if r.Service == partners.ServiceScreening && (r.Status != StatusOperational || r.ListsAgeHours == nil || *r.ListsAgeHours != 3) {
 			t.Fatalf("the screening rail with lists 3 h old: %+v", r)
+		}
+	}
+}
+
+// brokerCleared is a clearance reader where only trade_equities has a clearance in force.
+type brokerCleared struct{}
+
+func (brokerCleared) WalletCapabilities(context.Context) ([]economy.CapabilityStatus, error) {
+	out := []economy.CapabilityStatus{}
+	for _, c := range economy.Capabilities {
+		st := economy.CapabilityStatus{Capability: c}
+		if c.Key == economy.CapabilityTradeEquities {
+			st.Clearance = &economy.Clearance{}
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// B56.6: the public page names no trading while no trade_ capability has a clearance in force, and the Trading rail
+// comes back once one has.
+func TestStatus_NoTradingUntilCleared(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		clearances clearanceReader
+		want       bool
+	}{{"uncleared", fxCleared{}, false}, {"unreadable", nil, false}, {"cleared", brokerCleared{}, true}} {
+		page := newStatusPage(&fakePinger{}, nil, nil, "test")
+		page.UseMoneyRails(partners.NewRegistry(nil), tc.clearances)
+		page.UpdateCache(page.Check(ctx))
+		rec := httptest.NewRecorder()
+		page.ServeJSON(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
+		js := rec.Body.String()
+		hrec := httptest.NewRecorder()
+		page.ServeHTTP(hrec, httptest.NewRequest(http.MethodGet, "/status", nil))
+		html := hrec.Body.String()
+		for what, has := range map[string]bool{
+			"a broker rail in the JSON": strings.Contains(js, `"service":"`+string(partners.ServiceBroker)+`"`),
+			"a trade_ key in the JSON":  strings.Contains(js, `"trade_`),
+			"Trading on the page":       strings.Contains(html, "Trading"),
+		} {
+			if has != tc.want {
+				t.Errorf("%s: %s is %v, want %v", tc.name, what, has, tc.want)
+			}
 		}
 	}
 }

@@ -121,7 +121,8 @@ func TestRooms_TheRoomsWalletItsBudgetAndWhoMaySpendIt(t *testing.T) {
 	}
 
 	// Until it has a monthly limit the room has no budget, and nobody spends it.
-	if _, err := store.MaySpend(ctx, owner, room.ID); !errors.Is(err, rooms.ErrPlanLimit) || !strings.Contains(err.Error(), "it has none") {
+	if _, err := store.MaySpend(ctx, owner, room.ID); !errors.Is(err, rooms.ErrPlanLimit) ||
+		err.Error() != "This room has no budget yet. Its owner sets one in Room settings: on Free, up to $100 (1,000 LXC) a month." {
 		t.Fatalf("the owner spends a room with no budget: %v, want refused for having none", err)
 	}
 
@@ -132,7 +133,8 @@ func TestRooms_TheRoomsWalletItsBudgetAndWhoMaySpendIt(t *testing.T) {
 			`{"monthly_limit_ulxc":`+monthly+`,"max_per_request_ulxc":20000000,"approval_above_ulxc":10000000}`)
 	}
 	if code, body := rules("1000000001"); code != http.StatusPaymentRequired || !strings.Contains(body, `"setting":"rooms_plan_limits"`) ||
-		!strings.Contains(body, `"plan":"free"`) || !strings.Contains(body, `"limit":"room_budget_max_usd"`) || !strings.Contains(body, `"allows":"team"`) {
+		!strings.Contains(body, `"plan":"free"`) || !strings.Contains(body, `"limit":"room_budget_max_usd"`) || !strings.Contains(body, `"allows":"team"`) ||
+		!strings.Contains(body, `"error":"Free allows a room a budget of up to $100 (1,000 LXC) a month. Team allows $5,000."`) {
 		t.Fatalf("a monthly limit above $100 = %d %s, want 402 naming rooms_plan_limits, the free plan and team", code, body)
 	}
 	var saved int
@@ -155,10 +157,10 @@ func TestRooms_TheRoomsWalletItsBudgetAndWhoMaySpendIt(t *testing.T) {
 	if code, body := call(member, http.MethodPost, "/v1/rooms/"+room.ID+"/join", `{"terms_version":1}`); code != http.StatusCreated {
 		t.Fatalf("join = %d %s", code, body)
 	}
-	if _, err := store.MaySpend(ctx, member, room.ID); !errors.Is(err, rooms.ErrForbidden) || !strings.Contains(err.Error(), "may_spend") {
-		t.Fatalf("a member without may_spend spends the room's budget: %v, want refused naming may_spend", err)
+	if _, err := store.MaySpend(ctx, member, room.ID); !errors.Is(err, rooms.ErrForbidden) || !strings.Contains(err.Error(), "The room’s owner has not let you spend its budget.") {
+		t.Fatalf("a member without may_spend spends the room's budget: %v, want refused in plain words", err)
 	}
-	if _, body := call(member, http.MethodGet, "/v1/rooms/"+room.ID, ""); !strings.Contains(body, `"may_spend":false,"why_not":"the room's owner has not given you may_spend`) ||
+	if _, body := call(member, http.MethodGet, "/v1/rooms/"+room.ID, ""); !strings.Contains(body, `"may_spend":false,"why_not":"The room’s owner has not let you spend its budget. Ask the owner or an editor."`) ||
 		!strings.Contains(body, `"monthly_limit_ulxc":1000000000`) || !strings.Contains(body, `"budget_max_ulxc":1000000000`) {
 		t.Fatalf("the member's view of the room = %s, want the budget and why it may not spend it", body)
 	}
