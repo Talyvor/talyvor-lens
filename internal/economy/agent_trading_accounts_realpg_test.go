@@ -93,6 +93,15 @@ func TestTradingAccount_OpensAndFundsFromTheAgentsUSDAccount(t *testing.T) {
 	if _, err := s.FundTradingAccount(ctx, ws, agent.ID, 1_00, FundingLive, "b3048-live"); !errors.Is(err, ErrCapabilityNotCleared) {
 		t.Fatalf("live funding while trade_equities is uncleared: %v; want ErrCapabilityNotCleared", err)
 	}
+	if err := s.PauseAgent(ctx, ws, agent.ID, "owner paused it"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FundTradingAccount(ctx, ws, agent.ID, 1_00, FundingTest, "b3048-paused"); !errors.Is(err, ErrAgentRule) {
+		t.Fatalf("funding while the agent is paused: %v; want ErrAgentRule", err)
+	}
+	if err := s.ResumeAgent(ctx, ws, agent.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	seen, err := s.TradingAccount(ctx, ws, agent.ID)
 	if err != nil {

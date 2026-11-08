@@ -146,6 +146,10 @@ func (s *DualTokenStore) FundTradingAccount(ctx context.Context, workspaceID, ag
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return MoneyEntry{}, err
 	}
+	// The money stays the agent's, so no spending rule counts it; the owner's mandate is asked before each order instead.
+	if err := refuseIfPaused(ctx, tx, agentID); err != nil {
+		return MoneyEntry{}, err
+	}
 	var from string
 	err = tx.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND agent_id = $2 AND currency = 'USD'
 		AND purpose = 'agent' AND status = 'open' ORDER BY created_at LIMIT 1`, workspaceID, agentID).Scan(&from)
