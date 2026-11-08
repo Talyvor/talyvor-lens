@@ -274,11 +274,24 @@ func (s *Store) For(ctx context.Context, email string) (SignIn, error) {
 	return out, nil
 }
 
-// publicHost reports whether u names its host as a dotted DNS name, not an IP address or localhost, on the https port.
+// publicHost reports whether u names its host as a dotted DNS name on the https port: never an address in any form
+// (a top-level label starts with a letter, so 127.1 and 0x7f.1 are refused) nor a private-use name. Input hygiene
+// only: the BFF still refuses an issuer that resolves to a private address when it fetches it.
 func publicHost(u *url.URL) bool {
 	host, ok := normalise(u.Hostname())
-	return ok && net.ParseIP(host) == nil && !strings.HasSuffix(host, ".localhost") && !strings.HasSuffix(host, ".internal") &&
-		(u.Port() == "" || u.Port() == "443")
+	if !ok || net.ParseIP(host) != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	tld := host[strings.LastIndexByte(host, '.')+1:]
+	if tld[0] < 'a' || tld[0] > 'z' {
+		return false
+	}
+	for _, private := range []string{".localhost", ".internal", ".local", ".lan", ".home.arpa", ".corp", ".intranet"} {
+		if strings.HasSuffix(host, private) {
+			return false
+		}
+	}
+	return true
 }
 
 // normalise lowercases a domain and drops a trailing dot; ok is false unless it is a hostname with a dot in it.
