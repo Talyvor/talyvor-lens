@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/talyvor/lens/internal/brand"
 )
 
 var styleScriptRE = regexp.MustCompile(`(?is)<(style|script)\b.*?</(style|script)>`)
@@ -179,32 +181,39 @@ func TestPageHardcodesNoMoneyConstants(t *testing.T) {
 
 /* ── How it must look ─────────────────────────────────────────────────────── */
 
-// TestPageUsesTheBrandTokens pins the page to brand v4 (the 4 Oct 2026 board,
-// brand-v4/tokens/tokens.css), not to an approximation: the palette in both
+// TestPageUsesTheBrandTokens pins the page to Pocket (B57.14,
+// design/pocket/pocket.css), not to an approximation: the palette in both
 // themes, the type stack, and the flat mark beside the name. Drift here means the
 // API host stops looking like the product.
 func TestPageUsesTheBrandTokens(t *testing.T) {
 	body := render(t)
 	brandHex := map[string]string{
-		"canvas dark":   "#060A12",
-		"surface dark":  "#081220",
-		"ink dark":      "#E6EEF7",
-		"muted dark":    "#7E93AB",
-		"accent dark":   "#3AD6C0",
-		"canvas light":  "#F4F7FB",
-		"ink light":     "#060A12",
-		"muted light":   "#46586E",
-		"accent light":  "#0F7A6C",
-		"positive dark": "#45C77F",
+		"page light":   "#FFFFFF",
+		"cloud light":  "#F3F4F6",
+		"ink light":    "#111216",
+		"muted light":  "#4A5061",
+		"tangerine":    "#FF7A1A",
+		"page dark":    "#0F1013",
+		"cloud dark":   "#181A1F",
+		"ink dark":     "#F2F3F5",
+		"muted dark":   "#A6ACB9",
+		"success dark": "#3DD68C",
 	}
 	for name, hex := range brandHex {
 		if !strings.Contains(body, hex) {
 			t.Errorf("%s: %s missing — tokens must come from brand-v4/tokens/tokens.css", name, hex)
 		}
 	}
-	for _, font := range []string{`"Space Grotesk"`, `"IBM Plex Mono"`} {
+	for _, font := range []string{`"Bricolage Grotesque"`, `"Figtree"`} {
 		if !strings.Contains(body, font) {
 			t.Errorf("the brand type stack must name %s", font)
+		}
+	}
+	// The mark's own file keeps its colours until B57.81 replaces it; everything else on the page is Pocket's.
+	unmarked := strings.ToUpper(strings.Replace(body, brand.Mark, "", 1))
+	for _, old := range []string{"#060A12", "#0F7A6C", `"Space Grotesk"`, `"IBM Plex Mono"`} {
+		if strings.Contains(unmarked, strings.ToUpper(old)) {
+			t.Errorf("the page still carries today's %s", old)
 		}
 	}
 	if strings.Contains(body, "@font-face") {

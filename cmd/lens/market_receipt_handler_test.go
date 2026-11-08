@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/talyvor/lens/internal/brand"
+
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
@@ -69,5 +71,48 @@ func TestMarketReceiptRoutes_AnswerJSONHTMLAndPDF(t *testing.T) {
 	caller = &auth.AuthContext{WorkspaceID: "ws-1", AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "agent"}
 	if w := get(one, ""); w.Code != http.StatusForbidden {
 		t.Fatalf("an agent's key reading a receipt = %d; want 403", w.Code)
+	}
+}
+
+// B57.14 — a receipt's page and its PDF are in Pocket's colours, with none of today's, and the page keeps the policy
+// it had before.
+func TestMarketReceipt_WearsPocket(t *testing.T) {
+	r := chi.NewRouter()
+	rc := market.Receipt{ID: "rcpt_1", Number: "2026-000001", BuyerWorkspaceID: "ws-1", IssuedAt: time.Now(), PaidAt: time.Now(),
+		Supplier: market.Supplier{LegalName: "TALYVOR LTD"}, Preview: true, PreviewReason: "Sandbox",
+		Lines: []market.ReceiptLine{{Description: "Adder — rental", NetUSDMicros: 10_000_000}}, NetUSDMicros: 10_000_000, GrossUSDMicros: 10_000_000}
+	mountMarketReceiptRoutes(r, fakeReceipts{rc})
+	get := func(q string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws-1/marketplace/receipts/rcpt_1?format="+q, nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: "ws-1", AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	page := get("html")
+	if got, want := page.Header().Get("Content-Security-Policy"), "default-src 'none'; style-src 'unsafe-inline'; img-src data:"; got != want {
+		t.Errorf("receipt page policy = %q, want %q", got, want)
+	}
+	// The mark's own file keeps its colours until B57.81 replaces it; everything else on the receipt is Pocket's.
+	body := strings.ToUpper(strings.Replace(page.Body.String(), brand.Mark, "", 1))
+	for _, want := range []string{"#111216", "#FF7A1A", "#0F1013", `"FIGTREE"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("receipt page is missing Pocket's %s", want)
+		}
+	}
+	for _, old := range []string{"#060A12", "#0F7A6C"} {
+		if strings.Contains(body, old) {
+			t.Errorf("the receipt page still carries today's %s", old)
+		}
+	}
+	// The PDF's text and rules; today's ink stays only in the mark's own paths, which B57.81 replaces.
+	pdf := get("pdf").Body.String()
+	for old, colour := range map[string]string{"#060A12": "Tf 0.024 0.039 0.071 rg", "#0F7A6C": "0.059 0.478 0.424", "#8A6A12": "0.541 0.416 0.071"} {
+		if strings.Contains(pdf, colour) {
+			t.Errorf("the receipt PDF still draws today's %s", old)
+		}
+	}
+	if !strings.Contains(pdf, "0.067 0.071 0.086 rg") { // Pocket ink, #111216
+		t.Error("the receipt PDF is not drawn in Pocket's ink")
 	}
 }

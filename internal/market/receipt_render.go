@@ -114,11 +114,11 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
   body{margin:0;padding:40px 24px;background:var(--tv-canvas);color:var(--tv-ink);
        font-family:var(--tv-font-sans);font-size:15px;line-height:24px;-webkit-font-smoothing:antialiased}
   main{max-width:880px;margin:0 auto}
-  .num{font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums}
+  .num{font-variant-numeric:tabular-nums}
   header{display:flex;align-items:flex-start;gap:16px;margin-bottom:24px}
   header .tv-mark{width:40px;height:40px;margin-top:4px}
-  .eyebrow{font-size:12px;line-height:16px;font-weight:500;letter-spacing:.22em;text-transform:uppercase;color:var(--tv-label);margin:0}
-  h1{margin:4px 0 6px;font-size:28px;line-height:34px;font-weight:500;letter-spacing:-.01em}
+  .eyebrow{font-family:var(--tv-font-sans);font-size:12px;line-height:16px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--tv-label);margin:0}
+  h1{margin:4px 0 6px;font-size:30px;line-height:34px;font-weight:750;letter-spacing:-.015em}
   header .tv-rule{margin-top:14px}
   .meta{color:var(--tv-ink-muted);font-size:13px;line-height:20px}
   .meta .num{overflow-wrap:anywhere}
@@ -136,7 +136,7 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
   table{border-collapse:collapse;width:100%;font-size:14px;line-height:20px}
   th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--tv-line);vertical-align:top}
   tbody tr:last-child td{border-bottom:0}
-  th{color:var(--tv-label);font-weight:500;font-size:12px;letter-spacing:.08em;text-transform:uppercase}
+  th{color:var(--tv-label);font-weight:600}
   td.num,th.num{text-align:right;white-space:nowrap}
   .totals{margin:12px 0 0 auto;max-width:320px}
   .totals div{display:flex;justify-content:space-between;gap:16px;padding:4px 8px}
@@ -152,7 +152,6 @@ var receiptHTML = template.Must(template.New("receipt").Funcs(template.FuncMap{
     section{padding:14px 12px}
     table{font-size:13px}
     th,td{padding:8px 4px}
-    th{letter-spacing:.04em}
     .hide-narrow{display:none}
     .totals{max-width:none}
     .local{text-align:left}
@@ -223,14 +222,14 @@ func (r Receipt) HTML() ([]byte, error) {
 
 // ── the PDF ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Paper colours: the light column of brand-v4/tokens/tokens.css, as PDF RGB.
+// Paper colours: the light column of design/pocket/pocket.css (B57.14), as PDF RGB.
 const (
-	pdfInk     = "0.024 0.039 0.071" // #060A12
-	pdfMuted   = "0.275 0.345 0.431" // #46586E
-	pdfLabel   = "0.392 0.420 0.475" // #646B79
-	pdfAccent  = "0.059 0.478 0.424" // #0F7A6C
-	pdfCaution = "0.541 0.416 0.071" // #8A6A12
-	pdfLine    = "0.898 0.910 0.925" // rgba(6,10,18,.10) on white
+	pdfInk     = "0.067 0.071 0.086" // #111216
+	pdfMuted   = "0.290 0.314 0.380" // #4A5061
+	pdfLabel   = "0.392 0.420 0.482" // #646B7B
+	pdfAccent  = "1.000 0.478 0.102" // #FF7A1A
+	pdfCaution = "0.659 0.255 0.000" // #A84100
+	pdfLine    = "0.894 0.902 0.922" // #E4E6EB
 )
 
 // pdfPage is one A4 page's content stream as it is drawn.

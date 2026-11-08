@@ -139,11 +139,11 @@ var htmlReportTmpl = template.Must(template.New("roi").Funcs(template.FuncMap{
   body{margin:0;padding:40px 24px;background:var(--tv-canvas);color:var(--tv-ink);
        font-family:var(--tv-font-sans);font-size:15px;line-height:24px;-webkit-font-smoothing:antialiased}
   main{max-width:880px;margin:0 auto}
-  .num{font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums}
+  .num{font-variant-numeric:tabular-nums}
   header{display:flex;align-items:flex-start;gap:16px;margin-bottom:24px}
   header .tv-mark{width:40px;height:40px;margin-top:4px}
-  .eyebrow{font-size:12px;line-height:16px;font-weight:500;letter-spacing:.22em;text-transform:uppercase;color:var(--tv-label)}
-  h1{margin:4px 0 6px;font-size:28px;line-height:34px;font-weight:500;letter-spacing:-.01em}
+  .eyebrow{font-family:var(--tv-font-sans);font-size:12px;line-height:16px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--tv-label)}
+  h1{margin:4px 0 6px;font-size:30px;line-height:34px;font-weight:750;letter-spacing:-.015em}
   header .tv-rule{margin-top:14px}
   .meta{color:var(--tv-ink-muted);font-size:13px;line-height:20px}
   .meta .num{white-space:nowrap}
@@ -151,16 +151,16 @@ var htmlReportTmpl = template.Must(template.New("roi").Funcs(template.FuncMap{
           padding:18px 20px;margin-bottom:16px;break-inside:avoid}
   section h2{margin:0 0 8px}
   .headline{background:var(--tv-raised)}
-  .total{font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums;font-size:36px;line-height:42px;
-         font-weight:500;margin:6px 0 4px}
+  .total{font-family:var(--tv-font-display);font-variant-numeric:tabular-nums;font-size:40px;line-height:44px;
+         font-weight:750;letter-spacing:-.03em;margin:6px 0 4px}
   table{border-collapse:collapse;width:100%;font-size:14px;line-height:20px}
   th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--tv-line);vertical-align:top}
   tr:last-child td{border-bottom:0}
-  th{color:var(--tv-label);font-weight:500;font-size:12px;letter-spacing:.08em;text-transform:uppercase}
-  td.num{text-align:right;font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums}
+  th{color:var(--tv-label);font-weight:600}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
   th.num{text-align:right}
   td.id{font-family:var(--tv-font-mono);overflow-wrap:anywhere}
-  .proj{font-family:var(--tv-font-mono);font-variant-numeric:tabular-nums;font-weight:500}
+  .proj{font-variant-numeric:tabular-nums;font-weight:600}
   .note{color:var(--tv-ink-muted);font-size:13px;line-height:20px;font-style:italic;margin:0 0 4px}
   td.note{text-align:left}
   .pill{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
@@ -179,7 +179,6 @@ var htmlReportTmpl = template.Must(template.New("roi").Funcs(template.FuncMap{
     .total{font-size:28px;line-height:34px}
     table{font-size:13px}
     th,td{padding:8px 5px}
-    th{letter-spacing:.04em}
     td.split span{display:block}
   }
   @page{margin:16mm}
