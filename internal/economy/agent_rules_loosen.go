@@ -121,7 +121,7 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 	}
 	amount := func(v int64) string {
 		if v > 0 {
-			return lxcString(v) + " LXC"
+			return LXCMoney(v)
 		}
 		return "none"
 	}
@@ -189,7 +189,7 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		if a.ULXC <= 0 { // none, or 0, which allows nothing
 			return "none"
 		}
-		return fmt.Sprintf("up to %s LXC a %s", lxcString(a.ULXC), a.Per)
+		return fmt.Sprintf("up to %s a %s", LXCMoney(a.ULXC), a.Per)
 	}
 	for _, id := range slices.Sorted(maps.Keys(mergedKeys(was.PayeeAllowances, now.PayeeAllowances))) {
 		b, n := was.PayeeAllowances[id], now.PayeeAllowances[id]

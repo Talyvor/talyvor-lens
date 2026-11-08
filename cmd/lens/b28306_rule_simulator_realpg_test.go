@@ -84,7 +84,7 @@ func TestB28306_TheSimulatorSaysRefusedForAnOverCapRequestAndThePostingsCountIsU
 	}
 	payTo := `"payee":{"kind":"agent","id":"` + supplier + `"}`
 
-	if sim := simulate(`{"amount_ulxc":3000000,"model":"gpt-4o"}`); sim.Verdict != "refused" || !strings.Contains(sim.Reason, "daily limit of 2 LXC") {
+	if sim := simulate(`{"amount_ulxc":3000000,"model":"gpt-4o"}`); sim.Verdict != "refused" || !strings.Contains(sim.Reason, "daily limit of $0.20 (2 LXC)") {
 		t.Fatalf("a request over the daily cap = %+v, want refused naming the daily limit", sim)
 	}
 	if sim := simulate(`{"amount_ulxc":1000000,` + payTo + `}`); sim.Verdict != "allowed" || sim.BalanceULXC != 10_000_000 {
@@ -108,7 +108,7 @@ func TestB28306_TheSimulatorSaysRefusedForAnOverCapRequestAndThePostingsCountIsU
 	if code, body := call(http.MethodPost, base+"/pay", `{"to_agent_id":"`+supplier+`","amount_ulxc":1000000}`); code != http.StatusOK {
 		t.Fatalf("a real payment under the cap = %d %s", code, body)
 	}
-	if sim := simulate(`{"amount_ulxc":1500000,` + payTo + `}`); sim.Verdict != "refused" || !strings.Contains(sim.Reason, "spent 1 LXC") {
+	if sim := simulate(`{"amount_ulxc":1500000,` + payTo + `}`); sim.Verdict != "refused" || !strings.Contains(sim.Reason, "spent $0.10 (1 LXC)") {
 		t.Errorf("after 1 LXC spent, a payment of 1.5 = %+v, want refused counting the 1 LXC spent", sim)
 	}
 

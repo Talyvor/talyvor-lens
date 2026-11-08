@@ -1,7 +1,7 @@
 // Package plans is what each plan unlocks — Nicolai's decision of 5 Oct 2026 (B32.12): agents, seats, own
 // provider keys and live money. One setting, LENS_PLAN_GATES, whose default in lens.env.example is his values;
-// every feature a plan gates asks For which gates a workspace has, and a refusal names the setting, the plan and
-// the plan that would allow it. A gate whose feature does not exist yet is enforced by the item that builds it.
+// every feature a plan gates asks For which gates a workspace has, and a refusal says in words what the plan allows
+// and the plan that would allow more, with the setting in a field of its own (B55.29). A gate whose feature does not exist yet is enforced by the item that builds it.
 package plans
 
 import (
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -225,14 +226,35 @@ func (w Workspace) Allowing(gates map[string]Gates, ok func(Gates) bool) string 
 	return ""
 }
 
-// Refusal is something the workspace's plan does not unlock. Its message names LENS_PLAN_GATES, the plan, and
-// the plan that would allow it.
+// Name is a plan as people read it: Free, Team, Business, Enterprise, Plus, Pro, Max and BYOK.
+func Name(plan string) string {
+	if plan == "byok" {
+		return "BYOK"
+	}
+	if plan == "" {
+		return plan
+	}
+	return strings.ToUpper(plan[:1]) + plan[1:]
+}
+
+// Thousands writes n with a comma between each group of three digits.
+func Thousands(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	for i := len(s) - 3; i > 0 && s[i-1] != '-'; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// Refusal is something the workspace's plan does not unlock. Its message says, in words, what the plan allows and
+// what the plan that would allow more does; the setting it comes from is Setting.
 type Refusal struct {
-	Plan   string `json:"plan"`
-	Gate   string `json:"gate"`             // agents, seats, own_provider_keys or live_money
-	Limit  *int64 `json:"limit,omitempty"`  // for agents and seats
-	Allows string `json:"allows,omitempty"` // the plan that would allow it; "" when only a contract would
-	Detail string `json:"detail"`
+	Setting string `json:"setting,omitempty"` // LENS_PLAN_GATES; "" where the refusal names no setting
+	Plan    string `json:"plan"`
+	Gate    string `json:"gate"`             // agents, seats, own_provider_keys, live_money or audit_export
+	Limit   *int64 `json:"limit,omitempty"`  // for agents and seats
+	Allows  string `json:"allows,omitempty"` // the plan that would allow it; "" when only a contract would
+	Detail  string `json:"detail"`
 }
 
 func (r *Refusal) Error() string { return r.Detail }
@@ -243,24 +265,33 @@ func (r *Refusal) Is(target error) bool { return target == ErrRefused }
 // ErrRefused is the plan not unlocking something.
 var ErrRefused = errors.New("plans: the plan does not allow this")
 
-// RefuseCount is the refusal of one more agent or seat than the workspace's plan allows.
+// RefuseCount is the refusal of one more agent or seat than the workspace's plan allows: "Free allows 3 agents, and
+// all 3 are in use. Team allows 25."
 func (w Workspace) RefuseCount(gates map[string]Gates, gate string, limit int64) *Refusal {
 	noun := map[string]string{"agents": "agent", "seats": "seat"}[gate]
 	allows := w.Allowing(gates, func(g Gates) bool {
 		n := map[string]int64{"agents": g.Agents, "seats": g.Seats}[gate]
 		return n == Unlimited || n > limit
 	})
-	detail := fmt.Sprintf("%s: the %s plan allows %d %s", Setting, w.Plan, limit, plural(noun, limit))
-	switch {
-	case allows != "" && gates[allows].countOf(gate) == Unlimited:
-		detail += fmt.Sprintf(" — the %s plan allows unlimited %ss", allows, noun)
-	case allows != "":
-		n := gates[allows].countOf(gate)
-		detail += fmt.Sprintf(" — the %s plan allows %d %s", allows, n, plural(noun, n))
+	used := map[string]string{"agents": "in use", "seats": "taken"}[gate]
+	var detail string
+	switch limit {
+	case 0:
+		detail = fmt.Sprintf("%s allows no %ss.", Name(w.Plan), noun)
+	case 1:
+		detail = fmt.Sprintf("%s allows 1 %s, and it is %s.", Name(w.Plan), noun, used)
 	default:
-		detail += " — a contract with Talyvor sets more"
+		detail = fmt.Sprintf("%s allows %s %ss, and all %s are %s.", Name(w.Plan), Thousands(limit), noun, Thousands(limit), used)
 	}
-	return &Refusal{Plan: w.Plan, Gate: gate, Limit: &limit, Allows: allows, Detail: detail}
+	switch n := gates[allows].countOf(gate); {
+	case allows == "":
+		detail += " A contract with Talyvor sets more."
+	case n == Unlimited:
+		detail += fmt.Sprintf(" %s allows unlimited %ss.", Name(allows), noun)
+	default:
+		detail += fmt.Sprintf(" %s allows %s.", Name(allows), Thousands(n))
+	}
+	return &Refusal{Setting: Setting, Plan: w.Plan, Gate: gate, Limit: &limit, Allows: allows, Detail: detail}
 }
 
 func (g Gates) countOf(gate string) int64 {
@@ -268,13 +299,6 @@ func (g Gates) countOf(gate string) int64 {
 		return g.Seats
 	}
 	return g.Agents
-}
-
-func plural(noun string, n int64) string {
-	if n == 1 {
-		return noun
-	}
-	return noun + "s"
 }
 
 // CheckSeats refuses members past the seats the workspace's plan allows; nil when they fit.
@@ -285,35 +309,50 @@ func (w Workspace) CheckSeats(members int64) error {
 	return w.RefuseCount(Current(), "seats", w.Seats)
 }
 
-// RefuseOwnKeys is the refusal of an own provider key on a plan that does not allow one.
+// RefuseOwnKeys is the refusal of an own provider key on a plan that does not allow one: "Free does not include your
+// own provider keys. Team has them with the BYOK add-on, and Business includes them."
 func (w Workspace) RefuseOwnKeys(gates map[string]Gates) *Refusal {
-	r := &Refusal{Plan: w.Plan, Gate: "own_provider_keys"}
+	r := &Refusal{Setting: Setting, Plan: w.Plan, Gate: "own_provider_keys"}
+	included := w.Allowing(gates, func(g Gates) bool { return g.OwnKeys == OwnKeysIncluded })
 	if w.OwnKeys == OwnKeysAddOn {
-		r.Allows = w.Allowing(gates, func(g Gates) bool { return g.OwnKeys == OwnKeysIncluded })
-		r.Detail = fmt.Sprintf("%s: the %s plan has own provider keys only with the BYOK add-on — add it", Setting, w.Plan)
+		r.Allows = included
+		r.Detail = fmt.Sprintf("%s has your own provider keys only with the BYOK add-on.", Name(w.Plan))
 		if r.Allows != "" {
-			r.Detail += fmt.Sprintf(", or move to the %s plan, which includes them", r.Allows)
+			r.Detail += fmt.Sprintf(" %s includes them.", Name(r.Allows))
 		}
 		return r
 	}
 	r.Allows = w.Allowing(gates, func(g Gates) bool { return g.OwnKeys != OwnKeysNone })
-	r.Detail = fmt.Sprintf("%s: the %s plan does not include own provider keys", Setting, w.Plan)
+	r.Detail = fmt.Sprintf("%s does not include your own provider keys.", Name(w.Plan))
 	switch {
+	case r.Allows != "" && gates[r.Allows].OwnKeys == OwnKeysAddOn && included != "":
+		r.Detail += fmt.Sprintf(" %s has them with the BYOK add-on, and %s includes them.", Name(r.Allows), Name(included))
 	case r.Allows != "" && gates[r.Allows].OwnKeys == OwnKeysAddOn:
-		r.Detail += fmt.Sprintf(" — the %s plan has them with the BYOK add-on", r.Allows)
+		r.Detail += fmt.Sprintf(" %s has them with the BYOK add-on.", Name(r.Allows))
 	case r.Allows != "":
-		r.Detail += fmt.Sprintf(" — the %s plan includes them", r.Allows)
+		r.Detail += fmt.Sprintf(" %s includes them.", Name(r.Allows))
 	}
 	return r
 }
 
-// RefuseLiveMoney is the refusal of live money for a capability the workspace's plan keeps on test money.
+// RefuseLiveMoney is the refusal of live money for a capability the workspace's plan keeps on test money: "On Free,
+// Escrow takes no real money. On Team it does, once it is cleared."
 func (w Workspace) RefuseLiveMoney(gates map[string]Gates, capability string) *Refusal {
-	r := &Refusal{Plan: w.Plan, Gate: "live_money", Allows: w.Allowing(gates, func(g Gates) bool { return g.LiveMoney })}
-	r.Detail = fmt.Sprintf("%s: on the %s plan, %s takes no real money, even with a clearance, and this would use real money",
-		Setting, w.Plan, capability)
+	r := &Refusal{Setting: Setting, Plan: w.Plan, Gate: "live_money", Allows: w.Allowing(gates, func(g Gates) bool { return g.LiveMoney })}
+	r.Detail = fmt.Sprintf("On %s, %s takes no real money.", Name(w.Plan), capability)
 	if r.Allows != "" {
-		r.Detail += fmt.Sprintf(" — on the %s plan it is live once cleared", r.Allows)
+		r.Detail += fmt.Sprintf(" On %s it does, once it is cleared.", Name(r.Allows))
+	}
+	return r
+}
+
+// RefuseAuditExport is the refusal of audit export on a plan without it: "Team does not include audit export. Business
+// includes it." It names no setting (B56.5).
+func (w Workspace) RefuseAuditExport(gates map[string]Gates) *Refusal {
+	r := &Refusal{Plan: w.Plan, Gate: "audit_export", Allows: w.Allowing(gates, func(g Gates) bool { return g.AuditExport })}
+	r.Detail = fmt.Sprintf("%s does not include audit export.", Name(w.Plan))
+	if r.Allows != "" {
+		r.Detail += fmt.Sprintf(" %s includes it.", Name(r.Allows))
 	}
 	return r
 }

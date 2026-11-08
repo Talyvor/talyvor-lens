@@ -8,8 +8,8 @@ func TestRegistrableDomain(t *testing.T) {
 		"agent.acme.example": "acme.example", "Procurement.ACME.example.": "acme.example", "acme.co.uk": "acme.co.uk",
 		"buy.acme.co.uk": "acme.co.uk", "10.0.0.1": "10.0.0.1", "10.9.0.1": "10.9.0.1", "[::1]": "[::1]",
 	} {
-		if got := registrableDomain(in); got != want {
-			t.Errorf("registrableDomain(%q) = %q, want %q", in, got, want)
+		if got := RegistrableDomain(in); got != want {
+			t.Errorf("RegistrableDomain(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

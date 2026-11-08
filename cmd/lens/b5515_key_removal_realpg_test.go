@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -297,7 +296,7 @@ func TestB5515_TheKeyThatOwnsAnAccountStaysAndOnlyTheOwnerRemoves(t *testing.T) 
 	if code, out := w.call(http.MethodDelete, removePasskey, nil); code != http.StatusOK {
 		t.Fatalf("remove the passkey that owns nothing = %d %v, want 200", code, out)
 	}
-	if code, out := w.register(w.signPhone); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out["error"]), "removed") {
-		t.Errorf("register the removed passkey again = %d %v, want 400 saying it was removed", code, out)
+	if code, out := w.register(w.signPhone); code != http.StatusConflict || out["error"] != economy.PasskeyRemovedSentence {
+		t.Errorf("register the removed passkey again = %d %v, want 409 %q", code, out, economy.PasskeyRemovedSentence)
 	}
 }

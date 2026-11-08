@@ -110,12 +110,18 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		return Passkey{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var taken bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1)`, r.CredentialID).Scan(&taken); err != nil {
+	// B54.28: a known passkey is refused now; one still waiting may be registered signed, and its enrolment then 409s.
+	// B55.15: a removed passkey keeps its row, so it is never registered again.
+	var known, removed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1),
+		EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1 AND removed_at IS NOT NULL)`, r.CredentialID).Scan(&known, &removed); err != nil {
 		return Passkey{}, fmt.Errorf("economy: register passkey: %w", err)
 	}
-	if taken { // B55.15: a removed passkey keeps its row, so it is never registered again
-		return Passkey{}, fmt.Errorf("%w: this passkey is registered already, or was removed; make a new one", passkey.ErrInvalid)
+	if removed {
+		return Passkey{}, ErrPasskeyRemoved
+	}
+	if known {
+		return Passkey{}, ErrPasskeyRegistered
 	}
 	if err := s.authorizeEnrol(ctx, tx, workspaceID, "register", challenge, a); errors.Is(err, ErrPasskeyRequired) {
 		// B55.1: unsigned, it waits for a key the workspace already has to let it in.
@@ -539,18 +545,18 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if reason == "" && model != "" {
 			reason = "a request to " + model
 		}
-		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
-			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
-			"payee_name": payeeName, "memo": memo})
 		// B40.15: the phones are told the payee and the amount — not the reason or memo, which the agent wrote.
 		to := payeeName
 		if to == "" {
 			to = model
 		}
-		body := agentName + " wants to spend " + lxcString(amount) + " LXC"
+		body := agentName + " wants to spend " + LXCMoney(amount)
 		if to != "" {
-			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
+			body = agentName + " wants to pay " + to + " " + LXCMoney(amount)
 		}
+		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
+			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
+			"payee_name": payeeName, "memo": memo, "body": body}) // B55.30: body is the sentence the phones show
 		// B55.12: the agent_approval category gives the lock screen its Approve button, and the data is what the phone
 		// checks the approval against before it signs; an agent's approval counts in µLXC, LXC's minor unit.
 		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{

@@ -137,10 +137,24 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 	if code, out := call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":3500,"idempotency_key":"inv-big"}`); code != http.StatusForbidden {
 		t.Errorf("a pull of £35.00 = %d %v, want 403: over £30.00 a pull", code, out)
 	}
+	// B55.23 — while the payer has every agent paused the mandate pulls nothing; started again, the next pull is paid.
+	if err := store.PauseAllAgents(ctx, ws, "incident 7"); err != nil {
+		t.Fatal(err)
+	}
+	code, out := call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":2000,"idempotency_key":"inv-2"}`)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "the payer has paused its agents") {
+		t.Fatalf("a pull while every agent is paused = %d %v, want 409 saying the payer paused its agents", code, out)
+	}
+	if got := postings(); len(got) != 2 {
+		t.Fatalf("a pull while every agent is paused posted %v; want still the first pull's two postings", got)
+	}
+	if err := store.ResumeAllAgents(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
 	if code, out := call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":2000,"idempotency_key":"inv-2"}`); code != http.StatusCreated {
 		t.Fatalf("a second pull of £20.00 = %d %v, want 201", code, out)
 	}
-	code, out := call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":2000,"idempotency_key":"inv-3"}`)
+	code, out = call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":2000,"idempotency_key":"inv-3"}`)
 	if msg, _ := out["error"].(string); code != http.StatusForbidden || !strings.Contains(msg, "maximum per month of 5000") {
 		t.Fatalf("a third pull of £20.00 = %d %v, want 403 naming the monthly maximum", code, out)
 	}

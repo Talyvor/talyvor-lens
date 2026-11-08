@@ -67,7 +67,8 @@ func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, per
 		err = s.waitEnrolment(ctx, tx, workspaceID, "device-register", r.Challenge, KeyEnrolment{Kind: "device", Name: name, Platform: r.Platform},
 			person, "", r.PublicKey, 0, r.Attestation)
 		var waiting *EnrolmentWaiting
-		if errors.As(err, &waiting) || errors.Is(err, ErrTooManyEnrolments) || errors.Is(err, ErrEnrolmentCodeTaken) {
+		if errors.As(err, &waiting) || errors.Is(err, ErrTooManyEnrolments) || errors.Is(err, ErrEnrolmentCodeTaken) ||
+			errors.Is(err, ErrNoLiveKey) {
 			return DeviceKey{}, err
 		}
 		return DeviceKey{}, fmt.Errorf("%w: %v", devicekey.ErrInvalid, err)
@@ -269,7 +270,7 @@ func (s *DualTokenStore) notifyPaymentRequest(workspaceID string, r PaymentReque
 	}
 	var totals []string
 	for _, c := range slices.Sorted(maps.Keys(r.Totals)) {
-		totals = append(totals, formatMinor(c, r.Totals[c]))
+		totals = append(totals, Money(r.Totals[c], c))
 	}
 	m := nativepush.Message{Title: "Approval needed", Body: "Pay " + strings.Join(payees, ", ") + " · " + strings.Join(totals, " + "),
 		Data:     map[string]string{"type": "payment_request", "request_id": r.ID, "workspace_id": workspaceID, "url": r.DeepLink},

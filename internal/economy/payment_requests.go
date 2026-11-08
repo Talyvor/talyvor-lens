@@ -291,6 +291,12 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 		return r, false, fmt.Errorf("economy: payment request: %w", err)
 	}
 
+	// B54.10: an outside agent does not ask a paused agent's owner at all.
+	if in.AgentTrust != nil && in.AgentID != "" {
+		if err := refuseIfPaused(ctx, tx, in.AgentID); err != nil {
+			return r, false, err
+		}
+	}
 	id = "preq_" + uuid.NewString()
 	items, err := s.judgePaymentItems(ctx, tx, workspaceID, in)
 	if err != nil {
@@ -341,7 +347,12 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	if err := tx.Commit(ctx); err != nil {
 		return r, false, err
 	}
-	r, err = s.PaymentRequest(ctx, workspaceID, "", id)
+	// B55.21: what a signed mandate covers is paid now; a retry with the same key returned above and pays nothing.
+	if slices.ContainsFunc(items, func(it PaymentRequestItem) bool { return it.Decision == ItemAuto }) {
+		r, err = s.PayPaymentRequest(ctx, workspaceID, "", id)
+	} else {
+		r, err = s.PaymentRequest(ctx, workspaceID, "", id)
+	}
 	if err == nil {
 		s.notifyPaymentRequest(workspaceID, r) // B40.15: a retry with the same key returned above and tells nobody again
 	}
@@ -428,7 +439,8 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 		}
 	}
 
-	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do.
+	// Auto items so far count towards each mandate's limits, as earlier requests' auto items do — a declined one's
+	// only once paid (B55.21).
 	type spentKey struct{ mandate, currency string }
 	type spent struct {
 		day, month int64
@@ -446,7 +458,7 @@ func (s *DualTokenStore) judgePaymentItems(ctx context.Context, tx pgx.Tx, works
 			COALESCE(sum(i.amount_minor) FILTER (WHERE i.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'), 0),
 			count(*) FILTER (WHERE i.created_at >= now() - interval '1 hour')
 			FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id
-			WHERE i.mandate_id = $1 AND i.currency = $2 AND i.decision = 'auto' AND r.workspace_id = $3 AND r.status <> 'cancelled'
+			WHERE i.mandate_id = $1 AND i.currency = $2 AND i.decision = 'auto' AND r.workspace_id = $3 AND (r.status <> 'cancelled' OR i.payment_id <> '')
 			AND i.created_at >= now() - interval '32 days'`,
 			mandateID, currency, workspaceID).Scan(&sp.day, &sp.month, &sp.lastHour)
 		if err != nil {
@@ -570,11 +582,12 @@ func (s *DualTokenStore) resolveListing(ctx context.Context, workspaceID string,
 
 const paymentRequestCols = `id, kind, status, client, agent_id, canonical, payload_hash, created_at, cancelled_at, agent_trust`
 
-// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared.
+// PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared. An outside
+// agent's request to the agent is its owner's alone to read, approve, cancel or pay (B54.10).
 func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (PaymentRequest, error) {
 	var r PaymentRequest
 	err := s.pool.QueryRow(ctx, `SELECT `+paymentRequestCols+` FROM payment_requests WHERE id = $1 AND workspace_id = $2
-		AND ($3 = '' OR agent_id = $3)`, id, workspaceID, agentID).
+		AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL))`, id, workspaceID, agentID).
 		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.AgentTrust)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrPaymentRequestNotFound
@@ -622,7 +635,7 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 // it; agentID, when not "", only that agent's (B40.38).
 func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests WHERE workspace_id = $1 AND status = 'pending_approval'
-		AND ($2 = '' OR agent_id = $2) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
+		AND ($2 = '' OR (agent_id = $2 AND agent_trust IS NULL)) ORDER BY created_at DESC, id DESC`, workspaceID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
 	}
@@ -654,8 +667,13 @@ func formatMinor(currency string, minor int64) string {
 	return fmt.Sprintf("%s %d.%0*d", currency, minor/scale, d, minor%scale)
 }
 
-// CancelPaymentRequest cancels a request not yet cancelled: its auto items stop counting towards the mandates' limits.
-// agentID, when not "", cancels only a request that agent prepared. One approved, or with an item paid, stays (B40.5).
+// itemWaits is an item of a request not paid and not settled yet: one waiting for the person, or a covered one not
+// paid yet, failed or held for its new payee (B55.21). A blocked item never waits.
+const itemWaits = `decision <> 'blocked' AND payment_id = '' AND pay_status IN ('', 'failed', 'held')`
+
+// CancelPaymentRequest cancels a request not yet cancelled: what still waits is never paid, and its auto items not
+// paid stop counting towards the mandates' limits; an item paid stays paid (B55.21). agentID, when not "", cancels
+// only a request that agent prepared. One approved, or with nothing waiting, stays (B40.5).
 func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (PaymentRequest, error) {
 	if _, err := s.PaymentRequest(ctx, workspaceID, agentID, id); err != nil {
 		return PaymentRequest{}, err
@@ -665,21 +683,25 @@ func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, 
 		return PaymentRequest{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// Held as PayPaymentRequest holds it: a request is cancelled before any item is paid, or not at all.
+	// Held as PayPaymentRequest holds it: a payer that held it has finished, and none starts until this is kept.
 	var status string
-	var paid bool
+	var waits bool
 	if err := tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, workspaceID).Scan(&status); err != nil {
 		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
 	}
 	// Read after the lock, so a payer that held it is seen.
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM payment_request_items WHERE request_id = $1 AND payment_id <> '')`, id).Scan(&paid); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM payment_request_items WHERE request_id = $1 AND `+itemWaits+`)`, id).Scan(&waits); err != nil {
 		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
 	}
-	if status == "approved" || paid {
-		return PaymentRequest{}, fmt.Errorf("%w: the request was approved or paid already: it cannot be cancelled", ErrPaymentRequest)
+	if status == "approved" || !waits {
+		return PaymentRequest{}, fmt.Errorf("%w: the request was approved already, or nothing in it waits: it cannot be cancelled", ErrPaymentRequest)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE payment_requests SET status = 'cancelled', cancelled_at = now(), cancelled_by = $3
 		WHERE id = $1 AND workspace_id = $2 AND status <> 'cancelled'`, id, workspaceID, by); err != nil {
+		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE payment_request_items SET pay_status = $2, pay_detail = 'declined'
+		WHERE request_id = $1 AND `+itemWaits, id, PayNotApproved); err != nil {
 		return PaymentRequest{}, fmt.Errorf("economy: cancel payment request: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

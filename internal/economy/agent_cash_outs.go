@@ -142,7 +142,7 @@ func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentI
 		return CashOut{}, err
 	}
 	if bal < amount {
-		return CashOut{}, fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+		return CashOut{}, agentHolds(ctx, tx, ErrAgentFunds, agentID, bal, 0)
 	}
 	if _, _, _, err := readLXCBalance(ctx, tx, workspaceID); err != nil {
 		return CashOut{}, err
