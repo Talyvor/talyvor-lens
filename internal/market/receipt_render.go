@@ -2,9 +2,11 @@ package market
 
 import (
 	"bytes"
+	"compress/zlib"
 	"fmt"
 	"html/template"
-	"regexp"
+	"image/color"
+	"image/png"
 	"strconv"
 	"strings"
 
@@ -12,8 +14,8 @@ import (
 )
 
 // receipt_render.go — B32.40: a marketplace receipt as a page (HTML) and as a document (PDF), both in the brand: the
-// flat mark, Space Grotesk for words and IBM Plex Mono for figures on the page; on paper the light theme, the mark's
-// own vectors, Helvetica for words and Courier for figures (the PDF's built-in faces, so it embeds no font).
+// symbol, Space Grotesk for words and IBM Plex Mono for figures on the page; on paper the light theme, the symbol's
+// PNG, Helvetica for words and Courier for figures (the PDF's built-in faces, so it embeds no font).
 
 // usdText prints µUSD as US dollars: to the cent when it is whole cents, otherwise to as many places as it needs.
 func usdText(micros int64) string {
@@ -300,61 +302,37 @@ func wrap(s string, n int) []string {
 	return append(lines, s)
 }
 
-var (
-	svgViewBox = regexp.MustCompile(`viewBox="([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)"`)
-	svgPath    = regexp.MustCompile(`<path fill="#([0-9A-Fa-f]{6})" d="([^"]+)"`)
-	svgToken   = regexp.MustCompile(`[MLQCZ]|-?\d+(?:\.\d+)?`)
-)
-
-// mark draws the brand's flat mark (brand.MarkLightSVG, its own vectors) in a size×size box whose top left is (x, y).
-// The file's paths use M, L, Q, C and Z only; a quadratic segment is drawn as the cubic that is exactly it.
+// mark draws the brand's symbol (brand.MarkLightPNG) size wide, its top left at (x, y), as the image XObject /Im1.
 func (p *pdfPage) mark(x, y, size float64) {
-	svg := brand.MarkLightSVG()
-	vb := svgViewBox.FindStringSubmatch(svg)
-	if vb == nil {
-		return
-	}
-	minX, _ := strconv.ParseFloat(vb[1], 64)
-	minY, _ := strconv.ParseFloat(vb[2], 64)
-	w, _ := strconv.ParseFloat(vb[3], 64)
-	s := size / w
-	fmt.Fprintf(&p.b, "q %.5f 0 0 %.5f %.3f %.3f cm\n", s, -s, x-minX*s, y+minY*s)
-	for _, m := range svgPath.FindAllStringSubmatch(svg, -1) {
-		rgb, _ := strconv.ParseUint(m[1], 16, 32)
-		fmt.Fprintf(&p.b, "%.3f %.3f %.3f rg\n", float64(rgb>>16)/255, float64(rgb>>8&0xFF)/255, float64(rgb&0xFF)/255)
-		toks := svgToken.FindAllString(m[2], -1)
-		var cx, cy float64
-		num := func(i int) float64 { v, _ := strconv.ParseFloat(toks[i], 64); return v }
-		for i := 0; i < len(toks); {
-			switch toks[i] {
-			case "M":
-				cx, cy = num(i+1), num(i+2)
-				fmt.Fprintf(&p.b, "%g %g m\n", cx, cy)
-				i += 3
-			case "L":
-				cx, cy = num(i+1), num(i+2)
-				fmt.Fprintf(&p.b, "%g %g l\n", cx, cy)
-				i += 3
-			case "C":
-				fmt.Fprintf(&p.b, "%g %g %g %g %g %g c\n", num(i+1), num(i+2), num(i+3), num(i+4), num(i+5), num(i+6))
-				cx, cy = num(i+5), num(i+6)
-				i += 7
-			case "Q":
-				qx, qy, ex, ey := num(i+1), num(i+2), num(i+3), num(i+4)
-				fmt.Fprintf(&p.b, "%.4f %.4f %.4f %.4f %g %g c\n", cx+2*(qx-cx)/3, cy+2*(qy-cy)/3, ex+2*(qx-ex)/3, ey+2*(qy-ey)/3, ex, ey)
-				cx, cy = ex, ey
-				i += 5
-			case "Z":
-				p.b.WriteString("h\n")
-				i++
-			default:
-				i++
-			}
-		}
-		p.b.WriteString("f\n")
-	}
-	p.b.WriteString("Q\n")
+	h := size * float64(pdfMark.h) / float64(pdfMark.w)
+	fmt.Fprintf(&p.b, "q %.3f 0 0 %.3f %.3f %.3f cm /Im1 Do Q\n", size, h, x, y-h)
 }
+
+// pdfMark is brand.MarkLightPNG split for a PDF: its colour and its alpha, each zlib-compressed (FlateDecode).
+var pdfMark = func() (m struct {
+	w, h       int
+	rgb, alpha []byte
+}) {
+	img, err := png.Decode(bytes.NewReader(brand.MarkLightPNG))
+	if err != nil {
+		panic("brand.MarkLightPNG: " + err.Error())
+	}
+	b := img.Bounds()
+	m.w, m.h = b.Dx(), b.Dy()
+	var rgb, alpha bytes.Buffer
+	zr, za := zlib.NewWriter(&rgb), zlib.NewWriter(&alpha)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+			zr.Write([]byte{c.R, c.G, c.B})
+			za.Write([]byte{c.A})
+		}
+	}
+	zr.Close()
+	za.Close()
+	m.rgb, m.alpha = rgb.Bytes(), alpha.Bytes()
+	return m
+}()
 
 // PDF renders the receipt as an A4 document.
 func (r Receipt) PDF() []byte {
@@ -481,8 +459,8 @@ func (r Receipt) PDF() []byte {
 	return pdfDocument(width, height, pages)
 }
 
-// pdfDocument writes the pages as a PDF 1.4 file: a catalogue, the page tree, the three built-in fonts, and each page
-// with its content stream.
+// pdfDocument writes the pages as a PDF 1.4 file: a catalogue, the page tree, the three built-in fonts, the mark's
+// alpha and colour images, and each page with its content stream.
 func pdfDocument(width, height float64, pages []*pdfPage) []byte {
 	var out bytes.Buffer
 	var offsets []int
@@ -493,16 +471,20 @@ func pdfDocument(width, height float64, pages []*pdfPage) []byte {
 	out.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
 	kids := make([]string, len(pages))
 	for i := range pages {
-		kids[i] = fmt.Sprintf("%d 0 R", 6+2*i)
+		kids[i] = fmt.Sprintf("%d 0 R", 8+2*i)
 	}
 	obj("<< /Type /Catalog /Pages 2 0 R >>")
 	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(pages)))
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
 	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>")
+	obj(fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length %d >>\nstream\n%s\nendstream",
+		pdfMark.w, pdfMark.h, len(pdfMark.alpha), pdfMark.alpha))
+	obj(fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /SMask 6 0 R /Length %d >>\nstream\n%s\nendstream",
+		pdfMark.w, pdfMark.h, len(pdfMark.rgb), pdfMark.rgb))
 	for i, p := range pages {
-		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents %d 0 R >>",
-			width, height, 7+2*i))
+		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> /XObject << /Im1 7 0 R >> >> /Contents %d 0 R >>",
+			width, height, 9+2*i))
 		obj(fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", p.b.Len(), p.b.String()))
 	}
 	xref := out.Len()

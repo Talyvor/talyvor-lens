@@ -5,7 +5,7 @@ package dashboard
 // THE DESIGN IS POCKET'S (B57.14), via internal/brand: white page, cloud card,
 // ink text, one tangerine rule; Bricolage Grotesque for the heading and Figtree
 // for the UI and every number, both named first over the system stack and never
-// fetched. Light is primary, dark follows the viewer's preference. The flat mark sits beside the name; it is the brand's own
+// fetched. Light is primary, dark follows the viewer's preference. The symbol sits beside the name; it is the brand's own
 // file, inlined, never redrawn. The layout is a dense stack of hairline-separated
 // rows, label left and value right. status_test.go pins the hexes, so a drift
 // from the brand fails the build rather than quietly diverging.

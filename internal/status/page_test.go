@@ -226,13 +226,13 @@ func TestServeHTTP_RendersTheBrand(t *testing.T) {
 		"#0B7A45", "#A84100", "#C0262D", // success, caution, danger
 		"prefers-color-scheme: dark",
 		`"Bricolage Grotesque"`, `"Figtree"`,
-		`aria-label="Talyvor mark"`, `class="tv-mark"`,
+		`id="tslf-top"`, `id="tsdf-top"`, `class="tv-mark"`, // the chosen symbol, light and dark (B57.81)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/status is missing the brand's %s", want)
 		}
 	}
-	// The mark's own file keeps its colours until B57.81 replaces it; everything else on the page is Pocket's.
+	// The symbol's own file carries the logo kit's colours (B57.81); everything else on the page is Pocket's.
 	body = strings.Replace(body, brand.Mark, "", 1)
 	for _, old := range []string{"#060A12", "#0F7A6C", `"Space Grotesk"`, `"IBM Plex Mono"`, "#f0a030", "#0c0e12", "#13161c", "#d4d8e2", "#8892a4", "#5ac17d", "#e35d6a", "@font-face", "googleapis"} {
 		if strings.Contains(strings.ToLower(body), strings.ToLower(old)) {

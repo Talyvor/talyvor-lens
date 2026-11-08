@@ -129,7 +129,7 @@ func TestGenerateHTML_ContainsCompetitiveComparisonAndDarkTheme(t *testing.T) {
 	}
 }
 
-// The page wears brand v4: the tokens and the flat mark, the name written
+// The page wears brand v4: the tokens and the symbol, the name written
 // in words rather than TALYVOR set in a font, and none of the old amber theme.
 func TestGenerateHTML_WearsTheBrand(t *testing.T) {
 	html := GenerateHTML([]BenchmarkResult{{Name: "BenchmarkX", NsPerOp: 100}}, "go1.25", "linux/amd64")
