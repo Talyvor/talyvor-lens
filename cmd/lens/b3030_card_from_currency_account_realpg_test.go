@@ -85,6 +85,15 @@ func TestB3030_ACardOnTheUSDAccountHolds25AndCaptureAt24Releases1(t *testing.T) 
 		t.Fatalf("the authorisation posted %q, want %q", got, want)
 	}
 	b.balance(t, 47500)
+	// The owner switches the card back to credits mid-purchase: an increment of it cannot be held on credits.
+	if _, err := b.store.SetAgentCardDrawsOn(ctx, ws, agentID, economy.CardDrawsOnCredits); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := b.store.AuthorizeAgentCard(ctx, economy.CardAuthorization{EventID: "evt_b3030_incr", AuthorizationID: "iauth_evt_b3030",
+		CardID: "ic_b3030", AmountMinor: 500, Currency: "usd", MerchantName: "Paper Co", MerchantID: "m-paper", At: time.Now(),
+		USDMicros: 5_000_000}); err != nil || d.Approved || !strings.Contains(d.Reason, "drew on before") {
+		t.Fatalf("an increment on credits of a purchase held on the account = %+v %v, want declined", d, err)
+	}
 
 	if out := settle("evt_b3030_capture", economy.CardCapture, "", 2400); !out.Recorded || out.AmountMinor != 100 {
 		t.Fatalf("capture at $24.00 = %+v, want $1.00 released", out)

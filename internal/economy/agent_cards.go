@@ -286,6 +286,16 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on FROM agent_cards WHERE id = $1`, a.CardID).Scan(&frozen, &drawsNow); err != nil {
 		return d, err
 	}
+	// An increment is held where its purchase is, so each authorisation settles wholly on credits or on one account.
+	var began string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(money_account_id, '') FROM agent_card_authorizations
+		WHERE authorization_id = $1 AND agent_id = $2 AND approved ORDER BY created_at, id LIMIT 1`, a.AuthorizationID, d.AgentID).
+		Scan(&began); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return d, err
+	} else if err == nil && began != from.id {
+		_ = tx.Rollback(ctx)
+		return s.declineCard(ctx, a, d, "this purchase was approved on what the card drew on before: what it draws on now cannot add to it")
+	}
 	switch {
 	case frozen:
 		_ = tx.Rollback(ctx)
