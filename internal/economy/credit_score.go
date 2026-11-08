@@ -207,7 +207,7 @@ func (s *DualTokenStore) RequestCreditScoreReview(ctx context.Context, workspace
 	}
 	if _, err := s.pool.Exec(ctx, `INSERT INTO credit_score_reviews (id, workspace_id, score, band, reasons, note, requested_by)
 	  VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (workspace_id) WHERE status = 'open' DO NOTHING`,
-		"csr_"+uuid.NewString(), workspaceID, cs.Score, cs.Band, reasons, note, by); err != nil {
+		"csr_"+uuid.NewString(), workspaceID, cs.Score, cs.Band, string(reasons), note, by); err != nil {
 		return CreditScoreReview{}, fmt.Errorf("economy: credit score review: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+creditScoreReviewCols+` FROM credit_score_reviews
