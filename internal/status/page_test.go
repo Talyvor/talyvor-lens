@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/talyvor/lens/internal/brand"
+
 	"github.com/alicebob/miniredis/v2"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -207,10 +209,10 @@ func TestServeHTTP_ReturnsHTMLByDefault(t *testing.T) {
 	}
 }
 
-// TestServeHTTP_RendersTheBrand: /status wears brand v4 — the Obsidian/Teal
-// palette in both themes, Space Grotesk and IBM Plex Mono named over the system
-// stack with no font fetched, and the flat mark beside the name — and none of
-// the amber it wore before.
+// TestServeHTTP_RendersTheBrand (B57.14): /status wears Pocket — ink, cloud and
+// tangerine with Pocket's status colours, light and dark, Bricolage Grotesque
+// and Figtree named over the system stack with no font fetched, and the mark
+// beside the name — and none of the colours it wore before.
 func TestServeHTTP_RendersTheBrand(t *testing.T) {
 	sp := newTestPage(t, &fakePinger{})
 	sp.UpdateCache(sp.Check(context.Background()))
@@ -219,17 +221,20 @@ func TestServeHTTP_RendersTheBrand(t *testing.T) {
 	body := w.Body.String()
 
 	for _, want := range []string{
-		"#060A12", "#081220", "#E6EEF7", "#3AD6C0", // dark: canvas, surface, ink, accent
-		"#F4F7FB", "#0F7A6C", // light: canvas, accent
-		"#45C77F", "#D6A93C", "#F0685C", // positive, caution, critical
-		`"Space Grotesk"`, `"IBM Plex Mono"`,
+		"#111216", "#F3F4F6", "#FF7A1A", // light: ink, cloud, tangerine
+		"#0F1013", "#181A1F", "#F2F3F5", // dark: page, cloud, ink
+		"#0B7A45", "#A84100", "#C0262D", // success, caution, danger
+		"prefers-color-scheme: dark",
+		`"Bricolage Grotesque"`, `"Figtree"`,
 		`aria-label="Talyvor mark"`, `class="tv-mark"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/status is missing the brand's %s", want)
 		}
 	}
-	for _, old := range []string{"#f0a030", "#0c0e12", "#13161c", "#d4d8e2", "#8892a4", "#5ac17d", "#e35d6a", "@font-face", "googleapis"} {
+	// The mark's own file keeps its colours until B57.81 replaces it; everything else on the page is Pocket's.
+	body = strings.Replace(body, brand.Mark, "", 1)
+	for _, old := range []string{"#060A12", "#0F7A6C", `"Space Grotesk"`, `"IBM Plex Mono"`, "#f0a030", "#0c0e12", "#13161c", "#d4d8e2", "#8892a4", "#5ac17d", "#e35d6a", "@font-face", "googleapis"} {
 		if strings.Contains(strings.ToLower(body), strings.ToLower(old)) {
 			t.Errorf("/status still carries %s", old)
 		}
