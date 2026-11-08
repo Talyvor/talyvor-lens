@@ -2039,6 +2039,8 @@ func run() error {
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
 	dualToken.SetAccountPartners(partnerRegistry)
+	// B30.48 — an agent's trading account opens at the broker partner (the Test broker until trade_equities is cleared).
+	dualToken.SetBrokerPartners(partnerRegistry)
 	dualToken.SetBankInfo(partnerRegistry.AccountInfo)                                          // B53.13
 	economy.BankConsentRemindBefore = time.Duration(cfg.BankConsentRemindDays) * 24 * time.Hour // B53.13
 	// B30.9 — each capability's terms, accepted before first use: version 1 of every text Lens carries

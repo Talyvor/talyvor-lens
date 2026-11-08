@@ -30,6 +30,10 @@ import (
 //	                          the opening, in, out and closing balances
 //	GET  /v1/money/overview   ?agent_id= — B30.28: the cash view: totals per currency for the company and each agent,
 //	                          money in and out this month, the next 30 days of standing orders and mandates, the runway
+//	POST /v1/money/trading-account      {agent_id} — B30.48: the agent's USD trading account at the broker partner,
+//	                          opened, or the one it has
+//	POST /v1/money/trading-account/fund {agent_id, amount_minor, funding, idempotency_key} — from the agent's USD account
+//	GET  /v1/money/trading-account      ?agent_id= — the trading account and the cash it holds, test and live apart
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.
@@ -42,6 +46,9 @@ type moneyAccountBank interface {
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
 	AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (economy.MoneyStatement, error)
 	MoneyOverview(ctx context.Context, workspaceID, agentID string, now time.Time) (economy.MoneyOverview, error)
+	OpenTradingAccount(ctx context.Context, workspaceID, agentID string) (economy.TradingAccount, error)
+	FundTradingAccount(ctx context.Context, workspaceID, agentID string, amountMinor int64, funding, key string) (economy.MoneyEntry, error)
+	TradingAccount(ctx context.Context, workspaceID, agentID string) (economy.TradingAccount, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -120,6 +127,70 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, o)
+	})
+	r.Post("/v1/money/trading-account", func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"agent_id": "<the agent's, unless its own key asks>"}`)
+			return
+		}
+		ws, agentID, ok := caller(w, req, in.AgentID)
+		if !ok {
+			return
+		}
+		a, err := bank.OpenTradingAccount(req.Context(), ws, agentID)
+		if err != nil {
+			writePaymentErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, a)
+	})
+	r.Post("/v1/money/trading-account/fund", func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			AgentID        string `json:"agent_id"`
+			AmountMinor    int64  `json:"amount_minor"`
+			Funding        string `json:"funding"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"agent_id": "<optional>", "amount_minor": <positive>, "funding": "test|live", "idempotency_key": "<key>"}`)
+			return
+		}
+		ws, agentID, ok := caller(w, req, in.AgentID)
+		if !ok {
+			return
+		}
+		e, err := bank.FundTradingAccount(req.Context(), ws, agentID, in.AmountMinor, in.Funding, in.IdempotencyKey)
+		switch {
+		case errors.Is(err, economy.ErrTradingAccount):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrTradingAccountNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrAgentUSDAccountNeeded):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusCreated, e)
+		}
+	})
+	r.Get("/v1/money/trading-account", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req, req.URL.Query().Get("agent_id"))
+		if !ok {
+			return
+		}
+		a, err := bank.TradingAccount(req.Context(), ws, agentID)
+		if errors.Is(err, economy.ErrTradingAccountNotFound) {
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, a)
 	})
 	r.Post("/v1/money/accounts/{id}/test-money", func(w http.ResponseWriter, req *http.Request) {
 		ws, _ := auth.WorkspaceIdentity(req.Context())
