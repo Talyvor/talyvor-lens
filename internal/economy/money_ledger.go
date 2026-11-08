@@ -365,10 +365,9 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 
 	// Each account is the entry's workspace's — another's is not found, but for a mandate pull's payee's company account
 	// or an invoice issuer's agent account — and is held open until tx ends: a freeze or a close waits for the money
-	// already moving. An agent's sub-account also carries its company account's state (B30.24), and that row is held
-	// open too, so a freeze of the company's account waits for its agents' money as well.
-	rows, err := tx.Query(ctx, `SELECT a.id, a.currency, a.status, a.purpose,
-		COALESCE((SELECT c.status FROM money_accounts c WHERE c.id = a.parent_account_id), 'open')
+	// already moving. An agent's sub-account also carries its company account's state (B30.24), read off that row as
+	// it is held open too, so a freeze of the company's account waits for its agents' money as well.
+	rows, err := tx.Query(ctx, `SELECT a.id, a.currency, a.status, a.purpose, COALESCE(a.parent_account_id, '')
 		FROM money_accounts a
 		WHERE (a.id = ANY($1) OR a.id IN (SELECT parent_account_id FROM money_accounts WHERE id = ANY($1)))
 		  AND (a.workspace_id = $2 OR (a.workspace_id = $3 AND a.purpose IN ('company', 'agent'))) FOR SHARE`,
@@ -376,12 +375,12 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 	}
-	type held struct{ currency, status, purpose, parentStatus string }
+	type held struct{ currency, status, purpose, parent string }
 	accounts := map[string]held{}
 	for rows.Next() {
 		var id string
 		var h held
-		if err := rows.Scan(&id, &h.currency, &h.status, &h.purpose, &h.parentStatus); err != nil {
+		if err := rows.Scan(&id, &h.currency, &h.status, &h.purpose, &h.parent); err != nil {
 			rows.Close()
 			return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 		}
@@ -397,14 +396,15 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	args := []any{e.ID, e.Funding}
 	for i, p := range postings {
 		h, ok := accounts[p.AccountID]
+		parentStatus := accounts[h.parent].status // "" for an account with no parent
 		switch {
 		case !ok:
 			return MoneyEntry{}, fmt.Errorf("%w: %s", ErrMoneyAccountNotFound, p.AccountID)
-		case h.status == MoneyClosed || h.parentStatus == MoneyClosed:
+		case h.status == MoneyClosed || parentStatus == MoneyClosed:
 			return MoneyEntry{}, fmt.Errorf("%w: %s is closed", ErrMoneyAccountNotOpen, p.AccountID)
 		case h.status == MoneyFrozen && p.AmountMinor < 0: // B30.24: nothing leaves a frozen account; money in still lands
 			return MoneyEntry{}, fmt.Errorf("%w: %s is frozen", ErrMoneyAccountNotOpen, p.AccountID)
-		case h.parentStatus == MoneyFrozen && p.AmountMinor < 0:
+		case parentStatus == MoneyFrozen && p.AmountMinor < 0:
 			return MoneyEntry{}, fmt.Errorf("%w: the company account of %s is frozen", ErrMoneyAccountNotOpen, p.AccountID)
 		case p.Currency == "":
 			postings[i].Currency = h.currency
