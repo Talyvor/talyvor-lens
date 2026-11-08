@@ -98,7 +98,9 @@ func (s *Store) allowed(ctx context.Context, q plans.Querier, workspaceID string
 func (s *Store) Save(ctx context.Context, workspaceID, issuer, clientID, secret string, domains []string) (Connection, error) {
 	issuer, clientID, secret = strings.TrimRight(strings.TrimSpace(issuer), "/"), strings.TrimSpace(clientID), strings.TrimSpace(secret)
 	u, err := url.Parse(issuer)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil ||
+	// The BFF fetches the issuer, so it must name a public host by name on 443: never an address, localhost or a bare
+	// name an internal resolver answers.
+	if err != nil || u.Scheme != "https" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || !publicHost(u) ||
 		clientID == "" || len(clientID) > 512 || secret == "" || len(secret) > 2048 || len(domains) == 0 || len(domains) > 50 {
 		return Connection{}, ErrInvalid
 	}
@@ -270,6 +272,13 @@ func (s *Store) For(ctx context.Context, email string) (SignIn, error) {
 		return SignIn{}, fmt.Errorf("sso: the client secret of workspace %s cannot be opened — it must be entered again: %w", out.WorkspaceID, err)
 	}
 	return out, nil
+}
+
+// publicHost reports whether u names its host as a dotted DNS name, not an IP address or localhost, on the https port.
+func publicHost(u *url.URL) bool {
+	host, ok := normalise(u.Hostname())
+	return ok && net.ParseIP(host) == nil && !strings.HasSuffix(host, ".localhost") && !strings.HasSuffix(host, ".internal") &&
+		(u.Port() == "" || u.Port() == "443")
 }
 
 // normalise lowercases a domain and drops a trailing dot; ok is false unless it is a hostname with a dot in it.
