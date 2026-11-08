@@ -649,15 +649,14 @@ func (s *DualTokenStore) decideMandate(ctx context.Context, workspaceID, mandate
 	if err := m.undecided(); err != nil {
 		return Mandate{}, err
 	}
-	set := `declined_at`
 	if approve {
 		if err := s.authorizeSignedTx(ctx, tx, workspaceID, mandateApprovalPurpose(mandateID), a, ErrMandateUnsigned); err != nil {
 			return Mandate{}, err
 		}
-		set = `approved_at`
 	}
-	if m, err = scanMandate(tx.QueryRow(ctx, `WITH d AS (UPDATE money_mandates SET `+set+` = now(), decided_by = $2 WHERE id = $1 RETURNING *)
-		SELECT `+mandateColumns+` FROM d m`, mandateID, by)); err != nil {
+	if m, err = scanMandate(tx.QueryRow(ctx, `WITH d AS (UPDATE money_mandates SET approved_at = CASE WHEN $3 THEN now() END,
+		declined_at = CASE WHEN $3 THEN NULL ELSE now() END, decided_by = $2 WHERE id = $1 RETURNING *)
+		SELECT `+mandateColumns+` FROM d m`, mandateID, by, approve)); err != nil {
 		return Mandate{}, fmt.Errorf("economy: decide mandate: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
