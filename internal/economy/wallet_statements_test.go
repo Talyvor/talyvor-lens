@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"math/big"
 	"testing"
 	"time"
 )
@@ -18,12 +19,18 @@ func TestFIFOGains_AHandWorkedYear(t *testing.T) {
 	day := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 12, 0, 0, 0, time.UTC) }
 	v := func(pence int64) *int64 { return &pence }
 	moves := []TaxMovement{
-		{ID: "a", At: day(1, 10), Asset: "ETH", Direction: "in", QuantityMinor: 2 * eth, ValueMinor: v(400000), ValueCurrency: "GBP"},
-		{ID: "b", At: day(2, 5), Asset: "ETH", Direction: "in", QuantityMinor: eth, ValueMinor: v(260000), ValueCurrency: "GBP"},
-		{ID: "s1", At: day(3, 1), Asset: "ETH", Direction: "out", QuantityMinor: 5 * eth / 2, ValueMinor: v(750000), ValueCurrency: "GBP"},
-		{ID: "s2", At: day(4, 1), Asset: "ETH", Direction: "out", QuantityMinor: eth / 2, ValueMinor: v(100000), ValueCurrency: "GBP"},
-		{ID: "s3", At: day(5, 1), Asset: "ETH", Direction: "out", QuantityMinor: eth / 4, ValueMinor: v(50000), ValueCurrency: "GBP"},
-		{ID: "u", At: day(6, 1), Asset: "ETH", Direction: "in", QuantityMinor: eth},
+		{ID: "a", At: day(1, 10), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(2 * eth), ValueMinor: v(400000), ValueCurrency: "GBP"},
+		{ID: "b", At: day(2, 5), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(eth), ValueMinor: v(260000), ValueCurrency: "GBP"},
+		{ID: "s1", At: day(3, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(5 * eth / 2), ValueMinor: v(750000), ValueCurrency: "GBP"},
+		{ID: "s2", At: day(4, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(eth / 2), ValueMinor: v(100000), ValueCurrency: "GBP"},
+		{ID: "s3", At: day(5, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(eth / 4), ValueMinor: v(50000), ValueCurrency: "GBP"},
+		{ID: "u", At: day(6, 1), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(eth)},
+	}
+	noBasis := func(d TaxDisposal) int64 {
+		if d.NoBasisQuantityMinor == nil {
+			return 0
+		}
+		return d.NoBasisQuantityMinor.Int64()
 	}
 	year := FIFOGains(moves, "GBP", day(1, 1), day(12, 31))
 	want := []struct {
@@ -36,7 +43,7 @@ func TestFIFOGains_AHandWorkedYear(t *testing.T) {
 	}
 	for i, w := range want {
 		d := year.Disposals[i]
-		if d.ID != w.id || d.ProceedsMinor != w.proceeds || d.CostBasisMinor != w.cost || d.GainMinor != w.gain || d.NoBasisQuantityMinor != w.noBasis {
+		if d.ID != w.id || d.ProceedsMinor != w.proceeds || d.CostBasisMinor != w.cost || d.GainMinor != w.gain || noBasis(d) != w.noBasis {
 			t.Errorf("disposal %d = %+v; want %+v", i, d, w)
 		}
 	}

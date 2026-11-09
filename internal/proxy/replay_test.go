@@ -128,7 +128,7 @@ func TestServe_StreamTrueCacheHit_UsesSSEReplay(t *testing.T) {
 		fallback.New(), nil, nil, guardrails.New(pii.New(), injection.New(injection.DefaultPolicy())),
 		"openai-key", "anthropic-key", "",
 	)
-	cached := []byte(`{"choices":[{"message":{"role":"assistant","content":"cached hello"}}]}`)
+	cached := []byte(`{"choices":[{"message":{"role":"assistant","content":"cached hello"},"finish_reason":"stop"}]}`)
 	if err := exact.Set(context.Background(), "openai", "gpt-4", cache.FingerprintedKey("hi", plainFP), cached); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestServe_BufferedCacheHit_IsMarkedReplay(t *testing.T) {
 		fallback.New(), nil, nil, guardrails.New(pii.New(), injection.New(injection.DefaultPolicy())),
 		"openai-key", "anthropic-key", "",
 	)
-	cached := []byte(`{"choices":[{"message":{"role":"assistant","content":"cached hello"}}]}`)
+	cached := []byte(`{"choices":[{"message":{"role":"assistant","content":"cached hello"},"finish_reason":"stop"}]}`)
 	if err := exact.Set(context.Background(), "openai", "gpt-4", cache.FingerprintedKey("hi", plainFP), cached); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}

@@ -1,9 +1,9 @@
 // Package brand carries the Talyvor brand for the pages Lens renders itself:
 // Pocket's colour tokens and type (design/pocket/pocket.css, B57.14) and the mark.
 //
-// The two SVGs beside this file are byte-for-byte copies of
-// brand-v4/svg/talyvor-mark-flat-{dark,light}.svg. Never redraw or recolour
-// them; replace the files instead (B57.81 swaps them for the chosen logo).
+// The files beside this file are byte-for-byte copies of the chosen logo kit's
+// svg/talyvor-symbol-on-{dark,light}.svg and png/symbol/talyvor-symbol-on-light-256.png
+// (B57.81). Never redraw or recolour them; replace the files instead.
 //
 // Nothing here requests a font: Bricolage Grotesque and Figtree are named first
 // and fall back to the system stack, so an API host never makes a visitor's
@@ -16,22 +16,27 @@ import (
 	"strings"
 )
 
-//go:embed talyvor-mark-flat-dark.svg
-var markFlatDark string
+//go:embed talyvor-symbol-on-dark.svg
+var symbolOnDark string
 
-//go:embed talyvor-mark-flat-light.svg
-var markFlatLight string
+//go:embed talyvor-symbol-on-light.svg
+var symbolOnLight string
 
-// Mark is the flat mark for inline use: the dark-theme file and the light-theme
-// file, each shown only in its own theme by TokensCSS. It is decorative beside
-// the product name, so it is hidden from assistive technology.
+// Mark is the symbol for inline use: the on-dark file and the on-light file,
+// each shown only in its own theme by TokensCSS. Their gradient ids differ
+// (tsdf-, tslf-), so both can sit in one page. It is decorative beside the
+// product name, so it is hidden from assistive technology.
 var Mark = `<span class="tv-mark" aria-hidden="true">` +
-	`<span class="tv-mark-dark">` + inline(markFlatDark) + `</span>` +
-	`<span class="tv-mark-light">` + inline(markFlatLight) + `</span>` +
+	`<span class="tv-mark-dark">` + inline(symbolOnDark) + `</span>` +
+	`<span class="tv-mark-light">` + inline(symbolOnLight) + `</span>` +
 	`</span>`
 
-// MarkLightSVG is the light-theme flat mark file as it is, for documents drawn on paper (B32.40's receipt PDF).
-func MarkLightSVG() string { return markFlatLight }
+// MarkLightPNG is the on-light symbol as the kit exports it (256x184, RGBA),
+// for documents drawn on paper, whose renderers draw neither the SVG's
+// gradients nor its shadow (B32.40's receipt PDF).
+//
+//go:embed talyvor-symbol-on-light-256.png
+var MarkLightPNG []byte
 
 // inline drops the namespace declaration, which HTML supplies for an inline
 // <svg> anyway, so a page carrying the mark contains no http:// URL at all. The

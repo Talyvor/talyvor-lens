@@ -430,6 +430,9 @@ func TestGetTotalSupply_CountsPoolRoyalty_ExcludesNonMints(t *testing.T) {
 	wantCounted := []string{
 		TypeCacheMine, TypeComputeMine, TypeEmbeddingMine, TypeAnnotationMine, TypePatternMine,
 		TypePoolRoyalty,
+		// Talyvor's compute fee (B56.20): the share of a node earning Talyvor keeps. With the node's
+		// compute_mine it is the whole earning, so counting both keeps supply what it was before the fee.
+		TypeComputeFee,
 		// The four P-o-I final types: settled by the table-parameterized FinalizeSweeper,
 		// each under its OWN label. They must be counted for exactly the reason pool_royalty
 		// is — settlement is the moment the mint enters circulation. Before the sweeper was

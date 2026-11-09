@@ -71,7 +71,7 @@ func TestPagePointsAtTheDetailedStatusPage(t *testing.T) {
 
 // B28.12: the page says what Lens is for — Agent Wallets — and points at the API reference that lists them.
 func TestPageLeadsWithAgentWallets(t *testing.T) {
-	body := stripStyleAndScript(render(t))
+	body := stripStyleAndScript(strings.Replace(render(t), brand.Mark, "", 1)) // the symbol's filter box is drawn in percent
 	if !strings.Contains(body, "Agent Wallets and the gateway that enforces them") {
 		t.Error("the page must describe Lens as Agent Wallets and the gateway that enforces them")
 	}
@@ -161,7 +161,7 @@ func TestPageHardcodesNoMoneyConstants(t *testing.T) {
 	// Check what a READER sees: CSS legitimately contains "100%" and script
 	// legitimately contains numbers, and neither is a money constant. Stripping
 	// them is what makes this assertion mean what it says.
-	body := stripStyleAndScript(render(t))
+	body := stripStyleAndScript(strings.Replace(render(t), brand.Mark, "", 1)) // the symbol's filter box is drawn in percent
 	// Any currency amount, any percentage — on a page that has no business
 	// quoting either.
 	for _, re := range []*regexp.Regexp{
@@ -183,7 +183,7 @@ func TestPageHardcodesNoMoneyConstants(t *testing.T) {
 
 // TestPageUsesTheBrandTokens pins the page to Pocket (B57.14,
 // design/pocket/pocket.css), not to an approximation: the palette in both
-// themes, the type stack, and the flat mark beside the name. Drift here means the
+// themes, the type stack, and the symbol beside the name. Drift here means the
 // API host stops looking like the product.
 func TestPageUsesTheBrandTokens(t *testing.T) {
 	body := render(t)
@@ -209,7 +209,7 @@ func TestPageUsesTheBrandTokens(t *testing.T) {
 			t.Errorf("the brand type stack must name %s", font)
 		}
 	}
-	// The mark's own file keeps its colours until B57.81 replaces it; everything else on the page is Pocket's.
+	// The symbol's own file carries the logo kit's colours (B57.81); everything else on the page is Pocket's.
 	unmarked := strings.ToUpper(strings.Replace(body, brand.Mark, "", 1))
 	for _, old := range []string{"#060A12", "#0F7A6C", `"Space Grotesk"`, `"IBM Plex Mono"`} {
 		if strings.Contains(unmarked, strings.ToUpper(old)) {
@@ -219,8 +219,8 @@ func TestPageUsesTheBrandTokens(t *testing.T) {
 	if strings.Contains(body, "@font-face") {
 		t.Error("the page must not request a font — the brand faces are named over the system stack")
 	}
-	if !strings.Contains(body, `aria-label="Talyvor mark"`) || !strings.Contains(body, `class="tv-mark"`) {
-		t.Error("the brand's flat mark must sit beside the name, inlined")
+	if !strings.Contains(body, `id="tslf-top"`) || !strings.Contains(body, `class="tv-mark"`) {
+		t.Error("the chosen symbol must sit beside the name, inlined")
 	}
 	// The colours this page wore before the brand: the suite's old teal and its
 	// tokens, and the amber of the old Lens pages. None may come back.
