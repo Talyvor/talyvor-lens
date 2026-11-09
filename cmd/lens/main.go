@@ -2089,6 +2089,16 @@ func run() error {
 			chainIdx.indexChains(lctx, sanctionsAlert.sink)
 		})
 	}
+	// B54.26 — agents' smart-account payments settled from their operations' receipts.
+	agentPaymentChains, err := agentChains(cfg.AgentChains)
+	if err != nil {
+		return err
+	}
+	if len(agentPaymentChains) > 0 {
+		go haComps.leader.Run(ctx, "agent-payment-settle", 30*time.Second, func(lctx context.Context) {
+			settleAgentPayments(lctx, dualToken, agentPaymentChains)
+		})
+	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
 	if cfg.BillingEnabled {
 		taxProfiles.SetStripe(taxStripeByKind{isTest: wsManager.GetSynthetic, mainKeyLive: billing.LiveKey(cfg.StripeSecretKey),
@@ -2702,7 +2712,7 @@ func run() error {
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
-		mountNegotiationEmailRoutes(pub, net.DefaultResolver.LookupTXT, dualToken)
+		mountNegotiationEmailRoutes(pub, rateLimiter, net.DefaultResolver.LookupTXT, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.

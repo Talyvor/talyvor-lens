@@ -994,6 +994,9 @@ type Config struct {
 	MoneySandboxWebhookSecret string
 	// ChainIndex switches on the chain indexer (B48.6), network by network: LENS_CHAIN_INDEX, JSON. Unset, it is off.
 	ChainIndex string
+	// AgentChains is each chain agents' smart accounts pay on (B54.26): LENS_AGENT_CHAINS, JSON. Its payments are settled
+	// from their receipts each minute. Unset, none is.
+	AgentChains string
 	// TravelRule switches on the Travel Rule step of USDC sends and payouts (B48.7): LENS_TRAVEL_RULE. "test" is the
 	// Test adapter, "test:<address>=<provider>,…" with the addresses it names as a regulated provider's. Unset, it is
 	// off until a live adapter is chosen.
@@ -1467,6 +1470,7 @@ func Load() (*Config, error) {
 		StripeIssuingWebhookSecret:  os.Getenv("LENS_STRIPE_ISSUING_WEBHOOK_SECRET"),
 		MoneySandboxWebhookSecret:   os.Getenv("LENS_MONEY_SANDBOX_WEBHOOK_SECRET"),
 		ChainIndex:                  os.Getenv("LENS_CHAIN_INDEX"),
+		AgentChains:                 os.Getenv("LENS_AGENT_CHAINS"),
 		TravelRule:                  os.Getenv("LENS_TRAVEL_RULE"),
 		StripeIssuingCurrency:       getEnv("LENS_STRIPE_ISSUING_CURRENCY", "gbp"),
 		// Catalog-drift detection (internal/modelwatch). Poller default-ON: it is read-only, costs one
