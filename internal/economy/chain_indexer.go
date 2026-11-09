@@ -391,6 +391,13 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 		default:
 			conf, need := head-on.BlockNumber+1, n.threshold(m.asset, m.amount)
 			status := m.status
+			// B54.20: one that posted unvalued, its price not read as it confirmed, is valued on each look until it is
+			// final; valuing never posts it again.
+			if posted && !m.valued {
+				if verr := x.value(ctx, n, &m); verr != nil {
+					errs = append(errs, fmt.Errorf("economy: chain movement %s: %w", m.id, verr))
+				}
+			}
 			switch {
 			case !posted && conf >= need:
 				// valued first: a deposit of a token other than USDC is screened at its value
