@@ -385,11 +385,11 @@ func TestAgentTokenProvider_SuccessFailureReturnAndPending(t *testing.T) {
 	exp := time.Now().Add(time.Hour)
 	for _, o := range nameOutcomes {
 		answers(t, "provision "+o.name, o.now, o.later, func() (Result, error) {
-			tok, err := p.Provision(ctx, AgentTokenRequest{ID: "tok-" + o.name, AgentID: "agent-1", AgentName: o.name, Currency: "GBP", ExpiresAt: exp})
+			tok, err := p.Provision(ctx, AgentTokenRequest{ID: "tok-" + o.name, AgentID: "agent-1", AgentName: o.name, Merchant: "shop", Limit: Money{1_000_00, "GBP"}, ExpiresAt: exp})
 			return tok.Result, err
 		}, func(ref string) (Result, error) { return p.Status(ctx, ref) })
 	}
-	tok := must(p.Provision(ctx, AgentTokenRequest{ID: "tok-Ada Lovelace", AgentID: "agent-1", AgentName: "Ada Lovelace", Currency: "GBP", ExpiresAt: exp}))
+	tok := must(p.Provision(ctx, AgentTokenRequest{ID: "tok-Ada Lovelace", AgentID: "agent-1", AgentName: "Ada Lovelace", Merchant: "shop", Limit: Money{1_000_00, "GBP"}, ExpiresAt: exp}))
 	if tok.Network != "test" || len(tok.Last4) != 4 {
 		t.Fatalf("token = %+v", tok)
 	}
@@ -401,7 +401,34 @@ func TestAgentTokenProvider_SuccessFailureReturnAndPending(t *testing.T) {
 	if err := p.Revoke(ctx, tok.Ref); err != nil {
 		t.Fatal(err)
 	}
-	if r := must(p.Authorise(ctx, Authorisation{ID: "after-revoke", TokenRef: tok.Ref, Amount: Money{100, "GBP"}})); r.Status != StatusFailed {
+	if r := must(p.Authorise(ctx, Authorisation{ID: "after-revoke", TokenRef: tok.Ref, Amount: Money{100, "GBP"}, Merchant: "shop"})); r.Status != StatusFailed {
 		t.Fatalf("a revoked token authorised: %+v", r)
+	}
+}
+
+// B30.32: a token is bound to its agent, one merchant and a spending limit across all its payments.
+func TestAgentTokenProvider_PaysItsMerchantWithinItsLimit(t *testing.T) {
+	ctx := context.Background()
+	p := &TestAgentTokenProvider{}
+	tok := must(p.Provision(ctx, AgentTokenRequest{ID: "tok-1", AgentID: "agent-1", AgentName: "Ada", Merchant: "Acme Books",
+		Limit: Money{50_00, "GBP"}, ExpiresAt: time.Now().Add(time.Hour)}))
+	pay := func(id, merchant string, minor int64) Status {
+		return must(p.Authorise(ctx, Authorisation{ID: id, TokenRef: tok.Ref, Amount: Money{minor, "GBP"}, Merchant: merchant})).Status
+	}
+	if s := pay("a", "Acme Books", 30_00); s != StatusCompleted {
+		t.Fatalf("its merchant within its limit: %s", s)
+	}
+	if s := pay("b", "Other Shop", 1_00); s != StatusFailed {
+		t.Fatalf("another merchant: %s", s)
+	}
+	if s := pay("c", "Acme Books", 20_01); s != StatusFailed {
+		t.Fatalf("over the limit with what it already paid: %s", s)
+	}
+	if s := pay("d", "acme books", 20_00); s != StatusCompleted {
+		t.Fatalf("the rest of the limit: %s", s)
+	}
+	if _, err := p.Provision(ctx, AgentTokenRequest{ID: "tok-2", AgentID: "agent-1", Limit: Money{1_00, "GBP"},
+		ExpiresAt: time.Now().Add(time.Hour)}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a token with no merchant: %v", err)
 	}
 }

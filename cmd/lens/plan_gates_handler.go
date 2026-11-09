@@ -12,21 +12,24 @@ import (
 
 // B32.12 — what each plan unlocks (internal/plans, LENS_PLAN_GATES).
 
-// publicPlanGatesHandler is GET /v1/public/plan-gates: every plan's gates, as lens.env sets them, for /pricing.
-// -1 is unlimited.
+// publicPlanGatesHandler is GET /v1/public/plan-gates: every plan's gates, as lens.env sets them, for /pricing,
+// and which of them Lens enforces today (B56.8). -1 is unlimited.
 func publicPlanGatesHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONOK(w, http.StatusOK, map[string]any{"order": plans.Order, "plans": plans.Current()})
+	writeJSONOK(w, http.StatusOK, map[string]any{"order": plans.Order, "plans": plans.Current(), "built": plans.Built})
 }
 
-// writePlanRefusal answers a plan's refusal with 402 and the refusal itself — the setting, the plan and the plan
-// that would allow it are in "error" — or reports false when err is none.
+// writePlanRefusal answers a plan's refusal with 402 and the refusal itself — in words in "error", with the setting
+// (where it names one), the plan and the plan that would allow it beside — or reports false when err is none.
 func writePlanRefusal(w http.ResponseWriter, err error) bool {
 	var r *plans.Refusal
 	if !errors.As(err, &r) {
 		return false
 	}
-	writeJSONOK(w, http.StatusPaymentRequired, map[string]any{"error": r.Detail, "plan": r.Plan, "gate": r.Gate,
-		"limit": r.Limit, "allows": r.Allows})
+	out := map[string]any{"error": r.Detail, "plan": r.Plan, "gate": r.Gate, "limit": r.Limit, "allows": r.Allows}
+	if r.Setting != "" {
+		out["setting"] = r.Setting
+	}
+	writeJSONOK(w, http.StatusPaymentRequired, out)
 	return true
 }
 
@@ -50,8 +53,8 @@ func newWorkspacePlanHandler(db plans.Querier) http.HandlerFunc {
 	}
 }
 
-// GET /v1/workspaces/{wsID}/plan/seats?members=N → 200 when the plan's seats take N members, else 402 naming
-// LENS_PLAN_GATES, the plan and the plan that would. The members of a workspace are kept where they are added,
+// GET /v1/workspaces/{wsID}/plan/seats?members=N → 200 when the plan's seats take N members, else 402 saying so
+// in words, with LENS_PLAN_GATES, the plan and the plan that would in fields of their own. The members of a workspace are kept where they are added,
 // not in Lens: that feature asks here, with the count it would have, before it adds one.
 func newSeatsCheckHandler(db plans.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {

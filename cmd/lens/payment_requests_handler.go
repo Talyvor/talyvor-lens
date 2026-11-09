@@ -39,6 +39,14 @@ import (
 //	                                           items not yet paid); the preparer's
 //	GET  /v1/money/payment-requests/{id}/record — the request's hash-chained record, and whether it verifies
 //
+// B41.114 — limits per assistant (economy/assistant_limits.go): a request that would take its client over its daily
+// limit is refused, 403, and nothing is kept.
+//
+//	GET  /v1/money/assistant-limits            — {"limits": [{"client", "currency", "per_day_minor", "prepared_today_minor",
+//	                                           "updated_by", "updated_at"}]}; the owner's or an admin's
+//	PUT  /v1/money/assistant-limits            {"client", "currency", "per_day_minor"} — sets that client's daily limit;
+//	                                           0 removes it; the owner's or an admin's
+//
 // The owner or an admin names the client ("chat", "voice", "mcp:<client id>"; their own key's by default); an agent's
 // key is always judged as itself, "key:<its id>", and sees only its own requests. Mounted in the authed group.
 
@@ -52,6 +60,8 @@ type paymentRequestBank interface {
 	ApprovePaymentRequest(ctx context.Context, workspaceID, id, by, statement string, a *passkey.Assertion) (economy.PaymentRequest, error)
 	PayPaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	AuditRecord(ctx context.Context, workspaceID, subject string) ([]economy.AuditEntry, error)
+	AssistantLimits(ctx context.Context, workspaceID string) ([]economy.AssistantLimit, error)
+	SetAssistantLimit(ctx context.Context, workspaceID, by, client, currency string, perDayMinor int64) error
 }
 
 func mountPaymentRequestRoutes(r chi.Router, bank paymentRequestBank) {
@@ -78,6 +88,8 @@ func mountPaymentRequestRoutes(r chi.Router, bank paymentRequestBank) {
 	}
 	refuse := func(w http.ResponseWriter, err error) bool {
 		switch {
+		case errors.Is(err, economy.ErrAssistantLimit):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrPaymentRequest):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, passkey.ErrInvalid):
@@ -172,6 +184,40 @@ func mountPaymentRequestRoutes(r chi.Router, bank paymentRequestBank) {
 		}
 		return ws, by, ok
 	}
+	r.Get("/v1/money/assistant-limits", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := ownerOnly(w, req)
+		if !ok {
+			return
+		}
+		limits, err := bank.AssistantLimits(req.Context(), ws)
+		if refuse(w, err) {
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"limits": limits})
+	})
+	r.Put("/v1/money/assistant-limits", func(w http.ResponseWriter, req *http.Request) {
+		ws, by, ok := ownerOnly(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Client      string `json:"client"`
+			Currency    string `json:"currency"`
+			PerDayMinor int64  `json:"per_day_minor"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"client": "mcp:<client id>", "currency": "GBP", "per_day_minor": 20000}`)
+			return
+		}
+		if refuse(w, bank.SetAssistantLimit(req.Context(), ws, by, in.Client, in.Currency, in.PerDayMinor)) {
+			return
+		}
+		limits, err := bank.AssistantLimits(req.Context(), ws)
+		if refuse(w, err) {
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"limits": limits})
+	})
 	r.Post("/v1/money/payment-requests/{id}/approval", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := ownerOnly(w, req)
 		if !ok {

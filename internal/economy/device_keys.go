@@ -245,7 +245,7 @@ func (s *DualTokenStore) notifyPaymentRequest(workspaceID string, r PaymentReque
 	}
 	var totals []string
 	for _, c := range slices.Sorted(maps.Keys(r.Totals)) {
-		totals = append(totals, formatMinor(c, r.Totals[c]))
+		totals = append(totals, Money(r.Totals[c], c))
 	}
 	m := nativepush.Message{Title: "Approval needed", Body: "Pay " + strings.Join(payees, ", ") + " · " + strings.Join(totals, " + "),
 		Data:     map[string]string{"type": "payment_request", "request_id": r.ID, "workspace_id": workspaceID, "url": r.DeepLink},

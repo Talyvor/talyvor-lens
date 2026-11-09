@@ -650,6 +650,10 @@ type Config struct {
 	// ScreeningMaxAge is how long ago a sanctions list may have last downloaded before every payment in or out is held
 	// for an operator (B37.4). Env: LENS_SCREENING_MAX_AGE_HOURS, whole hours, which Nicolai sets; until he does, 48.
 	ScreeningMaxAge time.Duration
+	// SuspenseReturnDays is how many business days money in that matched no account sits in suspense before it goes
+	// back to its payer, unless the operator assigns it (B30.15). Env: LENS_SUSPENSE_RETURN_DAYS, which Nicolai sets;
+	// until he does, 5.
+	SuspenseReturnDays int
 
 	// TrustfulComputeMintEnabled gates the LEGACY trust-based compute mint
 	// (ComputeMiner.RecordServedRequest mints LENS per served request with no
@@ -1126,6 +1130,13 @@ type Config struct {
 	// RoomReportsHide is how many workspaces' open reports take a public room off the list of rooms until the operator
 	// reviews it (B32.52). Env: LENS_ROOM_REPORTS_HIDE, default 3 — a proposal for Nicolai.
 	RoomReportsHide int
+	// RoomPointsPerUSD is how many points each US dollar a contribution already received in prizes or royalties takes
+	// off its size in a room's points ledger (B41.143). Env: LENS_ROOM_POINTS_PER_USD, a setting Nicolai fills; until he
+	// does (0), any money received takes the whole size, so nobody is paid twice for the same work.
+	RoomPointsPerUSD int64
+	// RoomReviewPoints is the points a contribution's reviewer earns when its score agreed with the decision (B41.144).
+	// Env: LENS_ROOM_REVIEW_POINTS, a setting Nicolai fills; until he does (0), reviewers earn none.
+	RoomReviewPoints int64
 
 	// MarketPayoutReturnURL / MarketPayoutRefreshURL are where Stripe's seller onboarding returns to when a
 	// seller finishes it, and when its link has expired (B20.5). Env: LENS_MARKET_PAYOUT_RETURN_URL,
@@ -2154,6 +2165,15 @@ func Load() (*Config, error) {
 		}
 		c.ScreeningMaxAge = time.Duration(h) * time.Hour
 	}
+	// B30.15 — how long money in that matched no account waits in suspense. A malformed value is refused.
+	c.SuspenseReturnDays = 5
+	if v := os.Getenv("LENS_SUSPENSE_RETURN_DAYS"); v != "" {
+		d, err := strconv.Atoi(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("config: LENS_SUSPENSE_RETURN_DAYS must be a whole number of business days above 0, got %q", v)
+		}
+		c.SuspenseReturnDays = d
+	}
 	// HA fail-closed: with LENS_HA_ENABLED every replica must share STABLE
 	// signing keys. Ephemeral per-replica keys "work" at startup and break
 	// silently in production: JWTs minted by one instance are rejected by the
@@ -2505,6 +2525,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_ROOM_REPORTS_HIDE must be a positive integer, got %q", v)
 		}
 		c.RoomReportsHide = n
+	}
+	if v := os.Getenv("LENS_ROOM_POINTS_PER_USD"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_ROOM_POINTS_PER_USD must be a non-negative integer, got %q", v)
+		}
+		c.RoomPointsPerUSD = n
+	}
+	if v := os.Getenv("LENS_ROOM_REVIEW_POINTS"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_ROOM_REVIEW_POINTS must be a non-negative integer, got %q", v)
+		}
+		c.RoomReviewPoints = n
 	}
 
 	// D — the Model 2 allowance, in µLXC (W4.6.1 step 2). Default 0 = "no allowance

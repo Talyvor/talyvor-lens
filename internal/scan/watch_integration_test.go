@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/talyvor/lens/internal/economy"
 )
 
@@ -47,7 +49,7 @@ func TestWatchFiresOnceChargesOnceAndStops(t *testing.T) {
 		}
 	}
 
-	bank := economy.NewDualTokenStore(nil, s.pool, nil)
+	bank := economy.NewDualTokenStore(nil, s.pool.(*pgxpool.Pool), nil)
 	if _, err := s.pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, ws); err != nil {
 		t.Fatal(err)
 	}

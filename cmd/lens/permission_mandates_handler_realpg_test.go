@@ -126,6 +126,21 @@ func TestPermissionMandates_SignedEvaluatedAndRevoked(t *testing.T) {
 	judge(`{"client":"voice","payee_id":"payee-plumber","currency":"GBP","amount_minor":9000}`, economy.MandateNeedsApproval, "clients.voice")
 	judge(`{"client":"chat","payee_id":"payee-grocer","currency":"GBP","amount_minor":9000,"spent_today_minor":17000}`, economy.MandateNeedsApproval, "limits.per_day")
 
+	// B55.32: a reason gives amounts as money and the rule's code only in its field.
+	_, over := call(http.MethodPost, "/v1/money/permission-mandates/"+id+"/evaluate", pay120)
+	if over["reason"] != "£120.00 is over the £100.00 a payment your permission allows" {
+		t.Errorf("the over-limit reason is %q", over["reason"])
+	}
+	_, day := call(http.MethodPost, "/v1/money/permission-mandates/"+id+"/evaluate",
+		`{"client":"chat","payee_id":"payee-grocer","currency":"GBP","amount_minor":9000,"spent_today_minor":17000}`)
+	if r := day["reason"].(string); !strings.Contains(r, "£170.00") || !strings.Contains(r, "£250.00") || strings.Contains(r, "17000") || strings.Contains(r, "per_day") {
+		t.Errorf("the per-day reason is %q", r)
+	}
+	ended := economy.PermissionMandateTerms{ExpiresAt: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)}
+	if d := economy.EvaluatePermissionMandate(ended, nil, economy.PreparedPayment{}, ended.ExpiresAt.Add(time.Hour)); d.Reason != "your permission ended on Oct 31, 2026 at 09:00 UTC" {
+		t.Errorf("the expired reason is %q", d.Reason)
+	}
+
 	// Altered where it is kept: the signature no longer covers it, so it pays nothing.
 	if _, err := pool.Exec(ctx, `UPDATE permission_mandates SET canonical = replace(canonical, '"GBP":10000', '"GBP":99900') WHERE id = $1`, id); err != nil {
 		t.Fatal(err)

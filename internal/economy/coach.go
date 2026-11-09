@@ -275,7 +275,17 @@ func coachJSON(f CoachFact) string {
 	return strings.TrimSpace(b.String())
 }
 
-func categoryWords(c string) string { return strings.ReplaceAll(c, "_", " ") }
+// categoryWords is c's name inside a sentence: "eating out", but "AI and software".
+func categoryWords(c string) string {
+	n, ok := spendCategoryNames[c]
+	if !ok {
+		return strings.ReplaceAll(c, "_", " ")
+	}
+	if strings.HasPrefix(n, "AI ") {
+		return n
+	}
+	return strings.ToLower(n[:1]) + n[1:]
+}
 
 // findingFact is a B53.5 finding as the Coach sees it.
 func findingFact(f SpendFinding) CoachFact {
@@ -294,7 +304,7 @@ func findingFact(f SpendFinding) CoachFact {
 	case FindingDuplicate:
 		c.MinutesApart = f.MinutesApart
 	case FindingAgentUnusualSpend:
-		c.Agent, c.Amount, c.Usual = true, briefingAmount(f.LastHourULXC, "LXC"), briefingAmount(f.UsualPerHourULXC, "LXC")
+		c.Agent, c.Amount, c.Usual = true, Money(f.LastHourULXC, "LXC"), Money(f.UsualPerHourULXC, "LXC")
 	}
 	return c
 }
@@ -373,7 +383,7 @@ func coachTemplate(f CoachFact) string {
 	merchant := f.Merchant
 	if merchant == "" {
 		merchant = "a " + f.Category + " merchant"
-		if strings.IndexAny(f.Category, "aeiou") == 0 {
+		if strings.IndexAny(f.Category, "aeiouAEIOU") == 0 {
 			merchant = "an " + f.Category + " merchant"
 		}
 	}
@@ -401,7 +411,9 @@ func coachTemplate(f CoachFact) string {
 		if f.Category != "" {
 			what = strings.ToUpper(f.Category[:1]) + f.Category[1:]
 		}
-		if f.Agent {
+		if f.Agent && f.Category != "" {
+			what = "An agent's " + f.Category
+		} else if f.Agent {
 			what = "An agent's " + strings.ToLower(what)
 		}
 		if f.Left == "" {

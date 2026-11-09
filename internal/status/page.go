@@ -491,12 +491,19 @@ func (s *StatusPage) moneyRails(ctx context.Context) []MoneyRail {
 				}
 			}
 		}
+		anyCleared := false
 		for _, key := range railCapabilities[r.Service] {
 			c := RailCapability{Key: key}
 			if v, ok := cleared[key]; ok {
 				c.Cleared = &v
+				anyCleared = anyCleared || v
 			}
 			m.Capabilities = append(m.Capabilities, c)
+		}
+		// B56.6: the public page names no trading before a trade_ capability is cleared; operators still see the
+		// capabilities on /v1/wallets/capabilities.
+		if r.Service == partners.ServiceBroker && !anyCleared {
+			continue
 		}
 		out = append(out, m)
 	}
@@ -758,17 +765,17 @@ func renderHTML(s *StatusResponse) string {
          font-family: var(--tv-font-sans); font-size: 15px; line-height: 24px;
          -webkit-font-smoothing: antialiased; }
   main { max-width: 880px; margin: 0 auto; }
-  .num { font-family: var(--tv-font-mono); font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
   header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 28px; }
   header .tv-mark { width: 40px; height: 40px; margin-top: 4px; }
-  .eyebrow { font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .22em;
+  .eyebrow { font-family: var(--tv-font-sans); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .04em;
              text-transform: uppercase; color: var(--tv-label); }
-  h1 { margin: 4px 0 6px; font-size: 28px; line-height: 34px; font-weight: 500; letter-spacing: -.01em; }
+  h1 { margin: 4px 0 6px; font-size: 30px; line-height: 34px; font-weight: 750; letter-spacing: -.015em; }
   .subtitle { color: var(--tv-ink-muted); font-size: 13px; line-height: 20px; }
   header .tv-rule { margin-top: 14px; }
   .banner { display: flex; align-items: center; gap: 12px; padding: 20px; margin-bottom: 24px;
             background: var(--tv-raised); border: 1px solid var(--tv-line); border-radius: var(--tv-radius-md);
-            font-size: 20px; line-height: 26px; font-weight: 600; }
+            font-family: var(--tv-font-display); font-size: 20px; line-height: 26px; font-weight: 700; }
   .banner::before, .pill::before { content: ""; flex: none; border-radius: var(--tv-radius-pill);
             background: var(--tv-ink-muted); }
   .banner::before { width: 10px; height: 10px; }
@@ -788,7 +795,7 @@ func renderHTML(s *StatusResponse) string {
   tbody tr:last-child td { border-bottom: 0; }
   th:first-child { width: 46%%; }
   th:nth-child(2) { width: 30%%; }
-  th { color: var(--tv-label); font-weight: 500; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  th { color: var(--tv-label); font-weight: 600; }
   td.num { white-space: nowrap; }
   .msg { margin-top: 2px; font-size: 13px; color: var(--tv-ink-muted); overflow-wrap: anywhere; }
   .note { margin: 0 0 6px; font-size: 13px; line-height: 20px; color: var(--tv-ink-muted); }

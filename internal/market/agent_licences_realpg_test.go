@@ -74,21 +74,21 @@ func TestAgentLicences_AnAgentTakesOnlyTheLicencesItsRulesAllow(t *testing.T) {
 	}
 
 	_, _, err = s.License(ctx, deps, buyer, buyer20, l.ID, "rent-25", LicenceRequest{OfferID: offer["rent enterprise"]})
-	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "max_commitment_ulxc") {
-		t.Fatalf("a 25 LXC rent under a 20 LXC commitment = %v; want refused naming max_commitment_ulxc", err)
+	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "the most one licence may commit it to is $2.00 (20 LXC)") {
+		t.Fatalf("a 25 LXC rent under a 20 LXC commitment = %v; want refused naming the commitment", err)
 	}
 	if licences, billed := written(buyer20); licences != 1 || billed != 1 {
 		t.Fatalf("after the refused rent the agent has %d licences and %d billed rows; want still 1 and 1", licences, billed)
 	}
 
 	_, _, err = s.License(ctx, deps, buyer, buyer20, l.ID, "sub", LicenceRequest{OfferID: offer["subscribe commercial"]})
-	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "may_subscribe") {
-		t.Fatalf("a subscription by an agent whose rules do not allow one = %v; want refused naming may_subscribe", err)
+	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "do not let it subscribe") {
+		t.Fatalf("a subscription by an agent whose rules do not allow one = %v; want refused saying so", err)
 	}
 	renews := true
 	_, _, err = s.License(ctx, deps, buyer, buyer20, l.ID, "rent-renews", LicenceRequest{OfferID: offer["rent commercial"], AutoRenew: &renews})
-	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "may_subscribe") {
-		t.Fatalf("a rent that renews itself, by an agent that may not subscribe = %v; want refused naming may_subscribe", err)
+	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "renews itself") {
+		t.Fatalf("a rent that renews itself, by an agent that may not subscribe = %v; want refused saying so", err)
 	}
 	if licences, billed := written(buyer20); licences != 1 || billed != 1 {
 		t.Fatalf("after the refused subscriptions the agent has %d licences and %d billed rows; want still 1 and 1", licences, billed)
@@ -129,7 +129,7 @@ func TestAgentLicences_AnAgentTakesOnlyTheLicencesItsRulesAllow(t *testing.T) {
 
 	sim, err := bank.SimulateAgentRules(ctx, buyer, buyer20, economy.SimulatedRequest{AmountULXC: 25_000_000,
 		Payee: &economy.Payee{Kind: "listing", ID: l.ID}, Licence: &economy.Commitment{Kind: OfferRent, Licence: LicenceEnterprise}})
-	if err != nil || sim.Verdict != "refused" || !strings.Contains(sim.Reason, "max_commitment_ulxc") {
-		t.Fatalf("simulating the 25 LXC rent = %+v, %v; want refused naming max_commitment_ulxc", sim, err)
+	if err != nil || sim.Verdict != "refused" || !strings.Contains(sim.Reason, "the most one licence may commit it to is $2.00 (20 LXC)") {
+		t.Fatalf("simulating the 25 LXC rent = %+v, %v; want refused naming the commitment", sim, err)
 	}
 }

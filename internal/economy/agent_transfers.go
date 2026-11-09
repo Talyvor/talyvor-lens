@@ -254,7 +254,7 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 		return t, err
 	}
 	if bal < t.AmountULXC {
-		return t, fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+		return t, agentHolds(ctx, tx, ErrAgentFunds, t.FromAgentID, bal, 0)
 	}
 	if t.ID == "" {
 		t.ID = "xfer_" + uuid.NewString()

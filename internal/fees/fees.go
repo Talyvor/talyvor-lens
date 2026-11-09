@@ -1,7 +1,7 @@
 // Package fees holds Talyvor's fees — Nicolai's decisions of 5 Oct 2026 (B32.8). Each is a setting in
 // lens.env.example whose default is his value, and nothing else in the code holds a fee: every feature that
 // charges one reads it from Current. A setting for a feature not built yet is read only by the item that
-// builds it.
+// builds it, which flips its entry in Charged.
 package fees
 
 import (
@@ -24,8 +24,9 @@ type Settings struct {
 	MarketTakeBPS int64 `json:"market_take_bps"`
 	// Jobs, and a payment to another company's agent through the marketplace (B19.15).
 	ServicesTakeBPS int64 `json:"services_take_bps"`
-	ComputeTakeBPS  int64 `json:"compute_take_bps"`
-	LendingFeeBPS   int64 `json:"lending_fee_bps"` // on a loan arranged
+	// What a registered compute node earns for serving another workspace's request: Talyvor keeps this much (B56.20).
+	ComputeTakeBPS int64 `json:"compute_take_bps"`
+	LendingFeeBPS  int64 `json:"lending_fee_bps"` // on a loan arranged
 	// On AI spend charged to credits, by plan.
 	PlatformFeeBPS map[string]int64 `json:"platform_fee_bps"`
 	// Over the reference rate on a currency conversion, by plan.
@@ -36,6 +37,15 @@ type Settings struct {
 	MerchantA2AFeeBPS   int64            `json:"merchant_a2a_fee_bps"` // accepting a payment from an account
 	// What a Scan agent's wallet pays, in µLXC of credits, for each alert its watch sends (B52.27).
 	ScanAlertULXC int64 `json:"scan_alert_ulxc"`
+}
+
+// Charged is, by each fee's name in GET /v1/public/fees, whether Lens charges it today (B56.8). The item that
+// builds a fee flips its entry in the same change; a test holds each entry to whether code outside this package
+// reads that fee.
+var Charged = map[string]bool{
+	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": true, "lending_fee_bps": false,
+	"platform_fee_bps": true, "fx_margin_bps": false, "intl_payment_fee_minor": true,
+	"merchant_fee_bps": false, "merchant_a2a_fee_bps": false, "scan_alert_ulxc": true,
 }
 
 // Defaults are Nicolai's values.

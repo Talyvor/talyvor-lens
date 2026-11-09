@@ -154,7 +154,8 @@ type streamOps interface {
 	// updating u in place. No-op for lines that carry no usage.
 	extractUsage(line []byte, u *streamUsage)
 	// synthesizeCachePayload produces the JSON to cache once the stream
-	// has fully been consumed.
+	// has fully been consumed. Only a finished answer is kept, so it carries
+	// the provider's normal stop reason (B17.384).
 	synthesizeCachePayload(accumulated string) []byte
 }
 
@@ -261,7 +262,7 @@ func (openAIStreamOps) processLine(line []byte, acc *strings.Builder) bool {
 func (openAIStreamOps) synthesizeCachePayload(accumulated string) []byte {
 	out, _ := json.Marshal(map[string]any{
 		"choices": []map[string]any{
-			{"message": map[string]any{"role": "assistant", "content": accumulated}},
+			{"message": map[string]any{"role": "assistant", "content": accumulated}, "finish_reason": "stop"},
 		},
 	})
 	return out
@@ -360,9 +361,14 @@ func (anthropicStreamOps) synthesizeCachePayload(accumulated string) []byte {
 		"content": []map[string]any{
 			{"type": "text", "text": accumulated},
 		},
+		"stop_reason": "end_turn",
 	})
 	return out
 }
+
+// streamMaxDuration bounds one streamed answer, connection and upstream call alike (B28.79). It replaces the
+// server's 30 s timeouts and the client's 120 s cap for a stream, which a slow model outlives.
+const streamMaxDuration = 10 * time.Minute
 
 func (s *StreamHandler) serve(
 	w http.ResponseWriter,
@@ -407,8 +413,20 @@ func (s *StreamHandler) serve(
 	// Measure the upstream connection/initial-response latency (the
 	// retry.Do block), NOT the whole stream forward. Record on every outcome
 	// with a bounded provider+status label; never alters control flow/errors.
+	//
+	// B28.79: a slow model streams for minutes, past the server's 30 s write and read timeouts (the read one
+	// cancels the request) and the client's 120 s cap; both cut a 90 s answer blank. This stream gets its own
+	// streamMaxDuration on the connection and on the upstream call instead, and keeps the client's transport.
+	streamDeadline := time.Now().Add(streamMaxDuration)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(streamDeadline)
+	_ = rc.SetReadDeadline(streamDeadline)
+	streamCtx, cancelStream := context.WithDeadline(r.Context(), streamDeadline)
+	defer cancelStream()
+	streamClient := *s.proxy.httpClient
+	streamClient.Timeout = 0
 	upstreamStart := time.Now()
-	result := retry.Do(r.Context(), retry.DefaultConfig(), func(c context.Context) (*http.Response, error) {
+	result := retry.Do(streamCtx, retry.DefaultConfig(), func(c context.Context) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(c, http.MethodPost, ops.upstreamURL(), bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -433,7 +451,7 @@ func (s *StreamHandler) serve(
 		if poolKey != nil {
 			ops.applyPoolKey(req, poolKey.Key)
 		}
-		return s.proxy.httpClient.Do(req)
+		return streamClient.Do(req)
 	})
 	if poolKey != nil {
 		if result.LastError != nil {
@@ -470,6 +488,7 @@ func (s *StreamHandler) serve(
 	var accumulated strings.Builder
 	var usage streamUsage
 	ended := false // the provider sent its end-of-answer event
+	cut := false   // B17.184: the provider stopped it at the length limit
 	// B18.7: the upstream's lines (Bedrock's are decoded from its binary event stream), and what the
 	// client is sent for each (Google and Bedrock are translated to OpenAI chunks).
 	src := upstreamLines(ops, resp.Body)
@@ -521,6 +540,9 @@ func (s *StreamHandler) serve(
 		if ops.endsAnswer(line) {
 			ended = true
 		}
+		if bytes.HasPrefix(line, []byte("data:")) && cutOff(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))) {
+			cut = true
+		}
 		if ops.processLine(line, &accumulated) {
 			break
 		}
@@ -556,7 +578,8 @@ func (s *StreamHandler) serve(
 	// workspace's output guardrails are on, only if the finished text passes them. They cannot run
 	// while a stream is in flight, so this client already has the text — but an answer that fails
 	// them must never be served to the next asker, in this workspace or through the pool.
-	shouldCache := !piiDetected && ended
+	// B17.184: nor is one the provider cut off at the length limit — it would be replayed as finished.
+	shouldCache := !piiDetected && ended && !cut
 	if shouldCache && s.proxy.guardrails != nil && s.proxy.guardrails.OutputEnabled() {
 		if ogr := s.proxy.guardrails.CheckOutput(storeCtx, sc.wsID, accumulated.String()); !ogr.Passed || len(ogr.Violations) > 0 {
 			shouldCache = false

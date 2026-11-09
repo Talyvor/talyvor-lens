@@ -82,6 +82,7 @@ type Message struct {
 	Cursor               int64           `json:"cursor"` // its place in the room: GET .../messages?before= and ?after= take it
 	RoomID               string          `json:"room_id"`
 	AuthorWorkspaceID    string          `json:"author_workspace_id"`
+	AuthorWorkspaceName  string          `json:"author_workspace_name"`
 	AuthorUserID         string          `json:"author_user_id,omitempty"` // shown to the author's own workspace only
 	AuthorAgentID        string          `json:"author_agent_id,omitempty"`
 	AuthorAgentName      string          `json:"author_agent_name,omitempty"` // an agent's message carries its name (B32.36)
@@ -155,14 +156,14 @@ func scanPublic(body string) ([]byte, error) {
 
 const messageCols = `m.id, m.seq, m.room_id, m.author_workspace_id, m.author_user_id, m.author_agent_id,
 	COALESCE((SELECT a.name FROM agent_accounts a WHERE a.id = m.author_agent_id), ''), m.kind, m.body, m.refs,
-	m.created_at, m.edited_at, m.deleted_at, m.deleted_by_workspace_id, m.scan`
+	m.created_at, m.edited_at, m.deleted_at, m.deleted_by_workspace_id, m.scan, ` + workspaceNameOf + `m.author_workspace_id` + workspaceNameEnd
 
 // scanMessage reads a messageCols row as viewer sees it, after the columns lead is scanned into.
 func scanMessage(row pgx.Row, viewer string, lead ...any) (Message, error) {
 	var m Message
 	var refs, sc []byte
 	if err := row.Scan(append(lead, &m.ID, &m.Cursor, &m.RoomID, &m.AuthorWorkspaceID, &m.AuthorUserID, &m.AuthorAgentID, &m.AuthorAgentName, &m.Kind,
-		&m.Body, &refs, &m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.DeletedByWorkspaceID, &sc)...); err != nil {
+		&m.Body, &refs, &m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.DeletedByWorkspaceID, &sc, &m.AuthorWorkspaceName)...); err != nil {
 		return m, err
 	}
 	m.Refs = json.RawMessage(refs)
