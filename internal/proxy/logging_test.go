@@ -139,7 +139,7 @@ func newLoggingProxy(t *testing.T, policy workspace.LoggingPolicy) (*Proxy, *rec
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
 	}))
 	t.Cleanup(srv.Close)
 

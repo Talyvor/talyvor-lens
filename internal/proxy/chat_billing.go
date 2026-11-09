@@ -55,16 +55,17 @@ func chatSession(ctx context.Context) (string, bool) {
 
 // chatAdmission refuses a chat request BEFORE the provider is called when its conservative cost is
 // not covered by the plan allowance plus prepaid credit, or would take the session past its bound.
-// It returns the message to send with a 402. Read errors fail open, like the LXC gate: the
-// post-serve charge still books what it can.
-func (p *Proxy) chatAdmission(ctx context.Context, workspaceID, model, prompt string, maxOut int) (string, bool) {
+// It returns the message to send with a 402 and its refusal code (B28.82; none for an empty balance,
+// which topping up fixes). Read errors fail open, like the LXC gate: the post-serve charge still
+// books what it can.
+func (p *Proxy) chatAdmission(ctx context.Context, workspaceID, model, prompt string, maxOut int) (string, string, bool) {
 	sessionID, ok := chatSession(ctx)
 	if !ok || p == nil || workspaceID == "" {
-		return "", false
+		return "", "", false
 	}
 	est := reserveEstimateLXC(model, prompt, maxOut)
 	if est <= 0 {
-		return "", false
+		return "", "", false
 	}
 	if p.sessionSpend != nil && sessionID != "" && p.sessionSpendBound > 0 {
 		spent, err := p.sessionSpend.Spent(ctx, sessionID)
@@ -72,7 +73,7 @@ func (p *Proxy) chatAdmission(ctx context.Context, workspaceID, model, prompt st
 			slog.Warn("billing: chat session spend read failed (failing open)", slog.String("err", err.Error()))
 		} else if spent+est > p.sessionSpendBound {
 			return fmt.Sprintf("this chat session has reached its spending limit of %s LXC — start a new chat to continue",
-				formatLXC(p.sessionSpendBound)), true
+				formatLXC(p.sessionSpendBound)), refusalSessionLimit, true
 		}
 	}
 	var covered int64
@@ -82,17 +83,17 @@ func (p *Proxy) chatAdmission(ctx context.Context, workspaceID, model, prompt st
 		}
 	}
 	if covered >= est || p.lxcGate == nil {
-		return "", false
+		return "", "", false
 	}
 	balance, err := p.lxcGate.GetUnallocatedLXC(ctx, workspaceID) // B19.13: not what its agents hold
 	if err != nil {
 		slog.Warn("billing: chat balance read failed (failing open)", slog.String("workspace", workspaceID), slog.String("err", err.Error()))
-		return "", false
+		return "", "", false
 	}
 	if balance < p.withPlatformFee(ctx, workspaceID, est-covered) { // B32.11: past the allowance, with its fee
-		return "not enough credit for this request — top up to continue", true
+		return "not enough credit for this request — top up to continue", "", true
 	}
-	return "", false
+	return "", "", false
 }
 
 // chargeChatUsage books a served chat request: the plan allowance first, then prepaid LXC for the

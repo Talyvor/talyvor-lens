@@ -121,7 +121,7 @@ func GenerateMarkdown(results []BenchmarkResult, goVersion, osArch string) strin
 
 // GenerateHTML renders the results in the brand the dashboard + status
 // page wear (internal/brand): dark unless the viewer prefers light, the
-// flat mark beside the name, IBM Plex Mono for every figure. Includes the
+// symbol beside the name, IBM Plex Mono for every figure. Includes the
 // competitive-comparison section the spec mandates — known LiteLLM /
 // Portkey numbers from their own published docs and reproducible
 // third-party benchmarks.
