@@ -320,6 +320,8 @@ var Manifest = map[string]Entry{
 	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
 	"spend_notice_settings":        {Delete, "B53.7: the owner's quiet hours, time zone and the kinds of notice switched off"},
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
+	"alert_channels":               {Delete, "B28.338: where the owner sends alerts — push, a webhook's url and signing secret, or a Slack incoming webhook"},
+	"alert_deliveries":             {Delete, "B28.338: each alert queued or sent to each channel, with its words and whether it was sent"},
 	"scan_watches":                 {Delete, "B52.27: each Scan agent's watch — the series its owner picked and what counts as unusual"},
 	"scan_watch_alerts":            {Delete, "B52.27: each alert a Scan agent's watch sent, with its report and what the agent paid for it"},
 	"scan_rehearsals":              {Delete, "B52.40: each Scan report a test workspace rehearsed, its review and planted outcome"},
