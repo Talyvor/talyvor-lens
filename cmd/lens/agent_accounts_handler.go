@@ -1074,7 +1074,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		writeStatementView(w, req, st, csv, func() (*time.Location, error) { return time.UTC, nil })
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
-		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") {
+		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") || q.Has("kind") || q.Has("q") {
 			from, to, csv, err := statementPeriod(req, time.Now())
 			if err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
@@ -1850,7 +1850,8 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv 
 }
 
 // writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
-// a day of zone's into one line, and ?limit= and ?cursor= page its lines newest first. The CSV is never grouped or
+// a day of zone's into one line, ?kind= (one or more, comma-separated) and ?q= keep only the lines of those kinds whose
+// words hold q (B28.51), and ?limit= and ?cursor= page what is left newest first. The CSV is never grouped, filtered or
 // paged: it is one row per posting, the audit file.
 func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, asCSV bool, zone func() (*time.Location, error)) {
 	q := req.URL.Query()
@@ -1880,6 +1881,21 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		writeJSONErr(w, http.StatusBadRequest, "group must be day")
 		return
 	}
+	var kinds []string
+	for _, v := range q["kind"] {
+		for _, k := range strings.Split(v, ",") {
+			if k = strings.TrimSpace(k); k == "" || len(k) > 64 {
+				writeJSONErr(w, http.StatusBadRequest, "kind must be one or more line kinds, comma-separated")
+				return
+			}
+			kinds = append(kinds, k)
+		}
+	}
+	if len(q.Get("q")) > 200 {
+		writeJSONErr(w, http.StatusBadRequest, "q must be at most 200 characters")
+		return
+	}
+	st = st.Filter(kinds, q.Get("q"))
 	if limit > 0 || q.Has("cursor") {
 		var err error
 		if st, err = st.Page(limit, q.Get("cursor")); err != nil {
