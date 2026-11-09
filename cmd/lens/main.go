@@ -2663,6 +2663,13 @@ func run() error {
 	// OpenAPI spec — public, no auth, no version path prefix.
 	r.Get("/openapi.json", api.ServeOpenAPI)
 
+	// B54.45: while the synthetic key is set, a tester publishes a .test domain's DKIM key here, and the inbound
+	// email route reads it; otherwise nil, and that route reads DNS alone.
+	var syntheticDKIM *syntheticDKIMKeys
+	if cfg.SyntheticKey != "" {
+		syntheticDKIM = newSyntheticDKIMKeys()
+	}
+
 	// Public read-only API endpoints — no auth required, but rate-limited to
 	// prevent enumeration and DoS on the public economic surface.
 	r.Group(func(pub chi.Router) {
@@ -2712,7 +2719,7 @@ func run() error {
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
-		mountNegotiationEmailRoutes(pub, rateLimiter, net.DefaultResolver.LookupTXT, dualToken)
+		mountNegotiationEmailRoutes(pub, rateLimiter, syntheticDKIM.resolver(net.DefaultResolver.LookupTXT), dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -3102,6 +3109,8 @@ func run() error {
 		plans: pool,
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
 		due: syntheticDue,
+		// B54.45 — a .test domain's DKIM key, for an email confirming a deal.
+		dkim: syntheticDKIM,
 	})
 	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
