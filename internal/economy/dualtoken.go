@@ -388,6 +388,9 @@ type DualTokenStore struct {
 	companyPayments CompanyPayments
 	// B22.1: whether Lens's Stripe key is live, which makes a Stripe bill real money.
 	liveStripe bool
+	// B56.7: whether card payments are live (billing.CardPayments) and the partner rails, which labels read.
+	cardPayments string
+	partnerRails railReader
 	// B32.11: the platform fee's rate on a workspace's AI spend; nil, no fee.
 	platformFee PlatformFeeResolver
 	// B32.32: what judges a room wallet's monthly limit against the room owner's plan; nil, a room wallet's rules
