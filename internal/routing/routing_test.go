@@ -104,6 +104,23 @@ func TestRecommend_DisabledReturnsNone(t *testing.T) {
 	}
 }
 
+// B28.105: Chat's cheaper-model hint reads /routing/recommendation, which must answer even while
+// LENS_ROUTING_INTELLIGENCE_ENABLED is off. StartRefresh loads the cohorts regardless; the hot path
+// (Recommend) still never recommends.
+func TestStartRefresh_DisabledStillAnswersTheRead(t *testing.T) {
+	m := &mockSource{stats: chatCohort()}
+	a := New(m, costStub, Config{Enabled: false})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.StartRefresh(ctx)
+	if rec := a.RecommendByRange(ctx, "ws1", "chat", "medium", "openai", nil, nil); rec.Model != "gpt-4o-mini" || rec.Basis != BasisQualityPerDollar {
+		t.Fatalf("read with routing off: got %q (%s), want gpt-4o-mini on quality_per_dollar", rec.Model, rec.Basis)
+	}
+	if rec := a.Recommend(ctx, "ws1", "chat", 1000, "", "openai", nil, nil); rec.Basis != BasisNone {
+		t.Fatalf("hot path with routing off must never recommend: got %q", rec.Basis)
+	}
+}
+
 // (b) Flag OFF (TierCohorts unset) must IGNORE the complexity arg — different complexities yield
 // the identical non-tiered recommendation (byte-for-byte the current behavior).
 func TestRecommend_FlagOff_IgnoresComplexity(t *testing.T) {

@@ -218,10 +218,12 @@ func sortCandidates(cs []Candidate) {
 
 // StartRefresh does an immediate refresh, then refreshes on the configured
 // interval until ctx is cancelled. Reuses the codebase's goroutine-ticker
-// pattern. Only runs when enabled (disabled ⇒ cache stays empty ⇒ every
-// lookup falls back).
+// pattern. Runs even when disabled (B28.105): the read-only
+// RecommendByRange behind Chat's cheaper-model hint needs the cohorts, while
+// the hot path (Recommend) still returns none until enabled. The QualityGate
+// already runs the same aggregate on the same timer, unflagged.
 func (a *Advisor) StartRefresh(ctx context.Context) {
-	if a == nil || !a.cfg.Enabled || a.src == nil {
+	if a == nil || a.src == nil {
 		return
 	}
 	if err := a.Refresh(ctx); err != nil {
