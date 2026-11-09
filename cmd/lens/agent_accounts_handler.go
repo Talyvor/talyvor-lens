@@ -83,6 +83,11 @@ import (
 // rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
 // first page's to with every cursor. The CSV is always one row per posting.
 //
+// B28.326 — one agent's spend by day, model and destination (internal/economy/agent_analytics.go), for the same
+// [from, to) as its statement; days are its rules' time zone's, else UTC's:
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/analytics?from=&to=   buckets whose out_ulxc sum to the statement's
+//
 // B19.6 — unusual spend is flagged, an agent can be paused, and the month-end is forecast
 // (internal/economy/agent_alerts.go states the rule):
 //
@@ -278,6 +283,7 @@ type agentBank interface {
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
 	AgentPeriodStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.Statement, error)
 	WorkspaceAgentStatement(ctx context.Context, workspaceID string, from, to time.Time) (economy.Statement, error)
+	AgentSpendAnalytics(ctx context.Context, workspaceID, agentID string, from, to time.Time, zone *time.Location) (economy.SpendAnalytics, error)
 	PauseAgent(ctx context.Context, workspaceID, agentID, reason string) error
 	PauseAllAgents(ctx context.Context, workspaceID, reason string) error
 	ResumeAllAgents(ctx context.Context, workspaceID string) error
@@ -1117,6 +1123,34 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": chi.URLParam(req, "agentID"), "lines": lines})
+		}
+	})
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/analytics", func(w http.ResponseWriter, req *http.Request) {
+		from, to, csv, err := statementPeriod(req, time.Now())
+		if err == nil && csv {
+			err = errors.New("analytics are JSON only")
+		}
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
+		zone := time.UTC
+		rules, err := bank.GetAgentRules(req.Context(), wsID, agentID)
+		if err == nil {
+			zone, err = time.LoadLocation(rules.Timezone)
+		}
+		var a economy.SpendAnalytics
+		if err == nil {
+			a, err = bank.AgentSpendAnalytics(req.Context(), wsID, agentID, from, to, zone)
+		}
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, a)
 		}
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/alerts", func(w http.ResponseWriter, req *http.Request) {
