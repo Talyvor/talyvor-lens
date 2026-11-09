@@ -3,7 +3,9 @@ package economy
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -81,6 +83,29 @@ func (st Statement) ByDay(loc *time.Location, zone string) Statement {
 		st.Lines[i] = lines[j]
 	}
 	st.Group, st.TimeZone = "day", zone
+	return st
+}
+
+// Filter is st with only its lines of one of kinds (every kind when there are none) whose words hold search, in any
+// case: its kind, account, counterparty, ref, memo, label, model or entry (B28.51). Its accounts are still the whole
+// period's, so a filtered page's totals are the statement's, not the lines'.
+func (st Statement) Filter(kinds []string, search string) Statement {
+	search = strings.ToLower(strings.TrimSpace(search))
+	if len(kinds) == 0 && search == "" {
+		return st
+	}
+	lines := make([]StatementLine, 0, len(st.Lines))
+	for _, l := range st.Lines {
+		if len(kinds) > 0 && !slices.Contains(kinds, l.Kind) {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(strings.Join([]string{l.Kind, l.Account, l.Counterparty, l.Ref,
+			l.Memo, l.Label, l.Model, l.EntryID}, "\n")), search) {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	st.Lines = lines
 	return st
 }
 
