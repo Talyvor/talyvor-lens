@@ -58,7 +58,7 @@ import (
 // tx rolls back — no row, no balance change — exactly like ErrEarnNotVerified, and every mint
 // call site already treats a ledger error as non-fatal-to-serve. So a shadowed mint simply does
 // not pay, and the request it rode on is unaffected.
-var ErrShadowedMint = errors.New("mining: mint is in SHADOW MODE — recorded as a hypothetical, credited nothing")
+var ErrShadowedMint = errors.New("mining: mint is in SHADOW MODE: recorded as a hypothetical, credited nothing")
 
 // ShadowSink persists what a mint would have paid.
 //

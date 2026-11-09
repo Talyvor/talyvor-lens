@@ -30,7 +30,7 @@ var (
 	// ErrNotApprover: the agent is not the approver in force for that request's agent.
 	ErrNotApprover = errors.New("economy: this agent is not the approver of that agent's requests")
 	// ErrAboveApproverLimits: the request is above what the approver may approve, so it waits for the owner.
-	ErrAboveApproverLimits = errors.New("economy: above the approver's own limits — the request waits for the workspace's owner")
+	ErrAboveApproverLimits = errors.New("economy: this is above the approver's own limits, so the request waits for the workspace's owner")
 	// ErrMandatesNotConfigured: Lens has no mandate signer.
 	ErrMandatesNotConfigured = errors.New("economy: mandates are not configured on this server")
 )
@@ -126,7 +126,7 @@ func (s *DualTokenStore) approverTerms(ctx context.Context, workspaceID, agentID
 	}
 	limit := approverLimit(rules)
 	if limit == 0 {
-		return 0, fmt.Errorf("%w: the approver has no limit of its own (max_per_request_ulxc or approval_above_ulxc), so it may approve nothing", ErrApprover)
+		return 0, fmt.Errorf("%w: the approver has no limit of its own, so it may approve nothing", ErrApprover)
 	}
 	return limit, nil
 }

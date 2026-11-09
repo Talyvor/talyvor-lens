@@ -142,7 +142,7 @@ var (
 	// when the economy master switch is off. Closes the kill-switch gap where the
 	// submit route (authed.Post) and applyTx never checked EconomyEnabled, so
 	// EconomyEnabled=false force-off'd every OTHER mint but MISSED annotation.
-	ErrEconomyDisabled = errors.New("annotation: economy disabled — minting is off (kill switch)")
+	ErrEconomyDisabled = errors.New("annotation: economy disabled, so minting is off (kill switch)")
 )
 
 // ─── AnnotationMiner ─────────────────────────────

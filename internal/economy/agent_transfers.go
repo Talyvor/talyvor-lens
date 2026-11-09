@@ -99,7 +99,7 @@ var handleRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,31}$`)
 func (s *DualTokenStore) SetAgentHandle(ctx context.Context, workspaceID, agentID, handle string) (WalletAddress, error) {
 	handle = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(handle), "@"))
 	if handle != "" && !handleRE.MatchString(handle) {
-		return WalletAddress{}, fmt.Errorf("%w: 3 to 32 of a–z, 0–9, '.', '_' and '-', starting with a letter or a digit", ErrHandle)
+		return WalletAddress{}, fmt.Errorf("%w: 3 to 32 of a to z, 0 to 9, '.', '_' and '-', starting with a letter or a digit", ErrHandle)
 	}
 	var a WalletAddress
 	var h *string

@@ -142,7 +142,7 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := call(payeeWS, "", http.MethodPost, pullPath, `{"amount_minor":2000,"idempotency_key":"inv-2"}`)
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "the payer has paused its agents") {
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "The payer has paused its agents") {
 		t.Fatalf("a pull while every agent is paused = %d %v, want 409 saying the payer paused its agents", code, out)
 	}
 	if got := postings(); len(got) != 2 {
