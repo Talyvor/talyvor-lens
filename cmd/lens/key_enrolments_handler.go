@@ -14,7 +14,8 @@ import (
 
 // B55.1 — a new key joins from another device (economy/key_enrolments.go). A passkey (POST …/agents/passkeys) or phone
 // key (POST /v1/money/devices) registered with no assertion in a workspace that has a key answers 202
-// {"enrolment": {"id", "code", "expires_at"}} and waits; 409 once three wait, or one with the same code does.
+// {"enrolment": {"id", "code", "expires_at"}} and waits; 409 once three wait, or one with the same code does; 409 for a
+// passkey already registered, or when every key of the workspace is revoked (B54.28).
 //
 //	GET  /v1/workspaces/{wsID}/agents/keys/enrolments                — the keys waiting
 //	GET  /v1/workspaces/{wsID}/agents/keys/enrolments/{id}           — one, whatever its status
@@ -42,7 +43,8 @@ func writeEnrolmentWaiting(w http.ResponseWriter, err error) bool {
 	case errors.As(err, &waiting):
 		e := waiting.Enrolment
 		writeJSONOK(w, http.StatusAccepted, map[string]any{"enrolment": map[string]any{"id": e.ID, "code": e.Code, "expires_at": e.ExpiresAt}})
-	case errors.Is(err, economy.ErrTooManyEnrolments), errors.Is(err, economy.ErrEnrolmentCodeTaken):
+	case errors.Is(err, economy.ErrTooManyEnrolments), errors.Is(err, economy.ErrEnrolmentCodeTaken),
+		errors.Is(err, economy.ErrPasskeyRegistered), errors.Is(err, economy.ErrNoLiveKey): // B54.28
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	default:
 		return false
@@ -59,6 +61,8 @@ func mountKeyEnrolmentRoutes(r chi.Router, bank keyEnrolmentBank) {
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrPasskeyRegistered):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:

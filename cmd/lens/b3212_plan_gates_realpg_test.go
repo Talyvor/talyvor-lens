@@ -35,10 +35,10 @@ func TestB3212_TheConsoleIsToldWhichPlanAllowsIt(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &out)
 		return w.Code, out
 	}
-	refused := func(code int, out map[string]any) bool {
-		msg, _ := out["error"].(string)
+	// B55.29: the refusal is in words; the setting is a field of its own.
+	refused := func(code int, out map[string]any, words string) bool {
 		return code == http.StatusPaymentRequired && out["plan"] == "free" && out["allows"] == "team" &&
-			strings.Contains(msg, "LENS_PLAN_GATES") && strings.Contains(msg, "the free plan") && strings.Contains(msg, "the team plan")
+			out["setting"] == "LENS_PLAN_GATES" && out["error"] == words
 	}
 
 	for i := 0; i < 3; i++ {
@@ -46,8 +46,8 @@ func TestB3212_TheConsoleIsToldWhichPlanAllowsIt(t *testing.T) {
 			t.Fatalf("free's agent %d = %d %v, want 201", i+1, code, out)
 		}
 	}
-	if code, out := call("POST", "/v1/workspaces/"+ws+"/agents", `{"name":"one too many"}`); !refused(code, out) || out["gate"] != "agents" {
-		t.Fatalf("free's fourth agent = %d %v, want 402 naming LENS_PLAN_GATES, the free plan and the team plan", code, out)
+	if code, out := call("POST", "/v1/workspaces/"+ws+"/agents", `{"name":"one too many"}`); !refused(code, out, "Free allows 3 agents, and all 3 are in use. Team allows 25.") || out["gate"] != "agents" {
+		t.Fatalf("free's fourth agent = %d %v, want 402 in words naming the free plan and the team plan", code, out)
 	}
 	if code, out := call("GET", "/v1/workspaces/"+ws+"/plan", ""); code != http.StatusOK || out["plan"] != "free" || out["agents_used"] != float64(3) {
 		t.Fatalf("the workspace's plan = %d %v, want free with 3 agents used", code, out)
@@ -55,8 +55,8 @@ func TestB3212_TheConsoleIsToldWhichPlanAllowsIt(t *testing.T) {
 	if code, out := call("GET", "/v1/workspaces/"+ws+"/plan/seats?members=1", ""); code != http.StatusOK {
 		t.Fatalf("free's first member = %d %v, want 200", code, out)
 	}
-	if code, out := call("GET", "/v1/workspaces/"+ws+"/plan/seats?members=2", ""); !refused(code, out) || out["gate"] != "seats" {
-		t.Fatalf("free's second member = %d %v, want 402 naming LENS_PLAN_GATES, the free plan and the team plan", code, out)
+	if code, out := call("GET", "/v1/workspaces/"+ws+"/plan/seats?members=2", ""); !refused(code, out, "Free allows 1 seat, and it is taken. Team allows 5.") || out["gate"] != "seats" {
+		t.Fatalf("free's second member = %d %v, want 402 in words naming the free plan and the team plan", code, out)
 	}
 	code, out := call("GET", "/v1/public/plan-gates", "")
 	team, _ := out["plans"].(map[string]any)["team"].(map[string]any)

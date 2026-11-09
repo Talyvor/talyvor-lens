@@ -14,6 +14,8 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/tenant"
 )
 
@@ -93,8 +95,8 @@ func TestDailyBriefing_NamesYesterdaysPaymentsTheApprovalAndTheBillDue(t *testin
 		t.Fatalf("the briefing lists\n  %s\nwant the approval first, then the bill due this week, then yesterday's two payments:\n  %s",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
-	for i, text := range []string{"30 LXC waits for your approval, to writer", "A bill from Acme for 30.00 GBP is due on",
-		"3 LXC was paid to writer for a logo", "4.5 LXC was paid to writer for the copy"} {
+	for i, text := range []string{"$3.00 (30 LXC) waits for your approval, to writer", "A bill from Acme for £30.00 is due on",
+		"$0.30 (3 LXC) was paid to writer for a logo", "$0.45 (4.5 LXC) was paid to writer for the copy"} {
 		if !strings.HasPrefix(b.Items[i].Text, text) {
 			t.Errorf("item %d reads %q, want it to start %q", i, b.Items[i].Text, text)
 		}
@@ -102,7 +104,7 @@ func TestDailyBriefing_NamesYesterdaysPaymentsTheApprovalAndTheBillDue(t *testin
 	if len(b.SpentYesterday) != 1 || b.SpentYesterday[0] != (economy.BriefingTotal{Currency: "LXC", Amount: 7_500_000}) {
 		t.Errorf("spent yesterday = %+v, want 7.5 LXC", b.SpentYesterday)
 	}
-	if b.Quiet || b.Line != "1 approval waiting, 1 bill due this week, 2 payments yesterday, spent yesterday 7.5 LXC." {
+	if b.Quiet || b.Line != "1 approval waiting, 1 bill due this week, 2 payments yesterday, spent yesterday $0.75 (7.5 LXC)." {
 		t.Errorf("quiet = %v, line = %q", b.Quiet, b.Line)
 	}
 
@@ -113,5 +115,41 @@ func TestDailyBriefing_NamesYesterdaysPaymentsTheApprovalAndTheBillDue(t *testin
 	}
 	if q := brief(calm, morning); !q.Quiet || len(q.Items) != 0 || q.Line != "A quiet day: nothing was spent yesterday, and nothing is waiting for you." {
 		t.Errorf("a quiet day's briefing = %+v", q)
+	}
+}
+
+// B55.9 — a payment request nobody answered within the approval life has expired: the briefing no longer says it waits.
+func TestDailyBriefing_LeavesOutAnExpiredPaymentRequest(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetPayeeScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
+	store.SetApprovalTTL(time.Second)
+	const ws = "ws-briefing-b559"
+	for _, payee := range []string{"Acme", "Globex"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number, check_result, checked_by)
+			VALUES ($1, $2, $3, 'GB', '20-00-00', '55779911', 'exact_match', 'test')`, "payee_"+payee, ws, payee); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepare := func(payee string) string {
+		t.Helper()
+		pr, _, err := store.PreparePaymentRequest(ctx, ws, "owner", payee, economy.PaymentRequestIn{Client: "chat",
+			Items: []economy.PaymentRequestItemIn{{PayeeID: "payee_" + payee, Currency: "GBP", AmountMinor: 4200, Reference: payee}}})
+		if err != nil || pr.Status != "pending_approval" {
+			t.Fatalf("prepare %s = %v %v, want pending_approval", payee, pr.Status, err)
+		}
+		return pr.ID
+	}
+	stale, fresh := prepare("Acme"), prepare("Globex")
+	if _, err := pool.Exec(ctx, `UPDATE payment_requests SET created_at = now() - interval '2 seconds' WHERE id = $1`, stale); err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.DailyBriefing(ctx, ws, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Items) != 1 || b.Items[0].ID != fresh || b.Items[0].Kind != economy.BriefingApproval {
+		t.Errorf("the briefing lists %+v, want only %s waiting, not the expired %s", b.Items, fresh, stale)
 	}
 }

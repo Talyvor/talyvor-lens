@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -111,10 +112,10 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 		return r, err
 	case r.Status == "approved":
 		return r, ErrPaymentRequestApproved
+	case r.Status == "expired":
+		return r, fmt.Errorf("%w: this request waited 24 hours without an answer and expired: ask for it again", ErrPaymentRequest)
 	case r.Status != "pending_approval":
 		return r, fmt.Errorf("%w: the request is %s: there is nothing to approve", ErrPaymentRequest, r.Status)
-	case time.Since(r.CreatedAt) >= s.approvalLife():
-		return r, fmt.Errorf("%w: the request waited %s unanswered and expired: ask again", ErrPaymentRequest, s.approvalLife())
 	case !frozenIntact(workspaceID, r):
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: it cannot be approved", ErrPaymentRequest)
 	}
@@ -163,7 +164,7 @@ func (s *DualTokenStore) signOver(ctx context.Context, tx pgx.Tx, workspaceID, c
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
@@ -280,7 +281,7 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 	defer func() { _ = tx.Rollback(ctx) }()
 	// One payer of a request at a time: a second waits, then finds each item already paid.
 	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 AND ($3 = '' OR agent_id = $3) FOR UPDATE`,
+	err = tx.QueryRow(ctx, `SELECT status FROM payment_requests WHERE id = $1 AND workspace_id = $2 AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL)) FOR UPDATE`,
 		id, workspaceID, agentID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PaymentRequest{}, ErrPaymentRequestNotFound
@@ -294,6 +295,9 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 	}
 	if status == "cancelled" {
 		return r, fmt.Errorf("%w: the request was cancelled: nothing is paid", ErrPaymentRequest)
+	}
+	if r.Status == "expired" {
+		return r, fmt.Errorf("%w: the request waited 24 hours without an answer and expired: nothing is paid", ErrPaymentRequest)
 	}
 	if !frozenIntact(workspaceID, r) {
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: nothing is paid", ErrPaymentRequest)
@@ -333,6 +337,10 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 			}
 			if err != nil || d.Decision == MandateBlock {
 				payStatus, detail = PayRefused, "the mandate no longer allows it: "+d.Reason
+			} else if dup, err := s.paidSincePrepared(ctx, workspaceID, r, it); err != nil {
+				return r, err
+			} else if dup {
+				payStatus, detail = PayRefused, PayCoveredPaidSince
 			}
 		case it.Decision == ItemNeedsApproval && isApproved && lapsed:
 			authority, payStatus, detail = "approval", PayRefused, "the approval expired, ask again"
@@ -351,12 +359,32 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		}
 		if payStatus == "" {
 			key := paymentRequestItemKey(id, it.Position)
-			p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
-				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key})
+			out := OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
+				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key}
+			p, err := s.PayOutside(ctx, workspaceID, out)
+			if errors.Is(err, ErrMoneyAccountNotFound) && r.AgentTrust != nil && r.AgentID != "" && authority == "approval" {
+				// B54.10: an outside agent's request the owner signed pays from the agent's own account in the currency,
+				// else the company's as before B54.10 — not while the agent is paused, nor once its account was closed.
+				var held bool
+				if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_accounts WHERE workspace_id = $1 AND agent_id = $2 AND currency = $3)`,
+					workspaceID, r.AgentID, it.Currency).Scan(&held); err == nil {
+					err = refuseIfPaused(ctx, tx, r.AgentID)
+				}
+				if err == nil && held {
+					err = fmt.Errorf("%w: the agent's %s account is closed", ErrMoneyAccountNotOpen, it.Currency)
+				}
+				if err == nil {
+					out.AgentID = ""
+					p, err = s.PayOutside(ctx, workspaceID, out)
+				}
+			}
 			call = map[string]any{"position": it.Position, "authority": authority, "idempotency_key": key}
 			switch {
 			case errors.Is(err, ErrPayeeCoolingOff):
 				payStatus, detail, call["held"] = PayHeld, err.Error(), err.Error()
+			case err != nil && it.Decision == ItemAuto && !errors.Is(err, ErrAgentFunds) && !errors.Is(err, partners.ErrScreeningUnavailable):
+				// B55.21: only a want of money or screening's being down is tried again; a refusal ends a covered item.
+				payStatus, detail, call["error"] = PayRefused, err.Error(), err.Error()
 			case err != nil:
 				payStatus, detail, call["error"] = PayFailed, err.Error(), err.Error()
 			default:
@@ -424,4 +452,107 @@ func (s *DualTokenStore) RunHeldPayments(ctx context.Context, workspaceID string
 		}
 	}
 	return len(due) - len(errs), errors.Join(errs...)
+}
+
+// coveredNotPaid is an auto item not paid yet, or that failed, of a request not cancelled (B55.21).
+const coveredNotPaid = `i.decision = 'auto' AND i.payment_id = '' AND i.pay_status IN ('', 'failed') AND r.status <> 'cancelled'`
+
+// Why an auto item is not paid: prepared too long ago, or the same payment was paid since it was prepared (B55.21).
+const (
+	PayCoveredLate      = "not paid within 24 hours of being prepared: prepare it again"
+	PayCoveredPaidSince = "the same payment was paid since it was prepared"
+)
+
+// paidSincePrepared is whether it, an item of r, repeats a payment made since r was prepared under another key — the
+// same payee with its reference or its amount, as riskFlags judges a duplicate — so a failed item prepared again is
+// paid once.
+func (s *DualTokenStore) paidSincePrepared(ctx context.Context, workspaceID string, r PaymentRequest, it PaymentRequestItem) (bool, error) {
+	var dup bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_payments WHERE workspace_id = $1 AND payee_id = $2
+		AND status NOT IN ('failed', 'returned') AND idempotency_key <> $3 AND created_at >= $4
+		AND (($5 <> '' AND lower(reference) = lower($5)) OR (amount_minor = $6 AND currency = $7)))`,
+		workspaceID, it.PayeeID, paymentRequestItemKey(r.ID, it.Position), r.CreatedAt, it.Reference, it.AmountMinor, it.Currency).Scan(&dup); err != nil {
+		return false, fmt.Errorf("economy: duplicate check: %w", err)
+	}
+	return dup, nil
+}
+
+// RunCoveredPayments pays again the auto items that failed for want of money or screening, and those this Lens left
+// unpaid when it prepared them (B55.21), of requests prepared within the approval life; one prepared before it is
+// refused. A request prepared before this Lens started and never tried is left: it was prepared when a covered item
+// waited to be paid, and is never paid without the person. It says how many requests it paid; one it could not pay is
+// in the error and tried again next time.
+func (s *DualTokenStore) RunCoveredPayments(ctx context.Context) (int, error) {
+	life := s.approvalLife()
+	rows, err := s.pool.Query(ctx, `SELECT r.workspace_id, r.id, i.position, i.mandate_id, r.created_at > now() - make_interval(secs => $1),
+		i.pay_status = 'failed' OR r.created_at >= $2
+		FROM payment_request_items i JOIN payment_requests r ON r.id = i.request_id WHERE `+coveredNotPaid+`
+		ORDER BY r.created_at, r.id, i.position`, life.Seconds(), s.started)
+	if err != nil {
+		return 0, fmt.Errorf("economy: covered payments: %w", err)
+	}
+	type covered struct {
+		ws, id, mandate string
+		position        int
+		inLife, tried   bool
+	}
+	var due []covered
+	for rows.Next() {
+		var c covered
+		if err := rows.Scan(&c.ws, &c.id, &c.position, &c.mandate, &c.inLife, &c.tried); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("economy: covered payments: %w", err)
+		}
+		due = append(due, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("economy: covered payments: %w", err)
+	}
+	var errs []error
+	paid := map[string]bool{}
+	for _, c := range due { // one request that cannot be paid does not hold up the others
+		switch {
+		case c.inLife && c.tried && !paid[c.id]:
+			paid[c.id] = true
+			if _, err := s.PayPaymentRequest(ctx, c.ws, "", c.id); err != nil {
+				delete(paid, c.id)
+				errs = append(errs, fmt.Errorf("%s: %w", c.id, err))
+			}
+		case !c.inLife:
+			if err := s.refuseCoveredLate(ctx, c.ws, c.id, c.position, c.mandate); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", c.id, err))
+			}
+		}
+	}
+	return len(paid), errors.Join(errs...)
+}
+
+// refuseCoveredLate marks item position of request id refused as prepared too long ago, under the request's lock so
+// a payer that held it has finished, and in the request's record. One whose payment was made under its key is left.
+func (s *DualTokenStore) refuseCoveredLate(ctx context.Context, workspaceID, id string, position int, mandateID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM payment_requests WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, id, workspaceID); err != nil {
+		return fmt.Errorf("economy: payment request: %w", err)
+	}
+	authority := "mandate:" + mandateID
+	tag, err := tx.Exec(ctx, `UPDATE payment_request_items i SET pay_status = $3, pay_detail = $4, authority = $5 FROM payment_requests r
+		WHERE r.id = i.request_id AND i.request_id = $1 AND i.position = $2 AND `+coveredNotPaid+`
+		AND NOT EXISTS (SELECT 1 FROM money_payments m WHERE m.workspace_id = r.workspace_id AND m.idempotency_key = $6)`,
+		id, position, PayRefused, PayCoveredLate, authority, paymentRequestItemKey(id, position))
+	if err != nil {
+		return fmt.Errorf("economy: payment request item: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // paid or cancelled meanwhile
+	}
+	if err := appendAudit(ctx, tx, workspaceID, id, "not_paid", map[string]any{"position": position, "authority": authority,
+		"status": PayRefused, "detail": PayCoveredLate}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

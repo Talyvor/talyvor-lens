@@ -209,7 +209,8 @@ func TestStatus_SecurityHeaders(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
 
 	for name, want := range map[string]string{
-		"Content-Security-Policy":   pageCSP,
+		// B57.14: pinned to the value it had before Pocket's colours, so a restyle cannot loosen it.
+		"Content-Security-Policy":   "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
 		"X-Content-Type-Options":    "nosniff",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",
 		"X-Frame-Options":           "DENY",

@@ -154,15 +154,15 @@ func (s *Store) readWallet(ctx context.Context, tx pgx.Tx, r Room, walletID stri
 func whyNotSpend(r Room, t Terms, me Member) string {
 	switch {
 	case r.Status == Closed:
-		return "the room is closed, and its budget is spent no more"
+		return "This room is closed, so its budget is not spent."
 	case r.Status == Locked:
-		return "Talyvor has locked the room: it is read-only, and its budget is not spent until it is unlocked"
+		return "Talyvor has locked this room: it is read-only until it is unlocked."
 	case me.Role == RoleOwner:
 		return ""
 	case t.SpendPolicy != SpendMembersWithSpend:
-		return "the room's spend policy is owner_only: only its owner spends the room's budget"
+		return "Only the room’s owner spends its budget."
 	case !me.MaySpend:
-		return "the room's owner has not given you may_spend: ask its owner or an editor"
+		return "The room’s owner has not let you spend its budget. Ask the owner or an editor."
 	}
 	return ""
 }
@@ -187,13 +187,13 @@ func (s *Store) CheckRoomBudget(ctx context.Context, q plans.Querier, ws string,
 }
 
 // judgeBudget answers nil when p allows a room a monthly limit of monthlyULXC, and its refusal under rooms_plan_limits
-// when it does not.
+// when it does not: "Free allows a room a budget of up to $100 (1,000 LXC) a month. Team allows $5,000."
 func (s *Store) judgeBudget(p PlanLimits, monthlyULXC int64) error {
 	ceiling := budgetMaxULXC(p)
 	if ceiling == plans.Unlimited || (monthlyULXC > 0 && monthlyULXC <= ceiling) {
 		return nil
 	}
-	e := &PlanLimitError{Plan: p.Plan, Limit: "room_budget_max_usd", Max: p.RoomBudgetMaxUSD}
+	e := &PlanLimitError{Setting: LimitsSetting, Plan: p.Plan, Limit: "room_budget_max_usd", Max: p.RoomBudgetMaxUSD}
 	past := false
 	for _, name := range plans.Order {
 		if n := s.limits[name].RoomBudgetMaxUSD; past && (n == plans.Unlimited || n > p.RoomBudgetMaxUSD) {
@@ -202,27 +202,26 @@ func (s *Store) judgeBudget(p PlanLimits, monthlyULXC int64) error {
 		}
 		past = past || name == p.LimitAs
 	}
-	allows := fmt.Sprintf("%s (%s): your %s plan allows a room a budget of at most $%d (%s LXC) a month",
-		LimitsSetting, LimitsEnv, p.Plan, p.RoomBudgetMaxUSD, lxc(ceiling))
+	upTo := fmt.Sprintf("up to $%s (%s LXC) a month", plans.Thousands(p.RoomBudgetMaxUSD), lxc(ceiling))
 	if monthlyULXC <= 0 {
-		e.Detail = "a room's budget is its wallet's monthly limit, and it has none: " + allows
-	} else {
-		e.Detail = fmt.Sprintf("a monthly limit of %s LXC is above the room's budget: %s", lxc(monthlyULXC), allows)
+		e.Detail = fmt.Sprintf("This room has no budget yet. Its owner sets one in Room settings: on %s, %s.", plans.Name(p.Plan), upTo)
+		return e
 	}
+	e.Detail = fmt.Sprintf("%s allows a room a budget of %s.", plans.Name(p.Plan), upTo)
 	switch n := s.limits[e.Allows].RoomBudgetMaxUSD; {
 	case e.Allows == "":
-		e.Detail += " — a contract with Talyvor sets more"
+		e.Detail += " A contract with Talyvor sets more."
 	case n == plans.Unlimited:
-		e.Detail += fmt.Sprintf(" — the %s plan allows any budget", e.Allows)
+		e.Detail += fmt.Sprintf(" %s allows any budget.", plans.Name(e.Allows))
 	default:
-		e.Detail += fmt.Sprintf(" — the %s plan allows $%d", e.Allows, n)
+		e.Detail += fmt.Sprintf(" %s allows $%s.", plans.Name(e.Allows), plans.Thousands(n))
 	}
 	return e
 }
 
-// lxc writes µLXC as LXC, without trailing zeros.
+// lxc writes µLXC as LXC, grouped in thousands and without trailing zeros.
 func lxc(ulxc int64) string {
-	s := fmt.Sprintf("%d.%06d", ulxc/1_000_000, ulxc%1_000_000)
+	s := fmt.Sprintf("%s.%06d", plans.Thousands(ulxc/1_000_000), ulxc%1_000_000)
 	return strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
 }
 

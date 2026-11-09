@@ -594,6 +594,7 @@ func (s *LedgerStore) Burn(ctx context.Context, workspaceID string, amount int64
 var countedSupplyTypeList = []string{
 	TypeCacheMine,
 	TypeComputeMine,
+	TypeComputeFee, // B56.20: Talyvor's share of a compute earning; with the node's compute_mine it is the whole earning
 	TypeEmbeddingMine,
 	TypeAnnotationMine,
 	TypePatternMine,

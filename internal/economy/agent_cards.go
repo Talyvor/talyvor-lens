@@ -108,6 +108,11 @@ func (s *DualTokenStore) SetAgentCardFrozen(ctx context.Context, workspaceID, ag
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return AgentCard{}, err
 	}
+	if !frozen {
+		if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil { // B41.116
+			return AgentCard{}, err
+		}
+	}
 	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = $3 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, frozen)
 	if err != nil {
 		return AgentCard{}, fmt.Errorf("economy: freeze agent card: %w", err)
@@ -216,7 +221,7 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	}
 	if bal < d.AmountULXC {
 		_ = tx.Rollback(ctx)
-		return s.declineCard(ctx, a, d, fmt.Sprintf("the agent holds %s LXC and this purchase costs %s LXC", lxcString(bal), lxcString(d.AmountULXC)))
+		return s.declineCard(ctx, a, d, fmt.Sprintf("the agent holds %s and this purchase costs %s", LXCMoney(bal), LXCMoney(d.AmountULXC)))
 	}
 	// B22.1: cards are RED — test-funded credits only, until the operator clears them for real money.
 	if d.testFunded, err = spendForCapability(ctx, tx, d.WorkspaceID, CapabilityAgentCard, d.AmountULXC); err != nil {

@@ -172,7 +172,7 @@ func moneyPaymentRoutesHoldThenComplete(t *testing.T, layered bool) {
 	}
 	var approval, payeeKind, memo string
 	if err := pool.QueryRow(ctx, `SELECT id, payee_kind, memo FROM agent_approvals WHERE agent_id = $1 AND status = 'pending'`, agent.ID).
-		Scan(&approval, &payeeKind, &memo); err != nil || payeeKind != "outside" || !strings.Contains(memo, "GBP 100.00 to Ada Lovelace") {
+		Scan(&approval, &payeeKind, &memo); err != nil || payeeKind != "outside" || !strings.Contains(memo, "£100.00 to Ada Lovelace") {
 		t.Fatalf("approval %s for payee %q, memo %q (%v), want one pending for the outside payee", approval, payeeKind, memo, err)
 	}
 	var payments int

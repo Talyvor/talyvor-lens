@@ -17,6 +17,10 @@ Publish your Ed25519 public keys as a JWKS at `https://<your domain>/.well-known
 (Web Bot Auth). Sign with `alg="ed25519"`, `keyid` = the key's RFC 7638 JWK thumbprint, and `tag="web-bot-auth"`, and
 send `Signature-Agent: "https://<your domain>"`. Talyvor caches your directory for 5 minutes.
 
+An agent on a subdomain speaks for your business's domain (to prove the domain a workspace negotiates as, or to
+confirm a deal for it) only when it signs as that domain itself, or you list it by publishing its key in that domain's
+own directory too: `https://acme.com/.well-known/http-message-signatures-directory` lists `agent.acme.com`'s agent.
+
 ## Two profiles
 
 **Web Bot Auth** — on the A2A endpoints (`/.well-known/agent-card.json`, `/v1/a2a/...`): cover `@authority` (or
@@ -41,10 +45,11 @@ To become `verified`, ask Talyvor to check the business behind your signing doma
 
 ## Ask to be paid
 
-    POST https://lens.talyvor.com/v1/a2a/agents/<agent id>/payment-requests    under the money profile, or unsigned
+    POST https://lens.talyvor.com/v1/a2a/agents/<agent id or @handle>/payment-requests    under the money profile, or unsigned
     Idempotency-Key: <your key>
     {"items": [{"payee_id": "<the payee id the owner gave you>", "currency": "GBP", "amount_minor": 12500, "reference": "INV-1"}]}
 
 The request lands in the owner's approvals with your trust level, and nothing is paid until the owner approves it. An
 unsigned request is shown as "Unverified agent". Bank details are refused: you are paid to the payee the owner saved.
-The answer is `{"id", "status", "agent_trust"}`.
+The answer is `{"id", "status", "agent_trust"}`. While the agent is paused, the request is refused with 409 and kept
+nowhere.

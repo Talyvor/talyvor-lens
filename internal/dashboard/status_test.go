@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/talyvor/lens/internal/brand"
 )
 
 var styleScriptRE = regexp.MustCompile(`(?is)<(style|script)\b.*?</(style|script)>`)
@@ -69,7 +71,7 @@ func TestPagePointsAtTheDetailedStatusPage(t *testing.T) {
 
 // B28.12: the page says what Lens is for — Agent Wallets — and points at the API reference that lists them.
 func TestPageLeadsWithAgentWallets(t *testing.T) {
-	body := stripStyleAndScript(render(t))
+	body := stripStyleAndScript(strings.Replace(render(t), brand.Mark, "", 1)) // the symbol's filter box is drawn in percent
 	if !strings.Contains(body, "Agent Wallets and the gateway that enforces them") {
 		t.Error("the page must describe Lens as Agent Wallets and the gateway that enforces them")
 	}
@@ -83,8 +85,12 @@ func TestPagePointsAtTheDashboardAndTheDocs(t *testing.T) {
 	if !strings.Contains(body, "app.talyvor.com") {
 		t.Error("the page must point at where the dashboard actually is")
 	}
-	if !strings.Contains(body, "docs.talyvor.com") {
-		t.Error("the page must point at the docs")
+	// B56.6: docs.talyvor.com has no DNS record; the documentation lives on the web app.
+	if !strings.Contains(body, `href="https://app.talyvor.com/documentation"`) || !strings.Contains(body, "app.talyvor.com/documentation</div>") {
+		t.Error("the page must link and show https://app.talyvor.com/documentation")
+	}
+	if strings.Contains(body, "docs.talyvor.com") {
+		t.Error("the page must not point at docs.talyvor.com, which does not resolve")
 	}
 }
 
@@ -155,7 +161,7 @@ func TestPageHardcodesNoMoneyConstants(t *testing.T) {
 	// Check what a READER sees: CSS legitimately contains "100%" and script
 	// legitimately contains numbers, and neither is a money constant. Stripping
 	// them is what makes this assertion mean what it says.
-	body := stripStyleAndScript(render(t))
+	body := stripStyleAndScript(strings.Replace(render(t), brand.Mark, "", 1)) // the symbol's filter box is drawn in percent
 	// Any currency amount, any percentage — on a page that has no business
 	// quoting either.
 	for _, re := range []*regexp.Regexp{
@@ -175,39 +181,46 @@ func TestPageHardcodesNoMoneyConstants(t *testing.T) {
 
 /* ── How it must look ─────────────────────────────────────────────────────── */
 
-// TestPageUsesTheBrandTokens pins the page to brand v4 (the 4 Oct 2026 board,
-// brand-v4/tokens/tokens.css), not to an approximation: the palette in both
-// themes, the type stack, and the flat mark beside the name. Drift here means the
+// TestPageUsesTheBrandTokens pins the page to Pocket (B57.14,
+// design/pocket/pocket.css), not to an approximation: the palette in both
+// themes, the type stack, and the symbol beside the name. Drift here means the
 // API host stops looking like the product.
 func TestPageUsesTheBrandTokens(t *testing.T) {
 	body := render(t)
 	brandHex := map[string]string{
-		"canvas dark":   "#060A12",
-		"surface dark":  "#081220",
-		"ink dark":      "#E6EEF7",
-		"muted dark":    "#7E93AB",
-		"accent dark":   "#3AD6C0",
-		"canvas light":  "#F4F7FB",
-		"ink light":     "#060A12",
-		"muted light":   "#46586E",
-		"accent light":  "#0F7A6C",
-		"positive dark": "#45C77F",
+		"page light":   "#FFFFFF",
+		"cloud light":  "#F3F4F6",
+		"ink light":    "#111216",
+		"muted light":  "#4A5061",
+		"tangerine":    "#FF7A1A",
+		"page dark":    "#0F1013",
+		"cloud dark":   "#181A1F",
+		"ink dark":     "#F2F3F5",
+		"muted dark":   "#A6ACB9",
+		"success dark": "#3DD68C",
 	}
 	for name, hex := range brandHex {
 		if !strings.Contains(body, hex) {
 			t.Errorf("%s: %s missing — tokens must come from brand-v4/tokens/tokens.css", name, hex)
 		}
 	}
-	for _, font := range []string{`"Space Grotesk"`, `"IBM Plex Mono"`} {
+	for _, font := range []string{`"Bricolage Grotesque"`, `"Figtree"`} {
 		if !strings.Contains(body, font) {
 			t.Errorf("the brand type stack must name %s", font)
+		}
+	}
+	// The symbol's own file carries the logo kit's colours (B57.81); everything else on the page is Pocket's.
+	unmarked := strings.ToUpper(strings.Replace(body, brand.Mark, "", 1))
+	for _, old := range []string{"#060A12", "#0F7A6C", `"Space Grotesk"`, `"IBM Plex Mono"`} {
+		if strings.Contains(unmarked, strings.ToUpper(old)) {
+			t.Errorf("the page still carries today's %s", old)
 		}
 	}
 	if strings.Contains(body, "@font-face") {
 		t.Error("the page must not request a font — the brand faces are named over the system stack")
 	}
-	if !strings.Contains(body, `aria-label="Talyvor mark"`) || !strings.Contains(body, `class="tv-mark"`) {
-		t.Error("the brand's flat mark must sit beside the name, inlined")
+	if !strings.Contains(body, `id="tslf-top"`) || !strings.Contains(body, `class="tv-mark"`) {
+		t.Error("the chosen symbol must sit beside the name, inlined")
 	}
 	// The colours this page wore before the brand: the suite's old teal and its
 	// tokens, and the amber of the old Lens pages. None may come back.

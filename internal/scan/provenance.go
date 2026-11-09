@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -73,7 +74,15 @@ type Displayable struct {
 	Licences    []string // each source behind it: its name and licence
 }
 
-type Store struct{ pool *pgxpool.Pool }
+// db is the pool, or a transaction a rehearsal rolls back (B52.40).
+type db interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+type Store struct{ pool db }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 

@@ -87,6 +87,8 @@ type Licence struct {
 	RentPaidUSDMicros int64      `json:"rent_paid_usd_micros"` // what its rents have cleared (B32.20)
 	Source            string     `json:"source"`               // offer, or rent_to_own: its buyer's rents paid for it (B32.20)
 	CreatedAt         time.Time  `json:"created_at"`
+	LastUsedAt        *time.Time `json:"last_used_at"` // its buyer's last use of the listing; null: never (B41.176)
+	Idle              bool       `json:"idle"`         // it renews and has gone unused for IdleFor: worth cancelling
 	// The licence's purchase: one use on the buyer's bill.
 	UseID      string `json:"use_id"`
 	Charge     string `json:"charge"`
@@ -209,7 +211,8 @@ func (s *Store) License(ctx context.Context, deps LicenceDeps, buyerWorkspaceID,
 		what := fmt.Sprintf("licence:%s:%s:%s:%d", agentID, l.ID, o.ID, lic.PriceULXC)
 		// B32.22: what the licence commits the agent to is what it charges — nothing when it is free or linked.
 		c := economy.Commitment{Kind: o.Kind, Licence: o.Licence, Renews: lic.AutoRenew, ULXC: lic.PriceULXC}
-		err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, lic.PriceULXC, c, what, record)
+		memo := fmt.Sprintf("%s %s, %s licence, %s on your monthly marketplace bill", offerVerbs[o.Kind], l.Title, o.Licence, economy.LXCMoney(lic.PriceULXC))
+		err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, lic.PriceULXC, c, what, memo, record)
 	} else {
 		err = pgx.BeginFunc(ctx, s.pool, record)
 	}
@@ -245,7 +248,7 @@ const periodStart = `COALESCE((SELECT max(r.used_at) FROM market_uses r WHERE r.
 const licenceColumns = `c.id, c.listing_id, COALESCE(l.title, ''), COALESCE(c.offer_id, ''), c.agent_id, c.licence, c.kind, c.pinned_version,
 	c.starts_at, c.ends_at, c.auto_renew, c.status, c.seats, o.included_uses, c.rent_paid_usd_micros, c.source, c.created_at,
 	(SELECT count(*) FROM market_uses u WHERE u.licence_id = c.id AND u.charge = 'licensed' AND u.used_at >= ` + periodStart + `),
-	COALESCE(p.id, ''), COALESCE(p.charge, ''), COALESCE(p.price_ulxc, 0)
+	COALESCE(p.id, ''), COALESCE(p.charge, ''), COALESCE(p.price_ulxc, 0), ` + lastUse + `
 	FROM market_licences c LEFT JOIN market_listings l ON l.id = c.listing_id LEFT JOIN market_offers o ON o.id = c.offer_id
 	LEFT JOIN LATERAL (SELECT id, charge, price_ulxc FROM market_uses u WHERE u.licence_id = c.id AND u.use_kind <> 'use'
 	                   ORDER BY u.used_at, u.id LIMIT 1) p ON true`
@@ -253,7 +256,7 @@ const licenceColumns = `c.id, c.listing_id, COALESCE(l.title, ''), COALESCE(c.of
 func scanLicence(r pgx.Row) (Licence, error) {
 	var x Licence
 	err := r.Scan(&x.ID, &x.ListingID, &x.Title, &x.OfferID, &x.AgentID, &x.Licence, &x.Kind, &x.PinnedVersion, &x.StartsAt, &x.EndsAt,
-		&x.AutoRenew, &x.Status, &x.Seats, &x.IncludedUses, &x.RentPaidUSDMicros, &x.Source, &x.CreatedAt, &x.UsesCovered, &x.UseID, &x.Charge, &x.PriceULXC)
+		&x.AutoRenew, &x.Status, &x.Seats, &x.IncludedUses, &x.RentPaidUSDMicros, &x.Source, &x.CreatedAt, &x.UsesCovered, &x.UseID, &x.Charge, &x.PriceULXC, &x.LastUsedAt)
 	x.Terms = LicenceTerms[x.Licence]
 	return x, err
 }
@@ -297,6 +300,9 @@ func (s *Store) Licences(ctx context.Context, buyerWorkspaceID string) ([]Licenc
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Licence, error) { return scanLicence(r) })
 	if err != nil {
 		return nil, fmt.Errorf("market: licences: %w", err)
+	}
+	for i := range out {
+		out[i].Idle = idle(out[i], s.now())
 	}
 	return out, nil
 }

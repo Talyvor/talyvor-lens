@@ -94,6 +94,9 @@ func (p OutsidePayment) debit() int64 { return p.AmountMinor + p.PartnerCostMino
 
 func (p OutsidePayment) international() bool { return p.ArrivesCurrency != "" }
 
+// viaStablecoin is whether p is USDC from the company's account, made at the stablecoin partner (B30.33).
+func (p OutsidePayment) viaStablecoin() bool { return p.Currency == CurrencyUSDC && p.AgentID == "" }
+
 // normalise trims and checks what a payment or a quote is asked for; withKey, the idempotency key too.
 func (in *OutsidePayment) normalise(withKey bool) error {
 	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
@@ -209,9 +212,20 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if p.Partner, err = s.outsidePartner(ctx, p, payee); err != nil {
 		return OutsidePayment{}, fmt.Errorf("economy: payment: %w", err)
 	}
-	if usdc := p.Currency == CurrencyUSDC; usdc != (payee.Address != "") || usdc && (p.AgentID == "" || p.QuoteID != "" || !s.viaMoneyLayer(p)) {
-		// B46.18: USDC goes only to a saved USDC address, and only from an agent's wallet on the money layer
-		return OutsidePayment{}, fmt.Errorf("%w: a USDC address is paid in USDC from an agent's wallet, and USDC only to a saved USDC address", ErrOutsidePayment)
+	if usdc := p.Currency == CurrencyUSDC; usdc != (payee.Address != "") || usdc && (p.QuoteID != "" || !p.viaStablecoin() && !s.viaMoneyLayer(p)) {
+		// B46.18: USDC goes only to a saved USDC address, from an agent's wallet on the money layer or (B30.33) from the
+		// company's USDC account at the stablecoin partner
+		return OutsidePayment{}, fmt.Errorf("%w: a USDC address is paid in USDC from an agent's wallet or the company's USDC account, and USDC only to a saved USDC address", ErrOutsidePayment)
+	}
+	if p.viaStablecoin() && p.Funding == FundingLive { // B30.33: stablecoins is RED, so live USDC waits for its clearance
+		c, _ := CapabilityByKey(CapabilityStablecoins)
+		refusal, err := capabilityLive(ctx, s.pool, workspaceID, c)
+		if err != nil {
+			return OutsidePayment{}, err
+		}
+		if refusal != nil {
+			return OutsidePayment{}, refusal
+		}
 	}
 	var payer string
 	if p.QuoteID == "" && payeeCurrency(payee) != p.Currency { // B30.22: never sent without its fee and rate shown first
@@ -236,7 +250,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
 		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: hex.EncodeToString(fp[:]),
 			Payee: Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
-			Memo:  strings.TrimSuffix(minorString(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
+			Memo:  strings.TrimSuffix(Money(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — ")})
 	}
 
 	// B50.1: screened before the locks: screening takes a connection of its own, and one held under the locks while
@@ -518,6 +532,14 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 			return p, err
 		}
 		if payee.DetailsChangedAt != nil && payee.DetailsChangedAt.After(p.CreatedAt) { // B41.112: never resent to details changed since
+			var started bool
+			if err := s.pool.QueryRow(ctx, `SELECT send_started_at IS NOT NULL FROM money_payments WHERE id = $1`, p.ID).Scan(&started); err != nil {
+				return p, fmt.Errorf("economy: payment: %w", err)
+			}
+			if started { // B54.17: it may have gone to the details it was sent to, so it stays held for that send's answer
+				return scanOutsidePayment(s.pool.QueryRow(ctx, `UPDATE money_payments SET detail = $2, updated_at = now() WHERE id = $1
+					RETURNING `+outsidePaymentCols, p.ID, "the payee's details changed after this payment was sent: it waits for the answer to that send"))
+			}
 			return s.applyPartnerResult(ctx, p, from.partnerID, partners.Result{Status: partners.StatusFailed,
 				Detail: "the payee's bank details changed after this payment was made, so it was not sent"})
 		}
@@ -525,6 +547,8 @@ func (s *DualTokenStore) RefreshOutsidePayment(ctx context.Context, workspaceID,
 		if res, ok = s.sendOutside(ctx, p, from, payee); !ok {
 			return p, nil
 		}
+	} else if p.viaStablecoin() {
+		res, err = s.stablecoinStatus(ctx, p)
 	} else if p.Partner != partner.Name() && p.Partner != money.SandboxName {
 		return p, nil // B46.8: a live adapter tells where its transfer stands by its webhook (SettleOutsidePayment)
 	} else { // the sandbox's transfers are the Test account partner's
