@@ -23,6 +23,9 @@ func (p b5013Pages) InvoiceByToken(context.Context, string) (economy.Invoice, er
 func (p b5013Pages) CurrencyAccountDetails(context.Context, string, string, string) (economy.CurrencyAccountDetails, error) {
 	return economy.CurrencyAccountDetails{}, economy.ErrMoneyAccountNotFound
 }
+func (p b5013Pages) WorkspaceLabels(context.Context, string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
 
 // B50.13 — while the main Stripe key is a test-mode one, every route that starts a real workspace's payment answers
 // 403 "card payments are not switched on": a top-up, a plan checkout, a plan change, the BYOK add-on and an invoice
