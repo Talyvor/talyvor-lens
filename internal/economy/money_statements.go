@@ -50,8 +50,8 @@ type MoneyStatement struct {
 	Lines        []MoneyStatementLine `json:"lines"`
 }
 
-// AccountStatement is workspaceID's currency account accountID over [from, to). With agentID it is only that agent's
-// account: another's, or the company's, is ErrMoneyAccountNotFound, as for its details.
+// AccountStatement is workspaceID's company, agent or suspense (B30.15) account accountID over [from, to). With agentID
+// it is only that agent's account: another's, or the company's, is ErrMoneyAccountNotFound, as for its details.
 func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (MoneyStatement, error) {
 	st := MoneyStatement{WorkspaceID: workspaceID, AccountID: accountID, From: from, To: to, Lines: []MoneyStatementLine{}}
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(a.agent_id, ''), a.currency, t.opening, t.money_in, t.money_out
@@ -61,7 +61,7 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 		         COALESCE(-sum(p.amount_minor) FILTER (WHERE e.created_at >= $4 AND p.amount_minor < 0), 0)::bigint AS money_out
 		    FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
 		   WHERE p.account_id = a.id AND e.created_at < $5) t
-		WHERE a.id = $1 AND a.workspace_id = $2 AND a.purpose IN ('company', 'agent') AND ($3 = '' OR a.agent_id = $3)`,
+		WHERE a.id = $1 AND a.workspace_id = $2 AND a.purpose IN ('company', 'agent', 'suspense') AND ($3 = '' OR a.agent_id = $3)`,
 		accountID, workspaceID, agentID, from, to).Scan(&st.AgentID, &st.Currency, &st.OpeningMinor, &st.InMinor, &st.OutMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyStatement{}, ErrMoneyAccountNotFound

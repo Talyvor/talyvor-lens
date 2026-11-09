@@ -197,6 +197,22 @@ func (r *Registry) pick(ctx context.Context, c Capability, rt Route) (*Adapter, 
 	return r.cfg.Sandbox, nil
 }
 
+// Live reports whether a registered adapter offering c has a switch on for it in any country (B56.7).
+// shortcut: only a SwitchSet can be read this way and any other Switches reads as off; widen it when one exists.
+func (r *Registry) Live(c Capability) bool {
+	set, _ := r.cfg.Switches.(SwitchSet)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, a := range r.adapters {
+		for sw, on := range set {
+			if on && a.offers(c) && sw.Capability == c && sw.Partner == a.Name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Partner is the name of the adapter that serves c on rt now.
 func (r *Registry) Partner(ctx context.Context, c Capability, rt Route) (string, error) {
 	a, err := r.pick(ctx, c, rt)

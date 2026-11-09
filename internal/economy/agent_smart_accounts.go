@@ -69,6 +69,9 @@ type AgentSmartAccount struct {
 	Owners         []SmartAccountOwner `json:"owners"`
 	SolanaAddress  string              `json:"solana_address"` // the agent's Solana wallet, held by the same provider
 	CreatedAt      time.Time           `json:"created_at"`
+	// B54.25: why the calls that take the agent's key out of the account on chain could not be built after its
+	// freeze; "" once they are.
+	RevokeCallsError string `json:"revoke_calls_error,omitempty"`
 }
 
 // SmartAccountOwnerRequest names the account's owner signers: exactly one of CredentialID and DeviceID, and a recovery
@@ -125,7 +128,7 @@ func (s *DualTokenStore) ownerKey(ctx context.Context, workspaceID string, r Sma
 	case (r.CredentialID == "") == (r.DeviceID == ""):
 		return nil, ErrOwnerSigner
 	case r.CredentialID != "":
-		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2`,
+		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL`,
 			r.CredentialID, workspaceID).Scan(&spki)
 	default:
 		err = s.pool.QueryRow(ctx, `SELECT public_key FROM workspace_device_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL`,
@@ -235,10 +238,11 @@ func (s *DualTokenStore) AgentSmartAccount(ctx context.Context, workspaceID, age
 	var person, agent, recovery SmartAccountOwner
 	var pub []byte
 	err := s.pool.QueryRow(ctx, `SELECT address, factory, implementation, owner_credential_id, owner_device_id, owner_public_key,
-		agent_signer, provider, recovery_address, solana_address, created_at, owner_index, agent_index, recovery_index
+		agent_signer, provider, recovery_address, solana_address, created_at, owner_index, agent_index, recovery_index, revoke_calls_error
 		FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
 		agentID, workspaceID).Scan(&a.Address, &a.Factory, &a.Implementation, &person.CredentialID, &person.DeviceID, &pub,
-		&agent.Address, &agent.Provider, &recovery.Address, &a.SolanaAddress, &a.CreatedAt, &person.Index, &agent.Index, &recovery.Index)
+		&agent.Address, &agent.Provider, &recovery.Address, &a.SolanaAddress, &a.CreatedAt, &person.Index, &agent.Index, &recovery.Index,
+		&a.RevokeCallsError)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, _, kerr := s.agentWalletKind(ctx, workspaceID, agentID); kerr != nil {
 			return AgentSmartAccount{}, kerr
