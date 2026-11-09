@@ -1,4 +1,4 @@
--- 0341_agent_spend_permission_settle.sql — B54.26: an agent's payment settles from its operation's receipt.
+-- 0368_agent_spend_permission_settle.sql — B54.26: an agent's payment settles from its operation's receipt.
 --
 -- chain_id and paymaster are where a use was paid and, for a fee an ERC-20 paymaster takes in the token, who takes it:
 -- what is left approved to a paymaster on a chain is counted once per paymaster and chain, so another paymaster's
