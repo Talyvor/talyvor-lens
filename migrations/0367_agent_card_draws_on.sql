@@ -1,4 +1,4 @@
--- 0362_agent_card_draws_on.sql — B30.30: an agent card can spend from the agent's currency account in the card's
+-- 0367_agent_card_draws_on.sql — B30.30: an agent card can spend from the agent's currency account in the card's
 -- currency instead of its credits.
 --
 -- agent_cards.draws_on is what the card spends: 'credits' (B19.12, every card until now) or 'account'. An authorisation
