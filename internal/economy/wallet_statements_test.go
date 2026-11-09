@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 	"time"
@@ -19,12 +20,12 @@ func TestFIFOGains_AHandWorkedYear(t *testing.T) {
 	day := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 12, 0, 0, 0, time.UTC) }
 	v := func(pence int64) *int64 { return &pence }
 	moves := []TaxMovement{
-		{ID: "a", At: day(1, 10), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(2 * eth), ValueMinor: v(400000), ValueCurrency: "GBP"},
-		{ID: "b", At: day(2, 5), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(eth), ValueMinor: v(260000), ValueCurrency: "GBP"},
-		{ID: "s1", At: day(3, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(5 * eth / 2), ValueMinor: v(750000), ValueCurrency: "GBP"},
-		{ID: "s2", At: day(4, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(eth / 2), ValueMinor: v(100000), ValueCurrency: "GBP"},
-		{ID: "s3", At: day(5, 1), Asset: "ETH", Direction: "out", QuantityMinor: big.NewInt(eth / 4), ValueMinor: v(50000), ValueCurrency: "GBP"},
-		{ID: "u", At: day(6, 1), Asset: "ETH", Direction: "in", QuantityMinor: big.NewInt(eth)},
+		{ID: "a", At: day(1, 10), Asset: "ETH", Direction: "in", QuantityMinor: Quantity{big.NewInt(2 * eth)}, ValueMinor: v(400000), ValueCurrency: "GBP"},
+		{ID: "b", At: day(2, 5), Asset: "ETH", Direction: "in", QuantityMinor: Quantity{big.NewInt(eth)}, ValueMinor: v(260000), ValueCurrency: "GBP"},
+		{ID: "s1", At: day(3, 1), Asset: "ETH", Direction: "out", QuantityMinor: Quantity{big.NewInt(5 * eth / 2)}, ValueMinor: v(750000), ValueCurrency: "GBP"},
+		{ID: "s2", At: day(4, 1), Asset: "ETH", Direction: "out", QuantityMinor: Quantity{big.NewInt(eth / 2)}, ValueMinor: v(100000), ValueCurrency: "GBP"},
+		{ID: "s3", At: day(5, 1), Asset: "ETH", Direction: "out", QuantityMinor: Quantity{big.NewInt(eth / 4)}, ValueMinor: v(50000), ValueCurrency: "GBP"},
+		{ID: "u", At: day(6, 1), Asset: "ETH", Direction: "in", QuantityMinor: Quantity{big.NewInt(eth)}},
 	}
 	noBasis := func(d TaxDisposal) int64 {
 		if d.NoBasisQuantityMinor == nil {
@@ -55,5 +56,39 @@ func TestFIFOGains_AHandWorkedYear(t *testing.T) {
 	spring := FIFOGains(moves, "GBP", day(3, 15), day(12, 31))
 	if len(spring.Disposals) != 2 || spring.Disposals[0].CostBasisMinor != 130000 || spring.GainMinor != 20000 {
 		t.Fatalf("from 15 March: %+v, gain %d; want s2 at a basis of 130000 and s3, a gain of 20000", spring.Disposals, spring.GainMinor)
+	}
+}
+
+// B54.20: a token's quantity past 2^53 — any 18-decimal token's above 0.009 of it — reaches a JavaScript client exact,
+// as a decimal string its numbers cannot round; the number an earlier release sent is still read.
+func TestTaxExport_BigQuantitiesStayExact(t *testing.T) {
+	var moves []TaxMovement
+	if err := json.Unmarshal([]byte(`[
+		{"id": "a", "at": "2026-01-10T12:00:00Z", "asset": "ETH", "direction": "in", "quantity_minor": 9007199254740993, "value_minor": 100, "value_currency": "USD"},
+		{"id": "s", "at": "2026-02-10T12:00:00Z", "asset": "ETH", "direction": "out", "quantity_minor": "12000000000000000001", "value_minor": 500, "value_currency": "USD"},
+		{"id": "u", "at": "2026-03-10T12:00:00Z", "asset": "ETH", "direction": "in", "quantity_minor": "9007199254740993"}]`), &moves); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(FIFOGains(moves, "USD", time.Time{}, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As a JavaScript client reads it: every number a float64.
+	var js struct {
+		Disposals []map[string]any `json:"disposals"`
+		Unpriced  []map[string]any `json:"unpriced"`
+	}
+	if err := json.Unmarshal(b, &js); err != nil || len(js.Disposals) != 1 || len(js.Unpriced) != 1 {
+		t.Fatalf("the export = %s, %v; want one disposal and one unpriced movement", b, err)
+	}
+	if q, nb, u := js.Disposals[0]["quantity_minor"], js.Disposals[0]["no_basis_quantity_minor"], js.Unpriced[0]["quantity_minor"]; q != "12000000000000000001" ||
+		nb != "11990992800745259008" || u != "9007199254740993" {
+		t.Fatalf("a client reads quantities %v, no basis %v, unpriced %v; want the strings 12000000000000000001, 11990992800745259008 and 9007199254740993 (%s)",
+			q, nb, u, b)
+	}
+	var x TaxExport
+	if err := json.Unmarshal(b, &x); err != nil || x.Disposals[0].QuantityMinor.String() != "12000000000000000001" ||
+		x.Disposals[0].NoBasisQuantityMinor.String() != "11990992800745259008" || x.Unpriced[0].QuantityMinor.String() != "9007199254740993" {
+		t.Fatalf("the export read back = %+v, %v; want every quantity exact", x, err)
 	}
 }
