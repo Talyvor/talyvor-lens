@@ -150,7 +150,10 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		if !ok {
 			return
 		}
-		from, to, asCSV, err := statementPeriod(req, time.Now())
+		from, to, format, err := statementPeriod(req, time.Now())
+		if err == nil && format != "json" && format != "csv" {
+			err = errors.New("format must be json or csv")
+		}
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -161,7 +164,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-		case !asCSV:
+		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
 		default:
 			writeMoneyStatement(w, st)

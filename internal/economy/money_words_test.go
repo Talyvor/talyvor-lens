@@ -62,3 +62,31 @@ func TestCheckMoneyOrder_RefusesAnythingElse(t *testing.T) {
 		}
 	}
 }
+
+// B55.32 — a request's heading: every item blocked pays nothing, two currencies join with "and", one covered item says
+// so, and a seller's title cannot carry a control or bidi character into the heading.
+func TestPaymentRequestSummary_ReadsAsASentence(t *testing.T) {
+	item := func(name, decision string) PaymentRequestItem {
+		return PaymentRequestItem{PayeeName: name, Decision: decision}
+	}
+	for _, c := range []struct {
+		items  []PaymentRequestItem
+		totals map[string]int64
+		want   string
+	}{
+		{[]PaymentRequestItem{item("Acme", ItemBlocked), item("Kite", ItemBlocked)}, map[string]int64{}, "Nothing to pay: every payment was blocked"},
+		{[]PaymentRequestItem{item("Acme", ItemNeedsApproval), item("Kite", ItemNeedsApproval)}, map[string]int64{"USD": 10000, "GBP": 5000},
+			"Pay 2 payments, £50.00 and $100.00"},
+		{[]PaymentRequestItem{item("Kite Accounting", ItemAuto)}, map[string]int64{"USD": 45000}, "Pay Kite Accounting $450.00: 1 inside a permission you signed"},
+		{[]PaymentRequestItem{item("Acme\u202e00.1$ \nData", ItemNeedsApproval)}, map[string]int64{"USD": 34000}, "Pay Acme00.1$ Data $340.00"},
+		{[]PaymentRequestItem{item("Acme", ItemNeedsApproval), item("Kite", ItemBlocked)}, map[string]int64{"USD": 34000}, "Pay 2 payments, $340.00: 1 waits for you, 1 blocked"},
+	} {
+		counts := map[string]int{}
+		for _, it := range c.items {
+			counts[it.Decision]++
+		}
+		if got := paymentRequestSummary(PaymentRequest{Items: c.items, Totals: c.totals}, counts); got != c.want {
+			t.Errorf("summary = %q, want %q", got, c.want)
+		}
+	}
+}

@@ -17,7 +17,7 @@ func TestConnectToken_AuthenticatesOnlyOnItsAgentsPayRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewManager("", key, nil, nil)
-	tok, err := GenerateConnectToken("ws1", "u1", "https://claude.ai", "agt_1", []string{ScopePaymentsSend}, key, time.Minute)
+	tok, err := GenerateConnectToken("ws1", "u1", "https://claude.ai", "agt_1", []string{ScopePaymentsSend}, key, time.Minute, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
