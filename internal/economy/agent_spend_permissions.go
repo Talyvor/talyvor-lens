@@ -2,6 +2,7 @@ package economy
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -253,8 +254,8 @@ func (s *DualTokenStore) AgentSpendPermission(ctx context.Context, workspaceID, 
 // AuthoriseAgentCryptoPayment is Talyvor's gate before agentID's key is asked to sign pay: the agent is not frozen,
 // archived or paused (on its own or with every agent, B55.23), the permission it pays under is the one its account's owner signed, and pay is inside it, counting what it already
 // paid in the token this period. A payment it allows is kept, and counts against the allowance from then on: its use,
-// which SettleAgentCryptoFee settles once a fee paid in the token is known.
-func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, workspaceID, agentID string, pay smartaccount.Payment) (int64, error) {
+// on chainID, which SendAgentCryptoPayment sends and SettleAgentCryptoPayments settles from the chain.
+func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, workspaceID, agentID string, chainID int64, pay smartaccount.Payment) (int64, error) {
 	var use int64
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		acct, err := s.spendAccount(ctx, tx, workspaceID, agentID) // locked: two payments are counted one after the other
@@ -312,13 +313,10 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 		if err := t.Permission.Check(pay, spent, now); err != nil {
 			return err
 		}
-		var fee *int64
-		if pay.Fee != nil {
-			f := pay.Fee.Int64()
-			fee = &f
-		}
-		if err := tx.QueryRow(ctx, `INSERT INTO agent_spend_permission_uses (agent_id, workspace_id, permission_number, token, counterparty, amount, fee, used_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, agentID, workspaceID, t.Number, token, to, pay.Total().Int64(), fee, now).Scan(&use); err != nil {
+		fee, paymaster := tokenFee(pay)
+		if err := tx.QueryRow(ctx, `INSERT INTO agent_spend_permission_uses (agent_id, workspace_id, permission_number, token, counterparty, amount, fee,
+			paymaster, chain_id, used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			agentID, workspaceID, t.Number, token, to, pay.Total().Int64(), fee, paymaster, chainID, now).Scan(&use); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
 		return nil
@@ -326,18 +324,168 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 	return use, err
 }
 
-// SettleAgentCryptoFee charges use, agentID's payment whose network fee an ERC-20 paymaster takes in the token, what
-// the paymaster took for it (smartaccount.Chain.TokenFeeCharged) instead of the most the fee could be, once the
-// operation is on the chain; left is what the account approves the paymaster now (Chain.FeeApprovalLeft), which the
-// paymaster could still take. Each such payment's approval replaces the one before, so left is counted once, on the
-// newest settled use of the agent's token, and an older one counts only what was taken: the rest of every quote is the
-// allowance's again. What a use counts never falls on settling it again, and an approval left moves only to a newer
-// use, never to an older period's.
+// tokenFee is the most pay's ERC-20 paymaster may take for its network fee, and the paymaster: nil for a payment with no
+// such fee.
+func tokenFee(pay smartaccount.Payment) (fee *int64, paymaster *string) {
+	if pay.Fee == nil {
+		return nil, nil
+	}
+	f, p := pay.Fee.Int64(), smartaccount.Checksum(pay.Paymaster)
+	return &f, &p
+}
+
+// SendAgentCryptoPayment hands op, the operation agentID's key signed for its payment use, to chain c's bundler and
+// answers its hash. op is kept with the use first, so SettleAgentCryptoPayments settles it from the chain however the
+// bundler answers: an operation the bundler refuses could still reach the chain, so it counts until its account uses its
+// nonce for another. op must be exactly the payment the gate allowed, on c, out of the agent's own account.
+func (s *DualTokenStore) SendAgentCryptoPayment(ctx context.Context, c smartaccount.Chain, workspaceID, agentID string, use int64, op smartaccount.UserOp) (string, error) {
+	pay, err := smartaccount.PaymentOf(op.CallData)
+	if err != nil {
+		return "", err
+	}
+	h, err := op.Hash(c.ID)
+	if err != nil {
+		return "", err
+	}
+	hash := "0x" + hex.EncodeToString(h[:])
+	raw, err := json.Marshal(op)
+	if err != nil {
+		return "", err
+	}
+	head, err := c.Head(ctx)
+	if err != nil {
+		return "", err
+	}
+	fee, paymaster := tokenFee(pay)
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_spend_permission_uses SET op = $4, op_hash = $5, sent_block = COALESCE(sent_block, $6)
+		WHERE id = $1 AND agent_id = $2 AND workspace_id = $3 AND chain_id = $7 AND token = $8 AND counterparty = $9 AND amount = $10
+		AND fee IS NOT DISTINCT FROM $11 AND paymaster IS NOT DISTINCT FROM $12 AND outcome IS NULL AND (op_hash IS NULL OR op_hash = $5)
+		AND EXISTS (SELECT 1 FROM agent_smart_accounts a WHERE a.agent_id = $2 AND a.workspace_id = $3 AND lower(a.address) = lower($13))`,
+		use, agentID, workspaceID, raw, hash, head, c.ID, smartaccount.Checksum(pay.Token), smartaccount.Checksum(pay.To),
+		pay.Total().Int64(), fee, paymaster, op.Sender)
+	if err != nil {
+		return "", fmt.Errorf("economy: spend permission: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", fmt.Errorf("%w: the operation is not the agent's payment %d on chain %d, still to be sent", smartaccount.ErrInvalid, use, c.ID)
+	}
+	sent, err := c.Send(ctx, op)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(sent, hash) {
+		return "", fmt.Errorf("smartaccount: the bundler hashes the operation %s, Lens %s", sent, hash)
+	}
+	return hash, nil
+}
+
+// How a payment's operation ended on the chain (agent_spend_permission_uses.outcome).
+const (
+	outcomePaid     = "paid"     // the payment moved
+	outcomeReverted = "reverted" // it did not, though its network fee may have
+	outcomeDropped  = "dropped"  // its account used its nonce for another operation: it never lands
+)
+
+// SettleAgentCryptoPayments settles, from chain c, every payment sent there whose outcome is not known yet, and answers
+// how many it settled: one on the chain counts what moved (a fee paid in the token through settleAgentCryptoUse), one
+// that never lands counts nothing, and one still on its way is left for the next run. The leader runs it each minute.
+func (s *DualTokenStore) SettleAgentCryptoPayments(ctx context.Context, c smartaccount.Chain) (int, error) {
+	type sent struct {
+		id                 int64
+		workspaceID, agent string
+		op                 smartaccount.UserOp
+		block              int64
+		withFee            bool
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, workspace_id, agent_id, op, sent_block, fee IS NOT NULL FROM agent_spend_permission_uses
+		WHERE chain_id = $1 AND op IS NOT NULL AND outcome IS NULL ORDER BY id LIMIT 500`, c.ID)
+	if err != nil {
+		return 0, fmt.Errorf("economy: spend permission: %w", err)
+	}
+	pending, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (sent, error) {
+		var u sent
+		var raw []byte
+		if err := r.Scan(&u.id, &u.workspaceID, &u.agent, &raw, &u.block, &u.withFee); err != nil {
+			return u, err
+		}
+		return u, json.Unmarshal(raw, &u.op)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("economy: spend permission: %w", err)
+	}
+	settled := 0
+	var errs []error
+	for _, u := range pending {
+		outcome, charged, left, err := settleFromChain(ctx, c, u.op, u.block, u.withFee)
+		if err == nil && outcome != "" {
+			err = s.settleAgentCryptoUse(ctx, u.workspaceID, u.agent, u.id, outcome, charged, left)
+		}
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("payment %d: %w", u.id, err))
+		case outcome != "":
+			settled++
+		}
+	}
+	return settled, errors.Join(errs...)
+}
+
+// settleFromChain reads how op, sent at block, ended on c: its outcome, and for a fee paid in the token what the
+// paymaster took and what is still approved to it; no outcome while it is still on its way. Everything is read from
+// c's node in finalized blocks, never taken from the bundler's word, so a reorg cannot release what moved.
+func settleFromChain(ctx context.Context, c smartaccount.Chain, op smartaccount.UserOp, block int64, withFee bool) (string, *big.Int, *big.Int, error) {
+	found, success, tx, err := c.Landed(ctx, op, block)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if !found {
+		dropped, err := c.Dropped(ctx, op, block)
+		if err != nil || !dropped {
+			return "", nil, nil, err
+		}
+		return outcomeDropped, nil, nil, nil
+	}
+	outcome := outcomePaid
+	if !success {
+		outcome = outcomeReverted
+	}
+	if !withFee {
+		return outcome, nil, nil, nil
+	}
+	charged, err := c.TokenFeeTaken(ctx, op, tx)
+	if err != nil || charged == nil { // its transaction is not read yet
+		return "", nil, nil, err
+	}
+	left, err := c.FeeApprovalLeft(ctx, op)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return outcome, charged, left, nil
+}
+
+// SettleAgentCryptoFee settles use, agentID's payment whose network fee an ERC-20 paymaster takes in the token, as paid:
+// what the paymaster took for it (smartaccount.Chain.TokenFeeCharged), and left, what the account approves the
+// paymaster now (Chain.FeeApprovalLeft), as settleAgentCryptoUse counts them.
+func (s *DualTokenStore) SettleAgentCryptoFee(ctx context.Context, workspaceID, agentID string, use int64, charged, left *big.Int) error {
+	if charged == nil || left == nil {
+		return fmt.Errorf("%w: a fee charged and what is left approved are whole amounts, not negative", smartaccount.ErrInvalid)
+	}
+	return s.settleAgentCryptoUse(ctx, workspaceID, agentID, use, outcomePaid, charged, left)
+}
+
+// settleAgentCryptoUse records how agentID's payment use ended. Paid, it counts its amount; reverted or dropped, it
+// does not. A fee an ERC-20 paymaster takes in the token counts what the paymaster took (charged) instead of the most
+// it could be, once the operation is on the chain, and left, what the account approves the paymaster on the chain now,
+// which the paymaster could still take. Each such payment's approval replaces the one before to the same paymaster on
+// the same chain, so left is counted once, on the newest settled use of the agent's token with that paymaster on that
+// chain, and an older one counts only what was taken: the rest of every quote is the allowance's again. Another
+// paymaster's approval, or another chain's, is its own. What a use counts never falls on settling it again, and an
+// approval left moves only to a newer use, never to an older period's.
 //
 // shortcut: left is read before the agent's lock is taken, so two of an agent's fees settled at once, with a third
 // payment landing between, can count the older approval; upgrade by settling each agent's fees one at a time.
-func (s *DualTokenStore) SettleAgentCryptoFee(ctx context.Context, workspaceID, agentID string, use int64, charged, left *big.Int) error {
-	if charged == nil || charged.Sign() < 0 || !charged.IsInt64() || left == nil || left.Sign() < 0 || !left.IsInt64() {
+func (s *DualTokenStore) settleAgentCryptoUse(ctx context.Context, workspaceID, agentID string, use int64, outcome string, charged, left *big.Int) error {
+	if (charged == nil) != (left == nil) || charged != nil && (charged.Sign() < 0 || !charged.IsInt64() || left.Sign() < 0 || !left.IsInt64()) {
 		return fmt.Errorf("%w: a fee charged and what is left approved are whole amounts, not negative", smartaccount.ErrInvalid)
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
@@ -345,26 +493,44 @@ func (s *DualTokenStore) SettleAgentCryptoFee(ctx context.Context, workspaceID, 
 			return err
 		}
 		var token string
-		var fee, was *int64
-		err := tx.QueryRow(ctx, `SELECT token, fee, fee_charged FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2 AND workspace_id = $3`,
-			use, agentID, workspaceID).Scan(&token, &fee, &was)
+		var chainID, fee, was *int64
+		var paymaster, had *string
+		var amount int64
+		err := tx.QueryRow(ctx, `SELECT token, chain_id, paymaster, fee, fee_charged, amount, outcome FROM agent_spend_permission_uses
+			WHERE id = $1 AND agent_id = $2 AND workspace_id = $3`, use, agentID, workspaceID).
+			Scan(&token, &chainID, &paymaster, &fee, &was, &amount, &had)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("%w: no payment %d of the agent's", smartaccount.ErrInvalid, use)
 		case err != nil:
 			return fmt.Errorf("economy: spend permission: %w", err)
-		case fee == nil:
+		case fee == nil && charged != nil:
 			return fmt.Errorf("%w: payment %d's fee is not paid in the token", smartaccount.ErrInvalid, use)
-		case was != nil && *was == charged.Int64():
+		case had != nil && *had == outcome && (was == nil && charged == nil || was != nil && charged != nil && *was == charged.Int64()):
 			return nil
-		case was != nil:
+		case had != nil && was != nil:
 			return fmt.Errorf("%w: payment %d's fee was settled at %d", smartaccount.ErrInvalid, use, *was)
-		case charged.Int64() > *fee:
+		case had != nil:
+			return fmt.Errorf("%w: payment %d was settled %s", smartaccount.ErrInvalid, use, *had)
+		case fee != nil && outcome != outcomeDropped && charged == nil:
+			return fmt.Errorf("%w: payment %d's fee is paid in the token: settle it with what the paymaster took", smartaccount.ErrInvalid, use)
+		case charged != nil && charged.Int64() > *fee:
 			return fmt.Errorf("%w: a fee of %s is more than the %d approved for it", smartaccount.ErrInvalid, charged, *fee)
+		}
+		if charged == nil { // no fee in the token, or an operation that never landed
+			counts := amount
+			if outcome != outcomePaid {
+				counts = 0
+			}
+			if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = $2, outcome = $3 WHERE id = $1`, use, counts, outcome); err != nil {
+				return fmt.Errorf("economy: spend permission: %w", err)
+			}
+			return nil
 		}
 		var newest int64
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(id), 0) FROM agent_spend_permission_uses
-			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND fee_charged IS NOT NULL AND id > $4`, agentID, workspaceID, token, use).Scan(&newest); err != nil {
+			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND chain_id IS NOT DISTINCT FROM $4 AND paymaster IS NOT DISTINCT FROM $5
+			AND fee_charged IS NOT NULL AND id > $6`, agentID, workspaceID, token, chainID, paymaster, use).Scan(&newest); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
 		mine := left.Int64()
@@ -375,11 +541,16 @@ func (s *DualTokenStore) SettleAgentCryptoFee(ctx context.Context, workspaceID, 
 				return fmt.Errorf("economy: spend permission: %w", err)
 			}
 		} else if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = amount - fee_left, fee_left = 0
-			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND fee_left > 0 AND id < $4`, agentID, workspaceID, token, use); err != nil {
+			WHERE agent_id = $1 AND workspace_id = $2 AND token = $3 AND chain_id IS NOT DISTINCT FROM $4 AND paymaster IS NOT DISTINCT FROM $5
+			AND fee_left > 0 AND id < $6`, agentID, workspaceID, token, chainID, paymaster, use); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = amount - fee + $2 + $3, fee_charged = $2, fee_left = $3
-			WHERE id = $1`, use, charged.Int64(), mine); err != nil {
+		payment := amount - *fee
+		if outcome != outcomePaid {
+			payment = 0
+		}
+		if _, err := tx.Exec(ctx, `UPDATE agent_spend_permission_uses SET amount = $2::bigint + $3::bigint + $4::bigint, fee_charged = $3, fee_left = $4, outcome = $5
+			WHERE id = $1`, use, payment, charged.Int64(), mine, outcome); err != nil {
 			return fmt.Errorf("economy: spend permission: %w", err)
 		}
 		return nil

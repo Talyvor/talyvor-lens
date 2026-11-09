@@ -2089,6 +2089,16 @@ func run() error {
 			chainIdx.indexChains(lctx, sanctionsAlert.sink)
 		})
 	}
+	// B54.26 — agents' smart-account payments settled from their operations' receipts.
+	agentPaymentChains, err := agentChains(cfg.AgentChains)
+	if err != nil {
+		return err
+	}
+	if len(agentPaymentChains) > 0 {
+		go haComps.leader.Run(ctx, "agent-payment-settle", 30*time.Second, func(lctx context.Context) {
+			settleAgentPayments(lctx, dualToken, agentPaymentChains)
+		})
+	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
 	if cfg.BillingEnabled {
 		taxProfiles.SetStripe(taxStripeByKind{isTest: wsManager.GetSynthetic, mainKeyLive: billing.LiveKey(cfg.StripeSecretKey),

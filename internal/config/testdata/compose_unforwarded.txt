@@ -13,6 +13,7 @@
 # and on a listed name that becomes forwarded or unread, so this list only shrinks. Move a name to
 # the curated `environment:` list only if it must be set from .env; then delete its line here and
 # keep it out of lens.env.example.
+LENS_AGENT_CHAINS
 LENS_ANNOTATION_MINTING_ENABLED
 LENS_ANTIGAMING_AUTO_REVOKE_ENABLED
 LENS_ANTIGAMING_INTERVAL
