@@ -384,9 +384,11 @@ type CohortDigest struct {
 	Qualifies          bool    `json:"qualifies"` // meets the sample/workspace floor
 }
 
-// Overview returns the leading candidate per cohort for the dashboard. Pure
-// in-memory read; "Qualifies" reflects whether it clears the floor (and so
-// would actually be recommended).
+// Overview returns the leading candidate per cohort for the dashboard: the
+// best one that clears the floor (and so would actually be recommended). Pure
+// in-memory read. Any workspace can read it, so a candidate below the floor —
+// a thin or single-workspace signal, its feature tag included — is never
+// listed, and a cohort with none is left out (B28.105).
 func (a *Advisor) Overview() []CohortDigest {
 	if a == nil {
 		return nil
@@ -395,17 +397,19 @@ func (a *Advisor) Overview() []CohortDigest {
 	defer a.mu.RUnlock()
 	out := make([]CohortDigest, 0, len(a.cohorts))
 	for k, cs := range a.cohorts {
-		if len(cs) == 0 {
-			continue
-		}
 		feature, inputRange := splitCohortKey(k)
-		top := cs[0]
-		out = append(out, CohortDigest{
-			Feature: feature, InputRange: inputRange, Model: top.Model, Provider: top.Provider,
-			AvgQuality: top.AvgQuality, CostPer1k: top.CostPer1k, QualityPerDollar: top.QualityPerDollar,
-			SampleCount: top.SampleCount, DistinctWorkspaces: top.DistinctWorkspaces,
-			Qualifies: top.SampleCount >= a.cfg.MinSamples && top.DistinctWorkspaces >= a.cfg.MinWorkspaces,
-		})
+		for _, top := range cs {
+			if top.SampleCount < a.cfg.MinSamples || top.DistinctWorkspaces < a.cfg.MinWorkspaces {
+				continue
+			}
+			out = append(out, CohortDigest{
+				Feature: feature, InputRange: inputRange, Model: top.Model, Provider: top.Provider,
+				AvgQuality: top.AvgQuality, CostPer1k: top.CostPer1k, QualityPerDollar: top.QualityPerDollar,
+				SampleCount: top.SampleCount, DistinctWorkspaces: top.DistinctWorkspaces,
+				Qualifies: true,
+			})
+			break
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Feature != out[j].Feature {

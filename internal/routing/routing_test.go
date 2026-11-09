@@ -121,6 +121,29 @@ func TestStartRefresh_DisabledStillAnswersTheRead(t *testing.T) {
 	}
 }
 
+// B28.105: /v1/routing/intelligence/status serves Overview to any workspace, so a cohort below the
+// privacy floor (here one workspace's own feature tag) must not be listed — only candidates that clear it.
+func TestOverview_HidesCohortsBelowTheFloor(t *testing.T) {
+	stats := append(chatCohort(),
+		mining.CohortStat{FeatureCategory: "acme-secret-feature", InputTokenRange: "small", ModelUsed: "gpt-4o", ProviderUsed: "openai", AvgQuality: 0.9, SampleCount: 400, DistinctWorkspaces: 1},
+		mining.CohortStat{FeatureCategory: "chat", InputTokenRange: "small", ModelUsed: "gpt-4o-mini", ProviderUsed: "openai", AvgQuality: 0.9, SampleCount: 5, DistinctWorkspaces: 1},
+		mining.CohortStat{FeatureCategory: "chat", InputTokenRange: "small", ModelUsed: "gpt-4.1", ProviderUsed: "openai", AvgQuality: 0.8, SampleCount: 30, DistinctWorkspaces: 4},
+	)
+	a, _ := newAdvisor(t, stats, Config{})
+	got := a.Overview()
+	if len(got) != 2 {
+		t.Fatalf("overview: got %d cohorts %+v, want chat/medium and chat/small only", len(got), got)
+	}
+	for _, d := range got {
+		if d.Feature != "chat" || !d.Qualifies {
+			t.Fatalf("overview lists a cohort below the floor: %+v", d)
+		}
+	}
+	if got[1].InputRange != "small" || got[1].Model != "gpt-4.1" {
+		t.Fatalf("chat/small: got %+v, want its best candidate that clears the floor (gpt-4.1)", got[1])
+	}
+}
+
 // (b) Flag OFF (TierCohorts unset) must IGNORE the complexity arg — different complexities yield
 // the identical non-tiered recommendation (byte-for-byte the current behavior).
 func TestRecommend_FlagOff_IgnoresComplexity(t *testing.T) {
