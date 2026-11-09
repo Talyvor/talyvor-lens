@@ -183,6 +183,8 @@ func openAPIWalletSchemas() map[string]any {
 				"balance_after_ulxc": ulxc,
 				"at":                 at,
 				"label":              map[string]any{"type": "string", "description": "on a platform_fee line, the fee and its rate: \"Platform fee 3%\""},
+				"model":              map[string]any{"type": "string", "description": "on a call's lines (spend, hold, settle, release, platform_fee): the model it asked"},
+				"source":             map[string]any{"type": "string", "enum": []string{"Model provider", "Cache", "Shared pool", "Node"}, "description": "on a call's lines: where its answer came from; absent until Lens has recorded it"},
 			},
 		},
 		"AgentTransfer": map[string]any{
