@@ -213,12 +213,12 @@ var moneyCalls = map[string]func(p any, id string, variant int64) any{
 		return ClaimRequest{ID: id, PolicyRef: policy.Ref, Amount: Money{10_00 + v, "GBP"}, What: "a bad trade"}
 	},
 	"agent_token.Provision": func(_ any, id string, v int64) any {
-		return AgentTokenRequest{ID: id, AgentID: "agent-1", AgentName: fmt.Sprint("Agent ", v), Currency: "GBP",
-			ExpiresAt: tokenExpiry}
+		return AgentTokenRequest{ID: id, AgentID: "agent-1", AgentName: fmt.Sprint("Agent ", v), Merchant: "Acme",
+			Limit: Money{100_00, "GBP"}, ExpiresAt: tokenExpiry}
 	},
 	"agent_token.Authorise": func(p any, id string, v int64) any {
 		token := must(p.(AgentTokenProvider).Provision(context.Background(), AgentTokenRequest{ID: "tok-" + id, AgentID: "agent-1",
-			AgentName: "Agent", Currency: "GBP", ExpiresAt: tokenExpiry}))
+			AgentName: "Agent", Merchant: "Acme", Limit: Money{100_00, "GBP"}, ExpiresAt: tokenExpiry}))
 		return Authorisation{ID: id, TokenRef: token.Ref, Amount: Money{10_00 + v, "GBP"}, Merchant: "Acme"}
 	},
 }

@@ -290,6 +290,11 @@ func ipHash(ctx context.Context, tx pgx.Tx, ip string) (string, error) {
 // termsRefusal refuses capability c for workspaceID while c has terms whose latest version the workspace has not
 // accepted — test money or live, whatever c's class. A capability with no terms asks nothing.
 func termsRefusal(ctx context.Context, q pgxDB, workspaceID string, c Capability) (*CapabilityRefusal, error) {
+	// B17.354: the terms are what a customer accepts from Talyvor, so Talyvor's own workspace — which pays the marketplace's
+	// sellers — has none to accept. No customer's workspace is named it: theirs are "u" and a hash (deriveWorkspaceID).
+	if workspaceID == TalyvorWorkspace {
+		return nil, nil
+	}
 	var version int
 	var accepted bool
 	err := q.QueryRow(ctx, `SELECT t.version, EXISTS (SELECT 1 FROM capability_terms_acceptances a
