@@ -21,6 +21,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/ratelimit"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
 
@@ -59,7 +60,8 @@ import (
 //	                                     it "Confirm <deal reference> for negotiation <id>", when a DKIM signature over
 //	                                     that subject holds for one of the mandate's counterparties (or a domain under
 //	                                     one), aligned with its one From, and the mandate allows email; 401 with no such
-//	                                     signature, 400 for an automatic reply, then as above
+//	                                     signature, 400 for an automatic reply, then as above; 429 with Retry-After
+//	                                     over the public limit per address or per signing domain, before any lookup
 
 type negotiationBank interface {
 	PrepareNegotiationMandate(ctx context.Context, workspaceID string, t economy.NegotiationMandateTerms) (canonical, challenge string, credentialIDs []string, err error)
@@ -273,8 +275,43 @@ func autoResponse(h mail.Header) bool {
 	return h.Get("X-Autoreply") != "" || h.Get("X-Autorespond") != "" || h.Get("List-Id") != ""
 }
 
-func mountNegotiationEmailRoutes(r chi.Router, lookupTXT func(ctx context.Context, name string) ([]string, error), bank negotiationBank) {
+// dkimSigningDomains is the registrable domain of each of the first three DKIM signatures in h, the ones that are
+// verified, read from their d= tags before anything is looked up. A subdomain counts as its registrable domain, as
+// its lookups reach the same name servers.
+func dkimSigningDomains(h mail.Header) []string {
+	var out []string
+	for _, sig := range h["Dkim-Signature"][:min(len(h["Dkim-Signature"]), 3)] {
+		for _, tag := range strings.Split(sig, ";") {
+			k, v, ok := strings.Cut(tag, "=")
+			if !ok || strings.TrimSpace(k) != "d" {
+				continue
+			}
+			d := strings.ToLower(strings.Join(strings.Fields(v), ""))
+			if reg, err := publicsuffix.EffectiveTLDPlusOne(d); err == nil {
+				d = reg
+			}
+			if d != "" && !slices.Contains(out, d) {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+func mountNegotiationEmailRoutes(r chi.Router, limiter *ratelimit.Limiter, lookupTXT func(ctx context.Context, name string) ([]string, error), bank negotiationBank) {
+	// Every request counts against the public limiter in buckets of this route's own, before any DNS lookup (B54.41):
+	// one for the caller's address, and one for each domain its signatures send Lens to ask.
+	limited := func(w http.ResponseWriter, req *http.Request, bucket string) bool {
+		if res := limiter.Check(req.Context(), "", "inbound-email:"+bucket); !res.Allowed {
+			ratelimit.WriteRejected(w, "", res)
+			return true
+		}
+		return false
+	}
 	r.Post("/v1/inbound/negotiations/deal", func(w http.ResponseWriter, req *http.Request) {
+		if limited(w, req, "ip:"+ratelimit.ClientIP(req)) {
+			return
+		}
 		raw, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
 		if err != nil {
 			writeJSONErr(w, http.StatusRequestEntityTooLarge, "an email up to 1 MiB, as message/rfc822")
@@ -295,6 +332,11 @@ func mountNegotiationEmailRoutes(r chi.Router, lookupTXT func(ctx context.Contex
 		fromDomain, _ := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(from.Address[strings.LastIndex(from.Address, "@")+1:]))
 		subject, _ := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
 		named := dealEmailSubject.FindStringSubmatch(strings.TrimSpace(subject))
+		for _, d := range dkimSigningDomains(msg.Header) {
+			if limited(w, req, "dkim:"+d) {
+				return
+			}
+		}
 		// Signatures are looked up in DNS, so a message gets three at most.
 		verifications, _ := dkim.VerifyWithOptions(bytes.NewReader(raw), &dkim.VerifyOptions{MaxVerifications: 3,
 			LookupTXT: func(name string) ([]string, error) { return lookupTXT(req.Context(), name) }})
