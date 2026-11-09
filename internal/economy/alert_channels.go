@@ -278,7 +278,7 @@ func (s *DualTokenStore) SendAlertDeliveries(ctx context.Context, workspaceID st
 			sendErr = postAlertWebhook(ctx, client, q.url, q.secret, q.ws, q.AlertDelivery, now)
 		case AlertChannelSlack:
 			body, _ := json.Marshal(map[string]string{"text": "*" + q.Title + "*\n" + q.Body})
-			sendErr = postAlert(ctx, client, q.url, body, nil)
+			sendErr = postAlert(ctx, client, q.url, body, "", "")
 		}
 		if sendErr == nil {
 			if _, err := s.pool.Exec(ctx, `UPDATE alert_deliveries SET status = 'sent', attempts = attempts + 1, last_error = '',
@@ -335,8 +335,7 @@ func postAlertWebhook(ctx context.Context, client *http.Client, to, secret, work
 	body, _ := json.Marshal(map[string]any{"type": "alert", "id": d.ID, "workspace_id": workspaceID, "alert_kind": d.AlertKind,
 		"alert_id": d.AlertID, "title": d.Title, "body": d.Body, "created_at": d.CreatedAt.UTC().Format(time.RFC3339)})
 	ts := strconv.FormatInt(now.Unix(), 10)
-	return postAlert(ctx, client, to, body, map[string]string{"X-Talyvor-Timestamp": ts,
-		"X-Talyvor-Signature": "v1=" + AlertSignature(secret, ts, body)})
+	return postAlert(ctx, client, to, body, ts, "v1="+AlertSignature(secret, ts, body))
 }
 
 // AlertSignature is a webhook POST's signature: hex(HMAC-SHA256(secret, timestamp + "." + body)).
@@ -347,8 +346,9 @@ func AlertSignature(secret, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// postAlert POSTs body as JSON to to; anything but a 2xx is an error.
-func postAlert(ctx context.Context, client *http.Client, to string, body []byte, headers map[string]string) error {
+// postAlert POSTs body as JSON to to, with a webhook's timestamp and signature when it has them; anything but a 2xx
+// is an error.
+func postAlert(ctx context.Context, client *http.Client, to string, body []byte, timestamp, signature string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, to, bytes.NewReader(body))
@@ -356,8 +356,9 @@ func postAlert(ctx context.Context, client *http.Client, to string, body []byte,
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
+	if signature != "" {
+		req.Header.Set("X-Talyvor-Timestamp", timestamp)
+		req.Header.Set("X-Talyvor-Signature", signature)
 	}
 	resp, err := client.Do(req)
 	if uerr := (*url.Error)(nil); errors.As(err, &uerr) {
