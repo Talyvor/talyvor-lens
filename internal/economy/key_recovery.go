@@ -359,6 +359,11 @@ func (s *DualTokenStore) finishRecovery(ctx context.Context, tx pgx.Tx, workspac
 		map[string]any{"way": way, "by": by, "kind": key.Kind, "key": key.ID}); err != nil {
 		return RecoveredKey{}, err
 	}
+	// A recovery still waiting is over once a key is back, so it never adds another after this one is lost.
+	if _, err := tx.Exec(ctx, `UPDATE recovery_requests SET status = 'cancelled', cancelled_by = 'superseded'
+		WHERE workspace_id = $1 AND status = 'waiting'`, workspaceID); err != nil {
+		return RecoveredKey{}, fmt.Errorf("economy: recovery: %w", err)
+	}
 	code, err := issueRecoveryCode(ctx, tx, workspaceID)
 	if err != nil {
 		return RecoveredKey{}, err
@@ -474,15 +479,26 @@ func (s *DualTokenStore) CompleteKeyRecovery(ctx context.Context, workspaceID, u
 		return RecoveredKey{}, err
 	}
 	var r KeyRecovery
-	var ready, expired bool
-	err = tx.QueryRow(ctx, `SELECT `+keyRecoveryCols+`, ready_at <= now(), ready_at + make_interval(secs => $2) <= now()
-		FROM recovery_requests WHERE workspace_id = $1 AND status = 'waiting' FOR UPDATE`, workspaceID, recoveryWindow.Seconds()).
-		Scan(&r.ID, &r.Status, &r.CreatedAt, &r.ReadyAt, &r.userID, &ready, &expired)
+	var ready, expired, superseded bool
+	// superseded: a key was added since it began (after a lockdown was lifted, say), so it no longer stands.
+	err = tx.QueryRow(ctx, `SELECT `+keyRecoveryCols+`, ready_at <= now(), ready_at + make_interval(secs => $2) <= now(),
+		EXISTS (SELECT 1 FROM workspace_passkeys k WHERE k.workspace_id = $1 AND k.created_at > r.created_at)
+		OR EXISTS (SELECT 1 FROM workspace_device_keys d WHERE d.workspace_id = $1 AND d.created_at > r.created_at)
+		FROM recovery_requests r WHERE workspace_id = $1 AND status = 'waiting' FOR UPDATE OF r`, workspaceID, recoveryWindow.Seconds()).
+		Scan(&r.ID, &r.Status, &r.CreatedAt, &r.ReadyAt, &r.userID, &ready, &expired, &superseded)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return RecoveredKey{}, ErrRecoveryNotFound
 	case err != nil:
 		return RecoveredKey{}, fmt.Errorf("economy: recovery: %w", err)
+	case superseded:
+		if _, err := tx.Exec(ctx, `UPDATE recovery_requests SET status = 'cancelled', cancelled_by = 'superseded' WHERE id = $1`, r.ID); err != nil {
+			return RecoveredKey{}, fmt.Errorf("economy: recovery: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return RecoveredKey{}, err
+		}
+		return RecoveredKey{}, ErrRecoveryNotFound
 	case r.userID != userID:
 		return RecoveredKey{}, ErrRecoveryNotYours
 	case expired:

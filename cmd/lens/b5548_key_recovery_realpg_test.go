@@ -181,6 +181,11 @@ func TestB5548_TheRecoveryCodeAddsAKeyOnce(t *testing.T) {
 		t.Fatalf("live keys before recovery = %d, want 0", n)
 	}
 
+	// A recovery waits too; the code ends it, so it never adds a key later.
+	if code, out, _ := e.call(owner, ip, time.Minute, http.MethodPost, base+"/start", nil); code != http.StatusCreated {
+		t.Fatalf("start a recovery = %d %v, want 201", code, out)
+	}
+
 	// The right code, typed in lower case and without spaces, adds the key at once.
 	typed := strings.ToLower(strings.ReplaceAll(rc, " ", ""))
 	code, out, _ := e.call(owner, ip, time.Minute, http.MethodPost, base, map[string]any{"code": typed, "passkey": e.passkeyRegistration(ws)})
@@ -196,6 +201,9 @@ func TestB5548_TheRecoveryCodeAddsAKeyOnce(t *testing.T) {
 	}
 	if a := b5548Audit(t, e, ws, "key_recovered"); len(a) != 1 || a[0]["way"] != "code" {
 		t.Errorf("key_recovered audit entries = %v, want one with way code", a)
+	}
+	if code, out, _ := e.call(owner, ip, -1, http.MethodGet, base, nil); code != http.StatusOK || out["recovery"] != nil {
+		t.Errorf("GET recovery after the code added a key = %d %v, want none waiting", code, out)
 	}
 
 	// With a live key, every recovery route answers 409 in words.
@@ -438,5 +446,23 @@ func TestB5548_RecoveryAfter72Hours(t *testing.T) {
 	}
 	if n := b5548LiveKeys(t, store, ws); n != 0 {
 		t.Errorf("live keys after an expired recovery = %d, want 0", n)
+	}
+
+	// A key added another way since it began (after a lockdown was lifted, say), then lost: the recovery no longer stands.
+	if code, out, _ := e.call(owner, ip, time.Minute, http.MethodPost, base+"/start", nil); code != http.StatusCreated {
+		t.Fatalf("start a fourth time = %d %v, want 201", code, out)
+	}
+	if _, err := e.pool.Exec(ctx, `INSERT INTO workspace_passkeys (credential_id, workspace_id, name, public_key, sign_count, revoked_at)
+		VALUES ('cred-b5548-lift', $1, 'After the lift', '\x00', 0, now())`, ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE recovery_requests SET ready_at = now() - interval '1 minute' WHERE workspace_id = $1 AND status = 'waiting'`, ws); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := e.call(owner, ip, time.Minute, http.MethodPost, base+"/complete", map[string]any{"passkey": e.passkeyRegistration(ws)}); code != http.StatusNotFound {
+		t.Errorf("complete a recovery a later key superseded = %d %v, want 404", code, out)
+	}
+	if n := b5548LiveKeys(t, store, ws); n != 0 {
+		t.Errorf("live keys after a superseded recovery = %d, want 0", n)
 	}
 }
