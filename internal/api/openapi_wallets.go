@@ -243,6 +243,7 @@ func openAPIWalletPaths() map[string]any {
 	ws, agent, approval := param("wsID", "path"), param("agentID", "path"), param("approvalID", "path")
 	str := map[string]any{"type": "string"}
 	ulxc := map[string]any{"type": "integer", "format": "int64", "minimum": 1}
+	integer := map[string]any{"type": "integer", "format": "int64"}
 	balance := ok("the agent's balance after the move", obj(nil, map[string]any{"agent_id": str, "balance_ulxc": ulxc}))
 	idempotency := map[string]any{"name": "Idempotency-Key", "in": "header", "required": false,
 		"description": "sent again with the same key, the move lands once (at most 128 characters)",
@@ -469,6 +470,20 @@ func openAPIWalletPaths() map[string]any {
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
+					"404": map[string]any{"description": "no such agent"},
+				}),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/analytics": map[string]any{
+			"get": op("Read the agent's spend by day, model and destination",
+				"For the period [from, to) of its statement: every posting that took money out of the agent's account is in one bucket, so the buckets' out_ulxc sum to the statement's. returned_ulxc is a hold's unused part coming back, on the day it came back; spent_ulxc is out less returned. Days are in the agent's rules' time_zone, else UTC. destination is the account the money went to, as the statement's counterparty names it.",
+				[]map[string]any{ws, agent, periodParams[1], periodParams[2]},
+				map[string]any{
+					"200": ok("the agent's spend in buckets", obj(nil, map[string]any{
+						"agent_id": str, "time_zone": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer,
+						"buckets": map[string]any{"type": "array", "items": obj(nil, map[string]any{
+							"day": str, "model": str, "destination": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer, "postings": integer})},
+					})),
+					"400": map[string]any{"description": "from or to is not a time, or from is not before to"},
 					"404": map[string]any{"description": "no such agent"},
 				}),
 		},
