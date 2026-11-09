@@ -52,7 +52,7 @@ func (s *DualTokenStore) platformFeeBPS(ctx context.Context, q FeeQuerier, works
 		return 0, fmt.Errorf("economy: the platform fee of %s: %w", workspaceID, err)
 	}
 	if bps < 0 || bps > feeDenominator {
-		return 0, fmt.Errorf("economy: the platform fee of %s is %d basis points, outside 0–%d", workspaceID, bps, feeDenominator)
+		return 0, fmt.Errorf("economy: the platform fee of %s is %d basis points, outside 0 to %d", workspaceID, bps, feeDenominator)
 	}
 	return bps, nil
 }

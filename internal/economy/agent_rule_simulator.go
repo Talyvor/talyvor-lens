@@ -55,7 +55,7 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 		out.At = *in.At
 	}
 	if in.AmountULXC < 0 {
-		return out, fmt.Errorf("%w: amount_ulxc cannot be negative", ErrBadSimulation)
+		return out, fmt.Errorf("%w: the amount cannot be negative", ErrBadSimulation)
 	}
 	req := AgentRequest{Model: in.Model, Provider: in.Provider, At: out.At, Fingerprint: "simulated:" + uuid.NewString()}
 	what := "request"

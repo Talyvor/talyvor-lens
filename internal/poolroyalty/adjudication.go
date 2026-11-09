@@ -114,7 +114,7 @@ func (w *AdjudicationWriter) Adjudicate(ctx context.Context, d AdjudicationDecis
 		return "", RevokeReport{}, errors.New("poolroyalty: nil adjudication writer")
 	}
 	if len(d.RevokeRequestIDs) == 0 {
-		return "", RevokeReport{}, errors.New("poolroyalty: empty revoke set — nothing to adjudicate")
+		return "", RevokeReport{}, errors.New("poolroyalty: empty revoke set, so nothing to adjudicate")
 	}
 
 	// 1. Record the decision BEFORE any burn.

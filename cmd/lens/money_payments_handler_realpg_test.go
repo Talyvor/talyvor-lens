@@ -167,7 +167,7 @@ func moneyPaymentRoutesHoldThenComplete(t *testing.T, layered bool) {
 
 	// £100.00 is above the approval amount: an approval is filed, and nothing moves until the owner approves it.
 	code, out = pay("big", 10000)
-	if msg, _ := out["error"].(string); code != http.StatusForbidden || !strings.Contains(msg, "approval apr_") {
+	if msg, _ := out["error"].(string); code != http.StatusForbidden || !strings.Contains(msg, "Approval apr_") {
 		t.Fatalf("pay £100.00 = %d %v, want 403 naming the approval", code, out)
 	}
 	var approval, payeeKind, memo string

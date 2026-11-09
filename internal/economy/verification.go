@@ -234,7 +234,7 @@ func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partne
 	}
 	if have, _ := reachedLevels(checks); have < in.Level-1 {
 		below := in.Level - 1
-		return VerificationCheck{}, fmt.Errorf("%w: the %s check (%s) needs %s — %s — first; this workspace is at %s",
+		return VerificationCheck{}, fmt.Errorf("%w: the %s check (%s) needs %s (%s) first; this workspace is at %s",
 			ErrVerificationOrder, in.Level.Meaning(), in.Level, below, below.Meaning(), have)
 	}
 	if person, named := identityNamed(checks, slices.Concat(in.Directors, in.SignificantControl)); in.Level == LevelCompany && !named {
