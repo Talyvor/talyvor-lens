@@ -120,7 +120,9 @@ type Chain struct {
 	TokenPaymasterLayout string
 	CoinPrice            func(ctx context.Context, token string) (*big.Rat, error)
 	TokenPriceSpreadBps  int64
-	HTTP                 *http.Client
+	// B48.24: the chain's SpendPermissionManager; "" is Coinbase's deployment (SpendPermissionManager).
+	SpendManager string
+	HTTP         *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {

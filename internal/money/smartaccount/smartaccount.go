@@ -101,6 +101,11 @@ func New(f Factory, passkey *ecdsa.PublicKey, agentKey, recovery string) (Accoun
 		}
 		owners = append(owners, r)
 	}
+	return newAccount(f, owners)
+}
+
+// newAccount is the account factory f makes for owners.
+func newAccount(f Factory, owners [][]byte) (Account, error) {
 	fw, err := addressW(f.Address)
 	if err != nil {
 		return Account{}, fmt.Errorf("%w: the factory: %v", ErrInvalid, err)

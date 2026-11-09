@@ -23,6 +23,7 @@ type Adapter struct {
 	KYC       KYC
 	Webhooks  Webhooks // verifies the partner's notifications; nil takes none
 	Signers   Signers  // agents' keys in the partner's enclave (B48.2); nil holds none
+	Spenders  Spenders // B48.24: agents' keys spend under the owner's on-chain permission; nil spends none
 }
 
 func (a *Adapter) offers(c Capability) bool {
