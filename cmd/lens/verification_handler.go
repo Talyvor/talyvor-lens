@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -60,7 +61,7 @@ func mountVerificationRoutes(r chi.Router, store verificationStore, verifiers pa
 				writeJSONErr(w, http.StatusBadRequest, "body must be what the check confirms, as JSON: "+err.Error())
 				return
 			}
-			in.Level = level
+			in.Level, in.Session = level, auth.GetAuthContext(req.Context()).Session()
 			ws := chi.URLParam(req, "wsID")
 			c, err := store.StartVerification(req.Context(), verifiers, ws, who, in)
 			switch {
