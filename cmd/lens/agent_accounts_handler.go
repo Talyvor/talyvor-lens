@@ -19,6 +19,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
@@ -71,17 +72,17 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/statement?limit=   the agent's account, newest first (default and at most 1000)
 //
 // B19.5 — statements an enterprise can audit (internal/economy/agent_statements.go), for the period
-// [from, to), as JSON or CSV:
+// [from, to), as JSON, CSV or (B28.328) a PDF to download:
 //
-//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv   one agent's account
-//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv        every agent wallet in the workspace
+//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv|pdf   one agent's account
+//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv|pdf        every agent wallet in the workspace
 //
 // from and to are RFC 3339 times or YYYY-MM-DD dates (midnight UTC); from defaults to the start of the
 // current month and to to now, so September is from=2026-09-01&to=2026-10-01. On an agent's route any of
 // the three, group or cursor asks for the period statement; with none it is the newest-first list above.
 // B57.13: group=day makes each model's questions on a day one line, its fees the line under it (the agent's
 // rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
-// first page's to with every cursor. The CSV is always one row per posting.
+// first page's to with every cursor. The CSV and the PDF are always one row per posting.
 //
 // B28.326 — one agent's spend by day, model and destination (internal/economy/agent_analytics.go), for the same
 // [from, to) as its statement; days are its rules' time zone's, else UTC's:
@@ -1066,7 +1067,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/deny", decide(false))
 
 	r.Get("/v1/workspaces/{wsID}/agents/statement", func(w http.ResponseWriter, req *http.Request) {
-		from, to, csv, err := statementPeriod(req, time.Now())
+		from, to, format, err := statementPeriod(req, time.Now())
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -1077,11 +1078,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		// A workspace's agents may keep different zones: its days are UTC's.
-		writeStatementView(w, req, st, csv, func() (*time.Location, error) { return time.UTC, nil })
+		writeStatementView(w, req, st, format, func() (*time.Location, error) { return time.UTC, nil })
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
 		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") || q.Has("kind") || q.Has("q") {
-			from, to, csv, err := statementPeriod(req, time.Now())
+			from, to, format, err := statementPeriod(req, time.Now())
 			if err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
@@ -1094,7 +1095,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
 				// B57.13: an agent's days are its rules' time zone's, else UTC's.
-				writeStatementView(w, req, st, csv, func() (*time.Location, error) {
+				writeStatementView(w, req, st, format, func() (*time.Location, error) {
 					rules, err := bank.GetAgentRules(req.Context(), st.WorkspaceID, st.AgentID)
 					if err != nil {
 						return nil, err
@@ -1126,8 +1127,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/analytics", func(w http.ResponseWriter, req *http.Request) {
-		from, to, csv, err := statementPeriod(req, time.Now())
-		if err == nil && csv {
+		from, to, format, err := statementPeriod(req, time.Now())
+		if err == nil && format != "json" {
 			err = errors.New("analytics are JSON only")
 		}
 		if err != nil {
@@ -1847,16 +1848,14 @@ func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// statementPeriod reads a statement's ?from=, ?to= and ?format=. Times are cut to the microsecond
-// Postgres keeps, so the period a statement echoes is exactly the one it was built from.
-func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv bool, err error) {
+// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv or pdf. Times are cut to
+// the microsecond Postgres keeps, so the period a statement echoes is exactly the one it was built from.
+func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, format string, err error) {
 	q := req.URL.Query()
-	switch q.Get("format") {
-	case "", "json":
-	case "csv":
-		csv = true
+	switch format = cmp.Or(q.Get("format"), "json"); format {
+	case "json", "csv", "pdf":
 	default:
-		return from, to, false, errors.New("format must be json or csv")
+		return from, to, "", errors.New("format must be json, csv or pdf")
 	}
 	now = now.UTC()
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -1872,25 +1871,32 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv 
 		t, perr := time.Parse(time.RFC3339Nano, v)
 		if perr != nil {
 			if t, perr = time.Parse(time.DateOnly, v); perr != nil {
-				return from, to, false, fmt.Errorf("%s must be an RFC 3339 time or a YYYY-MM-DD date", p.name)
+				return from, to, "", fmt.Errorf("%s must be an RFC 3339 time or a YYYY-MM-DD date", p.name)
 			}
 		}
 		*p.into = t.UTC().Truncate(time.Microsecond)
 	}
 	if !from.Before(to) {
-		return from, to, false, errors.New("from must be before to")
+		return from, to, "", errors.New("from must be before to")
 	}
-	return from, to, csv, nil
+	return from, to, format, nil
 }
 
 // writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
 // a day of zone's into one line, ?kind= (one or more, comma-separated) and ?q= keep only the lines of those kinds whose
 // words hold q (B28.51), and ?limit= and ?cursor= page what is left newest first. The CSV is never grouped, filtered or
-// paged: it is one row per posting, the audit file.
-func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, asCSV bool, zone func() (*time.Location, error)) {
+// paged: it is one row per posting, the audit file; and so is the PDF (B28.328).
+func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, format string, zone func() (*time.Location, error)) {
 	q := req.URL.Query()
-	if asCSV {
+	switch format {
+	case "csv":
 		writeStatement(w, st, true)
+		return
+	case "pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
+			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
+		_, _ = w.Write(agentStatementPDF(st)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		return
 	}
 	limit := 0
@@ -1969,6 +1975,36 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 		_ = cw.Write([]string{"", l.UseID, at(l.At), economy.OnMarketplaceBill, l.Kind, i64(l.AmountULXC), cmp.Or(l.PayeeAgentID, l.ListingID), csvText(l.Memo), ""})
 	}
 	cw.Flush()
+}
+
+// agentStatementPDF is the period as a document (B28.328), row for row the CSV: each account's opening balance, every
+// line, each account's closing balance, then what went on the marketplace bill.
+func agentStatementPDF(st economy.Statement) []byte {
+	day := func(t time.Time) string { return t.UTC().Format("2 Jan 15:04") }
+	t := market.PDFTable{Label: "AGENT STATEMENT",
+		Title: st.From.UTC().Format("2 Jan 2006") + " – " + st.To.UTC().Format("2 Jan 2006"),
+		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04"))},
+		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 70},
+			{Name: "WITH", Width: 99}, {Name: "AMOUNT", Width: 88, Right: true}, {Name: "BALANCE", Width: 88.28, Right: true}},
+		Footer: "Times are UTC. Amounts are in LXC."}
+	if st.AgentID != "" {
+		t.Lines = append(t.Lines, "Agent "+st.AgentID)
+	}
+	for _, a := range st.Accounts {
+		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXC(a.OpeningULXC)})
+	}
+	for _, l := range st.Lines {
+		t.Rows = append(t.Rows, []string{day(l.At), l.Account, cmp.Or(l.Label, l.Kind), cmp.Or(l.Counterparty, l.Memo),
+			economy.LXC(l.AmountULXC), economy.LXC(l.BalanceAfterULXC)})
+	}
+	for _, a := range st.Accounts {
+		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXC(a.ClosingULXC)})
+	}
+	for _, l := range st.MarketplaceBill {
+		t.Rows = append(t.Rows, []string{day(l.At), economy.OnMarketplaceBill, l.Kind, cmp.Or(l.PayeeAgentID, l.ListingID, l.Memo),
+			economy.LXC(l.AmountULXC), ""})
+	}
+	return t.PDF()
 }
 
 // csvText keeps a memo a spreadsheet would run as a formula as text.
