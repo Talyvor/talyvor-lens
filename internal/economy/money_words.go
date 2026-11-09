@@ -55,11 +55,20 @@ func LXCMoney(ulxc int64) string {
 		sign, ulxc = "-", -ulxc
 	}
 	usd := sign + "$" + grouped((ulxc+ulxcPerCent/2)/ulxcPerCent, 2, 2)
-	lxc := sign + grouped(ulxc, 6, 0) + " LXC"
+	lxc := sign + LXC(ulxc)
 	if os.Getenv(MoneyOrderEnv) == "lxc_first" {
 		return lxc + " (" + usd + ")"
 	}
 	return usd + " (" + lxc + ")"
+}
+
+// LXC writes µLXC as LXC alone, every digit kept: "3,400 LXC", "-0.001234 LXC" — for a column with no room for
+// LXCMoney.
+func LXC(ulxc int64) string {
+	if ulxc < 0 {
+		return "-" + LXC(-ulxc)
+	}
+	return grouped(ulxc, 6, 0) + " LXC"
 }
 
 // When writes a moment for a person: "Oct 31, 2026 at 09:00 UTC".
