@@ -326,11 +326,12 @@ func TestB5548_OnlyTheOwnerRecentlySignedIn(t *testing.T) {
 	const ws = "ws-b5548-who"
 	rc := e.lockedOut(ctx, store, ws)
 	base := "/v1/workspaces/" + ws + "/keys/recover"
+	// Each carries the workspace, the owner's user and the keys scope, so only how it signed in refuses it.
 	callers := map[string]*auth.AuthContext{
-		"an admin":        {AuthMethod: auth.MethodGlobalKey, IsAdmin: true, Scopes: []string{auth.ScopeAdmin, auth.ScopeKeys}},
-		"an API key":      {WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-admin", Scopes: []string{auth.ScopeAdmin}},
-		"an agent's key":  {WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-agent", Scopes: []string{auth.ScopeProxy}},
-		"a Connect token": {WorkspaceID: ws, AuthMethod: auth.MethodConnect, ConnectAgentID: "agt", Scopes: []string{auth.ScopeProxy}},
+		"an admin":        {WorkspaceID: ws, UserID: "ada", AuthMethod: auth.MethodGlobalKey, IsAdmin: true, Scopes: []string{auth.ScopeAdmin, auth.ScopeKeys}},
+		"an API key":      {WorkspaceID: ws, UserID: "ada", AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-admin", Scopes: []string{auth.ScopeAdmin, auth.ScopeKeys}},
+		"an agent's key":  {WorkspaceID: ws, UserID: "ada", AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-agent", Scopes: []string{auth.ScopeProxy, auth.ScopeKeys}},
+		"a Connect token": {WorkspaceID: ws, UserID: "ada", AuthMethod: auth.MethodConnect, ConnectAgentID: "agt", Scopes: []string{auth.ScopeProxy, auth.ScopeKeys}},
 	}
 	for who, actx := range callers {
 		for _, p := range []string{base, base + "/start", base + "/complete"} {

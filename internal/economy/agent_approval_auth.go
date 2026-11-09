@@ -56,7 +56,8 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"` // B41.116: revoked by a lockdown, it signs nothing
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`    // B41.116: revoked by a lockdown, it signs nothing
+	RecoveryCode string     `json:"recovery_code,omitempty"` // B55.48: answered once, with the workspace's first key
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -135,6 +136,9 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 	if err := tx.QueryRow(ctx, `INSERT INTO workspace_passkeys (credential_id, workspace_id, name, public_key, sign_count)
 		VALUES ($1, $2, $3, $4, $5) RETURNING created_at`, r.CredentialID, workspaceID, name, r.PublicKey, int64(count)).Scan(&p.CreatedAt); err != nil {
 		return p, fmt.Errorf("economy: register passkey: %w", err)
+	}
+	if p.RecoveryCode, err = firstKeyRecoveryCode(ctx, tx, workspaceID); err != nil {
+		return Passkey{}, err
 	}
 	return p, tx.Commit(ctx)
 }

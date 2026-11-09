@@ -40,6 +40,8 @@ type DeviceKey struct {
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	RevokedBy  string     `json:"revoked_by,omitempty"`
+	// RecoveryCode (B55.48) is answered once, with the workspace's first key.
+	RecoveryCode string `json:"recovery_code,omitempty"`
 }
 
 // SetDeviceKeys sets how device key registrations are checked.
@@ -83,6 +85,9 @@ func (s *DualTokenStore) RegisterDeviceKey(ctx context.Context, workspaceID, per
 		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at`, d.ID, workspaceID, person, r.Platform, name, r.PublicKey,
 		append([]byte{}, r.Attestation...)).Scan(&d.CreatedAt); err != nil {
 		return d, fmt.Errorf("economy: register device key: %w", err)
+	}
+	if d.RecoveryCode, err = firstKeyRecoveryCode(ctx, tx, workspaceID); err != nil {
+		return DeviceKey{}, err
 	}
 	return d, tx.Commit(ctx)
 }
