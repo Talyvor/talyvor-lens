@@ -46,6 +46,8 @@ func writeEnrolmentWaiting(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, economy.ErrTooManyEnrolments), errors.Is(err, economy.ErrEnrolmentCodeTaken),
 		errors.Is(err, economy.ErrPasskeyRegistered), errors.Is(err, economy.ErrNoLiveKey): // B54.28
 		writeJSONErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, economy.ErrPasskeyRemoved): // B55.15
+		writeJSONErr(w, http.StatusConflict, economy.PasskeyRemovedSentence)
 	default:
 		return false
 	}

@@ -255,7 +255,7 @@ func reenrolAfterLift(ctx context.Context, tx pgx.Tx, workspaceID, purpose, chal
 	var lifted time.Time
 	err := tx.QueryRow(ctx, `UPDATE workspace_lockdowns l SET reenrol_challenge = NULL WHERE l.workspace_id = $1
 		AND l.reenrol_challenge = $3 AND l.lifted_at > now() - make_interval(secs => $2)
-		AND NOT EXISTS (SELECT 1 FROM workspace_passkeys k WHERE k.workspace_id = $1 AND k.revoked_at IS NULL)
+		AND NOT EXISTS (SELECT 1 FROM workspace_passkeys k WHERE k.workspace_id = $1 AND k.removed_at IS NULL AND k.revoked_at IS NULL)
 		AND NOT EXISTS (SELECT 1 FROM workspace_device_keys d WHERE d.workspace_id = $1 AND d.revoked_at IS NULL)
 		RETURNING l.lifted_at`, workspaceID, reenrolWindow.Seconds(), challenge).Scan(&lifted)
 	if errors.Is(err, pgx.ErrNoRows) {
