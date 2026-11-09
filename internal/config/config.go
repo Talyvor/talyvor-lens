@@ -650,6 +650,10 @@ type Config struct {
 	// ScreeningMaxAge is how long ago a sanctions list may have last downloaded before every payment in or out is held
 	// for an operator (B37.4). Env: LENS_SCREENING_MAX_AGE_HOURS, whole hours, which Nicolai sets; until he does, 48.
 	ScreeningMaxAge time.Duration
+	// SuspenseReturnDays is how many business days money in that matched no account sits in suspense before it goes
+	// back to its payer, unless the operator assigns it (B30.15). Env: LENS_SUSPENSE_RETURN_DAYS, which Nicolai sets;
+	// until he does, 5.
+	SuspenseReturnDays int
 
 	// TrustfulComputeMintEnabled gates the LEGACY trust-based compute mint
 	// (ComputeMiner.RecordServedRequest mints LENS per served request with no
@@ -994,6 +998,9 @@ type Config struct {
 	// Test adapter, "test:<address>=<provider>,…" with the addresses it names as a regulated provider's. Unset, it is
 	// off until a live adapter is chosen.
 	TravelRule string
+	// TravelRuleMinor is the Travel Rule threshold for a company's USDC transfers (B30.33): one of more micro-USDC
+	// carries the payer's and the payee's names. Env: LENS_TRAVEL_RULE_MINOR, which Nicolai sets; until he does, 0.
+	TravelRuleMinor int64
 
 	// TrackWebhookURL / TrackWebhookSecret (SEC-7) configure the outbound Lens→Track
 	// spend-alert emitter. TrackWebhookURL is Track's POST /v1/lens/webhook;
@@ -2148,6 +2155,14 @@ func Load() (*Config, error) {
 		}
 		c.ScreeningFuzzyThreshold = f
 	}
+	// B30.33 — the Travel Rule threshold for a company's USDC transfers. A malformed value is refused.
+	if v := os.Getenv("LENS_TRAVEL_RULE_MINOR"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_TRAVEL_RULE_MINOR must be a whole number of micro-USDC, 0 or more, got %q", v)
+		}
+		c.TravelRuleMinor = n
+	}
 	// B37.4 — how old the sanctions lists may get before payments hold. A malformed value is refused.
 	c.ScreeningMaxAge = 48 * time.Hour
 	if v := os.Getenv("LENS_SCREENING_MAX_AGE_HOURS"); v != "" {
@@ -2156,6 +2171,15 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_SCREENING_MAX_AGE_HOURS must be a whole number of hours above 0, got %q", v)
 		}
 		c.ScreeningMaxAge = time.Duration(h) * time.Hour
+	}
+	// B30.15 — how long money in that matched no account waits in suspense. A malformed value is refused.
+	c.SuspenseReturnDays = 5
+	if v := os.Getenv("LENS_SUSPENSE_RETURN_DAYS"); v != "" {
+		d, err := strconv.Atoi(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("config: LENS_SUSPENSE_RETURN_DAYS must be a whole number of business days above 0, got %q", v)
+		}
+		c.SuspenseReturnDays = d
 	}
 	// HA fail-closed: with LENS_HA_ENABLED every replica must share STABLE
 	// signing keys. Ephemeral per-replica keys "work" at startup and break

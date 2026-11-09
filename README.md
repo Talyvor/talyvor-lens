@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/talyvor-logo-dark-notag.svg">
-    <img alt="Talyvor" src="docs/brand/talyvor-logo-light-notag.svg" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/talyvor-logo-on-dark.svg">
+    <img alt="Talyvor" src="docs/brand/talyvor-logo-on-light.svg" width="360">
   </picture>
 </p>
 

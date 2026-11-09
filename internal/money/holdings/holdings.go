@@ -186,8 +186,7 @@ type Statement struct {
 // Statement is what held, by network, comes to for an owner in country, valued in currency: networks absent from held
 // were not read and are left out.
 func (l List) Statement(ctx context.Context, country, currency string, held map[string][]Held, prices Prices) (Statement, error) {
-	dp, ok := Currencies[currency]
-	if !ok {
+	if _, ok := Currencies[currency]; !ok {
 		return Statement{}, fmt.Errorf("%w, not %q", ErrCurrency, currency)
 	}
 	st := Statement{Currency: currency, Country: country, Networks: []NetworkBalances{}}
@@ -206,18 +205,10 @@ func (l List) Statement(ctx context.Context, country, currency string, held map[
 		}
 		nb := NetworkBalances{Network: n, Default: n.ID == defaultNetwork, Tokens: []Balance{}, Other: []Balance{}}
 		value := func(t Token, amount *big.Int) (*int64, error) {
-			p, err := prices.Price(ctx, t.Symbol, currency)
+			minor, err := Value(ctx, prices, t, amount, currency)
 			if err != nil {
 				return nil, fmt.Errorf("holdings: %s on %s: %w", t.Symbol, n.Name, err)
 			}
-			// minor = amount × price × 10^dp / 10^decimals, rounded down
-			v := new(big.Rat).Mul(new(big.Rat).SetInt(amount), p)
-			v.Mul(v, new(big.Rat).SetFrac(pow10(dp), pow10(t.Decimals)))
-			m := new(big.Int).Quo(v.Num(), v.Denom())
-			if !m.IsInt64() {
-				return nil, fmt.Errorf("holdings: %s on %s is worth more than a balance can show", t.Symbol, n.Name)
-			}
-			minor := m.Int64()
 			nb.ValueMinor += minor
 			return &minor, nil
 		}
@@ -260,6 +251,26 @@ func (l List) Statement(ctx context.Context, country, currency string, held map[
 		st.Networks = append(st.Networks, nb)
 	}
 	return st, nil
+}
+
+// Value is what amount of t, in its smallest unit, is worth in currency's minor units, rounded down.
+func Value(ctx context.Context, prices Prices, t Token, amount *big.Int, currency string) (int64, error) {
+	dp, ok := Currencies[currency]
+	if !ok {
+		return 0, fmt.Errorf("%w, not %q", ErrCurrency, currency)
+	}
+	p, err := prices.Price(ctx, t.Symbol, currency)
+	if err != nil {
+		return 0, err
+	}
+	// minor = amount × price × 10^dp / 10^decimals, rounded down
+	v := new(big.Rat).Mul(new(big.Rat).SetInt(amount), p)
+	v.Mul(v, new(big.Rat).SetFrac(pow10(dp), pow10(t.Decimals)))
+	m := new(big.Int).Quo(v.Num(), v.Denom())
+	if !m.IsInt64() {
+		return 0, errors.New("worth more than a balance can show")
+	}
+	return m.Int64(), nil
 }
 
 func pow10(n int) *big.Int { return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil) }

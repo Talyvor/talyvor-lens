@@ -437,7 +437,7 @@ func openAPIPaths() map[string]any {
 		"/v1/public/fees": map[string]any{
 			"get": map[string]any{
 				"summary":     "Get every fee Talyvor charges",
-				"description": "No key needed. Basis points (100 = 1%) unless named minor units: market_take_bps (listing sales; the seller keeps the rest), services_take_bps, compute_take_bps, lending_fee_bps, merchant_fee_bps, merchant_a2a_fee_bps, and by plan platform_fee_bps and fx_margin_bps; intl_payment_fee_minor by currency; scan_alert_ulxc, the µLXC of credits a Scan agent pays for each alert its watch sends.",
+				"description": "No key needed. Basis points (100 = 1%) unless named minor units: market_take_bps (listing sales; the seller keeps the rest), services_take_bps, compute_take_bps, lending_fee_bps, merchant_fee_bps, merchant_a2a_fee_bps, and by plan platform_fee_bps and fx_margin_bps; intl_payment_fee_minor by currency; scan_alert_ulxc, the µLXC of credits a Scan agent pays for each alert its watch sends. charged says, by the same names, whether Lens charges each fee today.",
 				"security":    []map[string]any{},
 				"responses":   map[string]any{"200": map[string]any{"description": "every fee setting"}},
 			},
@@ -453,7 +453,7 @@ func openAPIPaths() map[string]any {
 		"/v1/public/plan-gates": map[string]any{
 			"get": map[string]any{
 				"summary":     "Get what each plan unlocks",
-				"description": "No key needed. order (free, team, business, enterprise) and, by plan, agents and seats (-1 unlimited), own_provider_keys (none, add_on — only with the BYOK add-on — or included), live_money, slack_teams_approvals, sso, audit_export and edge. plus, pro and max take free's; byok takes team's, with own keys.",
+				"description": "No key needed. order (free, team, business, enterprise) and, by plan, agents and seats (-1 unlimited), own_provider_keys (none, add_on — only with the BYOK add-on — or included), live_money, slack_teams_approvals, sso, audit_export and edge. plus, pro and max take free's; byok takes team's, with own keys. built says, by the same names, whether Lens enforces each gate today.",
 				"security":    []map[string]any{},
 				"responses":   map[string]any{"200": map[string]any{"description": "order and plans"}},
 			},

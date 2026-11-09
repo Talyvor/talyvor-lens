@@ -27,6 +27,9 @@ const (
 	OfferSubscribe = "subscribe"
 )
 
+// offerVerbs is how an approval for a licence names taking it (B55.31).
+var offerVerbs = map[string]string{OfferBuy: "Buy", OfferRent: "Rent", OfferSubscribe: "Subscribe to"}
+
 // Licences. What each allows is LicenceTerms; it is defined here and nowhere else.
 const (
 	LicencePersonal   = "personal"
