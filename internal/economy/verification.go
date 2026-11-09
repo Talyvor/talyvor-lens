@@ -2,6 +2,8 @@ package economy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -123,6 +125,8 @@ type VerificationRequest struct {
 	CompanyNumber      string            `json:"company_number"`
 	Directors          []string          `json:"directors"`
 	SignificantControl []string          `json:"people_with_significant_control"`
+	// Session is the sign-in asking (auth.AuthContext.Session): only it may lift a lockdown with this check (B41.116).
+	Session string `json:"-"`
 }
 
 // VerificationCheck is one check and where it stands.
@@ -142,6 +146,10 @@ type VerificationCheck struct {
 	CheckedAt     time.Time         `json:"checked_at"` // when it reached its status
 	// Link is where the person completes a check still waiting for them (Persona's one-time link); never stored.
 	Link string `json:"link,omitempty"`
+	// RequestedSession is the sign-in that started the check, and DateOfBirthDigest a digest of the date of birth an
+	// identity check confirms: a lockdown's lift goes only to that session, for a re-check matching the earlier one.
+	RequestedSession  string `json:"-"`
+	DateOfBirthDigest string `json:"-"`
 }
 
 // WorkspaceVerification is the owner's record: the level the checks reach, the level live money is judged by, the
@@ -249,15 +257,26 @@ func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partne
 		return VerificationCheck{}, fmt.Errorf("economy: verification: %w", err)
 	}
 	c := VerificationCheck{Level: in.Level, Subject: subject, Method: kyc.Name(), Status: string(res.Status), EvidenceRef: res.Ref,
-		Country: in.Country, CompanyNumber: in.CompanyNumber, Detail: res.Detail, RequestedBy: by, Link: res.Link}
+		Country: in.Country, CompanyNumber: in.CompanyNumber, Detail: res.Detail, RequestedBy: by, Link: res.Link,
+		RequestedSession: in.Session}
 	if in.Level != LevelContact {
 		c.VerifiedName = in.Name
+	}
+	if in.Level == LevelIdentity {
+		c.DateOfBirthDigest = dateOfBirthDigest(workspaceID, in.DateOfBirth)
 	}
 	if err := recordVerificationCheck(ctx, s.pool, workspaceID, &c); err != nil {
 		return VerificationCheck{}, err
 	}
 	c.StartedAt = c.CheckedAt
 	return c, nil
+}
+
+// dateOfBirthDigest is what an identity check keeps of the date of birth: enough to match a re-check, never shown. It
+// is no secret from anyone who can read the row, as there are few dates to try.
+func dateOfBirthDigest(workspaceID, dob string) string {
+	h := sha256.Sum256([]byte("dob\x00" + workspaceID + "\x00" + dob))
+	return hex.EncodeToString(h[:])
 }
 
 // identityNamed says whether names include the person whose identity check (L2) passed most recently, and who: a
@@ -278,9 +297,10 @@ func identityNamed(checks []VerificationCheck, names []string) (person string, n
 func recordVerificationCheck(ctx context.Context, q pgxDB, workspaceID string, c *VerificationCheck) error {
 	c.Test = testOnly(c.Method)
 	if err := q.QueryRow(ctx, `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref,
-		verified_name, country, company_number, detail, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		verified_name, country, company_number, detail, requested_by, requested_session, date_of_birth_digest)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING created_at`, workspaceID, int(c.Level), c.Subject, c.Method, c.Status, c.EvidenceRef, c.VerifiedName, c.Country,
-		c.CompanyNumber, c.Detail, c.RequestedBy).Scan(&c.CheckedAt); err != nil {
+		c.CompanyNumber, c.Detail, c.RequestedBy, c.RequestedSession, c.DateOfBirthDigest).Scan(&c.CheckedAt); err != nil {
 		return fmt.Errorf("economy: record verification: %w", err)
 	}
 	return nil
@@ -335,7 +355,7 @@ func (s *DualTokenStore) Verification(ctx context.Context, verifiers partners.Ve
 // first.
 func readVerificationChecks(ctx context.Context, q pgxDB, workspaceID string) ([]VerificationCheck, error) {
 	rows, err := q.Query(ctx, `SELECT level, subject, method, status, evidence_ref, verified_name, country, company_number, detail,
-		requested_by, started_at, created_at FROM (
+		requested_by, requested_session, date_of_birth_digest, started_at, created_at FROM (
 			SELECT DISTINCT ON (evidence_ref) *, min(created_at) OVER (PARTITION BY evidence_ref) AS started_at
 			FROM workspace_verifications WHERE workspace_id = $1 ORDER BY evidence_ref, id DESC) latest
 		ORDER BY started_at DESC, evidence_ref`, workspaceID)
@@ -346,7 +366,7 @@ func readVerificationChecks(ctx context.Context, q pgxDB, workspaceID string) ([
 		var c VerificationCheck
 		var level int16
 		err := row.Scan(&level, &c.Subject, &c.Method, &c.Status, &c.EvidenceRef, &c.VerifiedName, &c.Country, &c.CompanyNumber,
-			&c.Detail, &c.RequestedBy, &c.StartedAt, &c.CheckedAt)
+			&c.Detail, &c.RequestedBy, &c.RequestedSession, &c.DateOfBirthDigest, &c.StartedAt, &c.CheckedAt)
 		c.Level, c.Test = VerificationLevel(level), testOnly(c.Method)
 		return c, err
 	})

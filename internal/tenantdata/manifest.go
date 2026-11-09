@@ -166,6 +166,7 @@ var Manifest = map[string]Entry{
 	"chain_reconciliations":     {Retain, "B48.6: each night's comparison of an agent's crypto wallet on the chain with the ledger — the balances and any difference; financial-record retention"},
 	"travel_rule_transfers":     {Retain, "B48.7: the identity data — the payer's and the payee's names, wallets and addresses, and the payee's provider — that travelled with each payment to an address at another regulated provider; the Travel Rule's record (Regulation 2023/1113 Art. 26)"},
 	"crypto_address_proofs":     {Delete, "B48.7: each self-hosted address the owner proved they hold the key of, with the signed message; nothing to keep once the workspace is gone"},
+	"money_allowances":          {Retain, "B30.27: each agent's monthly allowance in a currency — amount, day, sweep-back; its money_allowance_runs name the money_entries each month posted; financial-record retention"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
 	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
@@ -261,6 +262,7 @@ var Manifest = map[string]Entry{
 	"market_uses":                  {Delete, "B20.2: keys `seller_workspace_id`+`buyer_workspace_id`: each use of a listing, what it was billed and when it cleared"},
 	"agent_money_requests":         {Delete, "B22.3: keys `from_workspace_id`+`to_workspace_id`: one agent asking another for credits, and the answer; the transfer an accepted one made is in agent_transfers"},
 	"company_credit_lines":         {Delete, "B22.4: a company's credit line: its limit and whether the operator paused it"},
+	"connector_grants":             {Delete, "B41.178: each assistant the owner connected through the Talyvor connector, the agent it acts as and the key it was given"},
 	"credit_line_draws":            {Delete, "B22.4: what the line lent an agent and the invoice it went on; the credits themselves are lxc_ledger rows of type credit_line_draw"},
 	"credit_score_reviews":         {Delete, "B30.39: a company's request for a person to review its credit score, the score it saw and the operator's answer"},
 	"credit_line_invoices":         {Delete, "B22.4: each month's Stripe invoice of a line's draws, and when it was paid"},
@@ -310,6 +312,7 @@ var Manifest = map[string]Entry{
 	"gas_budgets":                  {Delete, ""},
 	"gas_budget_top_ups":           {Delete, ""},
 	"gas_sponsorships":             {Delete, ""},
+	"workspace_lockdowns":          {Delete, "B41.116: whether the workspace is locked down after a lost phone, since when and by whom"},
 	"agent_smart_accounts":         {Delete, "B48.2: each crypto agent's smart account — its address, the owner's passkey public key, the address of the agent's key at the provider and the recovery address"},
 	"agent_spend_permissions":      {Delete, "B48.3: each permission the owner signed for a crypto agent's key — its limits, counterparties and the owner's passkey assertion"},
 	"agent_spend_permission_uses":  {Delete, "B48.3: each crypto payment the gate allowed under an agent's permission — token, counterparty and amount"},
