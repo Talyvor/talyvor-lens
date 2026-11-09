@@ -109,6 +109,7 @@ const ungatedMintMoment = ""
 var mintMomentFor = map[string]string{
 	TypeCacheMine:           TypeCacheMineHeld,
 	TypeComputeMine:         TypeComputeMineHeld,
+	TypeComputeFee:          TypeComputeMineHeld, // B56.20: the fee is part of the node's gated mint, booked in its tx
 	TypeEmbeddingMine:       TypeEmbeddingMineHeld,
 	TypeAnnotationMine:      TypeAnnotationMine, // no held stage: mint moment == settlement
 	TypePatternMine:         TypePatternMineHeld,
