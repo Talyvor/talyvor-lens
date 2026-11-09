@@ -2702,7 +2702,7 @@ func run() error {
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
 		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
-		mountNegotiationEmailRoutes(pub, net.DefaultResolver.LookupTXT, dualToken)
+		mountNegotiationEmailRoutes(pub, rateLimiter, net.DefaultResolver.LookupTXT, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
