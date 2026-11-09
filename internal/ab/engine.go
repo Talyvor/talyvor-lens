@@ -420,7 +420,7 @@ func (e *Engine) StartExperiment(ctx context.Context, id string) error {
 		return fmt.Errorf("ab: experiment %q not found", id)
 	}
 	if exp.Status == StatusCompleted {
-		return errors.New("ab: cannot start a completed experiment — clone it instead")
+		return errors.New("ab: cannot start a completed experiment. Clone it instead")
 	}
 	if err := e.checkActiveCapLocked(exp.WorkspaceID, id); err != nil {
 		return err

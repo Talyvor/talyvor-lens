@@ -24,7 +24,7 @@ import (
 var ErrAgentArchived = errors.New("economy: this agent is archived")
 
 // ErrAgentPotsHeld: the agent still keeps LXC in its pots, which may be locked; it must move them back first.
-var ErrAgentPotsHeld = errors.New("economy: this agent keeps LXC in its pots — move it back to its balance before archiving")
+var ErrAgentPotsHeld = errors.New("economy: this agent keeps money in its pots. Move it back to its balance before archiving")
 
 // ErrAgentDetails: a blank name, a description longer than MaxAgentDescription, or a colour or face not on its list (B57.10).
 var ErrAgentDetails = errors.New("economy: invalid agent details")

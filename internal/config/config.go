@@ -1628,7 +1628,7 @@ func Load() (*Config, error) {
 	// Operators must switch to an EC P-256 private key.
 	if os.Getenv("LENS_JWT_SECRET") != "" {
 		return nil, errors.New(
-			"LENS_JWT_SECRET is no longer supported — Lens now uses ES256 (EC P-256). " +
+			"LENS_JWT_SECRET is no longer supported. Lens now uses ES256 (EC P-256). " +
 				"Generate a key with:\n" +
 				"  openssl ecparam -name prime256v1 -genkey -noout | \\\n" +
 				"    openssl pkcs8 -topk8 -nocrypt -out ec-private.pem\n" +
@@ -2070,7 +2070,7 @@ func Load() (*Config, error) {
 		// economic control is gone. Refuse at boot rather than rely on a convention.
 		if f >= 1 {
 			return nil, fmt.Errorf(
-				"invalid LENS_POOL_ROYALTY_SHARE (must be < 1): %s — the share is a self-deal control, "+
+				"invalid LENS_POOL_ROYALTY_SHARE (must be < 1): %s. The share is a self-deal control, "+
 					"not a tuning knob: a Sybil pair spends C to earn s*C, so it loses (1-s)*C per cycle only "+
 					"while s < 1; at s >= 1 that becomes break-even or better and per-identity workspaces lose "+
 					"their only economic protection (workspace_owner_links has no writer, and card fingerprints "+
@@ -2096,7 +2096,7 @@ func Load() (*Config, error) {
 		// it is lucky. Refuse at boot.
 		if f >= 1 {
 			return nil, fmt.Errorf(
-				"invalid LENS_POOL_CONSUMER_DISCOUNT (must be < 1): %s — at r = 1 the consumer is charged "+
+				"invalid LENS_POOL_CONSUMER_DISCOUNT (must be < 1): %s. At r = 1 the consumer is charged "+
 					"nothing for a pooled hit, and because the contributor's royalty is funded by the "+
 					"consumer's settled charge (the funding invariant), the contributor then earns NOTHING "+
 					"too. That is not a generous discount, it is the pool silently ceasing to pay", v)
@@ -2679,7 +2679,7 @@ func Load() (*Config, error) {
 	if v := os.Getenv("LENS_PROVIDER_SECRET_KEK"); v != "" {
 		ring, err := envelope.ParseKeyring(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid LENS_PROVIDER_SECRET_KEK (comma-separated base64 keys, primary first, each exactly %d bytes — `openssl rand -base64 %d`): %w", envelope.KEKLen, envelope.KEKLen, err)
+			return nil, fmt.Errorf("invalid LENS_PROVIDER_SECRET_KEK (comma-separated base64 keys, primary first, each exactly %d bytes, made with `openssl rand -base64 %d`): %w", envelope.KEKLen, envelope.KEKLen, err)
 		}
 		c.ProviderSecretKeyring = ring
 	}

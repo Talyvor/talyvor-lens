@@ -306,7 +306,7 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 }
 
 // ErrApprovalsChanged: one of the approvals a batch decision names is no longer pending, so none is decided.
-var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending — none was decided")
+var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending, so none was decided")
 
 // batchApprovalPurpose (B41.204) is the purpose one challenge over several approvals is issued for: the decision and
 // the set of ids, sorted, so the signature covers exactly that decision on exactly those approvals.

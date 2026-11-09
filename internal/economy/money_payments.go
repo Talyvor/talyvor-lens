@@ -229,7 +229,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	var payer string
 	if p.QuoteID == "" && payeeCurrency(payee) != p.Currency { // B30.22: never sent without its fee and rate shown first
-		return OutsidePayment{}, fmt.Errorf("%w: %s's account is in %s: an international payment is made at a quote — POST /v1/money/payments/quote first, then pay with its quote_id",
+		return OutsidePayment{}, fmt.Errorf("%w: %s's account is in %s: an international payment is made at a quote. POST /v1/money/payments/quote first, then pay with its quote_id",
 			ErrOutsidePayment, payee.Name, payeeCurrency(payee))
 	}
 	if p.QuoteID != "" {
@@ -369,7 +369,7 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 		Scan(&a.id, &a.agentID, &purpose, &currency, &status, &a.companyID, &a.partnerRef, &a.partnerID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return a, fmt.Errorf("%w: no %s account to pay from — open one at /v1/money/accounts", ErrMoneyAccountNotFound, in.Currency)
+		return a, fmt.Errorf("%w: no %s account to pay from. Open one at /v1/money/accounts", ErrMoneyAccountNotFound, in.Currency)
 	case err != nil:
 		return a, fmt.Errorf("economy: payment: %w", err)
 	case in.AgentID != "" && a.agentID != in.AgentID:

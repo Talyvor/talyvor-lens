@@ -30,7 +30,7 @@ const (
 )
 
 // ErrOutOfHoldback: a hold keeps only an earning still inside its holdback.
-var ErrOutOfHoldback = errors.New("market: the earning is already past its holdback — a hold keeps only an earning still inside it")
+var ErrOutOfHoldback = errors.New("market: the earning is already past its holdback. A hold keeps only an earning still inside it")
 
 // Hold is one market_holds row.
 type Hold struct {

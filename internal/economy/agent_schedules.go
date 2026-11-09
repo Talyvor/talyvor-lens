@@ -368,7 +368,7 @@ func (s *DualTokenStore) CancelAgentSchedule(ctx context.Context, workspaceID, s
 func (s *DualTokenStore) SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (AgentTopUp, error) {
 	t := AgentTopUp{AgentID: agentID, BelowULXC: belowULXC, ToULXC: toULXC}
 	if belowULXC <= 0 || toULXC <= belowULXC {
-		return t, fmt.Errorf("%w: a top-up needs 0 < below_ulxc < to_ulxc", ErrAgentRule)
+		return t, fmt.Errorf("%w: a top-up starts below an amount above zero and fills to a larger one", ErrAgentRule)
 	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO agent_topups (agent_id, workspace_id, below_ulxc, to_ulxc)
 		SELECT id, workspace_id, $3, $4 FROM agent_accounts WHERE id = $1 AND workspace_id = $2

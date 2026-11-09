@@ -21,7 +21,7 @@ import (
 // judge it exactly as they judge the owner's payment from it.
 
 // ErrApprovalNotNeeded: the payment is within the agent's approval amount, so there is nothing to approve.
-var ErrApprovalNotNeeded = errors.New("economy: this payment does not need approval — make it")
+var ErrApprovalNotNeeded = errors.New("economy: this payment does not need approval. Make it")
 
 // ErrReceiptNotFound: no entry of that id moved this agent's account.
 var ErrReceiptNotFound = errors.New("economy: no such entry on this agent's account")
