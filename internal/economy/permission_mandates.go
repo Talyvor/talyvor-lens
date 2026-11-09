@@ -401,10 +401,10 @@ func (s *DualTokenStore) CreatePermissionMandate(ctx context.Context, workspaceI
 	} else {
 		var spki []byte
 		var count int64
-		err = tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE`,
+		err = tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
 			a.CredentialID, workspaceID).Scan(&spki, &count)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return PermissionMandate{}, fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+			return PermissionMandate{}, fmt.Errorf("%w: not a passkey of this workspace, or it was removed", passkey.ErrInvalid)
 		}
 		if err != nil {
 			return PermissionMandate{}, fmt.Errorf("economy: passkey: %w", err)
@@ -511,7 +511,7 @@ func (s *DualTokenStore) EvaluateMandatePayment(ctx context.Context, workspaceID
 	var revokedAt *time.Time
 	err := s.pool.QueryRow(ctx, `SELECT m.canonical, m.workspace_id, m.credential_id, m.client_data_json, m.authenticator_data, m.signature,
 		m.device_id, m.revoked_at, k.public_key, d.public_key FROM permission_mandates m
-		LEFT JOIN workspace_passkeys k ON k.credential_id = m.credential_id AND k.workspace_id = m.workspace_id AND k.revoked_at IS NULL
+		LEFT JOIN workspace_passkeys k ON k.credential_id = m.credential_id AND k.workspace_id = m.workspace_id AND k.removed_at IS NULL AND k.revoked_at IS NULL
 		LEFT JOIN workspace_device_keys d ON d.id = m.device_id AND d.workspace_id = m.workspace_id AND d.revoked_at IS NULL
 		WHERE m.id = $1 AND m.workspace_id = $2`, id, workspaceID).
 		Scan(&canonical, &rowWS, &a.CredentialID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &a.DeviceID, &revokedAt, &spki, &deviceSPKI)

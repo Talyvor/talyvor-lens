@@ -103,6 +103,7 @@ import (
 	"github.com/talyvor/lens/internal/modelwatch"
 	"github.com/talyvor/lens/internal/moderatorkey"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/issuerfake"
 	"github.com/talyvor/lens/internal/monitoring"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/nodelatency"
@@ -2024,8 +2025,12 @@ func run() error {
 	// B46.3 — the money layer: every switch is off, so the sandbox (the Test partners above) serves every call, and partner
 	// webhooks enter at POST /v1/money/webhooks/{partner}. B46.4 — every agent's wallet is opened and read through it,
 	// and money leaving one is judged by the agent's rules first.
-	moneyLayer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
-		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)})
+	moneyCfg := money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
+		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)}
+	if cfg.PhysicalCards { // B53.19 — shortcut: the fake holds its cards in memory, so a restart forgets them; replaced by a live card issuer
+		moneyCfg.Issuer = issuerfake.New(dualToken.AuthorizeCardCharge).Adapter()
+	}
+	moneyLayer, err := money.NewRegistry(moneyCfg)
 	if err != nil {
 		return err
 	}
@@ -3070,6 +3075,9 @@ func run() error {
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
 		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken,
 		scan: scanWriter}
+	if cfg.PhysicalCards {
+		syntheticDue.physicalCards = dualToken // B53.19
+	}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -4967,6 +4975,7 @@ func run() error {
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
+		mountPhysicalCardRoutes(authed, dualToken, cfg.PhysicalCards)                   // B53.19
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50

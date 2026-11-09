@@ -42,6 +42,12 @@ var ErrEnrolmentCodeTaken = errors.New("A key with the same code already waits t
 // ErrPasskeyRegistered (B54.28): the passkey is already a workspace's key.
 var ErrPasskeyRegistered = errors.New("This passkey is already added. Use it as it is, or make a new passkey on this device.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
+// ErrPasskeyRemoved (B55.15): the passkey was a workspace's key and was removed.
+var ErrPasskeyRemoved = errors.New("economy: this passkey was removed")
+
+// PasskeyRemovedSentence is what the owner is told when a registration is refused with ErrPasskeyRemoved.
+const PasskeyRemovedSentence = "This passkey was removed. Make a new passkey on this device."
+
 // ErrNoLiveKey (B54.28): every key the workspace has is revoked, so none could let a waiting key in.
 var ErrNoLiveKey = errors.New("Every key of this workspace was removed, so no key can let a new one in.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
@@ -76,7 +82,7 @@ func enrolmentCode(spki []byte) string {
 func (s *DualTokenStore) waitEnrolment(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, e KeyEnrolment,
 	person, credentialID string, publicKey []byte, signCount int64, attestation []byte) error {
 	var live int
-	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1)
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL AND revoked_at IS NULL)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL)`, workspaceID).Scan(&live); err != nil {
 		return fmt.Errorf("economy: key enrolments: %w", err)
 	}
