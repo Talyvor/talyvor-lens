@@ -54,22 +54,6 @@ type Briefing struct {
 	Line           string          `json:"line"` // the whole briefing in one line
 }
 
-// briefingAmount writes an amount for a person: µLXC as LXC, minor units as FormatMinor does.
-func briefingAmount(amount int64, currency string) string {
-	if currency != "LXC" {
-		return FormatMinor(amount, currency)
-	}
-	sign := ""
-	if amount < 0 {
-		sign, amount = "-", -amount
-	}
-	out := fmt.Sprintf("%d", amount/1_000_000)
-	if frac := strings.TrimRight(fmt.Sprintf("%06d", amount%1_000_000), "0"); frac != "" {
-		out += "." + frac
-	}
-	return sign + out + " LXC"
-}
-
 // DailyBriefing reads workspaceID's briefing for the morning of at.
 func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, at time.Time) (Briefing, error) {
 	at = at.UTC()
@@ -87,8 +71,9 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 		       CASE WHEN count(*) > 1 THEN count(*)::text || ' payments' ELSE COALESCE(min(i.payee_name), '') END, min(i.reason), r.created_at
 		  FROM payment_requests r JOIN payment_request_items i ON i.request_id = r.id
 		 WHERE r.workspace_id = $1 AND r.status = 'pending_approval' AND i.decision = 'needs_approval'
+		   AND NOT `+requestExpired2+`
 		 GROUP BY r.id, r.agent_id, i.currency, r.created_at
-		ORDER BY 8, 1`, workspaceID)
+		ORDER BY 8, 1`, workspaceID, s.approvalLife().Microseconds())
 	if err != nil {
 		return fail(err)
 	}
@@ -101,7 +86,7 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 			return fail(err)
 		}
 		it.Kind = BriefingApproval
-		it.Text = briefingAmount(it.Amount, it.Currency) + " waits for your approval"
+		it.Text = Money(it.Amount, it.Currency) + " waits for your approval"
 		if payee != "" {
 			it.Text += ", to " + payee
 		}
@@ -139,7 +124,7 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 		it.Kind = BriefingBlocked
 		switch {
 		case it.Amount > 0:
-			it.Text = briefingAmount(it.Amount, it.Currency) + " to " + it.Name + " was blocked"
+			it.Text = Money(it.Amount, it.Currency) + " to " + it.Name + " was blocked"
 		case it.AgentID == "":
 			it.Name, it.Text = "Every agent", "Every agent is paused"
 		default:
@@ -168,7 +153,7 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 			rows.Close()
 			return fail(err)
 		}
-		it.Text = "A bill from " + it.Name + " for " + briefingAmount(it.Amount, it.Currency) + " is due"
+		it.Text = "A bill from " + it.Name + " for " + Money(it.Amount, it.Currency) + " is due"
 		if it.DueDate != "" {
 			it.Text += " on " + it.DueDate
 		}
@@ -211,12 +196,12 @@ func (s *DualTokenStore) DailyBriefing(ctx context.Context, workspaceID string, 
 			return fail(err)
 		}
 		if it.Kind == BriefingPayment {
-			it.Text = briefingAmount(it.Amount, it.Currency) + " was paid to " + it.Name
+			it.Text = Money(it.Amount, it.Currency) + " was paid to " + it.Name
 			if memo != "" {
 				it.Text += " for " + memo
 			}
 		} else {
-			it.Text = it.Name + " spent " + briefingAmount(it.Amount, it.Currency)
+			it.Text = it.Name + " spent " + Money(it.Amount, it.Currency)
 		}
 		if _, ok := totals[it.Currency]; !ok {
 			order = append(order, it.Currency)
@@ -269,7 +254,7 @@ func briefingLine(b Briefing) string {
 	if len(b.SpentYesterday) > 0 {
 		var spent []string
 		for _, t := range b.SpentYesterday {
-			spent = append(spent, briefingAmount(t.Amount, t.Currency))
+			spent = append(spent, Money(t.Amount, t.Currency))
 		}
 		parts = append(parts, "spent yesterday "+strings.Join(spent, " and "))
 	}

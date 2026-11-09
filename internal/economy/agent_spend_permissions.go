@@ -251,7 +251,7 @@ func (s *DualTokenStore) AgentSpendPermission(ctx context.Context, workspaceID, 
 }
 
 // AuthoriseAgentCryptoPayment is Talyvor's gate before agentID's key is asked to sign pay: the agent is not frozen,
-// the permission it pays under is the one its account's owner signed, and pay is inside it, counting what it already
+// archived or paused (on its own or with every agent, B55.23), the permission it pays under is the one its account's owner signed, and pay is inside it, counting what it already
 // paid in the token this period. A payment it allows is kept, and counts against the allowance from then on: its use,
 // which SettleAgentCryptoFee settles once a fee paid in the token is known.
 func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, workspaceID, agentID string, pay smartaccount.Payment) (int64, error) {
@@ -263,6 +263,9 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 		}
 		if acct.frozenAt != nil {
 			return smartaccount.ErrFrozen
+		}
+		if err := refuseIfPaused(ctx, tx, agentID); err != nil {
+			return err
 		}
 		var canonical string
 		var a passkey.Assertion

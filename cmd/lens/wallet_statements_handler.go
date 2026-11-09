@@ -202,12 +202,16 @@ func walletTaxCSV(x economy.TaxExport) [][]string {
 	rows := [][]string{{"line", "at", "asset", "network", "agent_id", "tx_hash", "direction", "quantity_minor", "proceeds_minor",
 		"cost_basis_minor", "gain_minor", "no_basis_quantity_minor", "currency"}}
 	for _, d := range x.Disposals {
+		noBasis := "0"
+		if d.NoBasisQuantityMinor != nil {
+			noBasis = d.NoBasisQuantityMinor.String()
+		}
 		rows = append(rows, []string{"disposal", d.At.Format(time.RFC3339), d.Asset, d.Network, d.AgentID, d.TxHash, d.Direction,
-			i64(d.QuantityMinor), i64(d.ProceedsMinor), i64(d.CostBasisMinor), i64(d.GainMinor), i64(d.NoBasisQuantityMinor), x.Currency})
+			d.QuantityMinor.String(), i64(d.ProceedsMinor), i64(d.CostBasisMinor), i64(d.GainMinor), noBasis, x.Currency})
 	}
 	for _, m := range x.Unpriced {
 		rows = append(rows, []string{"unpriced", m.At.Format(time.RFC3339), m.Asset, m.Network, m.AgentID, m.TxHash, m.Direction,
-			i64(m.QuantityMinor), "", "", "", "", x.Currency})
+			m.QuantityMinor.String(), "", "", "", "", x.Currency})
 	}
 	return append(rows, []string{"total", "", "", "", "", "", "", "", i64(x.ProceedsMinor), i64(x.CostBasisMinor), i64(x.GainMinor), "", x.Currency})
 }

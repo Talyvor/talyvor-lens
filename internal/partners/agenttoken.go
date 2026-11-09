@@ -8,7 +8,8 @@ import (
 )
 
 // AgentTokenProvider issues card-network agent tokens: a card credential an agent pays with, which the network
-// knows is an agent's and which its owner can revoke — the capability agent_card.
+// knows is an agent's, bound to one merchant and a spending limit, and which its owner can revoke — the capability
+// agent_card. This is the shape of Visa Intelligent Commerce and Mastercard Agent Pay tokens.
 type AgentTokenProvider interface {
 	// Name identifies the implementation on every request it handles.
 	Name() string
@@ -22,12 +23,13 @@ type AgentTokenProvider interface {
 	Revoke(ctx context.Context, tokenRef string) error
 }
 
-// AgentTokenRequest asks for a token for an agent.
+// AgentTokenRequest asks for a token for an agent, to pay one merchant up to a limit.
 type AgentTokenRequest struct {
 	ID        string    `json:"id"` // the caller's id for the token
 	AgentID   string    `json:"agent_id"`
 	AgentName string    `json:"agent_name"`
-	Currency  string    `json:"currency"`
+	Merchant  string    `json:"merchant"`
+	Limit     Money     `json:"limit"` // the most the token pays, all its payments together, in the one currency it pays in
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -49,7 +51,7 @@ type Authorisation struct {
 
 // TestAgentTokenProvider is test mode for agent tokens: it reaches no card network. A token is provisioned by the
 // agent's name, and an authorisation answers by its amount (see the package comment); a revoked or expired token,
-// or one in another currency, is declined.
+// a payment to another merchant or in another currency, and one that takes the token past its limit are declined.
 type TestAgentTokenProvider struct {
 	book    testBook
 	revoked map[string]bool
@@ -60,8 +62,11 @@ func (*TestAgentTokenProvider) Name() string { return "test" }
 
 // Provision issues a token on the "test" network.
 func (p *TestAgentTokenProvider) Provision(_ context.Context, req AgentTokenRequest) (AgentToken, error) {
-	if _, ok := currencies[req.Currency]; !ok || strings.TrimSpace(req.AgentID) == "" {
-		return AgentToken{}, fmt.Errorf("%w: a token is for an agent, in GBP, EUR, USD or USDC", ErrInvalid)
+	if err := checkMoney(req.Limit); err != nil {
+		return AgentToken{}, err
+	}
+	if strings.TrimSpace(req.AgentID) == "" || strings.TrimSpace(req.Merchant) == "" {
+		return AgentToken{}, fmt.Errorf("%w: a token is for an agent and a merchant", ErrInvalid)
 	}
 	p.book.mu.Lock()
 	defer p.book.mu.Unlock()
@@ -95,14 +100,31 @@ func (p *TestAgentTokenProvider) Authorise(_ context.Context, req Authorisation)
 		decide = declined("test mode: the token is not active")
 	case !p.book.clock().Before(t.ExpiresAt):
 		decide = declined("test mode: the token has expired")
-	case t.Currency != req.Amount.Currency:
-		decide = declined("test mode: the token pays in " + t.Currency)
+	case !strings.EqualFold(strings.TrimSpace(req.Merchant), strings.TrimSpace(t.Merchant)):
+		decide = declined("test mode: the token pays only " + t.Merchant)
+	case t.Limit.Currency != req.Amount.Currency:
+		decide = declined("test mode: the token pays in " + t.Limit.Currency)
+	case req.Amount.Minor > t.Limit.Minor-p.spent(req.TokenRef): // never overflows: spent stays within the limit
+		decide = declined("test mode: the payment takes the token past its limit")
 	}
 	op, _, err := p.book.record("auth", req.ID, req, decide)
 	if err != nil {
 		return Result{}, err
 	}
 	return op.result, nil
+}
+
+// spent is what the token's approved and pending payments add up to. The caller holds p.book.mu.
+func (p *TestAgentTokenProvider) spent(tokenRef string) (minor int64) {
+	for ref, op := range p.book.ops {
+		if !strings.HasPrefix(ref, "test_auth_") || op.request.(Authorisation).TokenRef != tokenRef {
+			continue
+		}
+		if s := op.status().Status; s == StatusCompleted || s == StatusPending {
+			minor += op.request.(Authorisation).Amount.Minor
+		}
+	}
+	return minor
 }
 
 // Status is where a token or an authorisation stands now: a revoked token reads failed.

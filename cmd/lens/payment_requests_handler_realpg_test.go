@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 	}
 
 	for _, p := range [][3]string{{"payee_plumber", "Ada Plumbing", "exact_match"}, {"payee_grocer", "Grace Groceries", "exact_match"},
-		{"payee_stranger", "Carol Consulting", "exact_match"}, {"payee_nomatch", "Bob TESTNOMATCH", "no_match"}} {
+		{"payee_stranger", "Carol Consulting", "exact_match"}, {"payee_nomatch", "Bob TESTNOMATCH", "no_match"}, {"payee_acme", "Acme Hosting", "exact_match"}} {
 		if _, err := pool.Exec(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number, check_result, checked_by)
 			VALUES ($1, $2, $3, 'GB', '20-00-00', '55779911', $4, 'test')`, p[0], ws, p[1], p[2]); err != nil {
 			t.Fatal(err)
@@ -84,8 +85,8 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 	}
 	canonical, challenge, _, err := store.PreparePermissionMandate(ctx, ws, economy.PermissionMandateTerms{
 		Principal: economy.MandatePrincipal{Type: "person", ID: "ada", Name: "Ada Lovelace"}, Clients: []string{"chat", "voice"},
-		Scope:  economy.MandateScope{Payees: []string{"payee_plumber", "payee_grocer"}, Currencies: []string{"GBP"}},
-		Limits: economy.MandateLimits{PerPayment: map[string]int64{"GBP": 10000}}, NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeConfirmationOfPayee},
+		Scope:  economy.MandateScope{Payees: []string{"payee_plumber", "payee_grocer", "payee_acme"}, Currencies: []string{"GBP", "USD"}},
+		Limits: economy.MandateLimits{PerPayment: map[string]int64{"GBP": 10000, "USD": 20000}}, NewPayee: economy.MandateNewPayee{Policy: economy.NewPayeeConfirmationOfPayee},
 		ExpiresAt: time.Now().Add(24 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +127,29 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 	if reason := items[2].(map[string]any)["reason"].(string); !strings.Contains(reason, "did not match its account") {
 		t.Errorf("the blocked payee's reason is %q", reason)
 	}
+	// B55.32: the summary and every reason read as sentences with real amounts.
+	if first["summary"] != "Pay 3 payments, £170.00: 2 wait for you, 1 blocked" {
+		t.Errorf("the batch's summary is %q", first["summary"])
+	}
+	if reason := items[0].(map[string]any)["reason"].(string); !strings.Contains(reason, "£120.00") || strings.Contains(reason, "12000") {
+		t.Errorf("the over-limit reason is %q, want £120.00 and no bare minor units", reason)
+	}
+	_, acme := call(http.MethodPost, "/v1/money/payment-requests", "acme-1",
+		`{"client":"chat","items":[{"payee_id":"payee_acme","currency":"USD","amount_minor":34000}]}`)
+	if acme["summary"] != "Pay Acme Hosting $340.00" {
+		t.Errorf("one waiting payment's summary is %q, want Pay Acme Hosting $340.00", acme["summary"])
+	}
+	_, three := call(http.MethodPost, "/v1/money/payment-requests", "acme-3", `{"client":"chat","items":[
+		{"payee_id":"payee_acme","currency":"USD","amount_minor":34000},{"payee_id":"payee_stranger","currency":"USD","amount_minor":75000},
+		{"payee_id":"payee_plumber","currency":"USD","amount_minor":15000}]}`)
+	if three["summary"] != "Pay 3 payments, $1,240.00: 2 wait for you, 1 inside a permission you signed" {
+		t.Errorf("a batch with one covered payment summarises %q", three["summary"])
+	}
+	for _, r := range []map[string]any{first, acme, three} {
+		if s := jsonOf(r["summary"]) + jsonOf(r["items"]); strings.Contains(s, "item(s)") || rfc3339.MatchString(s) {
+			t.Errorf("a summary or reason reads %s", s)
+		}
+	}
 
 	code, again := call(http.MethodPost, "/v1/money/payment-requests", "batch-1", batch)
 	if code != http.StatusOK || again["id"] != id || again["payload_hash"] != first["payload_hash"] {
@@ -154,7 +178,8 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 		t.Errorf("bank details in the arguments = %d %v, want 400", code, out)
 	}
 
-	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+chat["id"].(string)+"/cancel", "", ""); code != http.StatusOK || out["status"] != "cancelled" {
+	// B55.21: chat's covered £90 was refused for want of an account, so nothing in it waits; the voice one does.
+	if code, out := call(http.MethodPost, "/v1/money/payment-requests/"+voice["id"].(string)+"/cancel", "", ""); code != http.StatusOK || out["status"] != "cancelled" {
 		t.Errorf("cancel = %d %v", code, out)
 	}
 	if code, out := call(http.MethodGet, "/v1/money/payment-requests/"+id, "", ""); code != http.StatusOK || out["payload_hash"] != first["payload_hash"] {
@@ -168,6 +193,8 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 		}
 	}
 }
+
+var rfc3339 = regexp.MustCompile(`\d{4}-\d\d-\d\dT\d\d:\d\d`)
 
 func hex256(s string) string {
 	h := sha256.Sum256([]byte(s))
