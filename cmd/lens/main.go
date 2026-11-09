@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -236,6 +237,14 @@ func main() {
 	// `lens credit-lines` (B22.4): mark company workspaces and set, pause or resume their credit lines.
 	if len(os.Args) > 1 && os.Args[1] == "credit-lines" {
 		if err := runCreditLines(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	// `lens credit-scores` (B30.39): companies' requests for a person to review their credit score, and the answer.
+	if len(os.Args) > 1 && os.Args[1] == "credit-scores" {
+		if err := runCreditScores(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -2667,6 +2676,8 @@ func run() error {
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
+		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
+		mountNegotiationEmailRoutes(pub, net.DefaultResolver.LookupTXT, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -4868,6 +4879,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
+		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
 		mountAgentEscrowRoutes(authed, dualToken)                                       // B22.6
 		mountAgentPotRoutes(authed, dualToken)                                          // B22.7
@@ -4879,6 +4891,7 @@ func run() error {
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
+		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
@@ -4954,6 +4967,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
+		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
+			sweepAlertChannels(lctx, dualToken)
 		})
 		// B53.13: one replica reads the connected bank accounts in the background.
 		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {

@@ -267,12 +267,18 @@ func (s *DualTokenStore) ListAgentSpendAlerts(ctx context.Context, workspaceID s
 type AgentForecast struct {
 	AgentID      string `json:"agent_id"`
 	Name         string `json:"name"`
+	Colour       string `json:"colour"` // B57.10: its face, as the book has it
+	Face         string `json:"face"`
 	SpentULXC    int64  `json:"spent_ulxc"`
 	ForecastULXC int64  `json:"forecast_ulxc"`
 	BalanceULXC  int64  `json:"balance_ulxc"` // what it holds now
 	// RunsOutAt (B28.94) is when BalanceULXC is gone at its pace so far this month, in the agent's own time zone so
 	// its date is the agent's date; nil when it spends nothing at that pace.
 	RunsOutAt *time.Time `json:"runs_out_at"`
+	// RunsOutOn (B28.330) is RunsOutAt's date in Timezone, as YYYY-MM-DD, so a screen shows the agent's date and never
+	// re-reads the instant in its viewer's zone; nil with RunsOutAt.
+	RunsOutOn *string `json:"runs_out_on"`
+	Timezone  string  `json:"timezone"` // the agent's IANA time zone, "UTC" when it has none set
 }
 
 // SpendForecast is a workspace's month-end forecast, as of At.
@@ -316,7 +322,7 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 	start := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
 	f := SpendForecast{At: at, MonthStart: start, MonthEnd: start.AddDate(0, 1, 0), Agents: []AgentForecast{}}
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.id, a.name, COALESCE((SELECT -sum(p.amount_ulxc) FROM agent_postings p
+		SELECT a.id, a.name, a.colour, a.face, COALESCE((SELECT -sum(p.amount_ulxc) FROM agent_postings p
 		         WHERE p.workspace_id = a.workspace_id AND p.account = 'agent:' || a.id
 		           AND p.created_at >= $2 AND p.created_at < $3 AND `+agentSpendPostings+`), 0)::bigint,
 		       COALESCE((SELECT b.balance_ulxc FROM agent_account_balances b WHERE b.workspace_id = a.workspace_id AND b.account = 'agent:' || a.id), 0)::bigint,
@@ -330,7 +336,7 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 	for rows.Next() {
 		var a AgentForecast
 		var tz string
-		if err := rows.Scan(&a.AgentID, &a.Name, &a.SpentULXC, &a.BalanceULXC, &tz); err != nil {
+		if err := rows.Scan(&a.AgentID, &a.Name, &a.Colour, &a.Face, &a.SpentULXC, &a.BalanceULXC, &tz); err != nil {
 			return f, err
 		}
 		loc, err := AgentRules{Timezone: tz}.location()
@@ -340,8 +346,10 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 		a.ForecastULXC = runOn(a.SpentULXC, elapsed, length)
 		if t := runsOut(a.BalanceULXC, a.SpentULXC, at, elapsed); t != nil {
 			*t = t.In(loc)
-			a.RunsOutAt = t
+			on := t.Format(time.DateOnly)
+			a.RunsOutAt, a.RunsOutOn = t, &on
 		}
+		a.Timezone = loc.String()
 		f.SpentULXC += a.SpentULXC
 		f.Agents = append(f.Agents, a)
 	}

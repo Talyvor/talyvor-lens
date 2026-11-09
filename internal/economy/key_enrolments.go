@@ -34,13 +34,13 @@ const (
 var ErrEnrolmentNotFound = errors.New("economy: no such key waiting to join this workspace")
 
 // ErrTooManyEnrolments: maxWaitingEnrolments keys already wait in the workspace.
-var ErrTooManyEnrolments = errors.New("economy: three new keys already wait to join this workspace — approve or decline one first")
+var ErrTooManyEnrolments = errors.New("Three keys already wait to join this workspace. Answer one of them first.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrEnrolmentCodeTaken: a key with the same code already waits, so the two could not be told apart on screen.
-var ErrEnrolmentCodeTaken = errors.New("economy: a key with this code already waits to join this workspace — decline it first")
+var ErrEnrolmentCodeTaken = errors.New("A key with the same code already waits to join this workspace. Answer that one first.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrPasskeyRegistered (B54.28): the passkey is already a workspace's key.
-var ErrPasskeyRegistered = errors.New("economy: this passkey is already registered — use it as it is, or create a new passkey on this device")
+var ErrPasskeyRegistered = errors.New("This passkey is already added. Use it as it is, or make a new passkey on this device.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrPasskeyRemoved (B55.15): the passkey was a workspace's key and was removed.
 var ErrPasskeyRemoved = errors.New("economy: this passkey was removed")
@@ -49,7 +49,7 @@ var ErrPasskeyRemoved = errors.New("economy: this passkey was removed")
 const PasskeyRemovedSentence = "This passkey was removed. Make a new passkey on this device."
 
 // ErrNoLiveKey (B54.28): every key the workspace has is revoked, so none could let a waiting key in.
-var ErrNoLiveKey = errors.New("economy: every key of this workspace is revoked, so no key can let a new one in — recover the workspace's keys first")
+var ErrNoLiveKey = errors.New("Every key of this workspace was removed, so no key can let a new one in.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // KeyEnrolment is a key waiting to join a workspace. Status is waiting, approved, declined or expired.
 type KeyEnrolment struct {

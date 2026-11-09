@@ -33,8 +33,8 @@ import (
 //
 // The walk-away is the owner's alone: RecordNegotiationTerms refuses an outbound offer or message that names it, in
 // any way a number is written, and an offer that reaches it. One side per deal (B54.7): the reference the owner types
-// holds nothing until the counterparty's own signed agent confirms it (ConfirmNegotiationDeal), so no one can squat an
-// RFQ by typing it first; a confirmed deal holds at most one live mandate across every workspace, so Counter never
+// holds nothing until the counterparty's own signed agent, or an email its domain signed (B54.8), confirms it
+// (ConfirmNegotiationDeal), so no one can squat an RFQ by typing it first; a confirmed deal holds at most one live mandate across every workspace, so Counter never
 // acts for both sides of one deal or for two bidders in one RFQ, and a refusal in it names nobody. A deal is its
 // reference and its two parties, told apart by the domains each workspace proved it trades as (ClaimNegotiationDomain),
 // so a workspace confirming its own deal holds nothing and strangers sharing a reference block no one. Nothing here moves
@@ -420,15 +420,16 @@ func RegistrableDomain(d string) string {
 	return d
 }
 
-// ConfirmNegotiationDeal records that the counterparty's agent, signed by domain with key keyID, confirmed deal as
-// mandate id's: the deal is then the mandate's alone, recorded as domain's registrable domain. The caller has checked
-// that the agent speaks for that registrable domain (B54.16). The mandate must be live and allow the agent channel,
-// domain must be one of its counterparties or under one, and deal must be its reference; otherwise it is not found, so
-// a stranger learns nothing. The mandate's workspace must have proved a domain it trades as, and neither domain nor
-// keyID may be its own (a domain it proved, or an agent that proved one): a workspace never confirms its own deal. A
-// mandate is confirmed once; a deal already confirmed to a mandate it may not stand beside (dealHeld) is
-// ErrNegotiationOneSide.
-func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain, keyID, deal string) error {
+// ConfirmNegotiationDeal records that the counterparty, proved to be domain over channel via (its agent, signed with
+// key keyID, or an email its domain's DKIM signature holds for, B54.8, which passes no keyID), confirmed deal as
+// mandate id's: the deal is then the mandate's alone, recorded as domain's registrable domain and via. For the agent
+// channel the caller has checked that the agent speaks for that registrable domain (B54.16). The mandate must be live
+// and allow via, domain must be one of its counterparties or under one, and deal must be its reference; otherwise it
+// is not found, so a stranger learns nothing. The mandate's workspace must have proved a domain it trades as, and
+// neither domain nor keyID may be its own (a domain it proved, or an agent that proved one): a workspace never
+// confirms its own deal. A mandate is confirmed once; a deal already confirmed to a mandate it may not stand beside
+// (dealHeld) is ErrNegotiationOneSide.
+func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain, keyID, deal, via string) error {
 	var workspaceID string
 	err := s.pool.QueryRow(ctx, `SELECT workspace_id FROM negotiation_mandates WHERE id = $1`, id).Scan(&workspaceID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -438,7 +439,8 @@ func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain,
 		return fmt.Errorf("economy: negotiation mandate: %w", err)
 	}
 	t, err := s.signedNegotiation(ctx, workspaceID, id)
-	if err != nil || !slices.Contains(t.Channels, ChannelAgent) || !slices.ContainsFunc(t.Counterparties, func(c string) bool {
+	domain = strings.ToLower(domain)
+	if err != nil || !slices.Contains(t.Channels, via) || !slices.ContainsFunc(t.Counterparties, func(c string) bool {
 		return domain == c || strings.HasSuffix(domain, "."+c)
 	}) {
 		return ErrNegotiationNotFound
@@ -476,7 +478,7 @@ func (s *DualTokenStore) ConfirmNegotiationDeal(ctx context.Context, id, domain,
 			return fmt.Errorf("%w: this deal is already confirmed to another party", ErrNegotiationOneSide)
 		}
 		tag, err := tx.Exec(ctx, `UPDATE negotiation_mandates SET deal_confirmed_by = $2, deal_confirmed_via = $3, deal_confirmed_at = now()
-			WHERE id = $1 AND ended_at IS NULL AND deadline > now() AND deal_confirmed_at IS NULL`, id, by, ChannelAgent)
+			WHERE id = $1 AND ended_at IS NULL AND deadline > now() AND deal_confirmed_at IS NULL`, id, by, via)
 		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23505" {
 			return fmt.Errorf("%w: this deal is already confirmed to another party", ErrNegotiationOneSide)
 		}

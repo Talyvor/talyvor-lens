@@ -11,9 +11,11 @@ import (
 	"github.com/talyvor/lens/internal/economy"
 )
 
-// connectAgents is the slice of the agent store the Connect mint reads: which agents a workspace has, and whose.
+// connectAgents is the slice of the agent store the Connect mint reads: which agents a workspace has, and whose, and
+// the database's clock a token's issued-at is stamped from.
 type connectAgents interface {
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
+	ConnectClock(ctx context.Context) (time.Time, error)
 }
 
 // newConnectTokenMintHandler is POST /v1/auth/connect-token (B52.4): the BFF, holding LENS_CONNECT_MINT_KEY, mints the
@@ -55,7 +57,12 @@ func newConnectTokenMintHandler(authManager *auth.Manager, agents connectAgents)
 			writeJSONErr(w, http.StatusForbidden, "the agent is not one of this workspace's that the person owns")
 			return
 		}
-		tok, err := auth.GenerateConnectToken(in.WorkspaceID, in.UserID, in.ClientID, in.AgentID, in.Scopes, authManager.PrivateKey(), auth.ConnectTokenTTL)
+		issuedAt, err := agents.ConnectClock(req.Context())
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		tok, err := auth.GenerateConnectToken(in.WorkspaceID, in.UserID, in.ClientID, in.AgentID, in.Scopes, authManager.PrivateKey(), auth.ConnectTokenTTL, issuedAt)
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return

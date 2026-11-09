@@ -112,10 +112,10 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 		return r, err
 	case r.Status == "approved":
 		return r, ErrPaymentRequestApproved
+	case r.Status == "expired":
+		return r, fmt.Errorf("%w: this request waited 24 hours without an answer and expired: ask for it again", ErrPaymentRequest)
 	case r.Status != "pending_approval":
 		return r, fmt.Errorf("%w: the request is %s: there is nothing to approve", ErrPaymentRequest, r.Status)
-	case time.Since(r.CreatedAt) >= s.approvalLife():
-		return r, fmt.Errorf("%w: the request waited %s unanswered and expired: ask again", ErrPaymentRequest, s.approvalLife())
 	case !frozenIntact(workspaceID, r):
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: it cannot be approved", ErrPaymentRequest)
 	}
@@ -295,6 +295,9 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 	}
 	if status == "cancelled" {
 		return r, fmt.Errorf("%w: the request was cancelled: nothing is paid", ErrPaymentRequest)
+	}
+	if r.Status == "expired" {
+		return r, fmt.Errorf("%w: the request waited 24 hours without an answer and expired: nothing is paid", ErrPaymentRequest)
 	}
 	if !frozenIntact(workspaceID, r) {
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: nothing is paid", ErrPaymentRequest)

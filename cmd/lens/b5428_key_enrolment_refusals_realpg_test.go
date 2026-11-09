@@ -8,7 +8,7 @@ import (
 )
 
 // B54.28 — a passkey already registered is refused in words at once, never kept waiting to fail on approval with a 500;
-// and a workspace whose every key is revoked gets no code no key could approve, but words pointing to recovery.
+// and a workspace whose every key is revoked gets no code no key could approve, but words saying so.
 func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 	h := newB551Harness(t, "ws-b5428-known")
 	phone, laptop := newB551Phone(), newB551Passkey()
@@ -20,8 +20,8 @@ func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 		t.Fatalf("letting the passkey in = %d %v", code, out)
 	}
 	code, out := h.registerPasskey(laptop)
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already registered") {
-		t.Fatalf("registering a passkey this workspace already has = %d %v, want 409 saying it is already registered", code, out)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already added") {
+		t.Fatalf("registering a passkey this workspace already has = %d %v, want 409 saying it is already added", code, out)
 	}
 	if n := h.countOf("key_enrolments"); n != 1 {
 		t.Fatalf("%d enrolments, want only the one approved: a known passkey was kept waiting", n)
@@ -36,8 +36,8 @@ func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 	}
 	h.ws = "ws-b5428-known"
 	code, out = h.approveEnrolment(idDesk, phone.sign)
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already registered") {
-		t.Fatalf("approving a passkey registered meanwhile elsewhere = %d %v, want 409 saying it is already registered", code, out)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already added") {
+		t.Fatalf("approving a passkey registered meanwhile elsewhere = %d %v, want 409 saying it is already added", code, out)
 	}
 	if n := h.countOf("workspace_passkeys"); n != 1 {
 		t.Fatalf("%d passkeys here, want 1", n)
@@ -60,8 +60,8 @@ func TestKeyEnrolment_OnlyRevokedKeysGetNoCode(t *testing.T) {
 		"a phone key": func() (int, map[string]any) { return h.registerPhone(newPhone) },
 	} {
 		code, out := reg()
-		if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "recover") {
-			t.Fatalf("%s registered where every key is revoked = %d %v, want 409 pointing to recovery", name, code, out)
+		if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "no key can let a new one in") {
+			t.Fatalf("%s registered where every key is revoked = %d %v, want 409 saying no key can let it in", name, code, out)
 		}
 	}
 	var n int

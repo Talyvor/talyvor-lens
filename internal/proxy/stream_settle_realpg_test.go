@@ -150,7 +150,7 @@ func TestStreamSettle_CrossTenantPooledHit_FundsViaResolve(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&upstreamCalls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"pooled answer"}}]}`)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"pooled answer"},"finish_reason":"stop"}]}`)
 	}))
 	t.Cleanup(up.Close)
 	p.openAIURL = up.URL
