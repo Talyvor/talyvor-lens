@@ -151,7 +151,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			return
 		}
 		from, to, format, err := statementPeriod(req, time.Now())
-		if err == nil && format == "pdf" {
+		if err == nil && format != "json" && format != "csv" {
 			err = errors.New("format must be json or csv")
 		}
 		if err != nil {

@@ -72,17 +72,17 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/statement?limit=   the agent's account, newest first (default and at most 1000)
 //
 // B19.5 — statements an enterprise can audit (internal/economy/agent_statements.go), for the period
-// [from, to), as JSON, CSV or (B28.328) a PDF to download:
+// [from, to), as JSON, CSV, (B28.328) a PDF to download or (B28.329) a double-entry journal for an accounting package:
 //
-//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv|pdf   one agent's account
-//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv|pdf        every agent wallet in the workspace
+//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv|pdf|journal   one agent's account
+//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv|pdf|journal        every agent wallet in the workspace
 //
 // from and to are RFC 3339 times or YYYY-MM-DD dates (midnight UTC); from defaults to the start of the
 // current month and to to now, so September is from=2026-09-01&to=2026-10-01. On an agent's route any of
 // the three, group or cursor asks for the period statement; with none it is the newest-first list above.
 // B57.13: group=day makes each model's questions on a day one line, its fees the line under it (the agent's
 // rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
-// first page's to with every cursor. The CSV and the PDF are always one row per posting.
+// first page's to with every cursor. The CSV, the PDF and the journal are always one row per posting.
 //
 // B28.326 — one agent's spend by day, model and destination (internal/economy/agent_analytics.go), for the same
 // [from, to) as its statement; days are its rules' time zone's, else UTC's:
@@ -1848,14 +1848,14 @@ func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv or pdf. Times are cut to
-// the microsecond Postgres keeps, so the period a statement echoes is exactly the one it was built from.
+// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv, pdf or journal. Times are
+// cut to the microsecond Postgres keeps, so the period a statement echoes is exactly the one it was built from.
 func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, format string, err error) {
 	q := req.URL.Query()
 	switch format = cmp.Or(q.Get("format"), "json"); format {
-	case "json", "csv", "pdf":
+	case "json", "csv", "pdf", "journal":
 	default:
-		return from, to, "", errors.New("format must be json, csv or pdf")
+		return from, to, "", errors.New("format must be json, csv, pdf or journal")
 	}
 	now = now.UTC()
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -1885,7 +1885,7 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, form
 // writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
 // a day of zone's into one line, ?kind= (one or more, comma-separated) and ?q= keep only the lines of those kinds whose
 // words hold q (B28.51), and ?limit= and ?cursor= page what is left newest first. The CSV is never grouped, filtered or
-// paged: it is one row per posting, the audit file; and so is the PDF (B28.328).
+// paged: it is one row per posting, the audit file; and so are the PDF (B28.328) and the journal (B28.329).
 func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, format string, zone func() (*time.Location, error)) {
 	q := req.URL.Query()
 	switch format {
@@ -1897,6 +1897,9 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
 			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
 		_, _ = w.Write(agentStatementPDF(st)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		return
+	case "journal":
+		writeStatementJournal(w, economy.StatementJournal(st))
 		return
 	}
 	limit := 0
@@ -2005,6 +2008,28 @@ func agentStatementPDF(st economy.Statement) []byte {
 			economy.LXC(l.AmountULXC), ""})
 	}
 	return t.PDF()
+}
+
+// writeStatementJournal is the period as a CSV of journal lines an accounting package imports (B28.329): Xero's
+// manual journals and QuickBooks' journal entries both map these columns. Amounts are LXC to the sixth decimal.
+func writeStatementJournal(w http.ResponseWriter, j economy.Journal) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-journal-%s-%s.csv"`,
+		j.From.Format(time.DateOnly), j.To.Format(time.DateOnly)))
+	w.WriteHeader(http.StatusOK)
+	cw := csv.NewWriter(w)
+	amount := func(ulxc int64) string {
+		if ulxc == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d.%06d", ulxc/1_000_000, ulxc%1_000_000)
+	}
+	_ = cw.Write([]string{"journal_no", "date", "account", "description", "debit_lxc", "credit_lxc", "cost_centre", "ref"})
+	for _, l := range j.Lines {
+		_ = cw.Write([]string{l.Journal, l.At.UTC().Format(time.DateOnly), l.Account, csvText(l.Description),
+			amount(l.DebitULXC), amount(l.CreditULXC), l.CostCentre, csvText(l.Ref)})
+	}
+	cw.Flush()
 }
 
 // csvText keeps a memo a spreadsheet would run as a formula as text.

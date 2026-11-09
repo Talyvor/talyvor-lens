@@ -264,7 +264,7 @@ func openAPIWalletPaths() map[string]any {
 		ws,
 		{"name": "from", "in": "query", "required": false, "description": "RFC 3339 time or YYYY-MM-DD (midnight UTC); defaults to the start of this month", "schema": str},
 		{"name": "to", "in": "query", "required": false, "description": "exclusive; RFC 3339 time or YYYY-MM-DD; defaults to now", "schema": str},
-		{"name": "format", "in": "query", "required": false, "description": "json (the default), csv, or pdf: the statement as a document to download, its opening and closing balances the JSON's. The CSV and the PDF are one row per posting, never grouped, filtered or paged", "schema": map[string]any{"type": "string", "enum": []string{"json", "csv", "pdf"}}},
+		{"name": "format", "in": "query", "required": false, "description": "json (the default), csv, pdf: the statement as a document to download, its opening and closing balances the JSON's, or journal: a CSV of double-entry journal lines (journal_no, date, account, description, debit_lxc, credit_lxc, cost_centre, ref) for Xero or QuickBooks, one journal per entry, each balanced, its cost centre the entry's agent, the statement's accounts' debits their in_ulxc and credits their out_ulxc. The CSV, the PDF and the journal are one row per posting, never grouped, filtered or paged", "schema": map[string]any{"type": "string", "enum": []string{"json", "csv", "pdf", "journal"}}},
 		{"name": "group", "in": "query", "required": false, "description": "day: each model's questions on a day one line (model, requests, total), its platform fee the line under it; days in the agent's rules' time_zone, else UTC (the workspace's: UTC). The CSV is never grouped", "schema": map[string]any{"type": "string", "enum": []string{"day"}}},
 		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to and the same kind and q; pages are newest first", "schema": str},
 		{"name": "kind", "in": "query", "required": false, "description": "only lines of these kinds, comma-separated (fund, withdraw, spend, hold, settle, release, pay, card, platform_fee, ...); the totals stay the whole period's. The CSV is never filtered", "schema": str},
@@ -466,7 +466,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/statement": map[string]any{
 			"get": op("Read the agent's statement",
-				"With none of from, to, format, group, cursor, kind or q: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON, CSV or PDF; kind and q keep only the lines that match, then limit pages them newest first, each page with the whole period's totals and a next_cursor.",
+				"With none of from, to, format, group, cursor, kind or q: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON, CSV, PDF or a journal for an accounting package; kind and q keep only the lines that match, then limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
@@ -489,7 +489,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/statement": map[string]any{
 			"get": op("Read the statement of every agent wallet in the workspace",
-				"For the period [from, to), as JSON, CSV or PDF — the statement an auditor can open. kind and q keep only the lines that match, and limit pages them newest first, each page with the whole period's totals and a next_cursor.",
+				"For the period [from, to), as JSON, CSV, PDF or a journal for an accounting package — the statement an auditor can open. kind and q keep only the lines that match, and limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{{"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{"200": map[string]any{"description": "the period statement"}}),
 		},
