@@ -2010,6 +2010,8 @@ func run() error {
 	}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
+	// B56.7 — labels read card payments and the partner rails, every time.
+	dualToken.SetLabelRails(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey), partnerRegistry)
 	// B30.6 — every payee and every payment in or out through a partner is screened against the UK Sanctions List and
 	// OFAC's SDN list, downloaded at start and each day; the Test screening provider screens against them, and a match
 	// opens a compliance case the operator sees at /v1/admin/screening.
@@ -2983,6 +2985,9 @@ func run() error {
 
 		// B32.8 — every fee Talyvor charges, for /pricing.
 		pub.Get("/v1/public/fees", publicFeesHandler)
+
+		// B56.7 — each money capability Live or Sandbox, for every screen that shows money.
+		pub.Get("/v1/public/labels", publicLabelsHandler(dualToken, billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
 
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)

@@ -99,7 +99,7 @@ func (s *DualTokenStore) AgentWallets(ctx context.Context, workspaceID, agentID 
 		if err != nil {
 			return AgentWallets{}, err
 		}
-		out.Wallets = append(out.Wallets, w)
+		out.Wallets = append(out.Wallets, s.withWalletLabel(ctx, workspaceID, w))
 	}
 	return out, nil
 }
@@ -247,7 +247,7 @@ func (s *DualTokenStore) OwnerWallets(ctx context.Context, workspaceID string) (
 		if err != nil {
 			return AgentWallets{}, err
 		}
-		out.Wallets = append(out.Wallets, w)
+		out.Wallets = append(out.Wallets, s.withWalletLabel(ctx, workspaceID, w))
 	}
 	return out, nil
 }
