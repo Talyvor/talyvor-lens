@@ -89,6 +89,9 @@ func (s *DualTokenStore) ConnectedAccess(ctx context.Context, workspaceID string
 		// shortcut: no passkey revoke route yet (queued separately), so Revoke stays "" until it lands.
 		out = append(out, AccessItem{Kind: "passkey", ID: p.CredentialID, Name: p.Name, May: "sign approvals and mandates",
 			CreatedAt: p.CreatedAt, LastUsedAt: p.LastUsedAt, Status: "active"})
+		if p.RevokedAt != nil {
+			out[len(out)-1].Status = "revoked" // B41.116: a lockdown revokes passkeys
+		}
 	}
 	slices.SortStableFunc(out, func(a, b AccessItem) int { return b.CreatedAt.Compare(a.CreatedAt) })
 	return out, nil
