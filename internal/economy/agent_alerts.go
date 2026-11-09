@@ -275,6 +275,10 @@ type AgentForecast struct {
 	// RunsOutAt (B28.94) is when BalanceULXC is gone at its pace so far this month, in the agent's own time zone so
 	// its date is the agent's date; nil when it spends nothing at that pace.
 	RunsOutAt *time.Time `json:"runs_out_at"`
+	// RunsOutOn (B28.330) is RunsOutAt's date in Timezone, as YYYY-MM-DD, so a screen shows the agent's date and never
+	// re-reads the instant in its viewer's zone; nil with RunsOutAt.
+	RunsOutOn *string `json:"runs_out_on"`
+	Timezone  string  `json:"timezone"` // the agent's IANA time zone, "UTC" when it has none set
 }
 
 // SpendForecast is a workspace's month-end forecast, as of At.
@@ -342,8 +346,10 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 		a.ForecastULXC = runOn(a.SpentULXC, elapsed, length)
 		if t := runsOut(a.BalanceULXC, a.SpentULXC, at, elapsed); t != nil {
 			*t = t.In(loc)
-			a.RunsOutAt = t
+			on := t.Format(time.DateOnly)
+			a.RunsOutAt, a.RunsOutOn = t, &on
 		}
+		a.Timezone = loc.String()
 		f.SpentULXC += a.SpentULXC
 		f.Agents = append(f.Agents, a)
 	}
