@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,6 +65,26 @@ type Agent struct {
 	// B48.1: fiat, crypto or both — the wallets it owns — and the currency its fiat wallet is in.
 	WalletKind   string `json:"wallet_kind"`
 	FiatCurrency string `json:"fiat_currency"`
+	// B57.10: the colour and face the apps draw it with, which Lens picks from its id and keeps (migration 0360).
+	Colour string `json:"colour"`
+	Face   string `json:"face"`
+}
+
+// AgentColours and AgentFaces are the colours and shapes an agent's face takes (B57.10), in the order its pick counts.
+var (
+	AgentColours = []string{"cobalt", "orchid", "sky", "mint", "lemon", "rose", "lime"}
+	AgentFaces   = []string{"circle", "squircle", "hexagon", "flower"}
+)
+
+// checkAgentLook refuses a colour or a face that is not on its list, with ErrAgentDetails; "" is none named.
+func checkAgentLook(colour, face string) error {
+	if colour != "" && !slices.Contains(AgentColours, colour) {
+		return fmt.Errorf("%w: %q is not an agent colour: pick cobalt, orchid, sky, mint, lemon, rose or lime", ErrAgentDetails, colour)
+	}
+	if face != "" && !slices.Contains(AgentFaces, face) {
+		return fmt.Errorf("%w: %q is not an agent face: pick circle, squircle, hexagon or flower", ErrAgentDetails, face)
+	}
+	return nil
 }
 
 // AgentKindRoom is a room's wallet (B32.32). It does not count toward the agents a plan allows.
@@ -264,14 +285,17 @@ func lockAgent(ctx context.Context, tx pgx.Tx, workspaceID, agentID string) erro
 // CreateAgent creates an agent account in workspaceID, with no balance, owned by ownerUserID — the person
 // creating it (B19.11) — or refuses it with a *plans.Refusal past the agents its plan allows (B32.12).
 func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, ownerUserID string) (Agent, error) {
-	return s.CreateAgentOfKind(ctx, workspaceID, name, ownerUserID, WalletKindCrypto, "")
+	return s.CreateAgentOfKind(ctx, workspaceID, name, ownerUserID, WalletKindCrypto, "", "", "")
 }
 
 // CreateAgentOfKind creates an agent that is kind — fiat, crypto or both — and opens its wallets (B48.1); its fiat
-// wallet is in fiat, EUR when "".
-func (s *DualTokenStore) CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string) (Agent, error) {
+// wallet is in fiat, EUR when "". colour and face, when not "", are its face (B57.10); Lens picks what is "".
+func (s *DualTokenStore) CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (Agent, error) {
 	fiat, err := checkWalletKind(kind, fiat)
 	if err != nil {
+		return Agent{}, err
+	}
+	if err := checkAgentLook(colour, face); err != nil {
 		return Agent{}, err
 	}
 	if workspaceID == "" || name == "" {
@@ -288,7 +312,7 @@ func (s *DualTokenStore) CreateAgentOfKind(ctx context.Context, workspaceID, nam
 	if err := lockWorkspaceAgents(ctx, tx, workspaceID); err != nil {
 		return Agent{}, err
 	}
-	a, err := createAgentTx(ctx, tx, workspaceID, name, ownerUserID, kind, fiat)
+	a, err := createAgentTx(ctx, tx, workspaceID, name, ownerUserID, kind, fiat, colour, face)
 	if err != nil {
 		return Agent{}, err
 	}
@@ -308,8 +332,8 @@ func lockWorkspaceAgents(ctx context.Context, tx pgx.Tx, workspaceID string) err
 	return nil
 }
 
-// createAgentTx is CreateAgent in tx, which holds the workspace's agents lock.
-func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserID, kind, fiat string) (Agent, error) {
+// createAgentTx is CreateAgent in tx, which holds the workspace's agents lock, so no other create takes the face it picks.
+func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (Agent, error) {
 	// B32.12: no more agents than the workspace's plan allows (LENS_PLAN_GATES); an archived agent is retired
 	// for good and does not count, nor does a room's wallet (B32.32). Counted under the workspace's lock, so two
 	// creates cannot both take the last place.
@@ -326,8 +350,10 @@ func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserI
 		return Agent{}, plan.RefuseCount(plans.Current(), "agents", plan.Agents)
 	}
 	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{}, OwnerUserID: ownerUserID, Kind: "agent", WalletKind: kind, FiatCurrency: fiat}
-	err = tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id, wallet_kind, wallet_fiat_currency)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at`, a.ID, workspaceID, name, ownerUserID, kind, fiat).Scan(&a.CreatedAt)
+	// A colour or face left NULL is picked by the insert's trigger (0360).
+	err = tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id, wallet_kind, wallet_fiat_currency, colour, face)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, '')) RETURNING created_at, colour, face`,
+		a.ID, workspaceID, name, ownerUserID, kind, fiat, colour, face).Scan(&a.CreatedAt, &a.Colour, &a.Face)
 	if err != nil {
 		return Agent{}, fmt.Errorf("economy: create agent: %w", err)
 	}
@@ -345,7 +371,7 @@ func CreateRoomAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerU
 	}
 	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{scopedKeyID}, OwnerUserID: ownerUserID, Kind: AgentKindRoom}
 	if err := tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id, kind) VALUES ($1, $2, $3, $4, 'room')
-		RETURNING created_at`, a.ID, workspaceID, name, ownerUserID).Scan(&a.CreatedAt); err != nil {
+		RETURNING created_at, colour, face`, a.ID, workspaceID, name, ownerUserID).Scan(&a.CreatedAt, &a.Colour, &a.Face); err != nil {
 		return Agent{}, fmt.Errorf("economy: create a room's wallet: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO agent_account_keys (scoped_key_id, agent_id) VALUES ($1, $2)`, scopedKeyID, a.ID); err != nil {
@@ -558,7 +584,7 @@ func (s *DualTokenStore) AgentBook(ctx context.Context, workspaceID string) (Age
 		}
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT a.id, a.name, a.kind, a.wallet_kind, a.wallet_fiat_currency, a.description, a.archived_at, a.created_at, a.paused_at, a.paused_reason, a.owner_user_id, COALESCE(a.handle, ''),
+		SELECT a.id, a.name, a.kind, a.wallet_kind, a.wallet_fiat_currency, a.description, a.archived_at, a.created_at, a.paused_at, a.paused_reason, a.owner_user_id, COALESCE(a.handle, ''), a.colour, a.face,
 		       COALESCE((SELECT b.balance_ulxc FROM agent_account_balances b WHERE b.workspace_id = a.workspace_id AND b.account = 'agent:' || a.id), 0)::bigint,
 		       COALESCE((SELECT sum(amount_ulxc) FROM agent_postings p WHERE p.workspace_id = a.workspace_id AND p.account = 'agent:' || a.id
 		                   AND p.kind IN ('spend', 'hold', 'settle', 'release', 'card', 'platform_fee')), 0)::bigint,
@@ -573,7 +599,7 @@ func (s *DualTokenStore) AgentBook(ctx context.Context, workspaceID string) (Age
 	for rows.Next() {
 		var a Agent
 		var spendLegs int64
-		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.WalletKind, &a.FiatCurrency, &a.Description, &a.ArchivedAt, &a.CreatedAt, &a.PausedAt, &a.PausedReason, &a.OwnerUserID, &a.Handle, &a.BalanceULXC, &spendLegs, &a.Keys, &a.PotsULXC); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.WalletKind, &a.FiatCurrency, &a.Description, &a.ArchivedAt, &a.CreatedAt, &a.PausedAt, &a.PausedReason, &a.OwnerUserID, &a.Handle, &a.Colour, &a.Face, &a.BalanceULXC, &spendLegs, &a.Keys, &a.PotsULXC); err != nil {
 			return book, err
 		}
 		a.SpentULXC = -spendLegs

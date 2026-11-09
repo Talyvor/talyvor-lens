@@ -129,7 +129,7 @@ func TestApprovals_SayWhatPaysThemAndTheBudgetLeftAfter(t *testing.T) {
 		`"amount_minor":900000000,"balance_minor":10000000000}`, float64(500*lxc), nil)
 
 	// A listing's use goes on the monthly marketplace bill: 900 LXC is $90.00 at the peg.
-	err = store.JudgeAgentPurchase(ctx, ws, research.ID, "lst_b5711_leads", 900*lxc, economy.Commitment{}, "Lead finder",
+	err = store.JudgeAgentPurchase(ctx, ws, research.ID, "lst_b5711_leads", 900*lxc, economy.Commitment{}, "Lead finder", "",
 		func(pgx.Tx) error { return nil })
 	expect("a listing's use", approval(filed(err)), `{"kind":"marketplace_bill","account_id":"`+ws+`","name":"Your monthly marketplace bill",`+
 		`"currency":"USD","amount_minor":9000,"balance_minor":null}`, float64(500*lxc), float64(4_100*lxc))

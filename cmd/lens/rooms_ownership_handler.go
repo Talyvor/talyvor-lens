@@ -75,11 +75,22 @@ import (
 //	                                     person, signs the version it read: 201, or 200 with the signature already kept;
 //	                                     409 for any version but the current one
 //
+// B41.152 — the room's open tasks board, tasks sized from the rate card that any member may claim (internal/rooms/tasks.go):
+//
+//	GET    /v1/rooms/{roomID}/tasks                  [{id, title, description, size, points, claimant_workspace_id,
+//	                                                 claimant_workspace_name, claimed_at}], open ones first, to a member
+//	                                                 that accepted the room's current terms
+//	POST   /v1/rooms/{roomID}/tasks                  {title, description, size}   the room's owner or an editor; any
+//	                                                 other field (an assignee, a due date) is refused with 400
+//	POST   /v1/rooms/{roomID}/tasks/{taskID}/claim   any member, for itself; 409 when another member holds it
+//	DELETE /v1/rooms/{roomID}/tasks/{taskID}/claim   its claimant lets it go, with nothing lost
+//
 // Capability room_equity is RED: unless the room's owner and the caller are both synthetic workspaces, every route
 // here answers 404 until an operator records its clearance, and so does anyone who is not a member.
 // mountRoomOwnershipRoutes mounts shared ownership (B41.141), the rate card (B41.142), the points ledger (B41.143), its
 // reviewers (B41.144), the leaderboard (B41.145), the Gate tracker (B41.146) and the contributor agreement (B41.150).
 // It also mounts objections to the frozen leaderboard (B41.147).
+// It mounts the open tasks board (B41.152) too.
 func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 	actor := func(w http.ResponseWriter, req *http.Request) (ws, user string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
@@ -360,5 +371,60 @@ func mountRoomOwnershipRoutes(r chi.Router, store *rooms.Store) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, c)
+	}))
+	r.Get("/v1/rooms/{roomID}/tasks", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		ts, err := store.Tasks(req.Context(), ws, chi.URLParam(req, "roomID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, ts)
+	})
+	r.Post("/v1/rooms/{roomID}/tasks", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		var in rooms.TaskDraft
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 16<<10))
+		dec.DisallowUnknownFields() // a task names no assignee and no deadline: a body that tries is refused, not ignored
+		if err := dec.Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"title", "description", "size"}: `+err.Error())
+			return
+		}
+		t, err := store.PostTask(req.Context(), ws, chi.URLParam(req, "roomID"), in)
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusCreated, t)
+	}))
+	r.Post("/v1/rooms/{roomID}/tasks/{taskID}/claim", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		t, err := store.ClaimTask(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "taskID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, t)
+	}))
+	r.Delete("/v1/rooms/{roomID}/tasks/{taskID}/claim", roomActorOnly(func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := actor(w, req)
+		if !ok {
+			return
+		}
+		t, err := store.ReleaseTask(req.Context(), ws, chi.URLParam(req, "roomID"), chi.URLParam(req, "taskID"))
+		if err != nil {
+			writeRoomRunErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, t)
 	}))
 }

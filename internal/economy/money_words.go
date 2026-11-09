@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"time"
 )
 
 // B55.30 — amounts written for a person: pushes, the briefing, approval memos and refusals. API fields, CSV
@@ -59,6 +60,11 @@ func LXCMoney(ulxc int64) string {
 		return lxc + " (" + usd + ")"
 	}
 	return usd + " (" + lxc + ")"
+}
+
+// When writes a moment for a person: "Oct 31, 2026 at 09:00 UTC".
+func When(t time.Time) string {
+	return t.UTC().Format("Jan 2, 2006 at 15:04 UTC")
 }
 
 // grouped writes n / 10^places with thousands separators, keeping at least keep decimals and dropping trailing

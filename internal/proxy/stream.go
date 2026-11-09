@@ -154,7 +154,8 @@ type streamOps interface {
 	// updating u in place. No-op for lines that carry no usage.
 	extractUsage(line []byte, u *streamUsage)
 	// synthesizeCachePayload produces the JSON to cache once the stream
-	// has fully been consumed.
+	// has fully been consumed. Only a finished answer is kept, so it carries
+	// the provider's normal stop reason (B17.384).
 	synthesizeCachePayload(accumulated string) []byte
 }
 
@@ -261,7 +262,7 @@ func (openAIStreamOps) processLine(line []byte, acc *strings.Builder) bool {
 func (openAIStreamOps) synthesizeCachePayload(accumulated string) []byte {
 	out, _ := json.Marshal(map[string]any{
 		"choices": []map[string]any{
-			{"message": map[string]any{"role": "assistant", "content": accumulated}},
+			{"message": map[string]any{"role": "assistant", "content": accumulated}, "finish_reason": "stop"},
 		},
 	})
 	return out
@@ -360,6 +361,7 @@ func (anthropicStreamOps) synthesizeCachePayload(accumulated string) []byte {
 		"content": []map[string]any{
 			{"type": "text", "text": accumulated},
 		},
+		"stop_reason": "end_turn",
 	})
 	return out
 }

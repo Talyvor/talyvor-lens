@@ -23,6 +23,12 @@ func openAPIWalletTags() []map[string]any {
 	}}
 }
 
+// B57.10: an agent's face, which Lens picks from its id unless its owner picks one.
+var (
+	agentColour = map[string]any{"type": "string", "enum": []string{"cobalt", "orchid", "sky", "mint", "lemon", "rose", "lime"}}
+	agentFace   = map[string]any{"type": "string", "enum": []string{"circle", "squircle", "hexagon", "flower"}}
+)
+
 func openAPIWalletSchemas() map[string]any {
 	str := map[string]any{"type": "string"}
 	ulxc := map[string]any{"type": "integer", "format": "int64", "description": "µLXC (1 LXC = 1,000,000 µLXC = $0.10)"}
@@ -46,6 +52,8 @@ func openAPIWalletSchemas() map[string]any {
 				"handle":        map[string]any{"type": "string", "description": "its @handle, once its owner picks one"},
 				"description":   map[string]any{"type": "string", "description": "what the agent is for, in its owner's words"},
 				"archived_at":   map[string]any{"type": "string", "format": "date-time", "nullable": true, "description": "set once the agent is archived: swept to zero, its keys revoked"},
+				"colour":        agentColour,
+				"face":          agentFace,
 			},
 		},
 		"AgentBook": map[string]any{
@@ -272,6 +280,8 @@ func openAPIWalletPaths() map[string]any {
 		{"name": "from", "in": "query", "required": false, "description": "RFC 3339 time or YYYY-MM-DD (midnight UTC); defaults to the start of this month", "schema": str},
 		{"name": "to", "in": "query", "required": false, "description": "exclusive; RFC 3339 time or YYYY-MM-DD; defaults to now", "schema": str},
 		{"name": "format", "in": "query", "required": false, "schema": map[string]any{"type": "string", "enum": []string{"json", "csv"}}},
+		{"name": "group", "in": "query", "required": false, "description": "day: each model's questions on a day one line (model, requests, total), its platform fee the line under it; days in the agent's rules' time_zone, else UTC (the workspace's: UTC). The CSV is never grouped", "schema": map[string]any{"type": "string", "enum": []string{"day"}}},
+		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to; pages are newest first", "schema": str},
 	}
 
 	return map[string]any{
@@ -281,10 +291,10 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws},
 				map[string]any{"200": ok("the agents and the workspace's totals", ref("AgentBook"))}),
 			"post": withBody(op("Create an agent",
-				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too.",
+				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too. Without colour or face, Lens picks them from the agent's id, the next free pair when another live agent of the workspace wears that one.",
 				[]map[string]any{ws},
-				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, or no such template"}}),
-				body(obj([]string{"name"}, map[string]any{"name": str, "owner_user_id": str,
+				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, no such template, or a colour or face not on its list"}}),
+				body(obj([]string{"name"}, map[string]any{"name": str, "owner_user_id": str, "colour": agentColour, "face": agentFace,
 					"template": map[string]any{"type": "string", "example": "support-bot", "description": "the id of a rule template to start from"}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/rule-templates": map[string]any{
@@ -321,11 +331,11 @@ func openAPIWalletPaths() map[string]any {
 				}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}": map[string]any{
-			"patch": withBody(op("Rename or describe the agent",
-				"Owner or admin. Either field or both; a name cannot be blank and a description is at most 500 characters.",
+			"patch": withBody(op("Rename, describe or change the face of the agent",
+				"Owner or admin. Any of the fields; a name cannot be blank, a description is at most 500 characters, and a colour or face is one on its list.",
 				[]map[string]any{ws, agent},
-				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
-				body(obj(nil, map[string]any{"name": str, "description": str}))),
+				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, a colour or face not on its list, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
+				body(obj(nil, map[string]any{"name": str, "description": str, "colour": agentColour, "face": agentFace}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/archive": map[string]any{
 			"post": op("Archive the agent",
@@ -469,7 +479,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/statement": map[string]any{
 			"get": op("Read the agent's statement",
-				"With none of from, to or format: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV.",
+				"With none of from, to, format, group or cursor: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV; then limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
@@ -478,8 +488,8 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/statement": map[string]any{
 			"get": op("Read the statement of every agent wallet in the workspace",
-				"For the period [from, to), as JSON or CSV — the statement an auditor can open.",
-				periodParams,
+				"For the period [from, to), as JSON or CSV — the statement an auditor can open. limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				append([]map[string]any{{"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{"200": map[string]any{"description": "the period statement"}}),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/pause": map[string]any{

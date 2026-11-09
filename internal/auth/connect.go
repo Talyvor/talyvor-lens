@@ -36,7 +36,8 @@ var ConnectScopes = []string{ScopePaymentsSend}
 var ErrConnectRoute = errors.New("auth: a Connect token may only pay from its own agent")
 
 // GenerateConnectToken signs a Connect token for one agent of workspaceID, on behalf of clientID (the assistant).
-func GenerateConnectToken(workspaceID, userID, clientID, agentID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration) (string, error) {
+// issuedAt is the database's time (B54.27), the clock a revocation is recorded on; expiry stays on Lens's own.
+func GenerateConnectToken(workspaceID, userID, clientID, agentID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration, issuedAt time.Time) (string, error) {
 	if key == nil {
 		return "", errors.New("auth: jwt signing key not configured")
 	}
@@ -58,7 +59,7 @@ func GenerateConnectToken(workspaceID, userID, clientID, agentID string, scopes 
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    JWTIssuer,
 			Audience:  jwt.ClaimStrings{ConnectAudience},
-			IssuedAt:  jwt.NewNumericDate(now),
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
 			NotBefore: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(min(ttl, ConnectTokenTTL))),
 			Subject:   userID,
