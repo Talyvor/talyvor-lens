@@ -998,6 +998,9 @@ type Config struct {
 	// Test adapter, "test:<address>=<provider>,…" with the addresses it names as a regulated provider's. Unset, it is
 	// off until a live adapter is chosen.
 	TravelRule string
+	// TravelRuleMinor is the Travel Rule threshold for a company's USDC transfers (B30.33): one of more micro-USDC
+	// carries the payer's and the payee's names. Env: LENS_TRAVEL_RULE_MINOR, which Nicolai sets; until he does, 0.
+	TravelRuleMinor int64
 
 	// TrackWebhookURL / TrackWebhookSecret (SEC-7) configure the outbound Lens→Track
 	// spend-alert emitter. TrackWebhookURL is Track's POST /v1/lens/webhook;
@@ -2151,6 +2154,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_SCREENING_FUZZY_THRESHOLD must be above 0 and at most 1, got %q", v)
 		}
 		c.ScreeningFuzzyThreshold = f
+	}
+	// B30.33 — the Travel Rule threshold for a company's USDC transfers. A malformed value is refused.
+	if v := os.Getenv("LENS_TRAVEL_RULE_MINOR"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_TRAVEL_RULE_MINOR must be a whole number of micro-USDC, 0 or more, got %q", v)
+		}
+		c.TravelRuleMinor = n
 	}
 	// B37.4 — how old the sanctions lists may get before payments hold. A malformed value is refused.
 	c.ScreeningMaxAge = 48 * time.Hour

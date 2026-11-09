@@ -2046,6 +2046,8 @@ func run() error {
 	if travelRule != nil {
 		dualToken.SetTravelRule(travelRule)
 	}
+	// B30.33 — a company's USDC transfer over this carries the payer's and the payee's names.
+	dualToken.SetTravelRuleMinor(cfg.TravelRuleMinor)
 	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
