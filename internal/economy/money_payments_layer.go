@@ -32,7 +32,7 @@ import (
 // shortcut: an international payment is made at the account partner's quote, which money.Outbound cannot carry, so it
 // still goes to the account partner; upgrade when Transfers takes a quote.
 func (s *DualTokenStore) viaMoneyLayer(p OutsidePayment) bool {
-	return s.moneyLayer != nil && p.QuoteID == ""
+	return s.moneyLayer != nil && p.QuoteID == "" && !p.viaStablecoin()
 }
 
 func outsideRoute(p OutsidePayment, payee OutsidePayee) money.Route {
@@ -47,6 +47,13 @@ func (s *DualTokenStore) outsidePartner(ctx context.Context, p OutsidePayment, p
 	if s.viaMoneyLayer(p) {
 		return s.moneyLayer.Partner(ctx, money.CapTransfers, outsideRoute(p, payee))
 	}
+	if p.viaStablecoin() {
+		partner, err := s.accountPartners.Stablecoin(ctx, CapabilityStablecoins)
+		if err != nil {
+			return "", err
+		}
+		return partner.Name(), nil
+	}
 	partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
 	if err != nil {
 		return "", err
@@ -58,6 +65,9 @@ func (s *DualTokenStore) outsidePartner(ctx context.Context, p OutsidePayment, p
 // or not certainly, so the money stays held and p is asked again — under the same id — when it is read. A refusal is
 // a failed result, which releases the hold.
 func (s *DualTokenStore) sendOutside(ctx context.Context, p OutsidePayment, from payingAccount, payee OutsidePayee) (partners.Result, bool) {
+	if p.viaStablecoin() {
+		return s.sendStablecoin(ctx, p, from, payee)
+	}
 	if !s.viaMoneyLayer(p) {
 		partner, err := s.accountPartners.Account(ctx, CapabilityPaymentsOut)
 		if err != nil {

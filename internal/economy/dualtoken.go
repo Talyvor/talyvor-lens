@@ -355,6 +355,8 @@ type DualTokenStore struct {
 	screener PaymentScreener
 	// travelRule is the Travel Rule adapter (B48.7); nil, the Travel Rule step is off.
 	travelRule partners.TravelRuleProvider
+	// travelRuleMinor is the Travel Rule threshold for a company's USDC transfers, in micro-USDC (B30.33).
+	travelRuleMinor int64
 	// monitor runs transaction monitoring on each payment in or out through a partner once it has moved (B30.7);
 	// nil, the nightly run is the only one.
 	monitor MoneyMonitor
