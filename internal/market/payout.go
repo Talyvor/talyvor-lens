@@ -57,7 +57,7 @@ const (
 var ErrNotConnected = errors.New("market: connect a Stripe account to be paid")
 
 // ErrNothingAvailable: no earnings are past their holdback and unpaid.
-var ErrNothingAvailable = errors.New("market: no earnings are available yet — they become available 14 days after the buyer's payment clears")
+var ErrNothingAvailable = errors.New("market: no earnings are available yet. They become available 14 days after the buyer's payment clears")
 
 // ErrTaxHold: the seller's payouts are held until their tax details are complete (B32.41).
 var ErrTaxHold = errors.New("market: your payouts are on hold until your tax details are complete")

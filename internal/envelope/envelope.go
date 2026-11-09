@@ -116,7 +116,7 @@ func NewKeyring(keys ...[]byte) (*Keyring, error) {
 		}
 		id := keyID(k)
 		if _, dup := r.byID[id]; dup {
-			return nil, fmt.Errorf("envelope: key %d (id %s) is already in the ring — a duplicate KEK is not a rotation", i, id)
+			return nil, fmt.Errorf("envelope: key %d (id %s) is already in the ring. A duplicate KEK is not a rotation", i, id)
 		}
 		block, err := aes.NewCipher(k)
 		if err != nil {

@@ -237,7 +237,7 @@ func (s *FinalizeSweeper) settleOne(ctx context.Context, d dueMint) error {
 	// guess, and a mislabelled settle is silent and permanent. Refuse BEFORE the CAS, so
 	// the row stays held (visible, retried, recoverable) instead of settling as a lie.
 	if s.finalType == "" {
-		return fmt.Errorf("poolroyalty: no settled ledger type mapped for table %q — refusing to finalize (add it to finalTypeForTable)", s.table)
+		return fmt.Errorf("poolroyalty: no settled ledger type mapped for table %q, so it refuses to finalize (add it to finalTypeForTable)", s.table)
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

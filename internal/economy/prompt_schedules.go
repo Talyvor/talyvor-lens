@@ -92,7 +92,7 @@ func (s *DualTokenStore) CreatePromptSchedule(ctx context.Context, workspaceID, 
 	case firstRunAt.IsZero():
 		return PromptSchedule{}, fmt.Errorf("%w: a scheduled prompt needs the time it runs", ErrBadPromptSchedule)
 	case firstRunAt.Before(time.Now().Add(-promptScheduleSkew)):
-		return PromptSchedule{}, fmt.Errorf("%w: that time has passed — pick a time to come", ErrBadPromptSchedule)
+		return PromptSchedule{}, fmt.Errorf("%w: that time has passed. Pick a time to come", ErrBadPromptSchedule)
 	}
 	sc := PromptSchedule{Runs: []PromptRun{}}
 	err := s.pool.QueryRow(ctx, `

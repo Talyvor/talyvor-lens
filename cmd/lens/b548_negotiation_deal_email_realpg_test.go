@@ -20,6 +20,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/ratelimit"
 )
 
 // B54.8 — a counterparty confirms a negotiation's deal by email: the email's DKIM signature must hold for one of the
@@ -56,7 +57,7 @@ func TestB548_ACounterpartyConfirmsADealByDKIMSignedEmail(t *testing.T) {
 
 	r := chi.NewRouter()
 	mountNegotiationRoutes(r, store)
-	mountNegotiationEmailRoutes(r, lookup, store)
+	mountNegotiationEmailRoutes(r, ratelimit.New(nil, nil), lookup, store)
 	as := func(ws, method, path, body string) (int, string) {
 		who := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner-" + ws, Scopes: []string{auth.ScopeKeys}}
 		req := httptest.NewRequest(method, path, strings.NewReader(body))

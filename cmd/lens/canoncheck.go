@@ -107,7 +107,7 @@ func runCanonCheck() error {
 	// cmd/hitrate reads its one key the same way for the same reason.
 	key := os.Getenv("LENS_ANTHROPIC_API_KEY")
 	if key == "" {
-		return errors.New("canoncheck: needs LENS_ANTHROPIC_API_KEY — an unmeasured collapse rate must not be reported as one")
+		return errors.New("canoncheck: needs LENS_ANTHROPIC_API_KEY, because an unmeasured collapse rate must not be reported as one")
 	}
 	model := os.Getenv("LENS_CANON_MODEL")
 	if model == "" {
