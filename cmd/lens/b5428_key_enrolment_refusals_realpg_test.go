@@ -84,7 +84,7 @@ func TestKeyEnrolment_OnlyRemovedPasskeysGetNoCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := h.registerPhone(newB551Phone())
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "recover") {
-		t.Fatalf("a phone key registered where the only passkey was removed = %d %v, want 409 pointing to recovery", code, out)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "no key can let a new one in") {
+		t.Fatalf("a phone key registered where the only passkey was removed = %d %v, want 409 saying no key can let it in", code, out)
 	}
 }

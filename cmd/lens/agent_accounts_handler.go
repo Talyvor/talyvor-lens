@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -468,37 +469,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if in.Name == "" {
 			in.Name = agentID
 		}
-		// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
-		book, err := bank.AgentBook(req.Context(), wsID)
+		raw, key, status, err := mintAgentKey(req.Context(), bank, keys, wsID, agentID, in.Name)
 		if err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		found, archived, room := false, false, false
-		for _, a := range book.Agents {
-			if a.ID == agentID {
-				found, archived, room = true, a.ArchivedAt != nil, a.Kind == economy.AgentKindRoom
-			}
-		}
-		if !found {
-			writeJSONErr(w, http.StatusNotFound, economy.ErrAgentNotFound.Error())
-			return
-		}
-		if archived {
-			writeJSONErr(w, http.StatusConflict, economy.ErrAgentArchived.Error())
-			return
-		}
-		if room { // B32.32: before a key is minted that it would refuse
-			writeJSONErr(w, http.StatusConflict, economy.ErrRoomWalletKey.Error())
-			return
-		}
-		raw, key, err := keys.CreateAPIKey(req.Context(), wsID, in.Name, []string{"proxy"}, nil)
-		if err != nil {
-			writeJSONErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := bank.AttachAgentKey(req.Context(), wsID, agentID, key.ID); err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			writeJSONErr(w, status, err.Error())
 			return
 		}
 		writeJSONOK(w, http.StatusCreated, map[string]any{
@@ -771,7 +744,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+		// Some agents frozen, some not, or frozen with revoke calls that could not be built (B54.25): the app shows both,
+		// and a retry freezes the rest.
+		if err == nil && (len(out.Failed) > 0 || out.RevokeCallsOutstanding()) {
 			writeJSONOK(w, http.StatusMultiStatus, out)
 			return
 		}
@@ -1288,7 +1263,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		err := bank.AuthorizeResume(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Assertion)
 		switch {
-		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrLockedDown):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -1853,6 +1828,42 @@ func rulesChange(req *http.Request, what string) context.Context {
 	return economy.WithRulesChange(req.Context(), who, what)
 }
 
+// agentKeyRefusal says why no key may be minted for agentID, with its status; nil when one may.
+func agentKeyRefusal(ctx context.Context, bank agentBank, wsID, agentID string) (int, error) {
+	// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
+	book, err := bank.AgentBook(ctx, wsID)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	for _, a := range book.Agents {
+		switch {
+		case a.ID != agentID:
+		case a.ArchivedAt != nil:
+			return http.StatusConflict, economy.ErrAgentArchived
+		case a.Kind == economy.AgentKindRoom: // B32.32: before a key is minted that it would refuse
+			return http.StatusConflict, economy.ErrRoomWalletKey
+		default:
+			return 0, nil
+		}
+	}
+	return http.StatusNotFound, economy.ErrAgentNotFound
+}
+
+// mintAgentKey issues agentID its own proxy key: POST …/agents/{agentID}/keys, and the connector's token (B41.178).
+func mintAgentKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, wsID, agentID, name string) (string, *tenant.WorkspaceAPIKey, int, error) {
+	if status, err := agentKeyRefusal(ctx, bank, wsID, agentID); err != nil {
+		return "", nil, status, err
+	}
+	raw, key, err := keys.CreateAPIKey(ctx, wsID, name, []string{"proxy"}, nil)
+	if err != nil {
+		return "", nil, http.StatusBadRequest, err
+	}
+	if err := bank.AttachAgentKey(ctx, wsID, agentID, key.ID); err != nil {
+		return "", nil, http.StatusInternalServerError, err
+	}
+	return raw, key, 0, nil
+}
+
 func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
@@ -2080,4 +2091,52 @@ func ensurePromptKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, w
 		return fmt.Errorf("the agent's key for scheduled prompts: %w", err)
 	}
 	return bank.AttachAgentKey(ctx, wsID, agentID, key.ID)
+}
+
+// retryRevokeCalls builds again, every minute until ctx ends, the revoke calls of frozen agents whose calls could not be
+// built, and alerts the operator (sink nil: only logged) whenever the agents still outstanding change (B54.25).
+func retryRevokeCalls(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	last := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			last = retryRevokeCallsOnce(ctx, store, sink, last)
+		}
+	}
+}
+
+// retryRevokeCallsOnce is one retry; last is what the operator was last told, and it answers what they know now.
+func retryRevokeCallsOnce(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter, last string) string {
+	built, outstanding, err := store.RetryRevokeCalls(ctx)
+	if err != nil {
+		slog.Warn("revoke calls: retry failed", slog.String("err", err.Error()))
+		return last
+	}
+	if built > 0 {
+		slog.Info("revoke calls: built for frozen agents", slog.Int("agents", built))
+	}
+	var lines []string
+	for _, o := range outstanding {
+		lines = append(lines, "workspace "+o.WorkspaceID+", agent "+o.AgentID+": "+o.Error)
+	}
+	now := strings.Join(lines, "\n")
+	if now == last || now == "" {
+		return now
+	}
+	slog.Error("revoke calls: frozen agents whose key is still on chain", slog.Int("agents", len(outstanding)))
+	if sink == nil {
+		slog.Error("revoke calls: no operator alert sink is configured (LENS_OPERATOR_ALERT_WEBHOOK_URL and LENS_OPERATOR_ALERT_WEBHOOK_SECRET); nobody is told")
+		return now
+	}
+	if err := sink.NotifyAs(ctx, "agent_revoke_calls_outstanding", "lens/internal/economy",
+		fmt.Sprintf("%d frozen agents' keys cannot be taken out on chain", len(outstanding)),
+		"Each agent is frozen at Talyvor, but the call that takes its key out of its account cannot be built until its record is fixed. It is retried every minute.\n"+now); err != nil {
+		slog.Error("revoke calls: the operator alert did not send", slog.String("err", err.Error()))
+		return last
+	}
+	return now
 }

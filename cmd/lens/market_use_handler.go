@@ -365,6 +365,7 @@ func releaseMarketHoldbacks(ctx context.Context, store *market.Store) {
 // bill, the agent's judge, and a runner that calls the models with the credential the tool call came in with.
 type mcpMarketDeps struct {
 	lens   http.Handler
+	wallet http.Handler // B41.178: the in-process proxy a connector caller's model calls go through (roomWalletProxy)
 	meter  market.Meter
 	agents marketAgents
 }
@@ -377,7 +378,11 @@ func (d mcpMarketDeps) meterFor(wsID string) market.Meter {
 }
 
 func (d mcpMarketDeps) UseDeps(ctx context.Context, wsID string) market.UseDeps {
-	return market.UseDeps{Runner: proxyRunner{lens: d.lens, from: mcp.CallerRequest(ctx)}, Meter: d.meterFor(wsID), Agents: d.agents}
+	run := proxyRunner{lens: d.lens, from: mcp.CallerRequest(ctx)}
+	if as, ok := ctx.Value(connectorCallerKey{}).(*auth.AuthContext); ok { // B41.178: as the agent's key behind the token
+		run = proxyRunner{lens: d.wallet, from: run.from, as: as}
+	}
+	return market.UseDeps{Runner: run, Meter: d.meterFor(wsID), Agents: d.agents}
 }
 
 func (d mcpMarketDeps) LicenceDeps(_ context.Context, wsID string) market.LicenceDeps {

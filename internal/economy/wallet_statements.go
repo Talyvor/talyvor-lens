@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,7 +201,7 @@ type TaxMovement struct {
 	TxHash        string    `json:"tx_hash"`
 	Asset         string    `json:"asset"`
 	Direction     string    `json:"direction"`      // in: an acquisition; out: a disposal
-	QuantityMinor *big.Int  `json:"quantity_minor"` // in the token's smallest unit: an 18-decimal token's overflows int64
+	QuantityMinor Quantity  `json:"quantity_minor"` // in the token's smallest unit: an 18-decimal token's overflows int64
 	ValueMinor    *int64    `json:"value_minor"`    // in ValueCurrency's minor units, when it moved; nil = not priced
 	ValueCurrency string    `json:"value_currency,omitempty"`
 }
@@ -212,7 +213,35 @@ type TaxDisposal struct {
 	CostBasisMinor int64 `json:"cost_basis_minor"`
 	GainMinor      int64 `json:"gain_minor"` // proceeds − cost basis; a loss is negative
 	// NoBasisQuantityMinor is how much of it came from no acquisition the export saw, so has no cost basis.
-	NoBasisQuantityMinor *big.Int `json:"no_basis_quantity_minor,omitempty"`
+	NoBasisQuantityMinor *Quantity `json:"no_basis_quantity_minor,omitempty"`
+}
+
+// Quantity is a token's quantity in its smallest unit. It is sent as a decimal string (B54.20): one past 2^53 — any
+// 18-decimal token's above 0.009 of it — is not exact as a JavaScript client's number. It reads either.
+type Quantity struct{ *big.Int }
+
+func (q Quantity) MarshalJSON() ([]byte, error) {
+	if q.Int == nil {
+		return []byte("null"), nil
+	}
+	return strconv.AppendQuote(nil, q.String()), nil
+}
+
+func (q *Quantity) UnmarshalJSON(b []byte) error {
+	s := string(b)
+	if s == "null" {
+		q.Int = nil
+		return nil
+	}
+	if u, err := strconv.Unquote(s); err == nil {
+		s = u
+	}
+	n, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return fmt.Errorf("economy: a quantity is a whole number, not %s", b)
+	}
+	q.Int = n
+	return nil
 }
 
 // TaxExport is the accountant's export of the owner's disposals in [From, To), in Currency.
@@ -257,7 +286,7 @@ func (s *DualTokenStore) WalletTaxExport(ctx context.Context, workspaceID string
 		if err := rows.Scan(&m.ID, &m.At, &m.AgentID, &m.Network, &m.TxHash, &m.Asset, &m.Direction, &qty, &m.ValueMinor, &m.ValueCurrency); err != nil {
 			return TaxExport{}, err
 		}
-		m.QuantityMinor, _ = new(big.Int).SetString(qty, 10)
+		m.QuantityMinor.Int, _ = new(big.Int).SetString(qty, 10)
 		m.At = m.At.UTC()
 		moves = append(moves, m)
 	}
@@ -296,11 +325,11 @@ func FIFOGains(moves []TaxMovement, currency string, from, to time.Time) TaxExpo
 			continue
 		}
 		if m.Direction == "in" {
-			pools[m.Asset] = append(pools[m.Asset], lot{new(big.Int).Set(m.QuantityMinor), *m.ValueMinor})
+			pools[m.Asset] = append(pools[m.Asset], lot{new(big.Int).Set(m.QuantityMinor.Int), *m.ValueMinor})
 			continue
 		}
 		d := TaxDisposal{TaxMovement: m, ProceedsMinor: *m.ValueMinor}
-		left, pool := new(big.Int).Set(m.QuantityMinor), pools[m.Asset]
+		left, pool := new(big.Int).Set(m.QuantityMinor.Int), pools[m.Asset]
 		for left.Sign() > 0 && len(pool) > 0 {
 			take := left
 			if pool[0].qty.Cmp(left) < 0 {
@@ -324,7 +353,7 @@ func FIFOGains(moves []TaxMovement, currency string, from, to time.Time) TaxExpo
 		}
 		pools[m.Asset] = pool
 		if left.Sign() > 0 {
-			d.NoBasisQuantityMinor = left
+			d.NoBasisQuantityMinor = &Quantity{left}
 		}
 		d.GainMinor = d.ProceedsMinor - d.CostBasisMinor
 		if m.At.Before(from) { // a disposal before the period still used up its lots

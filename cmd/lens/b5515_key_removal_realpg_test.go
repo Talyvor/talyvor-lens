@@ -300,3 +300,37 @@ func TestB5515_TheKeyThatOwnsAnAccountStaysAndOnlyTheOwnerRemoves(t *testing.T) 
 		t.Errorf("register the removed passkey again = %d %v, want 409 %q", code, out, economy.PasskeyRemovedSentence)
 	}
 }
+
+// B55.15 with B41.116 — a passkey a lockdown revoked is not a live key: GET …/agents/keys leaves it out, the phone key
+// beside it is then the last key and is never revoked, and the revoked passkey can still be removed.
+func TestB5515_APasskeyALockdownRevokedIsNotALiveKey(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5515-revoked"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetApprovalAuth(passkey.RelyingParty{ID: "app.talyvor.com", Origins: []string{"https://app.talyvor.com"}}, nil)
+	store.SetDeviceKeys(devicekey.Verifier{AllowTest: true})
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	mountDeviceKeyRoutes(r, store)
+	w := b5515NewWorkspace(t, store, r, ws)
+	if _, err := pool.Exec(ctx, `UPDATE workspace_passkeys SET revoked_at = now(), revoked_by = 'lockdown' WHERE credential_id = $1`,
+		w.credID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := w.call(http.MethodGet, "/v1/workspaces/"+ws+"/agents/keys", nil)
+	if keys, _ := out["keys"].([]any); len(keys) != 1 || keys[0].(map[string]any)["kind"] != "phone" {
+		t.Errorf("GET keys beside a revoked passkey = %v, want the phone key only", out)
+	}
+	if code, out := w.call(http.MethodPost, "/v1/money/devices/"+w.deviceID+"/revoke", nil); code != http.StatusConflict || out["error"] != b5515LastKey {
+		t.Errorf("revoke the phone key beside a revoked passkey = %d %v, want 409 %q", code, out, b5515LastKey)
+	}
+	if code, out := w.call(http.MethodDelete, "/v1/workspaces/"+ws+"/agents/passkeys/"+w.credID, nil); code != http.StatusOK {
+		t.Errorf("remove the revoked passkey beside a live phone key = %d %v, want 200", code, out)
+	}
+	var live int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL`, ws).Scan(&live); err != nil || live != 1 {
+		t.Errorf("live phone keys after = %d, err %v; want 1", live, err)
+	}
+}

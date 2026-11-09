@@ -192,7 +192,7 @@ func (s *DualTokenStore) SetSpendPermission(ctx context.Context, workspaceID, ag
 			}
 			var spki []byte
 			var count int64
-			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL FOR UPDATE`,
+			err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
 				a.CredentialID, workspaceID).Scan(&spki, &count)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("%w: the passkey that owns the account is no longer the workspace's", passkey.ErrInvalid)
@@ -272,7 +272,7 @@ func (s *DualTokenStore) AuthoriseAgentCryptoPayment(ctx context.Context, worksp
 		var spki, deviceSPKI []byte
 		err = tx.QueryRow(ctx, `SELECT p.canonical, p.credential_id, p.device_id, p.client_data_json, p.authenticator_data, p.signature,
 			k.public_key, d.public_key FROM agent_spend_permissions p
-			LEFT JOIN workspace_passkeys k ON k.credential_id = p.credential_id AND k.workspace_id = p.workspace_id AND k.removed_at IS NULL
+			LEFT JOIN workspace_passkeys k ON k.credential_id = p.credential_id AND k.workspace_id = p.workspace_id AND k.removed_at IS NULL AND k.revoked_at IS NULL
 			LEFT JOIN workspace_device_keys d ON d.id = p.device_id AND d.workspace_id = p.workspace_id AND d.revoked_at IS NULL
 			WHERE p.agent_id = $1 AND p.workspace_id = $2 ORDER BY p.number DESC LIMIT 1`, agentID, workspaceID).
 			Scan(&canonical, &a.CredentialID, &a.DeviceID, &a.ClientDataJSON, &a.AuthenticatorData, &a.Signature, &spki, &deviceSPKI)
@@ -396,8 +396,8 @@ type AgentFreeze struct {
 	// B48.15: the calls that take out each key the agent rotated from, in case a rotation is not on chain yet; on chain
 	// the call for a key no longer there is refused, harmlessly, and the one for the key still there takes it out.
 	PreviousKeyRevokeCalls []string `json:"previous_key_revoke_calls,omitempty"`
-	// B54.9: why the calls above could not all be built. The freeze holds at Talyvor's gate regardless; freezing
-	// again builds them again.
+	// B54.9: why the calls above could not all be built. The freeze holds at Talyvor's gate regardless; the failure is
+	// stored on the agent and retried (B54.25).
 	RevokeCallsError string `json:"revoke_calls_error,omitempty"`
 }
 
@@ -427,11 +427,35 @@ func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, 
 		return AgentFreeze{}, err
 	}
 	f.Account = acct.address
-	if err := f.buildRevokeCalls(acct); err != nil {
+	err = f.buildRevokeCalls(acct)
+	if err != nil {
 		slog.Error("economy: freeze: the revoke calls were not built", slog.String("agent_id", agentID), slog.String("err", err.Error()))
-		f.RevokeCallsError = "the agent is frozen at Talyvor, but its key could not be taken out of the account on chain: freeze it again to retry"
+	}
+	f.RevokeCallsError = revokeCallsError(err)
+	// B54.25: stored, so the owner sees it on the agent and RetryRevokeCalls retries it; the freeze holds either way.
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_smart_accounts SET revoke_calls_error = $3 WHERE agent_id = $1 AND workspace_id = $2`,
+		agentID, workspaceID, f.RevokeCallsError); err != nil {
+		slog.Error("economy: freeze: the revoke calls' failure was not stored", slog.String("agent_id", agentID), slog.String("err", err.Error()))
 	}
 	return f, nil
+}
+
+// errRotatedFromRecord: the keys an agent rotated from and their indexes in the account disagree.
+var errRotatedFromRecord = errors.New("economy: freeze: the keys the agent rotated from and their indexes differ")
+
+// revokeCallsError is what the owner reads when buildRevokeCalls failed with err, "" when it did not. Building is
+// decided by the agent's record alone, so freezing again helps only once Talyvor fixes the record; RetryRevokeCalls
+// clears it then (B54.25).
+func revokeCallsError(err error) string {
+	if err == nil {
+		return ""
+	}
+	what := "Talyvor's record of its key is not a valid key"
+	if errors.Is(err, errRotatedFromRecord) {
+		what = "Talyvor's record of the keys it rotated from does not match their places in the account"
+	}
+	return "the agent is frozen at Talyvor, but its key could not be taken out of the account on chain: " + what +
+		". Talyvor has to fix that record, and once it is fixed, freezing it again answers the calls"
 }
 
 // buildRevokeCalls fills f's calls that take acct's agent key, and each key it rotated from, out of the account.
@@ -443,7 +467,7 @@ func (f *AgentFreeze) buildRevokeCalls(acct spendAccount) error {
 	f.RevokeCall = fmt.Sprintf("0x%x", call)
 	for i, key := range acct.rotatedFrom {
 		if i >= len(acct.rotatedFromIndexes) {
-			return fmt.Errorf("economy: freeze: the keys the agent rotated from and their indexes differ")
+			return errRotatedFromRecord
 		}
 		prev, err := smartaccount.FreezeCall(smartaccount.Account{Address: acct.address, AgentKey: key, AgentIndex: uint64(acct.rotatedFromIndexes[i])})
 		if err != nil {

@@ -82,7 +82,7 @@ func enrolmentCode(spki []byte) string {
 func (s *DualTokenStore) waitEnrolment(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, e KeyEnrolment,
 	person, credentialID string, publicKey []byte, signCount int64, attestation []byte) error {
 	var live int
-	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL)
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL AND revoked_at IS NULL)
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL)`, workspaceID).Scan(&live); err != nil {
 		return fmt.Errorf("economy: key enrolments: %w", err)
 	}
