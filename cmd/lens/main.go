@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -241,6 +242,14 @@ func main() {
 		}
 		return
 	}
+	// `lens credit-scores` (B30.39): companies' requests for a person to review their credit score, and the answer.
+	if len(os.Args) > 1 && os.Args[1] == "credit-scores" {
+		if err := runCreditScores(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `lens escrows` (B22.6): the disputed escrows, and the operator's decision on each.
 	if len(os.Args) > 1 && os.Args[1] == "escrows" {
 		if err := runEscrows(os.Args[2:]); err != nil {
@@ -447,6 +456,9 @@ func run() error {
 		return err
 	}
 	if err := rooms.CheckLimits(); err != nil {
+		return err
+	}
+	if err := economy.CheckMoneyOrder(); err != nil {
 		return err
 	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
@@ -1590,6 +1602,8 @@ func run() error {
 	computeMiner := mining.NewComputeMiner(tokenLedger, pool)
 	computeMiner.SetHTTPClient(newNodeHTTPClient(cfg.NodeTLSSkipVerify, 5*time.Second, nodeCIDRAllow))
 	computeMiner.SetHoldbackWindow(cfg.PoolHoldbackWindow) // Phase-3 Item 1: node mint lands HELD, finalizes after this window (mirrors cache/royalty)
+	// B56.20: Talyvor keeps its compute fee out of every node earning.
+	computeMiner.SetComputeFee(fees.Current().ComputeTakeBPS, economy.TalyvorWorkspace)
 	localRouterMulti.SetOnRequestServed(func(nodeID, requesterWS, requestID string, tokens int, latencyMs int64) {
 		// RETIREMENT SWITCH (PoVI Part 3): the LEGACY trust-based mint (mints LENS
 		// per served request, no receipt). U6: now DEFAULT OFF — an unprotected
@@ -2231,6 +2245,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("money: held payments paid", slog.Int("requests", n))
 				}
+				// B55.21: covered payments not paid when prepared, or that failed, paid within a day; refused after it.
+				if n, err := dualToken.RunCoveredPayments(ctx); err != nil {
+					slog.Warn("money: covered payments failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("money: covered payments paid", slog.Int("requests", n))
+				}
 				// B41.205: the morning briefing pushed to the owners' devices, once a workspace a day, from the push hour.
 				if n, err := dualToken.RunBriefingPushes(ctx, now, cfg.BriefingPushHour); err != nil {
 					slog.Warn("agents: briefing pushes failed", slog.String("err", err.Error()))
@@ -2659,6 +2679,8 @@ func run() error {
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
+		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
+		mountNegotiationEmailRoutes(pub, net.DefaultResolver.LookupTXT, dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -2952,6 +2974,9 @@ func run() error {
 		// B52.33 — Scan's published reports, for the app's report library: approved only, never the review.
 		pub.Get("/v1/public/scan/reports", newScanPublishedReportsHandler(scanWriter).ServeHTTP)
 		pub.Get("/v1/public/scan/reports/{id}", newScanPublishedReportHandler(scanWriter).ServeHTTP)
+
+		// B28.452 — a shared chat, read by anyone holding its link; the token is the whole credential.
+		pub.Get("/v1/public/chat-shares/{token}", publicChatShareHandler(pool))
 
 		// B51.2 — whether a card can be charged, for /pricing: "live", "test" or "off". Never any part of the key.
 		pub.Get("/v1/pricing", publicPricingHandler(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
@@ -3598,6 +3623,9 @@ func run() error {
 
 		// B46.15: the workspace's owner names the workspace.
 		mountWorkspaceNameRoutes(authed, pool, wsManager)
+
+		// B28.452: a chat shared from Chat as a link, kept until the link is turned off.
+		mountChatShareRoutes(authed, pool)
 
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider
@@ -4854,6 +4882,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
+		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
 		mountAgentEscrowRoutes(authed, dualToken)                                       // B22.6
 		mountAgentPotRoutes(authed, dualToken)                                          // B22.7
@@ -4865,6 +4894,7 @@ func run() error {
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
+		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
@@ -4905,6 +4935,8 @@ func run() error {
 		dualToken.SetRoomBudgets(roomStore)                       // B32.32: a room wallet's monthly limit, within the plan
 		roomStore.SetContextMessages(cfg.RoomContextMessages)     // B32.33: what the room's AI reads
 		roomStore.SetReportsHide(cfg.RoomReportsHide)             // B32.52: reports that take a public room off the list
+		roomStore.SetPointsPerUSD(cfg.RoomPointsPerUSD)           // B41.143: money received takes points off a size
+		roomStore.SetReviewPoints(cfg.RoomReviewPoints)           // B41.144: a reviewer's points when its score agreed
 		mountRoomRoutes(authed, roomStore)
 		mountMoneyEarningsRoutes(authed, dualToken, roomStore) // B46.11: payouts of earnings on the money layer
 		// B32.52: the operator's queue of reported rooms, and keeping, locking, unlocking or closing one (operator audit).
@@ -4917,7 +4949,8 @@ func run() error {
 		mcpServer.SetRooms(roomStore, mcpRoomDeps{lens: r, wallet: roomWallet, meter: marketMeter, agents: dualToken})
 		// B32.35: room prizes, paid as a purchase of the winning contribution; one unawarded at its deadline closes.
 		mountRoomPrizeRoutes(authed, roomStore, marketMeter, dualToken)
-		mountRoomTakeoverRoutes(authed, roomStore) // B41.148
+		mountRoomTakeoverRoutes(authed, roomStore)  // B41.148
+		mountRoomOwnershipRoutes(authed, roomStore) // B41.141
 		go func() {
 			t := time.NewTicker(time.Minute)
 			defer t.Stop()
@@ -4938,6 +4971,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
+		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
+			sweepAlertChannels(lctx, dualToken)
 		})
 		// B53.13: one replica reads the connected bank accounts in the background.
 		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {

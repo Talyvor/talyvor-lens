@@ -559,11 +559,11 @@ func EvaluatePermissionMandate(t PermissionMandateTerms, revokedAt *time.Time, p
 	}
 	switch {
 	case revokedAt != nil:
-		return d(MandateBlock, "revoked_at", "the mandate was revoked at %s", revokedAt.UTC().Format(time.RFC3339))
+		return d(MandateBlock, "revoked_at", "your permission was revoked on %s", When(*revokedAt))
 	case now.Before(t.ValidFrom):
-		return d(MandateBlock, "valid_from", "the mandate is valid only from %s", t.ValidFrom.Format(time.RFC3339))
+		return d(MandateBlock, "valid_from", "your permission starts on %s", When(t.ValidFrom))
 	case !now.Before(t.ExpiresAt):
-		return d(MandateBlock, "expires_at", "the mandate expired at %s", t.ExpiresAt.Format(time.RFC3339))
+		return d(MandateBlock, "expires_at", "your permission ended on %s", When(t.ExpiresAt))
 	case !slices.Contains(t.Clients, p.Client):
 		return d(MandateBlock, "clients", "the mandate does not let %q act on it", p.Client)
 	case t.AgentID != "" && p.AgentID != t.AgentID:
@@ -600,26 +600,26 @@ func EvaluatePermissionMandate(t PermissionMandateTerms, revokedAt *time.Time, p
 			return d(MandateBlock, "new_payee.cooling_off_hours", "a new payee is paid only %d hours after it was added, and this one's time is not known", t.NewPayee.CoolingOffHours)
 		}
 		if until := p.PayeeAddedAt.Add(time.Duration(t.NewPayee.CoolingOffHours) * time.Hour); now.Before(until) {
-			return d(MandateBlock, "new_payee.cooling_off_hours", "a new payee is paid only from %s, %d hours after it was added", until.UTC().Format(time.RFC3339), t.NewPayee.CoolingOffHours)
+			return d(MandateBlock, "new_payee.cooling_off_hours", "a new payee is paid only from %s, %d hours after it was added", When(until), t.NewPayee.CoolingOffHours)
 		}
 	}
 	if l, ok := over(t.Limits.PerPayment, p.AmountMinor); ok {
-		return d(MandateNeedsApproval, "limits.per_payment", "%d is over the mandate's %d %s a payment", p.AmountMinor, l, cur)
+		return d(MandateNeedsApproval, "limits.per_payment", "%s is over the %s a payment your permission allows", Money(p.AmountMinor, cur), Money(l, cur))
 	}
 	if l, ok := over(t.Limits.PerDay, p.SpentTodayMinor+p.AmountMinor); ok {
-		return d(MandateNeedsApproval, "limits.per_day", "with %d already today it is over the mandate's %d %s a day", p.SpentTodayMinor, l, cur)
+		return d(MandateNeedsApproval, "limits.per_day", "with %s already today, it is over the %s a day your permission allows", Money(p.SpentTodayMinor, cur), Money(l, cur))
 	}
 	if l, ok := over(t.Limits.PerMonth, p.SpentMonthMinor+p.AmountMinor); ok {
-		return d(MandateNeedsApproval, "limits.per_month", "with %d already this month it is over the mandate's %d %s a month", p.SpentMonthMinor, l, cur)
+		return d(MandateNeedsApproval, "limits.per_month", "with %s already this month, it is over the %s a month your permission allows", Money(p.SpentMonthMinor, cur), Money(l, cur))
 	}
 	if l, ok := over(t.Limits.BatchTotal, p.BatchTotalMinor); ok {
-		return d(MandateNeedsApproval, "limits.batch_total", "the batch's %d is over the mandate's %d %s a batch", p.BatchTotalMinor, l, cur)
+		return d(MandateNeedsApproval, "limits.batch_total", "the batch's %s is over the %s a batch your permission allows", Money(p.BatchTotalMinor, cur), Money(l, cur))
 	}
 	if n := t.Limits.PaymentsPerHour; n > 0 && p.PaymentsLastHour+1 > n {
 		return d(MandateNeedsApproval, "limits.payments_per_hour", "it is over the mandate's %d payments an hour", n)
 	}
 	if l, ok := over(t.RequiresApprovalAbove, p.AmountMinor); ok {
-		return d(MandateNeedsApproval, "requires_approval_above", "the mandate asks for approval above %d %s", l, cur)
+		return d(MandateNeedsApproval, "requires_approval_above", "your permission asks for approval above %s", Money(l, cur))
 	}
 	if p.NewPayee && t.NewPayee.Policy == NewPayeeAlwaysAsk {
 		return d(MandateNeedsApproval, "new_payee.policy", "the mandate asks before paying a new payee")

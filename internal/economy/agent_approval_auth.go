@@ -29,7 +29,7 @@ import (
 // subscription of the workspace one encrypted push naming the agent, the amount and the reason.
 
 // ErrPasskeyRequired: the workspace approves with a passkey and the decision carried no assertion.
-var ErrPasskeyRequired = errors.New("economy: this workspace approves with a passkey — sign this approval's challenge")
+var ErrPasskeyRequired = errors.New("This workspace approves with a passkey or the phone's key, so this needs one of them.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrPushNotConfigured: Lens has no VAPID key (LENS_VAPID_PRIVATE_KEY), so it sends no pushes.
 var ErrPushNotConfigured = errors.New("economy: web push is not configured on this server")
@@ -428,18 +428,18 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if reason == "" && model != "" {
 			reason = "a request to " + model
 		}
-		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
-			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
-			"payee_name": payeeName, "memo": memo})
 		// B40.15: the phones are told the payee and the amount — not the reason or memo, which the agent wrote.
 		to := payeeName
 		if to == "" {
 			to = model
 		}
-		body := agentName + " wants to spend " + lxcString(amount) + " LXC"
+		body := agentName + " wants to spend " + LXCMoney(amount)
 		if to != "" {
-			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
+			body = agentName + " wants to pay " + to + " " + LXCMoney(amount)
 		}
+		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
+			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
+			"payee_name": payeeName, "memo": memo, "body": body}) // B55.30: body is the sentence the phones show
 		// B55.12: the agent_approval category gives the lock screen its Approve button, and the data is what the phone
 		// checks the approval against before it signs; an agent's approval counts in µLXC, LXC's minor unit.
 		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{

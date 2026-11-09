@@ -409,6 +409,21 @@ func liveVerificationLevel(ctx context.Context, q pgxDB, workspaceID string) (Ve
 	return live, nil
 }
 
+// IdentityChecked says whether workspaceID's owner reached L2, identity checked (B41.143: a room's points need it): by
+// a real provider, or — for a synthetic workspace, whose checks stay with the Test provider — by any.
+func IdentityChecked(ctx context.Context, q pgx.Tx, workspaceID string) (bool, error) {
+	checks, err := readVerificationChecks(ctx, q, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	shown, live := reachedLevels(checks)
+	if live >= LevelIdentity {
+		return true, nil
+	}
+	synthetic, err := syntheticWorkspace(ctx, q, workspaceID)
+	return synthetic && shown >= LevelIdentity, err
+}
+
 // liveCountry is the country the owner is verified in for live money (B30.10): the one the highest-level check a real
 // provider passed confirmed — the company's at L3, the person's at L2 — the newest at that level. "" when none names
 // one.

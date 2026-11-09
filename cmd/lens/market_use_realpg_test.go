@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -296,6 +297,15 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 	}
 	if _ = json.Unmarshal([]byte(body), &refused); code != http.StatusForbidden || refused.ApprovalID == "" {
 		t.Fatalf("an agent's use above its approval amount = %d %s, want 403 naming the approval", code, body)
+	}
+	// B55.31: the approval reads as a sentence, and its fingerprint is the one an approval filed before it had.
+	var memo, fingerprint string
+	if err := pool.QueryRow(ctx, `SELECT memo, fingerprint FROM agent_approvals WHERE id = $1`, refused.ApprovalID).Scan(&memo, &fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	fp := sha256.Sum256([]byte("purchase\x00" + agent.ID + "\x00" + fmt.Sprintf("market:%s:%s:1:10000000", agent.ID, listing.ID)))
+	if want := "One use of Summariser (version 1), $1.00 (10 LXC) on your monthly marketplace bill"; memo != want || fingerprint != hex.EncodeToString(fp[:]) {
+		t.Errorf("the approval's memo = %q, fingerprint %s; want %q and the fingerprint it had before B55.31", memo, fingerprint, want)
 	}
 	if _, err := bank.DecideAgentApproval(ctx, buyer, refused.ApprovalID, true); err != nil {
 		t.Fatal(err)

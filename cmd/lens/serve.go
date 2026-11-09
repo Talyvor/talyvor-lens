@@ -50,8 +50,9 @@ import (
 // legitimately hold a connection open for 30 s–2 min; 5 min gives headroom
 // while still evicting truly stuck connections.
 //
-// shortWriteTimeout — redirect server and plain-HTTP server.  Neither ever
-// streams; a 30 s write cap is more than sufficient.
+// shortWriteTimeout — redirect server and plain-HTTP server.  The plain-HTTP
+// server is the one behind Caddy in production and does stream: each streamed
+// answer lifts its own deadlines (streamMaxDuration, internal/proxy, B28.79).
 //
 // serverIdleTimeout — applied to all three servers.  After 2 min of
 // keep-alive inactivity the server closes the connection, reclaiming the

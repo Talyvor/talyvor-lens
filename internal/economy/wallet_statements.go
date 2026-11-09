@@ -199,9 +199,9 @@ type TaxMovement struct {
 	Network       string    `json:"network"`
 	TxHash        string    `json:"tx_hash"`
 	Asset         string    `json:"asset"`
-	Direction     string    `json:"direction"` // in: an acquisition; out: a disposal
-	QuantityMinor int64     `json:"quantity_minor"`
-	ValueMinor    *int64    `json:"value_minor"` // in ValueCurrency's minor units, when it moved; nil = not priced
+	Direction     string    `json:"direction"`      // in: an acquisition; out: a disposal
+	QuantityMinor *big.Int  `json:"quantity_minor"` // in the token's smallest unit: an 18-decimal token's overflows int64
+	ValueMinor    *int64    `json:"value_minor"`    // in ValueCurrency's minor units, when it moved; nil = not priced
 	ValueCurrency string    `json:"value_currency,omitempty"`
 }
 
@@ -212,7 +212,7 @@ type TaxDisposal struct {
 	CostBasisMinor int64 `json:"cost_basis_minor"`
 	GainMinor      int64 `json:"gain_minor"` // proceeds − cost basis; a loss is negative
 	// NoBasisQuantityMinor is how much of it came from no acquisition the export saw, so has no cost basis.
-	NoBasisQuantityMinor int64 `json:"no_basis_quantity_minor,omitempty"`
+	NoBasisQuantityMinor *big.Int `json:"no_basis_quantity_minor,omitempty"`
 }
 
 // TaxExport is the accountant's export of the owner's disposals in [From, To), in Currency.
@@ -241,7 +241,7 @@ func (s *DualTokenStore) WalletTaxExport(ctx context.Context, workspaceID string
 	// Posted and not reversed (B48.6), up to the period's end: a lot bought before the period is the basis of a sale in it.
 	// A move between two of the owner's own wallets is neither an acquisition nor a disposal.
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id, m.seen_at, m.agent_id, m.network, m.tx_hash, m.asset, m.direction, m.amount_minor, m.value_minor, m.value_currency
+		SELECT m.id, m.seen_at, m.agent_id, m.network, m.tx_hash, m.asset, m.direction, m.amount_minor::text, m.value_minor, m.value_currency
 		  FROM chain_movements m
 		 WHERE m.workspace_id = $1 AND m.status IN ('confirmed', 'final') AND m.seen_at < $2 AND NOT (m.asset = ANY($3))
 		   AND NOT EXISTS (SELECT 1 FROM agent_smart_accounts o WHERE o.workspace_id = $1 AND lower(o.address) = lower(m.counterparty))
@@ -253,9 +253,11 @@ func (s *DualTokenStore) WalletTaxExport(ctx context.Context, workspaceID string
 	var moves []TaxMovement
 	for rows.Next() {
 		var m TaxMovement
-		if err := rows.Scan(&m.ID, &m.At, &m.AgentID, &m.Network, &m.TxHash, &m.Asset, &m.Direction, &m.QuantityMinor, &m.ValueMinor, &m.ValueCurrency); err != nil {
+		var qty string
+		if err := rows.Scan(&m.ID, &m.At, &m.AgentID, &m.Network, &m.TxHash, &m.Asset, &m.Direction, &qty, &m.ValueMinor, &m.ValueCurrency); err != nil {
 			return TaxExport{}, err
 		}
+		m.QuantityMinor, _ = new(big.Int).SetString(qty, 10)
 		m.At = m.At.UTC()
 		moves = append(moves, m)
 	}
@@ -278,7 +280,10 @@ func stableList() []string {
 // FIFOGains works out, from moves in time order, each disposal in [from, to) and its gain in currency: every
 // asset a pool of lots, a disposal taking the oldest first. A movement not valued in currency is left out and listed.
 func FIFOGains(moves []TaxMovement, currency string, from, to time.Time) TaxExport {
-	type lot struct{ qty, cost int64 }
+	type lot struct {
+		qty  *big.Int
+		cost int64
+	}
 	pools := map[string][]lot{}
 	x := TaxExport{Currency: currency, Method: "FIFO", From: from, To: to, Disposals: []TaxDisposal{}, Unpriced: []TaxMovement{}}
 	sort.SliceStable(moves, func(i, j int) bool { return moves[i].At.Before(moves[j].At) })
@@ -291,28 +296,36 @@ func FIFOGains(moves []TaxMovement, currency string, from, to time.Time) TaxExpo
 			continue
 		}
 		if m.Direction == "in" {
-			pools[m.Asset] = append(pools[m.Asset], lot{m.QuantityMinor, *m.ValueMinor})
+			pools[m.Asset] = append(pools[m.Asset], lot{new(big.Int).Set(m.QuantityMinor), *m.ValueMinor})
 			continue
 		}
 		d := TaxDisposal{TaxMovement: m, ProceedsMinor: *m.ValueMinor}
-		left, pool := m.QuantityMinor, pools[m.Asset]
-		for left > 0 && len(pool) > 0 {
-			take := min(left, pool[0].qty)
+		left, pool := new(big.Int).Set(m.QuantityMinor), pools[m.Asset]
+		for left.Sign() > 0 && len(pool) > 0 {
+			take := left
+			if pool[0].qty.Cmp(left) < 0 {
+				take = pool[0].qty
+			}
+			take = new(big.Int).Set(take)
 			// The lot's cost in proportion to what is taken; the whole of what is left when it is used up, so no part of
 			// a lot's cost is lost to rounding.
 			cost := pool[0].cost
-			if take < pool[0].qty {
-				c := new(big.Int).Mul(big.NewInt(pool[0].cost), big.NewInt(take))
-				cost = c.Quo(c, big.NewInt(pool[0].qty)).Int64()
+			if take.Cmp(pool[0].qty) < 0 {
+				c := new(big.Int).Mul(big.NewInt(pool[0].cost), take)
+				cost = c.Quo(c, pool[0].qty).Int64()
 			}
 			d.CostBasisMinor += cost
-			pool[0].qty, pool[0].cost, left = pool[0].qty-take, pool[0].cost-cost, left-take
-			if pool[0].qty == 0 {
+			pool[0].qty.Sub(pool[0].qty, take)
+			pool[0].cost -= cost
+			left.Sub(left, take)
+			if pool[0].qty.Sign() == 0 {
 				pool = pool[1:]
 			}
 		}
 		pools[m.Asset] = pool
-		d.NoBasisQuantityMinor = left
+		if left.Sign() > 0 {
+			d.NoBasisQuantityMinor = left
+		}
 		d.GainMinor = d.ProceedsMinor - d.CostBasisMinor
 		if m.At.Before(from) { // a disposal before the period still used up its lots
 			continue

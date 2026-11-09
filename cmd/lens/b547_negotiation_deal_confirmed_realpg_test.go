@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,7 +63,8 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	lensURL, _ := url.Parse("https://lens.example")
 	r := chi.NewRouter()
 	mountNegotiationRoutes(r, store)
-	mountNegotiationOutreachRoutes(r, store, nil, "")
+	ai := &b547Inferer{}
+	mountNegotiationOutreachRoutes(r, store, ai, "test-model")
 	mountNegotiationAgentRoutes(r, &agentsig.Verifier{PublicURL: lensURL, Keys: dir, Nonces: sigs, Businesses: sigs, Now: time.Now}, store)
 
 	as := func(ws string) func(method, path, body string) (int, string) {
@@ -260,11 +263,34 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM negotiation_messages WHERE mandate_id = $1`, b.ID).Scan(&sentBefore); err != nil {
 		t.Fatal(err)
 	}
+	callsBefore := ai.calls.Load()
 	if code, msg := as(wsB)(http.MethodPost, "/v1/negotiations/"+b.ID+"/outreach", askAcme); code != http.StatusBadRequest || strings.Contains(msg, wsA) {
 		t.Errorf("the rival asking Acme for a quote in a deal confirmed to another = %d %s, want 400 naming nobody", code, msg)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM negotiation_messages WHERE mandate_id = $1`, b.ID).Scan(&sentAfter); err != nil || sentAfter != sentBefore {
 		t.Errorf("the rival's refused outreach left a message: %d before, %d after, %v", sentBefore, sentAfter, err)
+	}
+	if n := ai.calls.Load() - callsBefore; n != 0 {
+		t.Errorf("the rival's refused outreach called the model %d times, want 0: a refused ask costs nothing", n)
+	}
+	// B54.23: naming another counterparty does not reach Acme's agent around the held deal. An agent is reached only as
+	// the counterparty its workspace proved it trades as, and the refusal names nobody.
+	codeO, msgO, other := side(wsB, `"other.example"`, "buy")
+	if codeO != http.StatusCreated {
+		t.Fatalf("the rival's mandate with another counterparty = %d %s, want 201", codeO, msgO)
+	}
+	askAsOther := `{"counterparty":"other.example","channel":"agent","to":"` + acmeAgent.ID + `"}`
+	callsBefore = ai.calls.Load()
+	if code, msg := as(wsB)(http.MethodPost, "/v1/negotiations/"+other.ID+"/outreach", askAsOther); code != http.StatusUnprocessableEntity ||
+		strings.Contains(msg, wsD) || strings.Contains(msg, "acme") {
+		t.Errorf("the rival reaching Acme's agent as other.example = %d %s, want 422 naming nobody", code, msg)
+	}
+	var reached int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM negotiation_messages WHERE mandate_id = $1`, other.ID).Scan(&reached); err != nil || reached != 0 {
+		t.Errorf("the rival's outreach as other.example left %d messages, %v", reached, err)
+	}
+	if n := ai.calls.Load() - callsBefore; n != 0 {
+		t.Errorf("the rival's outreach as other.example called the model %d times, want 0", n)
 	}
 	codeHeld, msgHeld, _ := side(wsB, `"acme.example"`, "buy")
 	body := `{"task":{"kind":"purchase","what":"GPU hours"},"side":"buy","currency":"GBP","target_minor":500000,"walk_away_minor":800000,
@@ -292,6 +318,14 @@ func TestB547_ADealHoldsOnlyOnceTheCounterpartyConfirmsIt(t *testing.T) {
 	if code := confirm(acme, b.ID, "rfq-acme-7"); code != http.StatusOK {
 		t.Errorf("Acme confirming the rival once the buyer revoked = %d, want 200", code)
 	}
+}
+
+// b547Inferer counts the model calls Counter makes, and words nothing, so the template is sent.
+type b547Inferer struct{ calls atomic.Int64 }
+
+func (i *b547Inferer) Infer(context.Context, string, string) (string, error) {
+	i.calls.Add(1)
+	return "", errors.New("b547: no model")
 }
 
 type b547Keys []struct {

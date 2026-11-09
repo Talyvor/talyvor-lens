@@ -221,7 +221,7 @@ func payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPay
 		return pay, err
 	}
 	if bal < amount {
-		return pay, fmt.Errorf("%w: the agent holds %d µLXC", ErrAgentFunds, bal)
+		return pay, agentHolds(ctx, tx, ErrAgentFunds, fromAgentID, bal, 0)
 	}
 	pay.EntryID = entry.String()
 	if err := enforceAgentRules(ctx, tx, workspaceID, fromAgentID, amount, pay.EntryID); err != nil {
@@ -253,6 +253,29 @@ type AgentStatementLine struct {
 	At               time.Time `json:"at"`
 	// Label names a platform fee line, with its rate: "Platform fee 3%" (B32.11). Empty on every other kind.
 	Label string `json:"label,omitempty"`
+	// Model and Source are on a call's lines (spend, hold, settle, release, platform_fee) (B28.93): the model it
+	// asked, as its caps count it, and where its answer came from, in words (CallSource). Empty when unknown.
+	Model  string `json:"model,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+// callKinds are the kinds a call to a model posts on its agent's account.
+var callKinds = map[string]bool{"spend": true, "hold": true, "settle": true, "release": true, LXCTypePlatformFee: true}
+
+// CallSource words where a call's answer came from: token_events.serve_source (0100, 0101). Empty when Lens has no
+// record of it yet.
+func CallSource(serveSource string) string {
+	switch serveSource {
+	case "upstream":
+		return "Model provider"
+	case "cache_hit_exact", "cache_hit_semantic":
+		return "Cache"
+	case "cache_hit_pooled", "cache_hit_pooled_semantic":
+		return "Shared pool"
+	case "node":
+		return "Node"
+	}
+	return ""
 }
 
 // AgentStatement reads an agent's account, newest first, at most limit lines.
@@ -265,13 +288,25 @@ func (s *DualTokenStore) AgentStatement(ctx context.Context, workspaceID, agentI
 	if !exists {
 		return nil, ErrAgentNotFound
 	}
+	// A call's lines are referenced by its hold (lxc_reservations) or its pre-serve debit (agent_debit_settlements),
+	// both of which carry the request's token_events request_id; its token_events row is written within the call.
 	rows, err := s.pool.Query(ctx, `
-		SELECT entry_id::text, kind, amount_ulxc, counterparty, ref, balance_after, created_at, fee_bps FROM (
-		  SELECT p.id, p.entry_id, p.kind, p.amount_ulxc, p.ref, p.created_at, p.fee_bps,
+		SELECT l.entry_id::text, l.kind, l.amount_ulxc, l.counterparty, l.ref, l.balance_after, l.created_at, l.fee_bps,
+		       COALESCE(l.model, ''),
+		       COALESCE(CASE WHEN l.kind = ANY($4) THEN (
+		         SELECT t.serve_source FROM token_events t
+		          WHERE t.workspace_id = $1
+		            AND t.request_id = COALESCE(
+		                  (SELECT r.request_id FROM lxc_reservations r WHERE r.reservation_id = l.ref AND r.workspace_id = $1),
+		                  (SELECT d.request_id FROM agent_debit_settlements d WHERE d.debit_key = l.ref AND d.workspace_id = $1))
+		            AND t.created_at BETWEEN l.created_at - interval '15 minutes' AND l.created_at + interval '15 minutes'
+		          ORDER BY t.created_at LIMIT 1) END, '') FROM (
+		  SELECT p.id, p.entry_id, p.kind, p.amount_ulxc, p.ref, p.created_at, p.fee_bps, p.model,
 		         COALESCE((SELECT o.account FROM agent_postings o WHERE o.entry_id = p.entry_id AND o.id <> p.id LIMIT 1), '') AS counterparty,
 		         sum(p.amount_ulxc) OVER (ORDER BY p.id)::bigint AS balance_after
-		    FROM agent_postings p WHERE p.workspace_id = $1 AND p.account = $2) lines
-		ORDER BY id DESC LIMIT $3`, workspaceID, agentAccount(agentID), limit)
+		    FROM agent_postings p WHERE p.workspace_id = $1 AND p.account = $2
+		   ORDER BY p.id DESC LIMIT $3) l
+		ORDER BY l.id DESC`, workspaceID, agentAccount(agentID), limit, callKindList())
 	if err != nil {
 		return nil, fmt.Errorf("economy: agent statement: %w", err)
 	}
@@ -280,8 +315,13 @@ func (s *DualTokenStore) AgentStatement(ctx context.Context, workspaceID, agentI
 	for rows.Next() {
 		var l AgentStatementLine
 		var feeBPS *int64
-		if err := rows.Scan(&l.EntryID, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &l.BalanceAfterULXC, &l.At, &feeBPS); err != nil {
+		var serveSource string
+		if err := rows.Scan(&l.EntryID, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &l.BalanceAfterULXC, &l.At, &feeBPS,
+			&l.Model, &serveSource); err != nil {
 			return nil, err
+		}
+		if callKinds[l.Kind] {
+			l.Source = CallSource(serveSource)
 		}
 		if l.Kind == LXCTypePlatformFee && feeBPS != nil {
 			l.Label = FeeLabel(*feeBPS)
@@ -289,4 +329,12 @@ func (s *DualTokenStore) AgentStatement(ctx context.Context, workspaceID, agentI
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+func callKindList() []string {
+	out := make([]string, 0, len(callKinds))
+	for k := range callKinds {
+		out = append(out, k)
+	}
+	return out
 }
