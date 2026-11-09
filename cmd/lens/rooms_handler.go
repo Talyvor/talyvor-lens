@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/reqtrack"
@@ -128,12 +129,12 @@ func mountRoomRoutes(r chi.Router, store *rooms.Store) {
 		case writeRoomPlanLimit(w, err):
 		case errors.As(err, &rate):
 			w.Header().Set("Retry-After", strconv.Itoa(int(rate.RetryAfter.Seconds())))
-			writeJSONOK(w, http.StatusTooManyRequests, map[string]any{"error": rate.Error(), "setting": rooms.MessagesPerMinuteSetting,
+			writeJSONOK(w, http.StatusTooManyRequests, map[string]any{"error": api.Refusal(rate.Error()), "setting": rooms.MessagesPerMinuteSetting,
 				"per_minute": rate.PerMinute})
 		case errors.As(err, &refusal):
-			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": refusal.Reason, "scan": refusal.Scan})
+			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": api.Refusal(refusal.Reason), "scan": refusal.Scan})
 		case errors.As(err, &refused):
-			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "scan": refused.Scan})
+			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": api.Refusal(err.Error()), "scan": refused.Scan})
 		case errors.Is(err, rooms.ErrInvalid), errors.Is(err, market.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, rooms.ErrNotFound), errors.Is(err, market.ErrNotFound):

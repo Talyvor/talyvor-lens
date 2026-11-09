@@ -222,7 +222,7 @@ func (e *ApprovalNeededError) Error() string {
 		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
 			LXCMoney(e.AmountULXC), e.ApprovalID)
 	}
-	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
+	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount. Approval %s must be approved by the workspace's owner before it is retried",
 		LXCMoney(e.AmountULXC), e.ApprovalID)
 }
 

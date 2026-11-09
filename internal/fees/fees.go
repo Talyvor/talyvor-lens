@@ -24,8 +24,9 @@ type Settings struct {
 	MarketTakeBPS int64 `json:"market_take_bps"`
 	// Jobs, and a payment to another company's agent through the marketplace (B19.15).
 	ServicesTakeBPS int64 `json:"services_take_bps"`
-	ComputeTakeBPS  int64 `json:"compute_take_bps"`
-	LendingFeeBPS   int64 `json:"lending_fee_bps"` // on a loan arranged
+	// What a registered compute node earns for serving another workspace's request: Talyvor keeps this much (B56.20).
+	ComputeTakeBPS int64 `json:"compute_take_bps"`
+	LendingFeeBPS  int64 `json:"lending_fee_bps"` // on a loan arranged
 	// On AI spend charged to credits, by plan.
 	PlatformFeeBPS map[string]int64 `json:"platform_fee_bps"`
 	// Over the reference rate on a currency conversion, by plan.
@@ -42,7 +43,7 @@ type Settings struct {
 // builds a fee flips its entry in the same change; a test holds each entry to whether code outside this package
 // reads that fee.
 var Charged = map[string]bool{
-	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": false, "lending_fee_bps": false,
+	"market_take_bps": true, "services_take_bps": true, "compute_take_bps": true, "lending_fee_bps": false,
 	"platform_fee_bps": true, "fx_margin_bps": false, "intl_payment_fee_minor": true,
 	"merchant_fee_bps": false, "merchant_a2a_fee_bps": false, "scan_alert_ulxc": true,
 }
@@ -100,7 +101,7 @@ func Load(getenv func(string) string) (Settings, error) {
 		}
 		for k, n := range m {
 			if n < 0 || (f.ceil >= 0 && n > f.ceil) {
-				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0–%d", f.name, k, n, f.units, f.ceil)
+				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0 to %d", f.name, k, n, f.units, f.ceil)
 			}
 		}
 		*f.into = m

@@ -56,6 +56,7 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"` // B41.116: revoked by a lockdown, it signs nothing
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -135,7 +136,7 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 
 // ListPasskeys reads a workspace's passkeys.
 func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) ([]Passkey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at FROM workspace_passkeys
+	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at, revoked_at FROM workspace_passkeys
 		WHERE workspace_id = $1 ORDER BY created_at`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
@@ -144,7 +145,7 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 	out := []Passkey{}
 	for rows.Next() {
 		var p Passkey
-		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt); err != nil {
+		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt, &p.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -185,7 +186,7 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 }
 
 // ErrApprovalsChanged: one of the approvals a batch decision names is no longer pending, so none is decided.
-var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending — none was decided")
+var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending, so none was decided")
 
 // batchApprovalPurpose (B41.204) is the purpose one challenge over several approvals is issued for: the decision and
 // the set of ids, sorted, so the signature covers exactly that decision on exactly those approvals.
@@ -298,7 +299,9 @@ func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, works
 // authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no
 // passkey or device key, and otherwise only with a's assertion, by one of them, over that same challenge — so a session
 // alone cannot add a key and then pass every passkey gate. It holds the workspace's enrolment lock until tx ends, so two
-// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned.
+// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned —
+// except for the one key registered over the challenge a lift returned, after a lockdown left no key live
+// (reenrolAfterLift).
 func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, a *passkey.Assertion) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
@@ -310,6 +313,9 @@ func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspac
 	}
 	if n == 0 {
 		return useChallenge(ctx, tx, workspaceID, purpose, challenge)
+	}
+	if free, err := reenrolAfterLift(ctx, tx, workspaceID, purpose, challenge); free || err != nil {
+		return err
 	}
 	if a == nil {
 		return ErrPasskeyRequired
@@ -336,7 +342,7 @@ func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspac
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)

@@ -183,6 +183,8 @@ func openAPIWalletSchemas() map[string]any {
 				"balance_after_ulxc": ulxc,
 				"at":                 at,
 				"label":              map[string]any{"type": "string", "description": "on a platform_fee line, the fee and its rate: \"Platform fee 3%\""},
+				"model":              map[string]any{"type": "string", "description": "on a call's lines (spend, hold, settle, release, platform_fee): the model it asked"},
+				"source":             map[string]any{"type": "string", "enum": []string{"Model provider", "Cache", "Shared pool", "Node"}, "description": "on a call's lines: where its answer came from; absent until Lens has recorded it"},
 			},
 		},
 		"AgentTransfer": map[string]any{
@@ -243,6 +245,7 @@ func openAPIWalletPaths() map[string]any {
 	ws, agent, approval := param("wsID", "path"), param("agentID", "path"), param("approvalID", "path")
 	str := map[string]any{"type": "string"}
 	ulxc := map[string]any{"type": "integer", "format": "int64", "minimum": 1}
+	integer := map[string]any{"type": "integer", "format": "int64"}
 	balance := ok("the agent's balance after the move", obj(nil, map[string]any{"agent_id": str, "balance_ulxc": ulxc}))
 	idempotency := map[string]any{"name": "Idempotency-Key", "in": "header", "required": false,
 		"description": "sent again with the same key, the move lands once (at most 128 characters)",
@@ -263,9 +266,11 @@ func openAPIWalletPaths() map[string]any {
 		ws,
 		{"name": "from", "in": "query", "required": false, "description": "RFC 3339 time or YYYY-MM-DD (midnight UTC); defaults to the start of this month", "schema": str},
 		{"name": "to", "in": "query", "required": false, "description": "exclusive; RFC 3339 time or YYYY-MM-DD; defaults to now", "schema": str},
-		{"name": "format", "in": "query", "required": false, "schema": map[string]any{"type": "string", "enum": []string{"json", "csv"}}},
+		{"name": "format", "in": "query", "required": false, "description": "json (the default), csv, pdf: the statement as a document to download, its opening and closing balances the JSON's, or journal: a CSV of double-entry journal lines (journal_no, date, account, description, debit_lxc, credit_lxc, cost_centre, ref) for Xero or QuickBooks, one journal per entry, each balanced, its cost centre the entry's agent, the statement's accounts' debits their in_ulxc and credits their out_ulxc. The CSV, the PDF and the journal are one row per posting, never grouped, filtered or paged", "schema": map[string]any{"type": "string", "enum": []string{"json", "csv", "pdf", "journal"}}},
 		{"name": "group", "in": "query", "required": false, "description": "day: each model's questions on a day one line (model, requests, total), its platform fee the line under it; days in the agent's rules' time_zone, else UTC (the workspace's: UTC). The CSV is never grouped", "schema": map[string]any{"type": "string", "enum": []string{"day"}}},
-		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to; pages are newest first", "schema": str},
+		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to and the same kind and q; pages are newest first", "schema": str},
+		{"name": "kind", "in": "query", "required": false, "description": "only lines of these kinds, comma-separated (fund, withdraw, spend, hold, settle, release, pay, card, platform_fee, ...); the totals stay the whole period's. The CSV is never filtered", "schema": str},
+		{"name": "q", "in": "query", "required": false, "description": "only lines whose kind, account, counterparty, ref, memo, label, model or entry holds this text, in any case; at most 200 characters", "schema": map[string]any{"type": "string", "maxLength": 200}},
 	}
 
 	return map[string]any{
@@ -463,16 +468,30 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/statement": map[string]any{
 			"get": op("Read the agent's statement",
-				"With none of from, to, format, group or cursor: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV; then limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				"With none of from, to, format, group, cursor, kind or q: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON, CSV, PDF or a journal for an accounting package; kind and q keep only the lines that match, then limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
 					"404": map[string]any{"description": "no such agent"},
 				}),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/analytics": map[string]any{
+			"get": op("Read the agent's spend by day, model and destination",
+				"For the period [from, to) of its statement: every posting that took money out of the agent's account is in one bucket, so the buckets' out_ulxc sum to the statement's. returned_ulxc is a hold's unused part coming back, on the day it came back; spent_ulxc is out less returned. Days are in the agent's rules' time_zone, else UTC. destination is the account the money went to, as the statement's counterparty names it.",
+				[]map[string]any{ws, agent, periodParams[1], periodParams[2]},
+				map[string]any{
+					"200": ok("the agent's spend in buckets", obj(nil, map[string]any{
+						"agent_id": str, "time_zone": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer,
+						"buckets": map[string]any{"type": "array", "items": obj(nil, map[string]any{
+							"day": str, "model": str, "destination": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer, "postings": integer})},
+					})),
+					"400": map[string]any{"description": "from or to is not a time, or from is not before to"},
+					"404": map[string]any{"description": "no such agent"},
+				}),
+		},
 		"/v1/workspaces/{wsID}/agents/statement": map[string]any{
 			"get": op("Read the statement of every agent wallet in the workspace",
-				"For the period [from, to), as JSON or CSV — the statement an auditor can open. limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				"For the period [from, to), as JSON, CSV, PDF or a journal for an accounting package — the statement an auditor can open. kind and q keep only the lines that match, and limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{{"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{"200": map[string]any{"description": "the period statement"}}),
 		},

@@ -21,7 +21,7 @@ import (
 // own key pays as before, judged by its rules.
 
 // ErrPaymentUnsigned: the workspace signs its payments and this one carried no signature.
-var ErrPaymentUnsigned = errors.New("economy: this workspace signs its payments with a passkey or the phone app — sign this payment's challenge (POST /v1/money/payments/challenge)")
+var ErrPaymentUnsigned = errors.New("economy: this workspace signs its payments with a passkey or the phone app. Sign this payment's challenge (POST /v1/money/payments/challenge)")
 
 // paymentPurpose binds a challenge to one payment exactly as asked, so a signature for it pays no other.
 func paymentPurpose(in OutsidePayment) string {

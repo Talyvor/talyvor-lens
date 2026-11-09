@@ -63,6 +63,10 @@ var knownGPUTypes = map[string]float64{
 // track. Same shape as TypeCacheMine.
 const TypeComputeMine = "compute_mine"
 
+// TypeComputeFee is Talyvor's compute fee on a node earning (B56.20), booked to Talyvor's workspace when the
+// node's mint settles. Counted in supply with the node's share: together they are the one earning.
+const TypeComputeFee = "compute_fee"
+
 // ─── types ───────────────────────────────────────
 
 // InferenceNode mirrors one row of inference_nodes.
@@ -148,6 +152,8 @@ type ComputeMiner struct {
 	pool           pgxDB
 	httpClient     *http.Client
 	holdbackWindow time.Duration // Phase-3 Item 1: the mint lands HELD, finalizes after this (default 72h)
+	feeBPS         int64         // B56.20: Talyvor's compute fee on a node's earning; 0 until SetComputeFee
+	feeWorkspace   string        // B56.20: the workspace Talyvor's compute fee row is booked to
 }
 
 func NewComputeMiner(ledger *LedgerStore, pool pgxDB) *ComputeMiner {
@@ -167,6 +173,26 @@ func (m *ComputeMiner) SetHoldbackWindow(d time.Duration) {
 		m.holdbackWindow = d
 	}
 }
+
+// SetComputeFee sets Talyvor's compute fee (B56.20): bps of every node earning, booked to workspace as its
+// own row. fees.Current().ComputeTakeBPS and economy.TalyvorWorkspace, wired in cmd/lens; unset, no fee.
+func (m *ComputeMiner) SetComputeFee(bps int64, workspace string) {
+	m.feeBPS, m.feeWorkspace = bps, workspace
+}
+
+// ComputeFee is Talyvor's compute fee on a node earning of gross µLENS at bps, rounded up to the µLENS so the
+// node is paid gross − fee and the two never come to more than gross. Split by the denominator so no earning
+// overflows.
+func ComputeFee(gross, bps int64) int64 {
+	if gross <= 0 || bps <= 0 {
+		return 0
+	}
+	q, r := gross/computeFeeDenominator, gross%computeFeeDenominator
+	return min(gross, q*bps+(r*bps+computeFeeDenominator-1)/computeFeeDenominator)
+}
+
+// computeFeeDenominator is 100%, in basis points (fees.BPSDenominator).
+const computeFeeDenominator = 10_000
 
 // SetHTTPClient lets tests inject an httptest.Server-backed client
 // for the async verification probe.
@@ -404,7 +430,16 @@ func (m *ComputeMiner) RecordServedRequest(
 	// previously lacked). U6: idempotent on (requestID, node-owner). Empty
 	// requestID ⇒ ErrNoMintRequestID ⇒ no mint (the dormant hook passes "" until
 	// the live wire-up threads a server-derived id).
-	if _, err := m.ledger.CreditOnceHeld(ctx, requestID, node.WorkspaceID, earning, TypeComputeMine, desc, m.holdbackWindow, meta); err != nil {
+	//
+	// B56.20: Talyvor keeps its compute fee out of the earning, held beside the node's mint in the same
+	// transaction and settled by the same sweeper.
+	var fee int64
+	if m.feeWorkspace != "" {
+		fee = ComputeFee(earning, m.feeBPS)
+	}
+	feeMeta := map[string]interface{}{"node_id": nodeID, "compute_take_bps": m.feeBPS, "node_earning_ulens": earning}
+	if _, err := m.ledger.CreditOnceHeldWithFee(ctx, requestID, node.WorkspaceID, earning-fee, TypeComputeMine, desc, m.holdbackWindow, meta,
+		m.feeWorkspace, fee, TypeComputeFee, feeMeta); err != nil {
 		return err
 	}
 	return m.updateMetrics(ctx, nodeID, tokens, latencyMs)

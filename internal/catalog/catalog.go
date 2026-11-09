@@ -412,7 +412,7 @@ func (r *Registry) DecodeOverrides(raw []byte) ([]Model, error) {
 		// request either, so it is the same failure wearing a different byte.
 		if strings.TrimSpace(probe.ID) == "" {
 			return nil, fmt.Errorf(`element %d names no model: every override element needs a non-empty "id" `+
-				`(the field is "id" here — the wire calls the same thing "model", which is the usual way to `+
+				`(the field is "id" here, while the wire calls the same thing "model", which is the usual way to `+
 				`write this wrong). Refusing the whole document: an element with no id registers a catalog `+
 				`entry under the empty string, which is what prices a request that names no model`, i)
 		}
@@ -445,7 +445,7 @@ func (r *Registry) DecodeOverrides(raw []byte) ([]Model, error) {
 		dec := json.NewDecoder(bytes.NewReader(e))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&base); err != nil {
-			return nil, fmt.Errorf("element %d (id %q): %w — every key must be a field of the "+
+			return nil, fmt.Errorf("element %d (id %q): %w. Every key must be a field of the "+
 				"override document; a key Lens cannot place is silently ignored, and when it is a "+
 				"rate the model registers at 0.00 and bills as an exact price. Refusing the whole "+
 				"document", i, probe.ID, err)

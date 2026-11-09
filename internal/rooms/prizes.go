@@ -147,7 +147,7 @@ func (s *Store) PostPrize(ctx context.Context, ws, user, roomID string, d PrizeD
 			}
 			left := b.MonthlyLimitULXC - b.SpentThisMonthULXC - promised*economy.ULXCPerUSDMicro
 			if amount := d.AmountUSDMicros * economy.ULXCPerUSDMicro; amount > left {
-				return fmt.Errorf("%w: the prize is %s and the room's budget has %s left this month — its wallet's monthly limit is %s, "+
+				return fmt.Errorf("%w: the prize is %s and the room's budget has %s left this month. Its wallet's monthly limit is %s, "+
 					"%s of it is spent and %s is promised to the room's open prizes", ErrOverBudget, usd(d.AmountUSDMicros),
 					usd(max(left, 0)/economy.ULXCPerUSDMicro), usd(b.MonthlyLimitULXC/economy.ULXCPerUSDMicro),
 					usd(b.SpentThisMonthULXC/economy.ULXCPerUSDMicro), usd(promised))
