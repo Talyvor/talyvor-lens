@@ -300,6 +300,27 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 		t.Fatalf("the gate kept %d payments while paused, want still 9", n)
 	}
 
+	// B54.5 — the passkey revoked, as a lockdown revokes a lost phone's, the permission it signed allows nothing and it
+	// signs no new one.
+	canonical, challenge = prepare(time.Now().Add(time.Hour))
+	if code := put(canonical, sign(challenge)); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workspace_passkeys SET revoked_at = now(), revoked_by = 'owner' WHERE credential_id = $1`,
+		keys[0].CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(usdc, payee, 1); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "owner signed") {
+		t.Fatalf("a payment under a permission signed by a revoked passkey: %v, want refused", err)
+	}
+	canonical, challenge = prepare(time.Now().Add(time.Hour))
+	if code := put(canonical, sign(challenge)); code == http.StatusOK {
+		t.Fatalf("a permission signed by a revoked passkey = %d, want refused", code)
+	}
+	if code := call(http.MethodGet, base+"/spend-permission", "", &got); code != http.StatusOK || got.Number != 4 {
+		t.Fatalf("GET = %d number %d, want 4: the revoked passkey's permission is not kept", code, got.Number)
+	}
+
 	// Freeze: everything refused at once, and the call that takes the agent's key out of the account on chain.
 	var frozen economy.AgentFreeze
 	if code := call(http.MethodPost, base+"/freeze", "", &frozen); code != http.StatusOK || frozen.Account != acct.Address ||
