@@ -52,7 +52,7 @@ func newCatalogPriceHandler(w *modelwatch.Watcher) http.HandlerFunc {
 		case errors.Is(err, modelwatch.ErrNotListed):
 			writeJSONErr(rw, http.StatusNotFound, err.Error())
 		case errors.Is(err, modelwatch.ErrAlreadyPriced):
-			writeJSONErr(rw, http.StatusConflict, err.Error()+" — a seeded price changes in internal/catalog/seed.go")
+			writeJSONErr(rw, http.StatusConflict, err.Error()+". A seeded price changes in internal/catalog/seed.go")
 		case err != nil:
 			writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		default:

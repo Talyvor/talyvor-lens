@@ -101,7 +101,7 @@ func Load(getenv func(string) string) (Settings, error) {
 		}
 		for k, n := range m {
 			if n < 0 || (f.ceil >= 0 && n > f.ceil) {
-				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0–%d", f.name, k, n, f.units, f.ceil)
+				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0 to %d", f.name, k, n, f.units, f.ceil)
 			}
 		}
 		*f.into = m

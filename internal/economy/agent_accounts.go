@@ -30,7 +30,7 @@ import (
 var ErrAgentNotFound = errors.New("economy: no such agent in this workspace")
 
 // ErrAgentOwnerless: the agent has no owner, so it cannot hold a balance until a person claims it (B19.11).
-var ErrAgentOwnerless = errors.New("economy: this agent has no owner — a person of its workspace must claim it before it can hold a balance")
+var ErrAgentOwnerless = errors.New("economy: this agent has no owner. A person of its workspace must claim it before it can hold a balance")
 
 // ErrAgentFunds: the workspace's unallocated LXC (its balance less what its agents hold), or for a
 // withdrawal the agent's balance, does not cover the amount.

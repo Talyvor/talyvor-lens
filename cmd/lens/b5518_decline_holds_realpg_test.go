@@ -114,7 +114,7 @@ func TestB5518_ADeclinedRequestIsNotAskedAgain(t *testing.T) {
 	pushes(1)
 	deny(b5018Pending(t, pool, ag[0].ID, "march"), `{"reason": "not this month"}`)
 	code, body := pay(5_000_000, "march")
-	if code != http.StatusForbidden || !strings.Contains(body, "the workspace's owner declined this request on ") ||
+	if code != http.StatusForbidden || !strings.Contains(body, "The workspace's owner declined this request on ") ||
 		!strings.Contains(body, ": not this month; the same request is refused until ") || strings.Contains(body, "spending rules") {
 		t.Errorf("the identical retry: %d %s, want 403 naming the owner's decline and reason, not the spending rules", code, body)
 	}

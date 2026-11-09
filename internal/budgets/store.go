@@ -51,7 +51,7 @@ var (
 	ErrNegativeLimit      = errors.New("budgets: limit_usd must be >= 0")
 	ErrNotFound           = errors.New("budgets: not found")
 	ErrScopeTaken         = errors.New("budgets: a budget for this scope already exists")
-	ErrUnknownScope       = errors.New("budgets: unknown scope — refusing to sum spend without a scope predicate")
+	ErrUnknownScope       = errors.New("budgets: unknown scope, so no spend is summed without a scope predicate")
 )
 
 // IsInvalid reports whether err is a budget the caller sent that the store

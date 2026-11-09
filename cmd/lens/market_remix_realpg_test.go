@@ -65,7 +65,7 @@ func TestMarketRemix_AcceptingTheLicenceOpensTheArtifactAndLocksTheShare(t *test
 
 	// Without a grant the remixer cannot declare it as a parent.
 	code, body := publish(remixer, "Sneaky", `,"parents":[{"listing_id":"`+royalty.ID+`"}]`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "accept that listing's remix licence") {
+	if code != http.StatusBadRequest || !strings.Contains(body, "Accept that listing's remix licence") {
 		t.Fatalf("declare a parent without a grant = %d %s, want 400", code, body)
 	}
 

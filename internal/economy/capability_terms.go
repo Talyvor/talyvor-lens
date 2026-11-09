@@ -28,7 +28,7 @@ import (
 
 var (
 	// ErrTermsNotAccepted: the capability's latest terms are not accepted for the workspace.
-	ErrTermsNotAccepted = errors.New("economy: refused — this capability's terms are not accepted")
+	ErrTermsNotAccepted = errors.New("economy: refused: this capability's terms are not accepted")
 	// ErrNoTerms: no terms are published for the capability.
 	ErrNoTerms = errors.New("economy: this capability has no terms")
 	// ErrTermsVersionStale: an acceptance of a version that is no longer the latest.
@@ -242,7 +242,7 @@ func (s *DualTokenStore) AcceptTerms(ctx context.Context, workspaceID, capabilit
 	case latest == 0:
 		return TermsAcceptance{}, fmt.Errorf("%w: %q", ErrNoTerms, capability)
 	case version != latest:
-		return TermsAcceptance{}, fmt.Errorf("%w: version %d of %s's terms is the latest, not %d — read it and accept it",
+		return TermsAcceptance{}, fmt.Errorf("%w: version %d of %s's terms is the latest, not %d. Read it and accept it",
 			ErrTermsVersionStale, latest, capability, version)
 	}
 	hash, err := ipHash(ctx, tx, ip)

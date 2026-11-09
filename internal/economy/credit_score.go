@@ -25,7 +25,7 @@ import (
 // private user is class RED.
 
 // ErrCreditScoreCompaniesOnly: a private user's workspace has no credit score.
-var ErrCreditScoreCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED — a credit score is for company workspaces only")
+var ErrCreditScoreCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED. A credit score is for company workspaces only")
 
 // ErrNoCreditScoreReview: no such review open.
 var ErrNoCreditScoreReview = errors.New("economy: no such open credit score review")

@@ -3498,7 +3498,7 @@ func run() error {
 				return
 			case errors.Is(err, tenant.ErrRotationOpen):
 				writeJSONErr(w, http.StatusConflict, err.Error()+
-					" — complete or abandon it before starting another, or the holder cannot be told which key to take")
+					". Complete or abandon it before starting another, or the holder cannot be told which key to take")
 				return
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -3553,7 +3553,7 @@ func run() error {
 				// unmet. Nothing was changed — both keys are still live — and the message says
 				// what makes it true rather than only that it is false.
 				writeJSONErr(w, http.StatusPreconditionFailed, err.Error()+
-					" — nothing was revoked. Point the holder at the new key and let it make one real "+
+					". Nothing was revoked. Point the holder at the new key and let it make one real "+
 					"authenticated request; a health check does not count, because a health route answers "+
 					"200 with no credential at all.")
 				return
@@ -5984,12 +5984,16 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 	// stack context — to the caller. For status >= 500 we log the full detail
 	// server-side (through the app's slog default, wired in main) and return a
 	// generic body. 4xx messages are legitimately client-facing (validation,
-	// not-found, auth) and pass through unchanged. Doing this in the ONE helper
-	// means no 500 call site (there are ~77 passing err.Error()) can forget to
-	// redact — the information-disclosure class is closed by construction.
+	// not-found, auth) and pass through, read as a person reads them (B55.51):
+	// no leading package name ("economy: ", "rooms: conflict: "), a capital first.
+	// Doing this in the ONE helper means no 500 call site (there are ~77 passing
+	// err.Error()) can forget to redact — the information-disclosure class is
+	// closed by construction.
 	if status >= http.StatusInternalServerError {
 		slog.Error("request failed", slog.Int("status", status), slog.String("detail", msg))
 		msg = "internal server error"
+	} else {
+		msg = api.Refusal(msg)
 	}
 	writeJSONOK(w, status, map[string]string{"error": msg})
 }

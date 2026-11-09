@@ -32,7 +32,7 @@ import (
 const CapabilityCompanyLoans = "loans_between_companies"
 
 // ErrLoanCompaniesOnly: a private user's workspace cannot lend or borrow.
-var ErrLoanCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED — both sides of a loan must be companies")
+var ErrLoanCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED. Both sides of a loan must be companies")
 
 // ErrLoanNotFound: no such loan this workspace can act on in its state.
 var ErrLoanNotFound = errors.New("economy: no such loan")
