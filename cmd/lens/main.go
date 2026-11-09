@@ -2073,6 +2073,10 @@ func run() error {
 	go haComps.leader.Run(ctx, "sanctions-lists", 30*time.Second, func(lctx context.Context) {
 		refreshSanctionsLists(lctx, screeningLists, sanctionsAlert)
 	})
+	// B54.25 — a frozen agent whose revoke calls could not be built is retried each minute, and the operator told.
+	go haComps.leader.Run(ctx, "revoke-calls", 30*time.Second, func(lctx context.Context) {
+		retryRevokeCalls(lctx, dualToken, sanctionsAlert.sink)
+	})
 	// B48.6 — agents' crypto wallets mirrored in the ledger: each movement seen, confirmed and reconciled nightly.
 	chainIdx, err := newChainIndex(dualToken, cfg.ChainIndex)
 	if err != nil {

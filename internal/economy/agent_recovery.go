@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -286,6 +287,15 @@ type Lockdown struct {
 	Failed []LockdownFailure `json:"failed"`
 }
 
+// RevokeCallsOutstanding reports whether any agent l froze still has revoke calls that could not be built (B54.25).
+func (l Lockdown) RevokeCallsOutstanding() bool {
+	return slices.ContainsFunc(l.Frozen, func(f AgentFreeze) bool { return f.RevokeCallsError != "" })
+}
+
+// lockdownTimeout caps a lockdown's database work: well inside the proxy's 5-minute write timeout, so the answer still
+// reaches the app.
+const lockdownTimeout = 2 * time.Minute
+
 // LockdownFailure is an agent a lockdown could not freeze; it is still open, and a retry freezes it.
 type LockdownFailure struct {
 	AgentID string `json:"agent_id"`
@@ -296,9 +306,10 @@ type LockdownFailure struct {
 // each freeze with its call, which the agent's own key signs on chain (smartaccount.SignRetirementAsAgent). It is the
 // emergency button, so one agent's failed freeze never stops the others': each failure is answered by agent, and a
 // retry freezes only those still open (FreezeAgent answers an agent already frozen with the same freeze). It runs to the
-// end even when the person's app hangs up mid-way (B54.9).
+// end even when the person's app hangs up mid-way (B54.9), within lockdownTimeout (B54.25).
 func (s *DualTokenStore) LockdownAgents(ctx context.Context, workspaceID, by string) (Lockdown, error) {
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockdownTimeout)
+	defer cancel()
 	out := Lockdown{Frozen: []AgentFreeze{}, Failed: []LockdownFailure{}}
 	rows, err := s.pool.Query(ctx, `SELECT agent_id FROM agent_smart_accounts WHERE workspace_id = $1 ORDER BY agent_id`, workspaceID)
 	if err != nil {
@@ -403,4 +414,52 @@ func (s *DualTokenStore) requireSwept(ctx context.Context, workspaceID, agentID 
 		}
 	}
 	return nil
+}
+
+// RevokeCallsOutstanding is a frozen agent whose revoke calls still cannot be built (B54.25).
+type RevokeCallsOutstanding struct {
+	WorkspaceID string `json:"workspace_id"`
+	AgentID     string `json:"agent_id"`
+	Error       string `json:"error"`
+}
+
+// RetryRevokeCalls builds again the revoke calls of every frozen agent whose calls could not be built (B54.25): it
+// answers how many it built, which clears their failure and records agent.revoke_calls_built (freezing again answers
+// the calls), and those still outstanding, for the operator's alert.
+func (s *DualTokenStore) RetryRevokeCalls(ctx context.Context) (int, []RevokeCallsOutstanding, error) {
+	rows, err := s.pool.Query(ctx, `SELECT workspace_id, agent_id, revoke_calls_error FROM agent_smart_accounts
+		WHERE frozen_at IS NOT NULL AND revoke_calls_error <> '' ORDER BY workspace_id, agent_id`)
+	if err != nil {
+		return 0, nil, fmt.Errorf("economy: revoke calls retry: %w", err)
+	}
+	pending, err := pgx.CollectRows(rows, pgx.RowToStructByPos[RevokeCallsOutstanding])
+	if err != nil {
+		return 0, nil, fmt.Errorf("economy: revoke calls retry: %w", err)
+	}
+	built, outstanding := 0, []RevokeCallsOutstanding{}
+	for _, p := range pending {
+		err := s.inTx(ctx, func(tx pgx.Tx) error {
+			acct, err := s.spendAccount(ctx, tx, p.WorkspaceID, p.AgentID)
+			if err != nil {
+				return err
+			}
+			p.Error = revokeCallsError((&AgentFreeze{}).buildRevokeCalls(acct))
+			if _, err := tx.Exec(ctx, `UPDATE agent_smart_accounts SET revoke_calls_error = $3 WHERE agent_id = $1 AND workspace_id = $2`,
+				p.AgentID, p.WorkspaceID, p.Error); err != nil || p.Error != "" {
+				return err
+			}
+			// Nothing here sends them: the owner's freeze answers them, so the agent's record says they are ready.
+			return appendAudit(ctx, tx, p.WorkspaceID, "agent:"+p.AgentID, "agent.revoke_calls_built", map[string]any{"agent_id": p.AgentID})
+		})
+		switch {
+		case err != nil:
+			slog.Error("economy: revoke calls retry", slog.String("agent_id", p.AgentID), slog.String("err", err.Error()))
+			outstanding = append(outstanding, p)
+		case p.Error != "":
+			outstanding = append(outstanding, p)
+		default:
+			built++
+		}
+	}
+	return built, outstanding, nil
 }
