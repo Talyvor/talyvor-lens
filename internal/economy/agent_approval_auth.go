@@ -29,7 +29,7 @@ import (
 // subscription of the workspace one encrypted push naming the agent, the amount and the reason.
 
 // ErrPasskeyRequired: the workspace approves with a passkey and the decision carried no assertion.
-var ErrPasskeyRequired = errors.New("economy: this workspace approves with a passkey — sign this approval's challenge")
+var ErrPasskeyRequired = errors.New("This workspace approves with a passkey or the phone's key, so this needs one of them.") //nolint:staticcheck // ST1005: shown to a person as this sentence (B55.50)
 
 // ErrPushNotConfigured: Lens has no VAPID key (LENS_VAPID_PRIVATE_KEY), so it sends no pushes.
 var ErrPushNotConfigured = errors.New("economy: web push is not configured on this server")
@@ -56,6 +56,7 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"` // B41.116: revoked by a lockdown, it signs nothing
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -135,7 +136,7 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 
 // ListPasskeys reads a workspace's passkeys.
 func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) ([]Passkey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at FROM workspace_passkeys
+	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at, revoked_at FROM workspace_passkeys
 		WHERE workspace_id = $1 ORDER BY created_at`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
@@ -144,7 +145,7 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 	out := []Passkey{}
 	for rows.Next() {
 		var p Passkey
-		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt); err != nil {
+		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt, &p.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -298,7 +299,9 @@ func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, works
 // authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no
 // passkey or device key, and otherwise only with a's assertion, by one of them, over that same challenge — so a session
 // alone cannot add a key and then pass every passkey gate. It holds the workspace's enrolment lock until tx ends, so two
-// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned.
+// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned —
+// except for the one key registered over the challenge a lift returned, after a lockdown left no key live
+// (reenrolAfterLift).
 func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, a *passkey.Assertion) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
@@ -310,6 +313,9 @@ func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspac
 	}
 	if n == 0 {
 		return useChallenge(ctx, tx, workspaceID, purpose, challenge)
+	}
+	if free, err := reenrolAfterLift(ctx, tx, workspaceID, purpose, challenge); free || err != nil {
+		return err
 	}
 	if a == nil {
 		return ErrPasskeyRequired
@@ -336,7 +342,7 @@ func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspac
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
@@ -422,18 +428,18 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if reason == "" && model != "" {
 			reason = "a request to " + model
 		}
-		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
-			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
-			"payee_name": payeeName, "memo": memo})
 		// B40.15: the phones are told the payee and the amount — not the reason or memo, which the agent wrote.
 		to := payeeName
 		if to == "" {
 			to = model
 		}
-		body := agentName + " wants to spend " + lxcString(amount) + " LXC"
+		body := agentName + " wants to spend " + LXCMoney(amount)
 		if to != "" {
-			body = agentName + " wants to pay " + to + " " + lxcString(amount) + " LXC"
+			body = agentName + " wants to pay " + to + " " + LXCMoney(amount)
 		}
+		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
+			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
+			"payee_name": payeeName, "memo": memo, "body": body}) // B55.30: body is the sentence the phones show
 		// B55.12: the agent_approval category gives the lock screen its Approve button, and the data is what the phone
 		// checks the approval against before it signs; an agent's approval counts in µLXC, LXC's minor unit.
 		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{

@@ -37,6 +37,9 @@ const (
 	// heldTypeFor(TypePatternMine) == this; the counted TypePatternMine is written
 	// at finalize.
 	TypePatternMineHeld = "pattern_mine_held"
+	// TypeComputeFeeHeld is Talyvor's compute fee while the node mint it was taken from is held (B56.20). Not
+	// a mint moment: its value is part of the gated compute_mine_held mint written in the same transaction.
+	TypeComputeFeeHeld = "compute_fee_held"
 )
 
 const insertTrafficHoldSQL = `
@@ -53,7 +56,16 @@ const insertTrafficHoldSQL = `
 // ONE tx, so a duplicate or a gate-blocked mint leaves no partial state and does
 // not consume the idempotency key.
 func (s *LedgerStore) CreditOnceHeld(ctx context.Context, requestID, workspaceID string, amount int64, mintType, description string, window time.Duration, metadata map[string]interface{}) (alreadyMinted bool, err error) {
-	if amount <= 0 {
+	return s.CreditOnceHeldWithFee(ctx, requestID, workspaceID, amount, mintType, description, window, metadata, "", 0, "", nil)
+}
+
+// CreditOnceHeldWithFee is CreditOnceHeld with Talyvor's fee taken out of the earning (B56.20): amount is what
+// the earner is paid, and fee µLENS land held for feeWorkspace as feeType in the same transaction, under the
+// same request and window, so the sweeper settles both and a gate-blocked mint books neither. fee 0 is
+// CreditOnceHeld exactly.
+func (s *LedgerStore) CreditOnceHeldWithFee(ctx context.Context, requestID, workspaceID string, amount int64, mintType, description string, window time.Duration, metadata map[string]interface{},
+	feeWorkspace string, fee int64, feeType string, feeMetadata map[string]interface{}) (alreadyMinted bool, err error) {
+	if amount <= 0 || fee < 0 {
 		return false, fmt.Errorf("mining: credit amount must be positive")
 	}
 	if requestID == "" {
@@ -82,6 +94,18 @@ func (s *LedgerStore) CreditOnceHeld(ctx context.Context, requestID, workspaceID
 	// mint type (in mintTypeList). A gate block rolls the claim back with it.
 	if err := s.CreditHeldTx(ctx, tx, workspaceID, amount, heldTypeFor(mintType), description, metadata); err != nil {
 		return false, err
+	}
+	if fee > 0 {
+		tag, err := tx.Exec(ctx, insertTrafficHoldSQL, requestID, feeWorkspace, feeType, fee, window.Microseconds())
+		if err != nil {
+			return false, fmt.Errorf("mining: insert fee hold claim: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return true, nil // the fee was already claimed for this request; the rollback undoes the earner's claim too
+		}
+		if err := s.CreditHeldTx(ctx, tx, feeWorkspace, fee, heldTypeFor(feeType), "Talyvor fee: "+description, feeMetadata); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("mining: commit credit-once-held: %w", err)

@@ -97,7 +97,7 @@ func (s *Store) GetCollection(ctx context.Context, viewer, id string) (Collectio
 		return Collection{}, fmt.Errorf("market: collection: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedListingColumns+` FROM market_collection_items i JOIN market_listings l ON l.id = i.listing_id
-		WHERE i.collection_id = $1 AND l.visibility = 'public' AND l.review_status = 'approved' ORDER BY i.position`, id)
+		WHERE i.collection_id = $1 AND l.visibility = 'public' AND l.review_status = 'approved' AND `+contentShown("$2", true)+` ORDER BY i.position`, id, viewer)
 	if err != nil {
 		return Collection{}, fmt.Errorf("market: collection: %w", err)
 	}

@@ -209,7 +209,7 @@ type ListingCharger interface {
 // LicenceJudge is what renewing a marketplace licence asks of the economy (B32.20), as its first charge did: its
 // agent's rules, and the capability its charge is recorded under. *DualTokenStore satisfies it.
 type LicenceJudge interface {
-	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c Commitment, what string,
+	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c Commitment, what, memo string,
 		record func(pgx.Tx) error) error
 	RequireBilledCapability(ctx context.Context, workspaceID, key string) error
 }
@@ -256,7 +256,7 @@ func (s *DualTokenStore) CreateAgentListingSchedule(ctx context.Context, workspa
 		amount = price
 	}
 	if amount < price {
-		return AgentSchedule{}, fmt.Errorf("%w: the listing costs %s LXC a use, more than %s LXC", ErrListingPayee, lxcString(price), lxcString(amount))
+		return AgentSchedule{}, fmt.Errorf("%w: the listing costs %s a use, more than %s", ErrListingPayee, LXCMoney(price), LXCMoney(amount))
 	}
 	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `
 		INSERT INTO agent_payment_schedules (id, workspace_id, from_agent_id, to_listing_id, amount_ulxc, memo, every, next_run_at)

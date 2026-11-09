@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,32 @@ var ErrAgentRequestRate = fmt.Errorf("%w", ErrAgentRule)
 
 // ErrApprovalRequired is the approval amount's refusal; *ApprovalNeededError carries the approval.
 var ErrApprovalRequired = errors.New("economy: this request needs a person's approval")
+
+// ErrApprovalDeclined is the refusal of a request the workspace's owner declined within the approval life (B55.18):
+// asking again the same way neither files an approval nor pushes.
+var ErrApprovalDeclined = errors.New("economy: the workspace's owner declined this request")
+
+// approvalDeclined is ErrApprovalDeclined saying when, why and until when. It is ErrAgentRule too, so every caller
+// refuses it as it refuses a rule (403), while its words name the owner's decline rather than the spending rules.
+type approvalDeclined struct {
+	at, until time.Time
+	reason    string
+}
+
+func (e approvalDeclined) Error() string {
+	const day, clock = "2 Jan 2006", "15:04 UTC"
+	reason := ""
+	if e.reason != "" {
+		reason = ": " + e.reason
+	}
+	at, until := e.at.UTC(), e.until.UTC()
+	return fmt.Sprintf("%s on %s at %s%s; the same request is refused until %s at %s",
+		ErrApprovalDeclined, at.Format(day), at.Format(clock), reason, until.Format(day), until.Format(clock))
+}
+
+func (e approvalDeclined) Is(target error) bool {
+	return target == ErrApprovalDeclined || target == ErrAgentRule
+}
 
 // ErrApprovalNotFound: no such open approval in this workspace.
 var ErrApprovalNotFound = errors.New("economy: no such pending approval in this workspace")
@@ -123,6 +150,9 @@ type AgentRequest struct {
 	Payee       Payee     // who a payment goes to, and Memo why: the approval it files names both (B23.5)
 	Memo        string
 	Commitment  Commitment // the marketplace licence a payment takes, if it takes one (B32.22)
+	// Approved: the owner signed for this payment in advance — a pull within the mandate they approved (B55.24) — so
+	// it needs no approval of its own. Every other rule still judges it.
+	Approved bool
 }
 
 // Payee is who a payment goes to. Name is the one it had when the approval was filed; empty until then
@@ -156,6 +186,18 @@ func WithAgentRequest(ctx context.Context, req AgentRequest) context.Context {
 	return context.WithValue(ctx, agentRequestKey{}, req)
 }
 
+type denyReasonKey struct{}
+
+// WithDenyReason carries what the owner wrote when declining (B55.18) to DecideAgentApproval and DecideAgentApprovalSigned.
+func WithDenyReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, denyReasonKey{}, reason)
+}
+
+func denyReasonFrom(ctx context.Context) string {
+	r, _ := ctx.Value(denyReasonKey{}).(string)
+	return r
+}
+
 func agentRequestFrom(ctx context.Context) AgentRequest {
 	req, _ := ctx.Value(agentRequestKey{}).(AgentRequest)
 	if req.At.IsZero() {
@@ -177,11 +219,11 @@ type ApprovalNeededError struct {
 
 func (e *ApprovalNeededError) Error() string {
 	if e.Expired {
-		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s LXC, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
-			lxcString(e.AmountULXC), e.ApprovalID)
+		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
+			LXCMoney(e.AmountULXC), e.ApprovalID)
 	}
-	return fmt.Sprintf("this request would cost up to %s LXC, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
-		lxcString(e.AmountULXC), e.ApprovalID)
+	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
+		LXCMoney(e.AmountULXC), e.ApprovalID)
 }
 
 func (e *ApprovalNeededError) Unwrap() error { return ErrApprovalRequired }
@@ -550,8 +592,8 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 	// What it paid other agents counts (B19.3), and its card purchases (B19.12); what they paid it does not raise its limit. What it
 	// used of paid marketplace listings counts too (B20.2), though it is billed to its company. Its questions' platform fees count (B32.11).
 	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
-	// invoices it paid from its currency account (B30.131), recorded under their entry key as the rules let them through,
-	// and the charges on its reusable cards (B54.6).
+	// invoices it paid from its currency account (B30.131) and what payees pulled under its mandates (B55.24), recorded
+	// under their entry key as the rules let them through, and the charges on its reusable cards (B54.6).
 	err := tx.QueryRow(ctx, `SELECT (
 		(SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
@@ -561,7 +603,7 @@ func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_payments
 		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned'))
 		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_payee_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND ref LIKE 'invoice_agent:%' AND created_at >= $3)
+		   WHERE workspace_id = $1 AND agent_id = $4 AND (ref LIKE 'invoice_agent:%' OR ref LIKE 'mandate_pull:%') AND created_at >= $3)
 		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_card_authorizations
 		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3))::bigint`,
 		workspaceID, agentAccount(agentID), since, agentID).Scan(&spent)
@@ -721,18 +763,27 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 	if err := r.judgeCommitment(req.Commitment); err != nil {
 		return err
 	}
-	var ids []string // the ids the payee lists and caps name a payment's payee by
+	var ids []string                              // the ids the payee lists and caps name a payment's payee by
+	payee := cmp.Or(req.Payee.Name, req.Payee.ID) // B55.30: the name a refusal gives the payee
 	if req.Payment && len(r.AllowedPayees)+len(r.BlockedPayees)+len(r.PayeeDailyLimitsULXC)+len(r.PayeeMonthlyLimitsULXC)+len(r.PayeeAllowances) > 0 {
 		if ids, err = payeeIDs(ctx, tx, req.Payee); err != nil {
 			return err
 		}
+		// Only the workspace's own agents and marketplace listings are named; another company's agent keeps its id.
+		if req.Payee.Name == "" && (req.Payee.Kind == "listing" || len(ids) > 1 && ids[1] == workspaceID) {
+			named, err := namePayee(ctx, tx, req.Payee)
+			if err != nil {
+				return err
+			}
+			payee = cmp.Or(named.Name, named.ID)
+		}
 	}
 	if req.Payment && len(r.AllowedPayees)+len(r.BlockedPayees) > 0 {
 		if slices.ContainsFunc(ids, func(id string) bool { return slices.Contains(r.BlockedPayees, id) }) {
-			return ruleRefusal("the agent may not pay %s %q", req.Payee.Kind, req.Payee.ID)
+			return ruleRefusal("the agent may not pay %s", payee)
 		}
 		if len(r.AllowedPayees) > 0 && !slices.ContainsFunc(ids, func(id string) bool { return slices.Contains(r.AllowedPayees, id) }) {
-			return ruleRefusal("the agent may pay only the payees its rules name, and %s %q is not one", req.Payee.Kind, req.Payee.ID)
+			return ruleRefusal("the agent may pay only the payees its rules name, and %s is not one", payee)
 		}
 	}
 	if rpm := limitOf(r.RequestsPerMinute); rpm > 0 && !req.Payment {
@@ -746,8 +797,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		}
 	}
 	if r.MaxPerRequestULXC > 0 && amount > r.MaxPerRequestULXC {
-		return ruleRefusal("this %s would cost up to %s LXC; the agent's limit per request is %s LXC",
-			what, lxcString(amount), lxcString(r.MaxPerRequestULXC))
+		return ruleRefusal("this %s would cost up to %s; the agent's limit per request is %s",
+			what, LXCMoney(amount), LXCMoney(r.MaxPerRequestULXC))
 	}
 	for _, limit := range r.periodLimits(now, loc) {
 		if limit.ulxc == 0 {
@@ -758,8 +809,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			return fmt.Errorf("economy: agent spend so far: %w", err)
 		}
 		if spent+amount > limit.ulxc {
-			return ruleRefusal("the agent has spent %s LXC of its %s limit of %s LXC, and this %s would cost up to %s LXC",
-				lxcString(spent), limit.name, lxcString(limit.ulxc), what, lxcString(amount))
+			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
+				LXCMoney(spent), limit.name, LXCMoney(limit.ulxc), what, LXCMoney(amount))
 		}
 	}
 	if limit, since := r.modelDailyLimit(req.Model, now, loc); limit > 0 && !req.Payment {
@@ -768,8 +819,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			return fmt.Errorf("economy: agent spend on the model so far: %w", err)
 		}
 		if spent+amount > limit {
-			return ruleRefusal("the agent has spent %s LXC of its daily limit of %s LXC for the model %q, and this request would cost up to %s LXC",
-				lxcString(spent), lxcString(limit), req.Model, lxcString(amount))
+			return ruleRefusal("the agent has spent %s of its daily limit of %s for the model %q, and this request would cost up to %s",
+				LXCMoney(spent), LXCMoney(limit), req.Model, LXCMoney(amount))
 		}
 	}
 	day, month := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
@@ -787,12 +838,12 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 				return fmt.Errorf("economy: agent payments to the payee so far: %w", err)
 			}
 			if paid+amount > c.limit {
-				return ruleRefusal("the agent has paid %s LXC %s of its %s limit of %s LXC for %q, and this payment would cost %s LXC",
-					lxcString(paid), c.when, c.name, lxcString(c.limit), id, lxcString(amount))
+				return ruleRefusal("the agent has paid %s %s of its %s limit of %s for %s, and this payment would cost %s",
+					LXCMoney(paid), c.when, c.name, LXCMoney(c.limit), payee, LXCMoney(amount))
 			}
 		}
 	}
-	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC {
+	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved {
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
@@ -924,15 +975,15 @@ func (r AgentRules) judgeCommitment(c Commitment) error {
 	case !slices.Contains(AgentLicences, c.Licence):
 		return ruleRefusal("an agent may hold only commercial and enterprise licences, and this %s is %s: a personal licence is one person's", c.Kind, c.Licence)
 	case len(r.AllowedLicences) > 0 && !slices.Contains(r.AllowedLicences, c.Licence):
-		return ruleRefusal("the agent may hold only %s licences (allowed_licences), and this %s is %s",
+		return ruleRefusal("the agent may hold only %s licences, and this %s is %s",
 			strings.Join(r.AllowedLicences, " and "), c.Kind, c.Licence)
 	case c.Kind == "subscribe" && (r.MaySubscribe == nil || !*r.MaySubscribe):
-		return ruleRefusal("the agent's rules do not let it subscribe (may_subscribe)")
+		return ruleRefusal("the agent's rules do not let it subscribe")
 	case c.Renews && (r.MaySubscribe == nil || !*r.MaySubscribe): // a rent that renews itself is a subscription
-		return ruleRefusal("the agent's rules do not let it take a %s that renews itself (may_subscribe)", c.Kind)
+		return ruleRefusal("the agent's rules do not let it take a %s that renews itself", c.Kind)
 	case limitOf(r.MaxCommitmentULXC) > 0 && c.ULXC > *r.MaxCommitmentULXC:
-		return ruleRefusal("this %s would commit the agent to %s LXC; the most one licence may commit it to is %s LXC (max_commitment_ulxc)",
-			c.Kind, lxcString(c.ULXC), lxcString(*r.MaxCommitmentULXC))
+		return ruleRefusal("this %s would commit the agent to %s; the most one licence may commit it to is %s",
+			c.Kind, LXCMoney(c.ULXC), LXCMoney(*r.MaxCommitmentULXC))
 	}
 	return nil
 }
@@ -968,6 +1019,9 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 				return ErrConnectApprovalsWaiting
 			}
 		}
+		if err := declined(ctx, tx, need.agentID, need.req.Fingerprint); err != nil { // B55.18
+			return err
+		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
@@ -988,6 +1042,27 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		return fmt.Errorf("economy: read approval: %w", err)
 	}
 	return need
+}
+
+// declined is approvalDeclined when the owner declined the agent's request of fingerprint within the approval life
+// (B55.18): the decline's expires_at is when the same request may ask again. Every place that files an approval asks it
+// in the filing's transaction, first locking the request's open approval: a retry racing the owner's decline waits for
+// it, and this statement, run after, sees it.
+func declined(ctx context.Context, tx pgx.Tx, agentID, fingerprint string) error {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2 AND status IN ('pending', 'approved')
+		FOR UPDATE`, agentID, fingerprint); err != nil {
+		return fmt.Errorf("economy: lock the open approval: %w", err)
+	}
+	var d approvalDeclined
+	err := tx.QueryRow(ctx, `SELECT decided_at, expires_at, deny_reason FROM agent_approvals WHERE agent_id = $1 AND fingerprint = $2
+		AND status = 'denied' AND expires_at > now() ORDER BY expires_at DESC LIMIT 1`, agentID, fingerprint).Scan(&d.at, &d.until, &d.reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("economy: declined approval: %w", err)
+	}
+	return d
 }
 
 // refusedMovement is what a hold or debit returns when agentMovement refused it: a request that needs
@@ -1018,17 +1093,18 @@ type AgentApproval struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
+	DenyReason        string `json:"deny_reason,omitempty"` // what the owner wrote when declining (B55.18)
 }
 
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at`
+	approved_by_agent_id, expires_at, deny_reason`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1060,9 +1136,10 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	if approve {
 		status = "approved"
 	}
-	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond'
+	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
+		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
 		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns,
-		approvalID, workspaceID, status, s.approvalLife().Microseconds()))
+		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
 	}
