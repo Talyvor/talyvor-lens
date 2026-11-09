@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -137,5 +138,88 @@ func TestB4828_EveryTokenSeenAndValuedWhenItMoves(t *testing.T) {
 		JOIN compliance_cases c ON c.subject_id = 'chain:' || m.id || ':1' WHERE m.tx_hash = $1`, held).Scan(&status, &currency, &amount); err != nil ||
 		status != "quarantined" || currency != "USD" || amount != 350_000 {
 		t.Fatalf("the flagged deposit is %s, its case %d %s, %v; want it quarantined, screened at 350000 USD", status, amount, currency, err)
+	}
+}
+
+// downOnce is a price adapter whose first answer is an outage, and every one after it p's figure.
+type downOnce struct {
+	down *bool
+	p    *big.Rat
+}
+
+func (p downOnce) Price(context.Context, string, string) (*big.Rat, error) {
+	if *p.down {
+		*p.down = false
+		return nil, errors.New("the price adapter is down")
+	}
+	return p.p, nil
+}
+
+// B54.20: a movement whose price could not be read as it confirmed posts unvalued, and is valued on the indexer's next
+// look — never posted again. Here 25 USDC comes in while the price adapter is down: it posts once, with no value, and
+// the next Confirm values it at 2500 cents, leaving the ledger's one entry as it was.
+func TestB4828_AMovementNotValuedWhenItMovedIsValuedNext(t *testing.T) {
+	dir := os.Getenv("LENS_TEST_DEVNET_CONTRACTS")
+	if dir == "" {
+		t.Skip("LENS_TEST_DEVNET_CONTRACTS is not set: run scripts/devnet-contracts.sh DIR and set it to DIR")
+	}
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5420"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetScreener(screening.NewScreener(pool, b487Screening{}))
+	agent, err := store.CreateAgent(ctx, ws, "treasurer", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wallet := smartaccount.Checksum("0x00000000000000000000000000000000000b5420")
+	if _, err := pool.Exec(ctx, `INSERT INTO agent_smart_accounts (agent_id, workspace_id, address, factory, implementation, owner_credential_id,
+		owner_public_key, agent_signer, provider, solana_address) VALUES ($1, $2, $3, '0x', '0x', 'cred', $4, '0x', 'cdp', '')`,
+		agent.ID, ws, wallet, make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+
+	chain := devnet(t)
+	usdc := chain.deploy(t, dir, "USD Coin", "USDC", 6)
+	chain.send(t, devnetFunded, usdc, "mint(address,uint256)", devnetFunded, big.NewInt(1_000_000_000))
+	idx, err := newChainIndex(store, `{"webhook_secret": "whsec_b5420", "networks": [{"name": "base", "chain_id": 8453, "rpc_url": "`+
+		chain.RPCURL+`", "usdc": "`+usdc+`", "confirmations": 3, "funding": "test"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	down := true
+	idx.x.SetPrices(downOnce{&down, big.NewRat(1, 1)}, nil)
+
+	deposit := chain.send(t, devnetFunded, usdc, "transfer(address,uint256)", wallet, big.NewInt(25_000_000))
+	if n, err := idx.x.Poll(ctx, "base"); err != nil || n != 1 {
+		t.Fatalf("poll = %d, %v; want the deposit seen", n, err)
+	}
+	chain.mine(t, 2)
+	// movement is the deposit's status and value, and the ledger's entries for it and what they put in the wallet's account.
+	movement := func() (status string, value int64, entries int, held int64) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT status, COALESCE(value_minor, -1) FROM chain_movements WHERE tx_hash = $1`, deposit).Scan(&status,
+			&value); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(DISTINCT p.entry_id), COALESCE(sum(p.amount_minor), 0)::bigint FROM money_postings p
+			JOIN money_accounts a ON a.id = p.account_id WHERE a.agent_id = $1 AND a.purpose = 'chain'`, agent.ID).Scan(&entries, &held); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if res, err := idx.x.Confirm(ctx, "base"); err != nil || res.Posted != 1 {
+		t.Fatalf("the deposit with 3 confirmations: %+v, %v; want it posted", res, err)
+	}
+	if status, value, entries, held := movement(); status != "confirmed" || value != -1 || entries != 1 || held != 25_000_000 {
+		t.Fatalf("after the outage the deposit is %s, worth %d, %d entries holding %d; want it confirmed, unvalued, one entry of 25000000",
+			status, value, entries, held)
+	}
+	if res, err := idx.x.Confirm(ctx, "base"); err != nil || res.Posted != 0 {
+		t.Fatalf("the next look: %+v, %v; want nothing posted again", res, err)
+	}
+	if status, value, entries, held := movement(); status != "confirmed" || value != 2500 || entries != 1 || held != 25_000_000 {
+		t.Fatalf("on the next look the deposit is %s, worth %d, %d entries holding %d; want it valued at 2500, the one entry of 25000000 as it was",
+			status, value, entries, held)
 	}
 }
