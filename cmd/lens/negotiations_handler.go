@@ -286,7 +286,8 @@ func dkimSigningDomains(h mail.Header) []string {
 			if !ok || strings.TrimSpace(k) != "d" {
 				continue
 			}
-			d := strings.ToLower(strings.Join(strings.Fields(v), ""))
+			// "acme.example." asks the same name servers as "acme.example", so it is the same bucket.
+			d := strings.TrimSuffix(strings.ToLower(strings.Join(strings.Fields(v), "")), ".")
 			if reg, err := publicsuffix.EffectiveTLDPlusOne(d); err == nil {
 				d = reg
 			}
