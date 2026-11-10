@@ -434,6 +434,35 @@ func openAPIPaths() map[string]any {
 				"responses": map[string]any{"204": map[string]any{"description": "removed"}},
 			},
 		},
+		"/v1/workspaces/{wsID}/sso": map[string]any{
+			"get": map[string]any{
+				"summary":     "Get this workspace's single sign-on connection — never its client secret",
+				"description": `{"issuer","client_id","domains":[{"domain","record","value","proven_at"}],"updated_at"}. A domain counts once a TXT record named record answers value. The owner, signed in, only. 404 when there is none. Present only when the deployment holds custody (LENS_PROVIDER_SECRET_KEK).`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "the connection"}},
+			},
+			"put": map[string]any{
+				"summary":     "Save this workspace's single sign-on connection",
+				"description": `Body {"issuer":"https://…","client_id","client_secret","domains":["example.com"]}. The secret is sealed and never returned. A domain kept from the connection it replaces stays proven; a new one starts unproven. Refused (402) unless the plan includes single sign-on; 409 when another workspace has proven a domain.`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "the connection"}},
+			},
+			"delete": map[string]any{
+				"summary":    "Remove this workspace's single sign-on connection and its domains",
+				"parameters": []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":  map[string]any{"204": map[string]any{"description": "removed"}},
+			},
+		},
+		"/v1/workspaces/{wsID}/sso/domains/{domain}/check": map[string]any{
+			"post": map[string]any{
+				"summary":     "Check a domain's TXT record and prove it for this workspace's single sign-on",
+				"description": `200 with the domain, proven. 409 with {"error","domain"} while the TXT record does not answer the value yet, or when another workspace has proven the domain.`,
+				"parameters": []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+					{"name": "domain", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+				},
+				"responses": map[string]any{"200": map[string]any{"description": "domain, record, value, proven_at"}},
+			},
+		},
 		"/v1/workspaces/{wsID}/approval-chat": map[string]any{
 			"get": map[string]any{
 				"summary":     "The Slack or Teams webhook this workspace's approvals are posted to",
