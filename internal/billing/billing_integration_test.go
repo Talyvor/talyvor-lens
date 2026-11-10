@@ -116,6 +116,8 @@ func (f *fakeStripe) CardFingerprint(_ context.Context, _ string) (string, error
 	return f.fingerprint, f.fingerprintErr
 }
 
+func (f *fakeStripe) ProcessingFee(context.Context, string) (int64, error) { return 0, nil }
+
 // flakyCrediter fails the FIRST CreditLXCTx (simulating a transient credit
 // failure), then delegates — to prove a 5xx + redelivery credits exactly once.
 type flakyCrediter struct {

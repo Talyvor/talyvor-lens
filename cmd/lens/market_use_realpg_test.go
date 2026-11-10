@@ -50,6 +50,7 @@ func (f *marketStripe) CreateCheckoutSession(context.Context, billing.CheckoutPa
 	return "", "", errors.New("not in this test")
 }
 func (f *marketStripe) CardFingerprint(context.Context, string) (string, error) { return "", nil }
+func (f *marketStripe) ProcessingFee(context.Context, string) (int64, error)    { return 0, nil }
 func (f *marketStripe) CreateMarketSubscription(_ context.Context, customer, price, ws string) (string, error) {
 	id := fmt.Sprintf("sub_market_%d", len(f.subs)+1)
 	f.subs = append(f.subs, id+" "+customer+" "+price)

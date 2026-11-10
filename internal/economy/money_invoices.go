@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/talyvor/lens/internal/fees"
 )
 
 // money_invoices.go — B30.20: INVOICES AND PAYMENT LINKS.
@@ -35,6 +39,12 @@ import (
 // Each class is RED: test money only until a clearance, asked by PostMoney. An invoice is draft until sent, sent until
 // its payments cover the total — then paid — and overdue while sent past its due date (UTC); a draft or sent one may be
 // voided. SweepInvoices sends a reminder before the due date when the issuer asked for one, and one once overdue.
+//
+// B56.21: Talyvor keeps a fee for accepting each payment, as its own entry from the issuing account to Talyvor's revenue
+// in the same transaction: merchant_a2a_fee_bps of a transfer or an agent's payment, and merchant_fee_bps of a card
+// payment plus what Stripe kept for processing it (internal/fees). The fee asks merchant_acceptance too, so live money
+// is accepted only once both capabilities are cleared. A card payment Stripe refunds is returned from the issuing
+// account, and the same share of its fee is given back.
 
 var (
 	// ErrInvoice: an invoice asked for with lines, a customer or a due date it cannot have.
@@ -124,10 +134,12 @@ type Invoice struct {
 
 // InvoicePayment is one payment on an invoice: the money entry that posted it.
 type InvoicePayment struct {
-	EntryID     string    `json:"entry_id"`
-	Method      string    `json:"method"` // card, transfer or agent
-	AmountMinor int64     `json:"amount_minor"`
-	PaidAt      time.Time `json:"paid_at"`
+	EntryID       string    `json:"entry_id"`
+	Method        string    `json:"method"` // card, transfer or agent
+	AmountMinor   int64     `json:"amount_minor"`
+	FeeMinor      int64     `json:"fee_minor"`      // Talyvor's fee for accepting it (B56.21)
+	ReturnedMinor int64     `json:"returned_minor"` // what has been refunded of it
+	PaidAt        time.Time `json:"paid_at"`
 }
 
 // InvoiceReminder is a reminder sent: before the due date, or once overdue.
@@ -153,6 +165,10 @@ type InvoiceCardPayment struct {
 	AmountMinor int64
 	Currency    string
 	Funding     string // test ("" too) or live
+	// The session's payment intent, which a refund names, and what Stripe kept for processing it in Currency: charged
+	// on to the issuer at cost (B56.21).
+	PaymentIntent     string
+	ProcessorFeeMinor int64
 }
 
 // SetInvoicePayBase is where an invoice's pay link points: the web app's origin, to which /pay/<token> is added.
@@ -165,7 +181,7 @@ const invoiceColumns = `i.id, i.workspace_id, i.agent_id, i.account_id, COALESCE
 	i.seller_vat_number, i.lines, i.subtotal_minor, i.vat_minor, i.total_minor, i.due_date::text, i.remind_days_before, i.memo, i.status,
 	i.sent_at, i.paid_at, i.voided_at, i.created_at,
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('entry_id', p.entry_id, 'method', p.method, 'amount_minor', p.amount_minor,
-		'paid_at', p.paid_at) ORDER BY p.paid_at, p.entry_id) FROM money_invoice_payments p WHERE p.invoice_id = i.id), '[]'),
+		'fee_minor', p.fee_minor, 'returned_minor', p.returned_minor, 'paid_at', p.paid_at) ORDER BY p.paid_at, p.entry_id) FROM money_invoice_payments p WHERE p.invoice_id = i.id), '[]'),
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', r.kind, 'sent_to', r.sent_to, 'message', r.message, 'sent_at', r.sent_at)
 		ORDER BY r.sent_at) FROM money_invoice_reminders r WHERE r.invoice_id = i.id), '[]')`
 
@@ -362,14 +378,54 @@ func (s *DualTokenStore) InvoiceByToken(ctx context.Context, token string) (Invo
 	return s.readInvoice(ctx, s.pool, `i.pay_token = $1 AND i.status <> 'draft'`, token)
 }
 
-// recordInvoicePayment keeps entryID as a payment of amountMinor on invoiceID, once, and marks the invoice paid when
+// acceptInvoicePayment keeps entryID as a payment of amountMinor on inv, once, and charges the issuer Talyvor's fee for
+// accepting it (B56.21) the first time: merchant_fee_bps of a card payment plus processorMinor, Stripe's cost, or
+// merchant_a2a_fee_bps of a transfer or an agent's; never more than the payment. Live money asks merchant_acceptance
+// first, so it stays test money until that is cleared as well as the payment's own capability. It marks inv paid when
 // its payments cover the total.
-func recordInvoicePayment(ctx context.Context, q pgxDB, invoiceID, entryID, method string, amountMinor int64) error {
-	if _, err := q.Exec(ctx, `INSERT INTO money_invoice_payments (invoice_id, entry_id, method, amount_minor) VALUES ($1, $2, $3, $4)
-		ON CONFLICT DO NOTHING`, invoiceID, entryID, method, amountMinor); err != nil {
+func acceptInvoicePayment(ctx context.Context, tx pgx.Tx, inv Invoice, entryID, method, funding, paymentIntent string, amountMinor, processorMinor int64) error {
+	accepting, _ := CapabilityByKey(CapabilityMerchantAcceptance)
+	if funding == FundingLive {
+		refusal, err := capabilityLive(ctx, tx, inv.WorkspaceID, accepting)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			return refusal
+		}
+	}
+	f := fees.Current()
+	bps := f.MerchantA2AFeeBPS
+	if method == "card" {
+		bps = f.MerchantFeeBPS
+	}
+	fee := min(partOf(amountMinor, bps, fees.BPSDenominator)+max(processorMinor, 0), amountMinor)
+	tag, err := tx.Exec(ctx, `INSERT INTO money_invoice_payments (invoice_id, entry_id, method, amount_minor, fee_minor, payment_intent)
+		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`, inv.ID, entryID, method, amountMinor, fee, paymentIntent)
+	if err != nil {
 		return fmt.Errorf("economy: record invoice payment: %w", err)
 	}
-	return markInvoicesPaid(ctx, q, `i.id = $1`, invoiceID)
+	if tag.RowsAffected() == 1 && fee > 0 {
+		revenue, err := routeAccount(ctx, tx, inv.WorkspaceID, inv.Currency, MoneyRevenue, "", "Talyvor fees")
+		if err != nil {
+			return err
+		}
+		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: inv.WorkspaceID, Capability: accepting.Key, Kind: "acceptance_fee",
+			IdempotencyKey: "acceptance_fee:" + entryID, Funding: funding, Memo: "Talyvor's fee for accepting a payment of invoice " + inv.Number,
+			Postings: []MoneyPosting{{AccountID: inv.AccountID, AmountMinor: -fee}, {AccountID: revenue, AmountMinor: fee}}}, nil); err != nil {
+			return err
+		}
+	}
+	return markInvoicesPaid(ctx, tx, `i.id = $1`, inv.ID)
+}
+
+// partOf is a × b ÷ c to the nearest whole unit, a half up, for 0 ≤ a and 0 ≤ b ≤ c: never more than a, so it cannot
+// overflow.
+func partOf(a, b, c int64) int64 {
+	hi, lo := bits.Mul64(uint64(a), uint64(b))
+	lo, carry := bits.Add64(lo, uint64(c/2), 0)
+	q, _ := bits.Div64(hi+carry, lo, uint64(c))
+	return int64(q)
 }
 
 func markInvoicesPaid(ctx context.Context, q pgxDB, where string, args ...any) error {
@@ -474,7 +530,7 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 	if out.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
 		return PaidInvoice{}, err
 	}
-	if err := recordInvoicePayment(ctx, tx, inv.ID, out.Entry.ID, "agent", inv.DueMinor); err != nil {
+	if err := acceptInvoicePayment(ctx, tx, inv, out.Entry.ID, "agent", funding, "", inv.DueMinor, 0); err != nil {
 		return PaidInvoice{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -489,8 +545,9 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 }
 
 // PayInvoiceByCard posts a card payment Stripe took for an invoice into the issuing account: payments_in from the
-// workspace's card partner account, screened against the cardholder first, once per Checkout Session. Money taken is
-// always posted — onto a paid or void invoice too — and marks a sent one paid once its payments cover the total.
+// workspace's card partner account, screened against the cardholder first, once per Checkout Session, and its fee
+// (acceptInvoicePayment) with it. Money taken is always posted — onto a paid or void invoice too — and marks a sent one
+// paid once its payments cover the total.
 func (s *DualTokenStore) PayInvoiceByCard(ctx context.Context, c InvoiceCardPayment) (Invoice, error) {
 	if c.Funding == "" {
 		c.Funding = FundingTest
@@ -513,14 +570,111 @@ func (s *DualTokenStore) PayInvoiceByCard(ctx context.Context, c InvoiceCardPaym
 		AND partner_account_ref = $4`, "macc_"+uuid.NewString(), inv.WorkspaceID, inv.Currency, cardPartnerRef).Scan(&partner); err != nil {
 		return Invoice{}, fmt.Errorf("economy: card partner account: %w", err)
 	}
-	e, err := s.PostMoney(ctx, MoneyEntry{WorkspaceID: inv.WorkspaceID, Capability: CapabilityPaymentsIn, Kind: "invoice_card",
+	e := MoneyEntry{WorkspaceID: inv.WorkspaceID, Capability: CapabilityPaymentsIn, Kind: "invoice_card",
 		IdempotencyKey: "invoice_card:" + c.SessionID, Funding: c.Funding, Memo: "Card payment of invoice " + inv.Number,
 		Counterparty: c.Payer, PartnerRef: c.SessionID,
-		Postings: []MoneyPosting{{AccountID: partner, AmountMinor: -c.AmountMinor}, {AccountID: inv.AccountID, AmountMinor: c.AmountMinor}}})
+		Postings: []MoneyPosting{{AccountID: partner, AmountMinor: -c.AmountMinor}, {AccountID: inv.AccountID, AmountMinor: c.AmountMinor}}}
+	// As PostMoney does: screened before the locks (B50.15), and judged by monitoring once it has moved.
+	if err := s.screenBeforeLocks(ctx, e); err != nil {
+		return Invoice{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Invoice{}, fmt.Errorf("economy: card payment: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if e, err = postMoneyTx(ctx, tx, e, screenedBeforeLocks{}); err != nil {
+		return Invoice{}, err
+	}
+	if err := acceptInvoicePayment(ctx, tx, inv, e.ID, "card", c.Funding, c.PaymentIntent, c.AmountMinor, c.ProcessorFeeMinor); err != nil {
+		return Invoice{}, err
+	}
+	if err := commitMoney(ctx, tx); err != nil {
+		return Invoice{}, err
+	}
+	s.monitorMoved(ctx, e)
+	return s.readInvoice(ctx, s.pool, `i.id = $1`, inv.ID)
+}
+
+// commitMoney commits tx, answering ErrMoneyUnbalanced when an entry in it does not sum to zero.
+func commitMoney(ctx context.Context, tx pgx.Tx) error {
+	if err := tx.Commit(ctx); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			return fmt.Errorf("%w: %s", ErrMoneyUnbalanced, pgErr.Message)
+		}
+		return fmt.Errorf("economy: post money: %w", err)
+	}
+	return nil
+}
+
+// ReturnInvoiceCardPayment books a refund Stripe made of the invoice card payment behind paymentIntent: refundedMinor
+// is how much of it has come back in all, as Stripe reports it on each charge.refunded, so a partial refund and then
+// the rest each return only what is new. What is new goes from the issuing account back to the card partner account,
+// and the same share of the payment's fee from Talyvor's revenue back to the issuing account. ErrInvoiceNotFound: no
+// invoice was paid by that payment intent.
+func (s *DualTokenStore) ReturnInvoiceCardPayment(ctx context.Context, paymentIntent string, refundedMinor int64) (Invoice, error) {
+	if paymentIntent == "" {
+		return Invoice{}, ErrInvoiceNotFound
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Invoice{}, fmt.Errorf("economy: return card payment: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var invoiceID, entryID string
+	var amount, fee, returned int64
+	err = tx.QueryRow(ctx, `SELECT invoice_id, entry_id, amount_minor, fee_minor, returned_minor FROM money_invoice_payments
+		WHERE payment_intent = $1 AND method = 'card' FOR UPDATE`, paymentIntent).Scan(&invoiceID, &entryID, &amount, &fee, &returned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invoice{}, ErrInvoiceNotFound
+	}
+	if err != nil {
+		return Invoice{}, fmt.Errorf("economy: return card payment: %w", err)
+	}
+	inv, err := s.readInvoice(ctx, tx, `i.id = $1`, invoiceID)
 	if err != nil {
 		return Invoice{}, err
 	}
-	if err := recordInvoicePayment(ctx, s.pool, inv.ID, e.ID, "card", c.AmountMinor); err != nil {
+	refunded := min(max(refundedMinor, 0), amount)
+	if refunded <= returned {
+		return inv, nil
+	}
+	paid, err := readMoneyEntry(ctx, tx, `e.id = $1`, entryID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	var partner string
+	for _, p := range paid.Postings {
+		if p.AmountMinor < 0 {
+			partner = p.AccountID
+		}
+	}
+	at := strconv.FormatInt(refunded, 10)
+	// The cardholder was screened when the money came in, and Stripe has already sent it back: nothing here can refuse it.
+	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: inv.WorkspaceID, Capability: CapabilityPaymentsIn, Kind: "invoice_card_returned",
+		IdempotencyKey: "invoice_card_returned:" + entryID + ":" + at, Funding: paid.Funding, Memo: "Card payment of invoice " + inv.Number + " refunded",
+		Counterparty: paid.Counterparty, PartnerRef: paid.PartnerRef,
+		Postings: []MoneyPosting{{AccountID: inv.AccountID, AmountMinor: -(refunded - returned)}, {AccountID: partner, AmountMinor: refunded - returned}}},
+		screenedBeforeLocks{}); err != nil {
+		return Invoice{}, err
+	}
+	if back := partOf(fee, refunded, amount) - partOf(fee, returned, amount); back > 0 {
+		revenue, err := routeAccount(ctx, tx, inv.WorkspaceID, inv.Currency, MoneyRevenue, "", "Talyvor fees")
+		if err != nil {
+			return Invoice{}, err
+		}
+		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: inv.WorkspaceID, Capability: CapabilityMerchantAcceptance, Kind: "acceptance_fee_returned",
+			IdempotencyKey: "acceptance_fee_returned:" + entryID + ":" + at, Funding: paid.Funding,
+			Memo:     "Talyvor's fee for accepting a payment of invoice " + inv.Number + ", given back with its refund",
+			Postings: []MoneyPosting{{AccountID: revenue, AmountMinor: -back}, {AccountID: inv.AccountID, AmountMinor: back}}}, nil); err != nil {
+			return Invoice{}, err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE money_invoice_payments SET returned_minor = $2 WHERE entry_id = $1`, entryID, refunded); err != nil {
+		return Invoice{}, fmt.Errorf("economy: return card payment: %w", err)
+	}
+	if err := commitMoney(ctx, tx); err != nil {
 		return Invoice{}, err
 	}
 	return s.readInvoice(ctx, s.pool, `i.id = $1`, inv.ID)
@@ -532,23 +686,45 @@ func (s *DualTokenStore) PayInvoiceByCard(ctx context.Context, c InvoiceCardPaym
 // shortcut: Lens has no mailer, so a reminder is kept on the invoice — its list, and its pay page — addressed to the
 // customer's email; send it by email too once Lens has a mailer.
 func (s *DualTokenStore) SweepInvoices(ctx context.Context, now time.Time) ([]InvoiceReminder, error) {
-	// A payment in to the invoice's account whose reference, as typed, holds the invoice's.
-	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO money_invoice_payments (invoice_id, entry_id, method, amount_minor)
-			SELECT i.id, e.id, 'transfer', p.amount_minor FROM money_invoices i
-			JOIN money_postings p ON p.account_id = i.account_id AND p.amount_minor > 0
-			JOIN money_entries e ON e.id = p.entry_id AND e.kind = 'payment_in' AND e.created_at >= i.created_at
-			WHERE i.status = 'sent' AND strpos(regexp_replace(upper(e.memo), '[^A-Z0-9]', '', 'g'), i.reference) > 0
-			ON CONFLICT DO NOTHING`); err != nil {
-			return err
-		}
-		return markInvoicesPaid(ctx, tx, `EXISTS (SELECT 1 FROM money_invoice_payments p WHERE p.invoice_id = i.id)`)
-	}); err != nil {
+	// A payment in to the invoice's account whose reference, as typed, holds the invoice's, each accepted with its fee in
+	// a transaction of its own. One that fails — a live one while merchant_acceptance is uncleared, say — stays in the
+	// account unmatched and is asked again at the next sweep, and the rest are matched.
+	type transfer struct {
+		invoiceID, entryID, funding string
+		amount                      int64
+	}
+	rows, err := s.pool.Query(ctx, `SELECT i.id, e.id, p.funding, p.amount_minor FROM money_invoices i
+		JOIN money_postings p ON p.account_id = i.account_id AND p.amount_minor > 0
+		JOIN money_entries e ON e.id = p.entry_id AND e.kind = 'payment_in' AND e.created_at >= i.created_at
+		WHERE i.status = 'sent' AND strpos(regexp_replace(upper(e.memo), '[^A-Z0-9]', '', 'g'), i.reference) > 0
+		  AND NOT EXISTS (SELECT 1 FROM money_invoice_payments x WHERE x.entry_id = e.id)
+		ORDER BY e.created_at, e.id`)
+	if err != nil {
 		return nil, fmt.Errorf("economy: match invoice transfers: %w", err)
+	}
+	transfers, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (transfer, error) {
+		var t transfer
+		return t, r.Scan(&t.invoiceID, &t.entryID, &t.funding, &t.amount)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("economy: match invoice transfers: %w", err)
+	}
+	for _, t := range transfers {
+		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			inv, err := s.readInvoice(ctx, tx, `i.id = $1`, t.invoiceID)
+			if err != nil {
+				return err
+			}
+			return acceptInvoicePayment(ctx, tx, inv, t.entryID, "transfer", t.funding, "", t.amount, 0)
+		})
+		if err != nil {
+			slog.Info("economy: a transfer quoting an invoice was not matched; the next sweep asks again", "invoice_id", t.invoiceID,
+				"entry_id", t.entryID, "err", err)
+		}
 	}
 
 	today := now.UTC().Format(time.DateOnly)
-	rows, err := s.pool.Query(ctx, `SELECT `+invoiceColumns+` FROM money_invoices i WHERE i.status = 'sent' AND (
+	rows, err = s.pool.Query(ctx, `SELECT `+invoiceColumns+` FROM money_invoices i WHERE i.status = 'sent' AND (
 		($1::date > i.due_date AND NOT EXISTS (SELECT 1 FROM money_invoice_reminders r WHERE r.invoice_id = i.id AND r.kind = 'overdue'))
 		OR (i.remind_days_before > 0 AND $1::date BETWEEN i.due_date - i.remind_days_before AND i.due_date
 			AND NOT EXISTS (SELECT 1 FROM money_invoice_reminders r WHERE r.invoice_id = i.id AND r.kind = 'before_due')))`, today)
