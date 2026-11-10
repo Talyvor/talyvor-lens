@@ -4978,6 +4978,7 @@ func run() error {
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
+		mountKeyRecoveryRoutes(authed, dualToken)                                       // B55.48
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17

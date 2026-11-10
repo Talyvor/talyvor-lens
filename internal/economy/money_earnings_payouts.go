@@ -370,7 +370,8 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		}
 		fp := sha256.Sum256([]byte("earnings\x00" + e.AgentID + "\x00" + key + "\x00" + strconv.FormatInt(freshTotal, 10) + "\x00" + e.Currency))
 		rctx := WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Payee: Payee{Kind: "outside", ID: e.Source,
-			Name: e.Kind + " " + e.Source}, Memo: minorString(freshTotal, e.Currency) + " of " + e.Kind + " " + e.Source + " paid out"})
+			Name: e.Kind + " " + e.Source}, Memo: minorString(freshTotal, e.Currency) + " of " + e.Kind + " " + e.Source + " paid out",
+			PaidFrom: PaidFrom{Kind: "account", Currency: e.Currency, AmountMinor: freshTotal, funding: e.Funding}})
 		if err := enforceAgentRules(rctx, tx, workspaceID, e.AgentID, value, key); err != nil {
 			return nil, s.refusedMovement(rctx, tx, err)
 		}
