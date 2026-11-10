@@ -149,6 +149,22 @@ func openAPIWalletSchemas() map[string]any {
 				"created_at": at,
 				"decided_at": map[string]any{"type": "string", "format": "date-time", "nullable": true},
 				"expires_at": map[string]any{"type": "string", "format": "date-time", "description": "When it stops being usable: 24 hours after it was filed while pending, 24 hours after the tap once approved."},
+				"paid_from": map[string]any{
+					"type":        "object",
+					"nullable":    true,
+					"description": "What pays it (B57.11); null on an approval filed before this was kept.",
+					"properties": map[string]any{
+						"kind":         map[string]any{"type": "string", "enum": []string{"lxc", "account", "marketplace_bill", "card"}},
+						"account_id":   map[string]any{"type": "string", "description": "the agent (lxc), the money account, the workspace (marketplace_bill) or the card"},
+						"name":         map[string]any{"type": "string", "description": "in words, e.g. Research’s US dollar account"},
+						"currency":     map[string]any{"type": "string", "description": "LXC, USD, EUR, GBP or USDC"},
+						"amount_minor": map[string]any{"type": "integer", "format": "int64", "description": "the amount in that currency's minor units (µLXC for LXC)"},
+						"balance_minor": map[string]any{"type": "integer", "format": "int64", "nullable": true,
+							"description": "its balance now, in the same units; null for a bill or a card"},
+					},
+				},
+				"asks_above_ulxc":        map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the approval amount it was above, when it was filed"},
+				"budget_left_after_ulxc": map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the monthly limit less the month's spend and this amount, when it was filed; null with no monthly limit"},
 			},
 		},
 		"AgentRulesVersion": map[string]any{

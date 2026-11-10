@@ -45,6 +45,23 @@ func (s *DualTokenStore) RequestPaymentApproval(ctx context.Context, workspaceID
 	if _, err := s.expireApprovals(ctx, agentID, fp); err != nil {
 		return AgentApproval{}, err
 	}
+	var monthLeft *int64 // B57.11: the monthly limit less the month's spend and this payment
+	if rules.MonthlyLimitULXC > 0 {
+		loc, err := rules.location()
+		if err != nil {
+			return AgentApproval{}, ruleRefusal("the agent's timezone %q cannot be read", rules.Timezone)
+		}
+		now := time.Now().In(loc)
+		var spent int64
+		if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) (err error) {
+			spent, err = agentSpentSince(ctx, tx, workspaceID, agentID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc))
+			return err
+		}); err != nil {
+			return AgentApproval{}, fmt.Errorf("economy: agent spend so far: %w", err)
+		}
+		left := rules.MonthlyLimitULXC - spent - amount
+		monthLeft = &left
+	}
 	var filed string
 	var inserted bool
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -52,11 +69,13 @@ func (s *DualTokenStore) RequestPaymentApproval(ctx context.Context, workspaceID
 			return err
 		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, payee_kind, payee_id, payee_name, memo, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond')
+			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, payee_kind, payee_id, payee_name, memo, expires_at,
+				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, asks_above_ulxc, budget_left_after_ulxc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', 'lxc', $3, 'LXC', $5, $12, $13)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO UPDATE SET reason = EXCLUDED.reason
 			RETURNING id, xmax = 0`,
-			"apr_"+uuid.NewString(), workspaceID, agentID, fp, amount, reason, payee.Kind, payee.ID, payee.Name, memo, s.approvalLife().Microseconds()).Scan(&filed, &inserted); err != nil {
+			"apr_"+uuid.NewString(), workspaceID, agentID, fp, amount, reason, payee.Kind, payee.ID, payee.Name, memo, s.approvalLife().Microseconds(),
+			rules.ApprovalAboveULXC, monthLeft).Scan(&filed, &inserted); err != nil {
 			return fmt.Errorf("economy: request approval: %w", err)
 		}
 		return nil

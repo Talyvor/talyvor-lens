@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/approvalchat"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/webpush"
@@ -44,6 +45,14 @@ type ApprovalPusher interface {
 	PublicKey() string
 }
 
+// ApprovalChat posts an approval to the workspace's Slack or Teams (internal/approvalchat.Store, B56.16).
+type ApprovalChat interface {
+	Post(ctx context.Context, workspaceID string, a approvalchat.Approval) error
+}
+
+// SetApprovalChat turns on the Slack or Teams post sent for each approval filed, to a workspace that saved a webhook.
+func (s *DualTokenStore) SetApprovalChat(c ApprovalChat) { s.approvalChat = c }
+
 // SetApprovalAuth sets the relying party passkeys are checked for and, when pusher is not nil, turns on
 // the push sent for each approval filed.
 func (s *DualTokenStore) SetApprovalAuth(rp passkey.RelyingParty, pusher ApprovalPusher) {
@@ -56,7 +65,8 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"` // B41.116: revoked by a lockdown, it signs nothing
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`    // B41.116: revoked by a lockdown, it signs nothing
+	RecoveryCode string     `json:"recovery_code,omitempty"` // B55.48: answered once, with the workspace's first key
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -135,6 +145,9 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 	if err := tx.QueryRow(ctx, `INSERT INTO workspace_passkeys (credential_id, workspace_id, name, public_key, sign_count)
 		VALUES ($1, $2, $3, $4, $5) RETURNING created_at`, r.CredentialID, workspaceID, name, r.PublicKey, int64(count)).Scan(&p.CreatedAt); err != nil {
 		return p, fmt.Errorf("economy: register passkey: %w", err)
+	}
+	if p.RecoveryCode, err = firstKeyRecoveryCode(ctx, tx, workspaceID); err != nil {
+		return Passkey{}, err
 	}
 	return p, tx.Commit(ctx)
 }
@@ -528,10 +541,10 @@ func (s *DualTokenStore) DeletePushSubscription(ctx context.Context, workspaceID
 }
 
 // notifyApproval sends, in the background, one push per subscription of workspaceID for a newly filed
-// approval: which agent, how much, to whom and why.
+// approval: which agent, how much, to whom and why — and, B56.16, one post to its Slack or Teams.
 func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 	pusher := s.approvalPusher
-	if pusher == nil && s.nativePusher == nil {
+	if pusher == nil && s.nativePusher == nil && s.approvalChat == nil {
 		return
 	}
 	go func() {
@@ -539,9 +552,10 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		defer cancel()
 		var agentID, agentName, model, reason, payeeName, memo string
 		var amount int64
-		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo
+		var expires time.Time
+		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo, a.expires_at
 			FROM agent_approvals a JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = $1`, approvalID).
-			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo); err != nil {
+			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo, &expires); err != nil {
 			slog.Warn("agents: approval push: read approval", slog.String("err", err.Error()))
 			return
 		}
@@ -566,6 +580,12 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID,
 			"agent_name": agentName, "payee_name": payeeName, "currency": "LXC", "amount_minor": strconv.FormatInt(amount, 10)}})
 		s.pushWeb(ctx, workspaceID, payload)
+		if s.approvalChat != nil {
+			if err := s.approvalChat.Post(ctx, workspaceID, approvalchat.Approval{ID: approvalID, Agent: agentName, To: to,
+				Amount: LXCMoney(amount), Reason: reason, URL: ApprovalURLBase + approvalID, ExpiresAt: expires}); err != nil {
+				slog.Warn("approval chat", slog.String("err", err.Error()))
+			}
+		}
 	}()
 }
 

@@ -434,6 +434,55 @@ func openAPIPaths() map[string]any {
 				"responses": map[string]any{"204": map[string]any{"description": "removed"}},
 			},
 		},
+		"/v1/workspaces/{wsID}/sso": map[string]any{
+			"get": map[string]any{
+				"summary":     "Get this workspace's single sign-on connection — never its client secret",
+				"description": `{"issuer","client_id","domains":[{"domain","record","value","proven_at"}],"updated_at"}. A domain counts once a TXT record named record answers value. The owner, signed in, only. 404 when there is none. Present only when the deployment holds custody (LENS_PROVIDER_SECRET_KEK).`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "the connection"}},
+			},
+			"put": map[string]any{
+				"summary":     "Save this workspace's single sign-on connection",
+				"description": `Body {"issuer":"https://…","client_id","client_secret","domains":["example.com"]}. The secret is sealed and never returned. A domain kept from the connection it replaces stays proven; a new one starts unproven. Refused (402) unless the plan includes single sign-on; 409 when another workspace has proven a domain.`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "the connection"}},
+			},
+			"delete": map[string]any{
+				"summary":    "Remove this workspace's single sign-on connection and its domains",
+				"parameters": []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":  map[string]any{"204": map[string]any{"description": "removed"}},
+			},
+		},
+		"/v1/workspaces/{wsID}/sso/domains/{domain}/check": map[string]any{
+			"post": map[string]any{
+				"summary":     "Check a domain's TXT record and prove it for this workspace's single sign-on",
+				"description": `200 with the domain, proven. 409 with {"error","domain"} while the TXT record does not answer the value yet, or when another workspace has proven the domain.`,
+				"parameters": []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+					{"name": "domain", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+				},
+				"responses": map[string]any{"200": map[string]any{"description": "domain, record, value, proven_at"}},
+			},
+		},
+		"/v1/workspaces/{wsID}/approval-chat": map[string]any{
+			"get": map[string]any{
+				"summary":     "The Slack or Teams webhook this workspace's approvals are posted to",
+				"description": `{"on": the plan includes Slack and Teams approvals, "hook": {"kind","host","updated_at"} or null}. The webhook's URL is never returned. Present only when the deployment holds custody (LENS_PROVIDER_SECRET_KEK).`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "on, hook"}},
+			},
+			"put": map[string]any{
+				"summary":     "Connect Slack or Teams: each approval filed is posted there with a button that opens it in Talyvor",
+				"description": `Body {"kind":"slack" or "teams","url":"<incoming webhook>"}. Owner or admin only (403). A URL that is not a Slack or Teams webhook is refused (400); a plan without Slack and Teams approvals is refused in words (402). Nothing posted there decides an approval: that is done in Talyvor with the passkey. Answers with the kind and host only.`,
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"200": map[string]any{"description": "kind, host, updated_at"}},
+			},
+			"delete": map[string]any{
+				"summary":     "Disconnect Slack or Teams",
+				"description": "Owner or admin only (403). 404 when none is saved.",
+				"parameters":  []map[string]any{{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"responses":   map[string]any{"204": map[string]any{"description": "removed"}},
+			},
+		},
 		"/v1/public/fees": map[string]any{
 			"get": map[string]any{
 				"summary":     "Get every fee Talyvor charges",
