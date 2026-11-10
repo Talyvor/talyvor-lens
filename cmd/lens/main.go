@@ -42,6 +42,7 @@ import (
 	"github.com/talyvor/lens/internal/anomaly"
 	"github.com/talyvor/lens/internal/ap2"
 	"github.com/talyvor/lens/internal/api"
+	"github.com/talyvor/lens/internal/approvalchat"
 	"github.com/talyvor/lens/internal/attest"
 	"github.com/talyvor/lens/internal/attribution"
 	"github.com/talyvor/lens/internal/audit"
@@ -2169,10 +2170,14 @@ func run() error {
 	// B27.26 — BYOK: a workspace on the BYOK plan is served on its own provider keys, sealed under
 	// LENS_PROVIDER_SECRET_KEK. Without the KEK there is no custody: no key routes and no own-key serving.
 	var byokStore *byok.Store
+	// B56.16 — Slack and Teams approvals: the workspace's webhook is sealed the same way, so it too needs the KEK.
+	var approvalChat *approvalchat.Store
 	var ssoStore *sso.Store
 	if cfg.ProviderSecretsEnabled() {
 		byokStore = byok.New(pool, cfg.ProviderSecretKeyring)
 		p.SetOwnKeys(byokStore)
+		approvalChat = approvalchat.New(pool, cfg.ProviderSecretKeyring, nil)
+		dualToken.SetApprovalChat(approvalChat)
 		// B56.18 — a workspace's single sign-on connection, its client secret sealed under the same KEK.
 		ssoStore = sso.New(pool, cfg.ProviderSecretKeyring)
 	}
@@ -4140,6 +4145,10 @@ func run() error {
 			authed.Put("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyPutHandler(byokStore))
 			authed.Delete("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyDeleteHandler(byokStore))
 		}
+		// B56.16 — the Slack or Teams webhook approvals are posted to (approval_chat_routes.go), only while custody is armed.
+		if approvalChat != nil {
+			mountApprovalChatRoutes(authed, approvalChat)
+		}
 
 		// B56.18 — single sign-on (sso_routes.go): the owner's connection, only while custody is armed.
 		if ssoStore != nil {
@@ -4983,6 +4992,7 @@ func run() error {
 		mountPaymentRequestRoutes(authed, dualToken)                                    // B40.3
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
+		mountKeyRecoveryRoutes(authed, dualToken)                                       // B55.48
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
