@@ -42,6 +42,7 @@ import (
 	"github.com/talyvor/lens/internal/anomaly"
 	"github.com/talyvor/lens/internal/ap2"
 	"github.com/talyvor/lens/internal/api"
+	"github.com/talyvor/lens/internal/approvalchat"
 	"github.com/talyvor/lens/internal/attest"
 	"github.com/talyvor/lens/internal/attribution"
 	"github.com/talyvor/lens/internal/audit"
@@ -2168,9 +2169,13 @@ func run() error {
 	// B27.26 — BYOK: a workspace on the BYOK plan is served on its own provider keys, sealed under
 	// LENS_PROVIDER_SECRET_KEK. Without the KEK there is no custody: no key routes and no own-key serving.
 	var byokStore *byok.Store
+	// B56.16 — Slack and Teams approvals: the workspace's webhook is sealed the same way, so it too needs the KEK.
+	var approvalChat *approvalchat.Store
 	if cfg.ProviderSecretsEnabled() {
 		byokStore = byok.New(pool, cfg.ProviderSecretKeyring)
 		p.SetOwnKeys(byokStore)
+		approvalChat = approvalchat.New(pool, cfg.ProviderSecretKeyring, nil)
+		dualToken.SetApprovalChat(approvalChat)
 	}
 	bill := billReg{on: cfg.BillingEnabled}
 	subs := billReg{on: cfg.BillingEnabled && billRoute.sellsSubscriptions()}
@@ -4133,6 +4138,10 @@ func run() error {
 			authed.Get("/v1/workspaces/{wsID}/provider-keys", newProviderKeysListHandler(byokStore))
 			authed.Put("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyPutHandler(byokStore))
 			authed.Delete("/v1/workspaces/{wsID}/provider-keys/{provider}", newProviderKeyDeleteHandler(byokStore))
+		}
+		// B56.16 — the Slack or Teams webhook approvals are posted to (approval_chat_routes.go), only while custody is armed.
+		if approvalChat != nil {
+			mountApprovalChatRoutes(authed, approvalChat)
 		}
 
 		// B1.6 — the subscriber's plan this period: the allowance, what has been used
