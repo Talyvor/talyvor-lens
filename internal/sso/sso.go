@@ -269,7 +269,7 @@ func (s *Store) For(ctx context.Context, email string) (SignIn, error) {
 		out.ClientSecret = string(pt)
 		return nil
 	}); err != nil {
-		return SignIn{}, fmt.Errorf("sso: the client secret of workspace %s cannot be opened — it must be entered again: %w", out.WorkspaceID, err)
+		return SignIn{}, fmt.Errorf("sso: the client secret of workspace %s cannot be opened, so it must be entered again: %w", out.WorkspaceID, err)
 	}
 	return out, nil
 }
