@@ -134,7 +134,7 @@ import (
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
 //	DELETE /v1/workspaces/{wsID}/agents/passkeys/{credentialID}      B55.15: removed at once, unless it is the last key or owns an agent's account (409)
 //	GET    /v1/workspaces/{wsID}/agents/keys                         B55.15: every active passkey and phone key
-//	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over
+//	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over, and the approval
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
 //	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion, reason?}   decides them all, or
 //	                                                       none; a decline's reason as on .../deny (B55.18)
@@ -313,6 +313,7 @@ type agentBank interface {
 	RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error
 	ListKeys(ctx context.Context, workspaceID string) ([]economy.Key, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string, allow *economy.PayeeAllowance) (challenge string, credentialIDs []string, err error)
+	GetAgentApproval(ctx context.Context, workspaceID, approvalID string) (economy.AgentApproval, error)
 	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
 	DecideAgentApprovals(ctx context.Context, workspaceID string, ids []string, approve bool, a *passkey.Assertion) ([]economy.AgentApproval, error)
 	PushPublicKey() (string, bool)
@@ -1581,13 +1582,17 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		c, creds, err := bank.ApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"), in.AlwaysAllow)
+		var a economy.AgentApproval
+		if err == nil { // B57.11: what is signed for, as the sheet shows it — what pays it and the budget left after
+			a, err = bank.GetAgentApproval(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"))
+		}
 		switch {
 		case errors.Is(err, economy.ErrApprovalNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
-			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required", "approval": a})
 		}
 	}))
 	// B41.204: one passkey assertion decides several approvals — "approve" or "deny", over the set of ids.

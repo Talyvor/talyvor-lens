@@ -150,10 +150,40 @@ type AgentRequest struct {
 	Payee       Payee     // who a payment goes to, and Memo why: the approval it files names both (B23.5)
 	Memo        string
 	Commitment  Commitment // the marketplace licence a payment takes, if it takes one (B32.22)
+	PaidFrom    PaidFrom   // what pays it, for the approval it files (B57.11); zero is the agent's LXC, or the bill for a listing
 	// Approved: the owner signed for this payment in advance — a pull within the mandate they approved (B55.24) — so
 	// it needs no approval of its own. Every other rule still judges it.
 	Approved bool
 }
+
+// PaidFrom is what pays an approval's payment (B57.11): the agent's LXC balance, one of its currency accounts, the
+// company's monthly marketplace bill or the agent's card, and the amount in that one's currency. Name and BalanceMinor
+// are read with the approval: a bill has no balance, nor has a card, which draws on the agent's LXC.
+type PaidFrom struct {
+	Kind         string `json:"kind"` // lxc | account | marketplace_bill | card
+	AccountID    string `json:"account_id"`
+	Name         string `json:"name"`
+	Currency     string `json:"currency"`
+	AmountMinor  int64  `json:"amount_minor"`
+	BalanceMinor *int64 `json:"balance_minor"`
+	funding      string // an account's test or live money, whose balance is shown
+}
+
+// paidFromName names what pays in words, as the approval sheet shows it.
+func paidFromName(kind, agent, currency string) string {
+	switch kind {
+	case "account":
+		return agent + "’s " + cmp.Or(currencyWords[currency], currency) + " account"
+	case "marketplace_bill":
+		return "Your monthly marketplace bill"
+	case "card":
+		return agent + "’s card"
+	}
+	return agent + "’s LXC balance"
+}
+
+// currencyWords are the currencies an agent's account holds, by their ISO 4217 names.
+var currencyWords = map[string]string{"USD": "US dollar", "EUR": "euro", "GBP": "pound sterling", "USDC": "USDC"}
 
 // Payee is who a payment goes to. Name is the one it had when the approval was filed; empty until then
 // (namePayee reads it) unless the caller already knows it.
@@ -215,6 +245,8 @@ type ApprovalNeededError struct {
 	workspaceID string
 	agentID     string
 	req         AgentRequest
+	asksAbove   int64  // the approval amount it is above (B57.11)
+	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
 }
 
 func (e *ApprovalNeededError) Error() string {
@@ -800,6 +832,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		return ruleRefusal("this %s would cost up to %s; the agent's limit per request is %s",
 			what, LXCMoney(amount), LXCMoney(r.MaxPerRequestULXC))
 	}
+	var monthLeft *int64
 	for _, limit := range r.periodLimits(now, loc) {
 		if limit.ulxc == 0 {
 			continue
@@ -811,6 +844,10 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		if spent+amount > limit.ulxc {
 			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
 				LXCMoney(spent), limit.name, LXCMoney(limit.ulxc), what, LXCMoney(amount))
+		}
+		if limit.name == "monthly" {
+			left := limit.ulxc - spent - amount
+			monthLeft = &left
 		}
 	}
 	if limit, since := r.modelDailyLimit(req.Model, now, loc); limit > 0 && !req.Payment {
@@ -844,6 +881,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		}
 	}
 	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved {
+		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
+			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
@@ -869,13 +908,13 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 					return fmt.Errorf("economy: waiting approval: %w", err)
 				}
 				if waiting {
-					return &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req}
+					return need
 				}
 			case allowed:
 			case req.Fingerprint == "":
 				return ruleRefusal("this %s needs approval and carries nothing to approve it by", what)
 			default:
-				return &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req}
+				return need
 			}
 		}
 	}
@@ -998,6 +1037,10 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if need.Expired, err = s.expireApprovals(ctx, need.agentID, need.req.Fingerprint); err != nil {
 		return err
 	}
+	from, err := s.paidFrom(ctx, need)
+	if err != nil {
+		return err
+	}
 	client, _ := ctx.Value(connectClientKey{}).(string)
 	var filed string
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -1023,11 +1066,13 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 			return err
 		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
+			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
+				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
-			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
+			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
@@ -1042,6 +1087,27 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		return fmt.Errorf("economy: read approval: %w", err)
 	}
 	return need
+}
+
+// paidFrom is what pays the request need is for (B57.11): what its caller named, else the marketplace bill for a
+// listing's use and the agent's LXC for anything else. An account named by its currency alone is the agent's open one.
+func (s *DualTokenStore) paidFrom(ctx context.Context, need *ApprovalNeededError) (PaidFrom, error) {
+	p := need.req.PaidFrom
+	switch {
+	case p.Kind == "account" && p.AccountID == "":
+		err := s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND agent_id = $2 AND currency = $3
+			AND purpose = 'agent' AND status = 'open'`, need.workspaceID, need.agentID, p.Currency).Scan(&p.AccountID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return p, fmt.Errorf("economy: paying account: %w", err)
+		}
+	case p.Kind != "":
+	case need.req.Listing != "":
+		// The bill is kept in micro-dollars and collected in cents (B32): the cents the use adds to it.
+		p = PaidFrom{Kind: "marketplace_bill", AccountID: need.workspaceID, Currency: "USD", AmountMinor: need.AmountULXC / ULXCPerUSDMicro / 10_000}
+	default:
+		p = PaidFrom{Kind: "lxc", AccountID: need.agentID, Currency: "LXC", AmountMinor: need.AmountULXC}
+	}
+	return p, nil
 }
 
 // declined is approvalDeclined when the owner declined the agent's request of fingerprint within the approval life
@@ -1094,21 +1160,57 @@ type AgentApproval struct {
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
 	DenyReason        string `json:"deny_reason,omitempty"` // what the owner wrote when declining (B55.18)
+	// PaidFrom is what pays it, with its balance now (B57.11); null on one filed before it was kept.
+	PaidFrom *PaidFrom `json:"paid_from"`
+	// AsksAboveULXC is the approval amount it was above, and BudgetLeftAfterULXC the monthly limit less the month's
+	// spend and this amount, both when it was filed; null with no monthly limit, and both on one filed before they were kept.
+	AsksAboveULXC       *int64 `json:"asks_above_ulxc"`
+	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
 }
 
+// agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at, deny_reason`
+	approved_by_agent_id, expires_at, deny_reason, paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor,
+	COALESCE((SELECT name FROM agent_accounts WHERE id = agent_approvals.agent_id), ''),
+	CASE paid_from_kind
+		WHEN 'lxc' THEN (SELECT COALESCE(sum(balance_ulxc), 0) FROM agent_account_balances
+			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
+		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
+			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
+	var from PaidFrom
+	var kind *string
+	var amountMinor *int64
+	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
+	if kind != nil && amountMinor != nil {
+		from.Kind, from.AmountMinor, from.Name = *kind, *amountMinor, paidFromName(*kind, agent, from.Currency)
+		a.PaidFrom = &from
+	}
 	return a, err
+}
+
+// GetAgentApproval reads one of a workspace's approvals.
+func (s *DualTokenStore) GetAgentApproval(ctx context.Context, workspaceID, approvalID string) (AgentApproval, error) {
+	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `SELECT `+agentApprovalColumns+` FROM agent_approvals WHERE id = $1 AND workspace_id = $2`,
+		approvalID, workspaceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, ErrApprovalNotFound
+	}
+	if err != nil {
+		return a, fmt.Errorf("economy: approval: %w", err)
+	}
+	return a, nil
 }
 
 // ListAgentApprovals reads a workspace's approvals, newest first.
