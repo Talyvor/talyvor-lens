@@ -60,6 +60,31 @@ func PlatformFeeBPS(ctx context.Context, db PlanQuerier, workspaceID string, s f
 	return s.PlatformFeeBPS[FreePlan], nil
 }
 
+// FXMarginBPS is the margin over the reference rate on workspaceID's currency conversions, in basis points (B56.23):
+// the Enterprise contract's own figure where the operator recorded one; else its plan's in s.FXMarginBPS, the plans
+// mapped as PlatformFeeBPS maps them.
+func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, error) {
+	c, err := ContractOf(ctx, db, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	if c != nil && c.FXMarginBPS != nil {
+		return *c.FXMarginBPS, nil
+	}
+	plan, err := PlanOf(ctx, db, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	switch plan {
+	case "plus", "pro", "max", BYOKPlan:
+		plan = TeamPlan
+	}
+	if bps, ok := s.FXMarginBPS[plan]; ok {
+		return bps, nil
+	}
+	return s.FXMarginBPS[FreePlan], nil
+}
+
 // Contract is an Enterprise contract as the operator records it: the contract's own platform fee and FX
 // margin, in basis points, where it agreed one (nil follows the enterprise figure in internal/fees), and its own
 // limits on agents and seats, -1 unlimited (nil follows enterprise's gates in LENS_PLAN_GATES, B32.12).
