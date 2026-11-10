@@ -174,7 +174,7 @@ func (s *Store) Post(ctx context.Context, workspaceID string, a Approval) error 
 	}
 	var hook string
 	if err := s.ring.Use(sealed, aad(workspaceID, kind), func(pt []byte) error { hook = string(pt); return nil }); err != nil {
-		return fmt.Errorf("approvalchat: the %s webhook of %s cannot be opened — it must be saved again: %w", kind, workspaceID, err)
+		return fmt.Errorf("approvalchat: the %s webhook of %s cannot be opened, so it must be saved again: %w", kind, workspaceID, err)
 	}
 	for try := 1; ; try++ {
 		again, err := s.send(ctx, hook, body)
