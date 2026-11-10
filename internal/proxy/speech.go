@@ -92,12 +92,12 @@ func (p *Proxy) speechAdmit(w http.ResponseWriter, r *http.Request, wsID string,
 		}
 	}
 	if p.budgetService != nil && p.budgetService.CheckBudget(ctx, wsID, r.Header.Get("X-Talyvor-Team"), r.Header.Get("X-Talyvor-Sprint"), estUSD) == budgets.DecisionBlock {
-		writeError(w, http.StatusPaymentRequired, "budget exceeded for workspace/team/sprint")
+		writeRefusal(w, http.StatusPaymentRequired, refusalBudgetExceeded, "budget exceeded for workspace/team/sprint")
 		metrics.RequestsTotal.WithLabelValues(m.Provider, "budget_blocked").Inc()
 		return ctx, false
 	}
 	if status, msg := p.limits.admit(ctx, wsID, estUSD, 0); status != 0 {
-		writeError(w, status, msg)
+		writeRefusal(w, status, limitRefusalCode(status), msg)
 		metrics.RequestsTotal.WithLabelValues(m.Provider, "workspace_limit_blocked").Inc()
 		return ctx, false
 	}

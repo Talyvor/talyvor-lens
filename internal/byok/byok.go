@@ -167,7 +167,7 @@ func (s *Store) OwnKeys(ctx context.Context, workspaceID string) (map[string]str
 			keys[provider] = string(pt)
 			return nil
 		}); err != nil {
-			errs = append(errs, fmt.Errorf("byok: %s key of workspace %s cannot be opened — it must be entered again: %w", provider, workspaceID, err))
+			errs = append(errs, fmt.Errorf("byok: %s key of workspace %s cannot be opened, so it must be entered again: %w", provider, workspaceID, err))
 		}
 	}
 	if err := rows.Err(); err != nil {

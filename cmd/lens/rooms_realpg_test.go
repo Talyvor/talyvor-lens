@@ -100,7 +100,7 @@ func TestRooms_CreateJoinUnderTermsRolesAndTheOpenList(t *testing.T) {
 
 	// A viewer cannot be given may_spend; a member can, and becoming a viewer takes it away.
 	if code, body := call(owner, http.MethodPatch, "/v1/rooms/"+room.ID+"/members/"+joiner, `{"role":"viewer","may_spend":true}`); code != http.StatusBadRequest ||
-		!strings.Contains(body, "a viewer cannot be given may_spend") {
+		!strings.Contains(body, "A viewer cannot be given may_spend") {
 		t.Fatalf("viewer with may_spend = %d %s, want 400", code, body)
 	}
 	if code, body := call(owner, http.MethodPatch, "/v1/rooms/"+room.ID+"/members/"+joiner, `{"may_spend":true}`); code != http.StatusOK {

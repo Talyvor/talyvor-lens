@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -54,8 +55,9 @@ func TestKeyRefusals_AreSentences(t *testing.T) {
 	if code, out := h.registerPhone(only); code != http.StatusCreated {
 		t.Fatalf("first key = %d %v", code, out)
 	}
-	if code, out := h.call(http.MethodPost, "/v1/money/devices/"+only.id+"/revoke", nil); code != http.StatusOK {
-		t.Fatalf("revoking the phone = %d %v", code, out)
+	// Revoked as a workspace's last key could be before B55.15, which now refuses it.
+	if _, err := h.pool.Exec(context.Background(), `UPDATE workspace_device_keys SET revoked_at = now() WHERE workspace_id = $1`, h.ws); err != nil {
+		t.Fatal(err)
 	}
 	code, out = h.registerPhone(newB551Phone())
 	says("a key where every key was removed", code, out, http.StatusConflict,

@@ -103,7 +103,7 @@ func TestMarketUse_APipelineRunsItsStepsInOrderAndPaysEachSeller(t *testing.T) {
 	// bills nothing.
 	loose := publish(seller, `{"kind":"pipeline","title":"Loose","price_per_use_ulxc":50000,"artifact":{"steps":[{"use":"prompt:summarise"}]}}`)
 	if code, out := call(buyer, http.MethodPost, "/v1/workspaces/"+buyer+"/marketplace/listings/"+loose.ID+"/use", `{"input":"x"}`); code != http.StatusBadRequest ||
-		!strings.Contains(out, `a step's \"use\" is \"listing:\u003ca listing's id\u003e\"`) {
+		!strings.Contains(out, `A step's \"use\" is \"listing:\u003ca listing's id\u003e\"`) {
 		t.Fatalf("a pipeline whose step names no listing = %d %s, want 400", code, out)
 	}
 	var n int

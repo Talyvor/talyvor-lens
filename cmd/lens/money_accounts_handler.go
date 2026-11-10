@@ -19,7 +19,7 @@ import (
 
 // B30.13 — accounts in pounds, euros and dollars for a company and each of its agents (economy/currency_accounts.go).
 //
-//	POST /v1/money/accounts   {currency, agent_id, funding} — the company's account in GBP, EUR or USD, or with
+//	POST /v1/money/accounts   {currency, agent_id, funding} — the company's account in GBP, EUR, USD or USDC, or with
 //	                          agent_id that agent's sub-account of it; funding is test (the default) or live
 //	GET  /v1/money/accounts   ?agent_id= — the accounts and what each holds, test and live apart
 //	GET  /v1/money/accounts/{id}/details — what a payer pays into it (B30.14): the company account's details, and an
@@ -150,7 +150,10 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		if !ok {
 			return
 		}
-		from, to, asCSV, err := statementPeriod(req, time.Now())
+		from, to, format, err := statementPeriod(req, time.Now())
+		if err == nil && format != "json" && format != "csv" {
+			err = errors.New("format must be json or csv")
+		}
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -161,7 +164,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-		case !asCSV:
+		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
 		default:
 			writeMoneyStatement(w, st)

@@ -45,7 +45,8 @@ import (
 // (runSyntheticPurge, B26.1).
 //
 // B25.7 adds four more that bring a test workspace's slow money due inside one tester run
-// (synthetic_due_handler.go).
+// (synthetic_due_handler.go), and B54.45 one that publishes a DKIM key for a .test domain
+// (synthetic_dkim_handler.go).
 //
 // A synthetic workspace's plan gates it and sets its platform fee exactly as a paying workspace's does
 // (internal/plans reads it after a contract and a subscription), but it creates no Stripe object, invoice or
@@ -97,8 +98,9 @@ type syntheticDeps struct {
 	answers    syntheticAnswers
 	audit      syntheticAudit
 	mint       tokenMinter
-	plans      plans.Querier    // B35.1: sets and reads a synthetic workspace's plan
-	due        syntheticDueDeps // B25.7; unset, its routes are not registered
+	plans      plans.Querier      // B35.1: sets and reads a synthetic workspace's plan
+	due        syntheticDueDeps   // B25.7; unset, its routes are not registered
+	dkim       *syntheticDKIMKeys // B54.45; unset, its route is not registered
 }
 
 // callLimiter admits at most max calls in any window of per.
@@ -135,6 +137,9 @@ func mountSyntheticRoutes(r chi.Router, key string, d syntheticDeps) {
 	r.Post("/v1/synthetic/workspaces/reset", syntheticGuard(key, "reset", limit, d, d.reset))
 	r.Post("/v1/synthetic/workspaces/{wsID}/plan", syntheticGuard(key, "plan", &callLimiter{max: syntheticMaxDueCalls, per: syntheticCallsPer}, d, d.setPlan))
 	mountSyntheticDueRoutes(r, key, d)
+	if d.dkim != nil {
+		r.Post("/v1/synthetic/dkim-keys", syntheticGuard(key, "dkim-key", &callLimiter{max: syntheticMaxCalls, per: syntheticCallsPer}, d, d.dkim.publish))
+	}
 }
 
 // syntheticGuard checks the key and the rate, runs the action, and records the call either way.

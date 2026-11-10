@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
@@ -71,17 +73,22 @@ import (
 //	GET  /v1/workspaces/{wsID}/agents/{id}/statement?limit=   the agent's account, newest first (default and at most 1000)
 //
 // B19.5 — statements an enterprise can audit (internal/economy/agent_statements.go), for the period
-// [from, to), as JSON or CSV:
+// [from, to), as JSON, CSV, (B28.328) a PDF to download or (B28.329) a double-entry journal for an accounting package:
 //
-//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv   one agent's account
-//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv        every agent wallet in the workspace
+//	GET  /v1/workspaces/{wsID}/agents/{id}/statement?from=&to=&format=json|csv|pdf|journal   one agent's account
+//	GET  /v1/workspaces/{wsID}/agents/statement?from=&to=&format=json|csv|pdf|journal        every agent wallet in the workspace
 //
 // from and to are RFC 3339 times or YYYY-MM-DD dates (midnight UTC); from defaults to the start of the
 // current month and to to now, so September is from=2026-09-01&to=2026-10-01. On an agent's route any of
 // the three, group or cursor asks for the period statement; with none it is the newest-first list above.
 // B57.13: group=day makes each model's questions on a day one line, its fees the line under it (the agent's
 // rules' time zone, else UTC; the workspace's, UTC), and limit= and cursor= page the lines newest first. Pass the
-// first page's to with every cursor. The CSV is always one row per posting.
+// first page's to with every cursor. The CSV, the PDF and the journal are always one row per posting.
+//
+// B28.326 — one agent's spend by day, model and destination (internal/economy/agent_analytics.go), for the same
+// [from, to) as its statement; days are its rules' time zone's, else UTC's:
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/analytics?from=&to=   buckets whose out_ulxc sum to the statement's
 //
 // B19.6 — unusual spend is flagged, an agent can be paused, and the month-end is forecast
 // (internal/economy/agent_alerts.go states the rule):
@@ -125,6 +132,8 @@ import (
 //	POST   /v1/workspaces/{wsID}/agents/passkeys/challenge           a registration challenge and the RP ID
 //	POST   /v1/workspaces/{wsID}/agents/passkeys   {credential_id, name, public_key (SPKI), client_data_json, authenticator_data}
 //	GET    /v1/workspaces/{wsID}/agents/passkeys
+//	DELETE /v1/workspaces/{wsID}/agents/passkeys/{credentialID}      B55.15: removed at once, unless it is the last key or owns an agent's account (409)
+//	GET    /v1/workspaces/{wsID}/agents/keys                         B55.15: every active passkey and phone key
 //	POST   /v1/workspaces/{wsID}/agents/approvals/{id}/challenge     the challenge an approval's decision is signed over, and the approval
 //	POST   /v1/workspaces/{wsID}/agents/approvals/challenge  {approval_ids, decision}   B41.204: one challenge for several
 //	POST   /v1/workspaces/{wsID}/agents/approvals/decide  {approval_ids, decision, assertion, reason?}   decides them all, or
@@ -278,6 +287,7 @@ type agentBank interface {
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
 	AgentPeriodStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.Statement, error)
 	WorkspaceAgentStatement(ctx context.Context, workspaceID string, from, to time.Time) (economy.Statement, error)
+	AgentSpendAnalytics(ctx context.Context, workspaceID, agentID string, from, to time.Time, zone *time.Location) (economy.SpendAnalytics, error)
 	PauseAgent(ctx context.Context, workspaceID, agentID, reason string) error
 	PauseAllAgents(ctx context.Context, workspaceID, reason string) error
 	ResumeAllAgents(ctx context.Context, workspaceID string) error
@@ -300,6 +310,8 @@ type agentBank interface {
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
 	RegisterPasskey(ctx context.Context, workspaceID, name string, r passkey.Registration, a *passkey.Assertion) (economy.Passkey, error)
 	ListPasskeys(ctx context.Context, workspaceID string) ([]economy.Passkey, error)
+	RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error
+	ListKeys(ctx context.Context, workspaceID string) ([]economy.Key, error)
 	ApprovalChallenge(ctx context.Context, workspaceID, approvalID string, allow *economy.PayeeAllowance) (challenge string, credentialIDs []string, err error)
 	GetAgentApproval(ctx context.Context, workspaceID, approvalID string) (economy.AgentApproval, error)
 	BatchApprovalChallenge(ctx context.Context, workspaceID string, ids []string, approve bool) (challenge string, credentialIDs []string, err error)
@@ -458,37 +470,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		if in.Name == "" {
 			in.Name = agentID
 		}
-		// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
-		book, err := bank.AgentBook(req.Context(), wsID)
+		raw, key, status, err := mintAgentKey(req.Context(), bank, keys, wsID, agentID, in.Name)
 		if err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		found, archived, room := false, false, false
-		for _, a := range book.Agents {
-			if a.ID == agentID {
-				found, archived, room = true, a.ArchivedAt != nil, a.Kind == economy.AgentKindRoom
-			}
-		}
-		if !found {
-			writeJSONErr(w, http.StatusNotFound, economy.ErrAgentNotFound.Error())
-			return
-		}
-		if archived {
-			writeJSONErr(w, http.StatusConflict, economy.ErrAgentArchived.Error())
-			return
-		}
-		if room { // B32.32: before a key is minted that it would refuse
-			writeJSONErr(w, http.StatusConflict, economy.ErrRoomWalletKey.Error())
-			return
-		}
-		raw, key, err := keys.CreateAPIKey(req.Context(), wsID, in.Name, []string{"proxy"}, nil)
-		if err != nil {
-			writeJSONErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := bank.AttachAgentKey(req.Context(), wsID, agentID, key.ID); err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			writeJSONErr(w, status, err.Error())
 			return
 		}
 		writeJSONOK(w, http.StatusCreated, map[string]any{
@@ -761,7 +745,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/lockdown", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.LockdownAgents(req.Context(), chi.URLParam(req, "wsID"), actor(req))
-		if err == nil && len(out.Failed) > 0 { // some agents frozen, some not: the app shows both, and a retry freezes the rest
+		// Some agents frozen, some not, or frozen with revoke calls that could not be built (B54.25): the app shows both,
+		// and a retry freezes the rest.
+		if err == nil && (len(out.Failed) > 0 || out.RevokeCallsOutstanding()) {
 			writeJSONOK(w, http.StatusMultiStatus, out)
 			return
 		}
@@ -1061,7 +1047,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/deny", decide(false))
 
 	r.Get("/v1/workspaces/{wsID}/agents/statement", func(w http.ResponseWriter, req *http.Request) {
-		from, to, csv, err := statementPeriod(req, time.Now())
+		from, to, format, err := statementPeriod(req, time.Now())
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -1072,11 +1058,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		// A workspace's agents may keep different zones: its days are UTC's.
-		writeStatementView(w, req, st, csv, func() (*time.Location, error) { return time.UTC, nil })
+		writeStatementView(w, req, st, format, func() (*time.Location, error) { return time.UTC, nil })
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
-		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") {
-			from, to, csv, err := statementPeriod(req, time.Now())
+		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") || q.Has("kind") || q.Has("q") {
+			from, to, format, err := statementPeriod(req, time.Now())
 			if err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
@@ -1089,7 +1075,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			default:
 				// B57.13: an agent's days are its rules' time zone's, else UTC's.
-				writeStatementView(w, req, st, csv, func() (*time.Location, error) {
+				writeStatementView(w, req, st, format, func() (*time.Location, error) {
 					rules, err := bank.GetAgentRules(req.Context(), st.WorkspaceID, st.AgentID)
 					if err != nil {
 						return nil, err
@@ -1118,6 +1104,34 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": chi.URLParam(req, "agentID"), "lines": lines})
+		}
+	})
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/analytics", func(w http.ResponseWriter, req *http.Request) {
+		from, to, format, err := statementPeriod(req, time.Now())
+		if err == nil && format != "json" {
+			err = errors.New("analytics are JSON only")
+		}
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
+		zone := time.UTC
+		rules, err := bank.GetAgentRules(req.Context(), wsID, agentID)
+		if err == nil {
+			zone, err = time.LoadLocation(rules.Timezone)
+		}
+		var a economy.SpendAnalytics
+		if err == nil {
+			a, err = bank.AgentSpendAnalytics(req.Context(), wsID, agentID, from, to, zone)
+		}
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, a)
 		}
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/alerts", func(w http.ResponseWriter, req *http.Request) {
@@ -1250,7 +1264,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		err := bank.AuthorizeResume(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Assertion)
 		switch {
-		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrLockedDown):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -1536,6 +1550,31 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"passkeys": list})
 	})
+	r.Delete("/v1/workspaces/{wsID}/agents/passkeys/{credentialID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
+		who, _ := storedanswers.OwnerOrAdmin(req.Context())
+		id := chi.URLParam(req, "credentialID")
+		err := bank.RemovePasskey(req.Context(), chi.URLParam(req, "wsID"), id, who)
+		switch {
+		case errors.Is(err, economy.ErrPasskeyNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrLastKey):
+			writeJSONErr(w, http.StatusConflict, economy.LastKeySentence)
+		case errors.Is(err, economy.ErrKeyOwnsAccount):
+			writeJSONErr(w, http.StatusConflict, economy.KeyOwnsAccountSentence)
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"credential_id": id, "removed": true})
+		}
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/keys", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		list, err := bank.ListKeys(req.Context(), chi.URLParam(req, "wsID"))
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"keys": list})
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		// B54.29: approving with always_allow is signed over the allowance too, so its challenge names it.
 		var in struct {
@@ -1794,6 +1833,42 @@ func rulesChange(req *http.Request, what string) context.Context {
 	return economy.WithRulesChange(req.Context(), who, what)
 }
 
+// agentKeyRefusal says why no key may be minted for agentID, with its status; nil when one may.
+func agentKeyRefusal(ctx context.Context, bank agentBank, wsID, agentID string) (int, error) {
+	// The agent must exist here before a key is minted for it; AgentBook is the read that says so.
+	book, err := bank.AgentBook(ctx, wsID)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	for _, a := range book.Agents {
+		switch {
+		case a.ID != agentID:
+		case a.ArchivedAt != nil:
+			return http.StatusConflict, economy.ErrAgentArchived
+		case a.Kind == economy.AgentKindRoom: // B32.32: before a key is minted that it would refuse
+			return http.StatusConflict, economy.ErrRoomWalletKey
+		default:
+			return 0, nil
+		}
+	}
+	return http.StatusNotFound, economy.ErrAgentNotFound
+}
+
+// mintAgentKey issues agentID its own proxy key: POST …/agents/{agentID}/keys, and the connector's token (B41.178).
+func mintAgentKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, wsID, agentID, name string) (string, *tenant.WorkspaceAPIKey, int, error) {
+	if status, err := agentKeyRefusal(ctx, bank, wsID, agentID); err != nil {
+		return "", nil, status, err
+	}
+	raw, key, err := keys.CreateAPIKey(ctx, wsID, name, []string{"proxy"}, nil)
+	if err != nil {
+		return "", nil, http.StatusBadRequest, err
+	}
+	if err := bank.AttachAgentKey(ctx, wsID, agentID, key.ID); err != nil {
+		return "", nil, http.StatusInternalServerError, err
+	}
+	return raw, key, 0, nil
+}
+
 func ownerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
@@ -1818,16 +1893,14 @@ func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// statementPeriod reads a statement's ?from=, ?to= and ?format=. Times are cut to the microsecond
-// Postgres keeps, so the period a statement echoes is exactly the one it was built from.
-func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv bool, err error) {
+// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv, pdf or journal. Times are
+// cut to the microsecond Postgres keeps, so the period a statement echoes is exactly the one it was built from.
+func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, format string, err error) {
 	q := req.URL.Query()
-	switch q.Get("format") {
-	case "", "json":
-	case "csv":
-		csv = true
+	switch format = cmp.Or(q.Get("format"), "json"); format {
+	case "json", "csv", "pdf", "journal":
 	default:
-		return from, to, false, errors.New("format must be json or csv")
+		return from, to, "", errors.New("format must be json, csv, pdf or journal")
 	}
 	now = now.UTC()
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -1843,24 +1916,35 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, csv 
 		t, perr := time.Parse(time.RFC3339Nano, v)
 		if perr != nil {
 			if t, perr = time.Parse(time.DateOnly, v); perr != nil {
-				return from, to, false, fmt.Errorf("%s must be an RFC 3339 time or a YYYY-MM-DD date", p.name)
+				return from, to, "", fmt.Errorf("%s must be an RFC 3339 time or a YYYY-MM-DD date", p.name)
 			}
 		}
 		*p.into = t.UTC().Truncate(time.Microsecond)
 	}
 	if !from.Before(to) {
-		return from, to, false, errors.New("from must be before to")
+		return from, to, "", errors.New("from must be before to")
 	}
-	return from, to, csv, nil
+	return from, to, format, nil
 }
 
 // writeStatementView answers with st read as the request asks (B57.13): ?group=day sums each model's questions on
-// a day of zone's into one line, and ?limit= and ?cursor= page its lines newest first. The CSV is never grouped or
-// paged: it is one row per posting, the audit file.
-func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, asCSV bool, zone func() (*time.Location, error)) {
+// a day of zone's into one line, ?kind= (one or more, comma-separated) and ?q= keep only the lines of those kinds whose
+// words hold q (B28.51), and ?limit= and ?cursor= page what is left newest first. The CSV is never grouped, filtered or
+// paged: it is one row per posting, the audit file; and so are the PDF (B28.328) and the journal (B28.329).
+func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, format string, zone func() (*time.Location, error)) {
 	q := req.URL.Query()
-	if asCSV {
+	switch format {
+	case "csv":
 		writeStatement(w, st, true)
+		return
+	case "pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
+			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
+		_, _ = w.Write(agentStatementPDF(st)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		return
+	case "journal":
+		writeStatementJournal(w, economy.StatementJournal(st))
 		return
 	}
 	limit := 0
@@ -1885,6 +1969,21 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		writeJSONErr(w, http.StatusBadRequest, "group must be day")
 		return
 	}
+	var kinds []string
+	for _, v := range q["kind"] {
+		for _, k := range strings.Split(v, ",") {
+			if k = strings.TrimSpace(k); k == "" || len(k) > 64 {
+				writeJSONErr(w, http.StatusBadRequest, "kind must be one or more line kinds, comma-separated")
+				return
+			}
+			kinds = append(kinds, k)
+		}
+	}
+	if len(q.Get("q")) > 200 {
+		writeJSONErr(w, http.StatusBadRequest, "q must be at most 200 characters")
+		return
+	}
+	st = st.Filter(kinds, q.Get("q"))
 	if limit > 0 || q.Has("cursor") {
 		var err error
 		if st, err = st.Page(limit, q.Get("cursor")); err != nil {
@@ -1926,6 +2025,58 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 	cw.Flush()
 }
 
+// agentStatementPDF is the period as a document (B28.328), row for row the CSV: each account's opening balance, every
+// line, each account's closing balance, then what went on the marketplace bill.
+func agentStatementPDF(st economy.Statement) []byte {
+	day := func(t time.Time) string { return t.UTC().Format("2 Jan 15:04") }
+	t := market.PDFTable{Label: "AGENT STATEMENT",
+		Title: st.From.UTC().Format("2 Jan 2006") + " – " + st.To.UTC().Format("2 Jan 2006"),
+		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04"))},
+		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 70},
+			{Name: "WITH", Width: 99}, {Name: "AMOUNT", Width: 88, Right: true}, {Name: "BALANCE", Width: 88.28, Right: true}},
+		Footer: "Times are UTC. Amounts are in LXC."}
+	if st.AgentID != "" {
+		t.Lines = append(t.Lines, "Agent "+st.AgentID)
+	}
+	for _, a := range st.Accounts {
+		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXC(a.OpeningULXC)})
+	}
+	for _, l := range st.Lines {
+		t.Rows = append(t.Rows, []string{day(l.At), l.Account, cmp.Or(l.Label, l.Kind), cmp.Or(l.Counterparty, l.Memo),
+			economy.LXC(l.AmountULXC), economy.LXC(l.BalanceAfterULXC)})
+	}
+	for _, a := range st.Accounts {
+		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXC(a.ClosingULXC)})
+	}
+	for _, l := range st.MarketplaceBill {
+		t.Rows = append(t.Rows, []string{day(l.At), economy.OnMarketplaceBill, l.Kind, cmp.Or(l.PayeeAgentID, l.ListingID, l.Memo),
+			economy.LXC(l.AmountULXC), ""})
+	}
+	return t.PDF()
+}
+
+// writeStatementJournal is the period as a CSV of journal lines an accounting package imports (B28.329): Xero's
+// manual journals and QuickBooks' journal entries both map these columns. Amounts are LXC to the sixth decimal.
+func writeStatementJournal(w http.ResponseWriter, j economy.Journal) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-journal-%s-%s.csv"`,
+		j.From.Format(time.DateOnly), j.To.Format(time.DateOnly)))
+	w.WriteHeader(http.StatusOK)
+	cw := csv.NewWriter(w)
+	amount := func(ulxc int64) string {
+		if ulxc == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d.%06d", ulxc/1_000_000, ulxc%1_000_000)
+	}
+	_ = cw.Write([]string{"journal_no", "date", "account", "description", "debit_lxc", "credit_lxc", "cost_centre", "ref"})
+	for _, l := range j.Lines {
+		_ = cw.Write([]string{l.Journal, l.At.UTC().Format(time.DateOnly), l.Account, csvText(l.Description),
+			amount(l.DebitULXC), amount(l.CreditULXC), l.CostCentre, csvText(l.Ref)})
+	}
+	cw.Flush()
+}
+
 // csvText keeps a memo a spreadsheet would run as a formula as text.
 func csvText(s string) string {
 	if s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0])) {
@@ -1945,4 +2096,52 @@ func ensurePromptKey(ctx context.Context, bank agentBank, keys agentKeyIssuer, w
 		return fmt.Errorf("the agent's key for scheduled prompts: %w", err)
 	}
 	return bank.AttachAgentKey(ctx, wsID, agentID, key.ID)
+}
+
+// retryRevokeCalls builds again, every minute until ctx ends, the revoke calls of frozen agents whose calls could not be
+// built, and alerts the operator (sink nil: only logged) whenever the agents still outstanding change (B54.25).
+func retryRevokeCalls(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	last := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			last = retryRevokeCallsOnce(ctx, store, sink, last)
+		}
+	}
+}
+
+// retryRevokeCallsOnce is one retry; last is what the operator was last told, and it answers what they know now.
+func retryRevokeCallsOnce(ctx context.Context, store *economy.DualTokenStore, sink operatorAlerter, last string) string {
+	built, outstanding, err := store.RetryRevokeCalls(ctx)
+	if err != nil {
+		slog.Warn("revoke calls: retry failed", slog.String("err", err.Error()))
+		return last
+	}
+	if built > 0 {
+		slog.Info("revoke calls: built for frozen agents", slog.Int("agents", built))
+	}
+	var lines []string
+	for _, o := range outstanding {
+		lines = append(lines, "workspace "+o.WorkspaceID+", agent "+o.AgentID+": "+o.Error)
+	}
+	now := strings.Join(lines, "\n")
+	if now == last || now == "" {
+		return now
+	}
+	slog.Error("revoke calls: frozen agents whose key is still on chain", slog.Int("agents", len(outstanding)))
+	if sink == nil {
+		slog.Error("revoke calls: no operator alert sink is configured (LENS_OPERATOR_ALERT_WEBHOOK_URL and LENS_OPERATOR_ALERT_WEBHOOK_SECRET); nobody is told")
+		return now
+	}
+	if err := sink.NotifyAs(ctx, "agent_revoke_calls_outstanding", "lens/internal/economy",
+		fmt.Sprintf("%d frozen agents' keys cannot be taken out on chain", len(outstanding)),
+		"Each agent is frozen at Talyvor, but the call that takes its key out of its account cannot be built until its record is fixed. It is retried every minute.\n"+now); err != nil {
+		slog.Error("revoke calls: the operator alert did not send", slog.String("err", err.Error()))
+		return last
+	}
+	return now
 }

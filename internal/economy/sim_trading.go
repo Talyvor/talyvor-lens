@@ -39,7 +39,7 @@ const MarketDataSource = "European Central Bank euro foreign exchange reference 
 const SimulatedNotice = "Simulated: executed by Talyvor's simulator at the ECB reference rate. No order is ever sent to a market."
 
 // ErrLiveTrading: an order that asks to go to a real market.
-var ErrLiveTrading = errors.New("economy: Investing and trading real assets is class RED: a live order goes only through an authorised broker partner, never Talyvor itself — portfolios here are simulated")
+var ErrLiveTrading = errors.New("economy: Investing and trading real assets is class RED: a live order goes only through an authorised broker partner, never Talyvor itself. Portfolios here are simulated")
 
 // ErrNoQuote: no reference rate for the instrument yet.
 var ErrNoQuote = errors.New("economy: no quote for this instrument")

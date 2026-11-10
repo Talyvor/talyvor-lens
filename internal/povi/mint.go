@@ -47,11 +47,11 @@ var (
 	// ErrNoServedMeasurement is returned when Lens has no gateway measurement for
 	// the receipt's request_id — i.e. a receipt for work Lens never served (or a
 	// node-asserted request_id Lens never dispatched). Fail closed: mint nothing.
-	ErrNoServedMeasurement = errors.New("povi: no gateway measurement for request — receipt mints nothing (fail closed)")
+	ErrNoServedMeasurement = errors.New("povi: no gateway measurement for request, so the receipt mints nothing (fail closed)")
 	// ErrMeasurementNodeMismatch is returned when the measured request was served
 	// by a DIFFERENT node than the receipt claims — a node naming a request it did
 	// not serve. Fail closed: mint nothing.
-	ErrMeasurementNodeMismatch = errors.New("povi: receipt node did not serve the measured request — mints nothing")
+	ErrMeasurementNodeMismatch = errors.New("povi: receipt node did not serve the measured request, so it mints nothing")
 )
 
 // ProvisionalMintAmountTokens is the µLENS a mint of `outputTokens` WOULD credit

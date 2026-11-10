@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
@@ -156,13 +157,13 @@ func writeRoomRunErr(w http.ResponseWriter, err error) {
 	var refusal *rooms.ScanRefusal
 	switch {
 	case errors.As(err, &need):
-		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "approval_id": need.ApprovalID})
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(err.Error()), "approval_id": need.ApprovalID})
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, rooms.ErrForbidden),
 		errors.Is(err, market.ErrNotSoldHere):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case writeRoomPlanLimit(w, err):
 	case errors.As(err, &refusal):
-		writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": refusal.Reason, "scan": refusal.Scan})
+		writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": api.Refusal(refusal.Reason), "scan": refusal.Scan})
 	case errors.Is(err, market.ErrNotFound), errors.Is(err, rooms.ErrNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, market.ErrTakenDown):

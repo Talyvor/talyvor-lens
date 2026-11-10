@@ -46,7 +46,7 @@ var (
 	// ErrPayeeConfirmed: a payee with nothing left to confirm.
 	ErrPayeeConfirmed = errors.New("economy: this payee needs no confirmation")
 	// ErrPayeePasskey: a payee is confirmed only with an assertion by one of the workspace's passkeys.
-	ErrPayeePasskey = errors.New("economy: a payee is confirmed with one of the workspace's passkeys, signing its challenge — register one first")
+	ErrPayeePasskey = errors.New("economy: a payee is confirmed with one of the workspace's passkeys, signing its challenge. Register one first")
 )
 
 // OutsidePayee is a saved payee outside Talyvor, and what its bank said of its name.

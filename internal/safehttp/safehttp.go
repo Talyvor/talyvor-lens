@@ -105,7 +105,7 @@ func ParseCIDRAllowlist(csv string) ([]*net.IPNet, error) {
 			return nil, fmt.Errorf("safehttp: invalid CIDR %q in allowlist: %w", part, err)
 		}
 		if n.Contains(metadataIP) {
-			return nil, fmt.Errorf("safehttp: CIDR %q contains the cloud metadata endpoint 169.254.169.254 — never allowlistable", part)
+			return nil, fmt.Errorf("safehttp: CIDR %q contains the cloud metadata endpoint 169.254.169.254, so it is never allowlistable", part)
 		}
 		out = append(out, n)
 	}

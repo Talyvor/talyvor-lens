@@ -34,10 +34,15 @@ type Address struct {
 
 // StablecoinTransfer sends USDC to an address.
 type StablecoinTransfer struct {
-	ID      string `json:"id"` // the caller's id for the transfer
+	ID      string `json:"id"`   // the caller's id for the transfer
+	From    string `json:"from"` // the sending account's address at the partner
 	Network string `json:"network"`
 	To      string `json:"to"`
 	Amount  Money  `json:"amount"`
+	// Originator and Beneficiary are the payer's and the payee's names, carried on a transfer over the Travel Rule
+	// threshold (B30.33).
+	Originator  string `json:"originator,omitempty"`
+	Beneficiary string `json:"beneficiary,omitempty"`
 }
 
 // TestStablecoinPartner is test mode for USDC: it holds and sends none, and reaches no network. Its addresses are

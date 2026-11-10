@@ -23,6 +23,7 @@ type Adapter struct {
 	KYC       KYC
 	Webhooks  Webhooks // verifies the partner's notifications; nil takes none
 	Signers   Signers  // agents' keys in the partner's enclave (B48.2); nil holds none
+	Spenders  Spenders // B48.24: agents' keys spend under the owner's on-chain permission; nil spends none
 }
 
 func (a *Adapter) offers(c Capability) bool {
@@ -103,8 +104,9 @@ type Config struct {
 	Clearances partners.Clearances
 	Limits     Limits
 	Audit      Audit
-	Ledger     Ledger  // where a verified webhook's money is posted
-	Replays    Replays // the webhook ids already taken
+	Ledger     Ledger   // where a verified webhook's money is posted
+	Replays    Replays  // the webhook ids already taken
+	Issuer     *Adapter // B53.19: the card issuer for physical cards while the sandbox serves cards (the fake, while LENS_PHYSICAL_CARDS is on)
 }
 
 // Registry routes every call to the adapter switched on for it, or the sandbox.
@@ -196,6 +198,22 @@ func (r *Registry) pick(ctx context.Context, c Capability, rt Route) (*Adapter, 
 	return r.cfg.Sandbox, nil
 }
 
+// Live reports whether a registered adapter offering c has a switch on for it in any country (B56.7).
+// shortcut: only a SwitchSet can be read this way and any other Switches reads as off; widen it when one exists.
+func (r *Registry) Live(c Capability) bool {
+	set, _ := r.cfg.Switches.(SwitchSet)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, a := range r.adapters {
+		for sw, on := range set {
+			if on && a.offers(c) && sw.Capability == c && sw.Partner == a.Name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Partner is the name of the adapter that serves c on rt now.
 func (r *Registry) Partner(ctx context.Context, c Capability, rt Route) (string, error) {
 	a, err := r.pick(ctx, c, rt)
@@ -239,6 +257,24 @@ func (r *Registry) Cards(ctx context.Context, rt Route) (Cards, error) {
 		return nil, err
 	}
 	return gatedCards{r.gate(a, rt, CapCards), a.Cards}, nil
+}
+
+// CardIssuer is a card partner's whole card life for rt (B53.19), and the partner's name: the adapter serving cards on
+// rt when its cards are a CardIssuer, or the registry's Issuer while the sandbox serves them.
+func (r *Registry) CardIssuer(ctx context.Context, rt Route) (CardIssuer, string, error) {
+	a, err := r.pick(ctx, CapCards, rt)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, ok := a.Cards.(CardIssuer); !ok && a == r.cfg.Sandbox && r.cfg.Issuer != nil {
+		a = r.cfg.Issuer
+	}
+	ci, ok := a.Cards.(CardIssuer)
+	if !ok {
+		return nil, "", fmt.Errorf("%w: %s issues no physical card", ErrInvalid, a.Name)
+	}
+	g := r.gate(a, rt, CapCards)
+	return gatedIssuer{gatedCards{g, ci}, ci}, a.Name, nil
 }
 
 // Payouts is the payouts capability for rt.

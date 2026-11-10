@@ -102,7 +102,7 @@ func TestB4610_OneApprovalIssuesThreeLockedCardsAndEachPaysItsMerchantOnceUpToIt
 			t.Fatalf("card %+v at the issuer %+v, want active, locked to its merchant, capped and closing within 24 hours", c, ic)
 		}
 	}
-	if _, ok := issuer.Card("ic_0004"); ok {
+	if issuer.Issued() > 3 {
 		t.Fatal("approving twice issued a fourth card")
 	}
 	if got, want := b4610Postings(t, pool, ws), "card_hold agent -40000; card_hold hold 40000"; got != want {

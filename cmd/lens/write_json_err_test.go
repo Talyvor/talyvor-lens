@@ -8,10 +8,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/talyvor/lens/internal/economy"
 )
 
 func TestWriteJSONErr_5xxRedacted(t *testing.T) {
@@ -50,5 +53,20 @@ func TestWriteJSONErr_4xxPassthrough(t *testing.T) {
 	}
 	if body["error"] != clientMsg {
 		t.Errorf("4xx body = %q, want passthrough %q", body["error"], clientMsg)
+	}
+}
+
+// B55.51: a refusal a person reads starts with no package name. Lens's own error text is the input,
+// so the web and the phone no longer strip "economy: " one screen at a time.
+func TestWriteJSONErr_4xxDropsThePackageName(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSONErr(rec, http.StatusNotFound, fmt.Errorf("economy: payment: %w", economy.ErrAgentNotFound).Error())
+
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if want := "No such agent in this workspace"; body["error"] != want {
+		t.Errorf("4xx body = %q, want %q", body["error"], want)
 	}
 }

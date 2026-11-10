@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -63,6 +64,7 @@ import (
 	"github.com/talyvor/lens/internal/compressmeasure"
 	"github.com/talyvor/lens/internal/compressor"
 	"github.com/talyvor/lens/internal/config"
+	"github.com/talyvor/lens/internal/connector"
 	"github.com/talyvor/lens/internal/controlplane"
 	"github.com/talyvor/lens/internal/costanomaly"
 	"github.com/talyvor/lens/internal/dashboard"
@@ -101,6 +103,7 @@ import (
 	"github.com/talyvor/lens/internal/modelwatch"
 	"github.com/talyvor/lens/internal/moderatorkey"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/issuerfake"
 	"github.com/talyvor/lens/internal/monitoring"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/nodelatency"
@@ -1601,6 +1604,8 @@ func run() error {
 	computeMiner := mining.NewComputeMiner(tokenLedger, pool)
 	computeMiner.SetHTTPClient(newNodeHTTPClient(cfg.NodeTLSSkipVerify, 5*time.Second, nodeCIDRAllow))
 	computeMiner.SetHoldbackWindow(cfg.PoolHoldbackWindow) // Phase-3 Item 1: node mint lands HELD, finalizes after this window (mirrors cache/royalty)
+	// B56.20: Talyvor keeps its compute fee out of every node earning.
+	computeMiner.SetComputeFee(fees.Current().ComputeTakeBPS, economy.TalyvorWorkspace)
 	localRouterMulti.SetOnRequestServed(func(nodeID, requesterWS, requestID string, tokens int, latencyMs int64) {
 		// RETIREMENT SWITCH (PoVI Part 3): the LEGACY trust-based mint (mints LENS
 		// per served request, no receipt). U6: now DEFAULT OFF — an unprotected
@@ -1851,6 +1856,7 @@ func run() error {
 	// one-way LENS->LXC conversion + LXC spend path.
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
+	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
 	// B30.5: every agent's Know Your Agent credential, signed with Ed25519.
 	kyaKey, kyaEphemeral, err := kya.ParseKey(cfg.KYASigningKey)
 	if err != nil {
@@ -1909,6 +1915,7 @@ func run() error {
 	}
 	// B20.2 — a buyer's paid marketplace uses go on their monthly Stripe bill, and a paid invoice clears them.
 	marketStore := market.NewStore(pool)
+	connectorGrantStore := connector.NewStore(pool)                           // B41.178: the Talyvor connector's OAuth grants
 	marketStore.SetTrialMax(cfg.MarketTrialMax)                               // B32.21
 	marketStore.SetLineageLimits(cfg.LineageMaxShareBPS, cfg.LineageMaxDepth) // B32.24
 	marketStore.SetLineageTotalCap(cfg.LineageTotalCapBPS)                    // B32.26
@@ -2006,6 +2013,8 @@ func run() error {
 	}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
+	// B56.7 — labels read card payments and the partner rails, every time.
+	dualToken.SetLabelRails(billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey), partnerRegistry)
 	// B30.6 — every payee and every payment in or out through a partner is screened against the UK Sanctions List and
 	// OFAC's SDN list, downloaded at start and each day; the Test screening provider screens against them, and a match
 	// opens a compliance case the operator sees at /v1/admin/screening.
@@ -2016,8 +2025,12 @@ func run() error {
 	// B46.3 — the money layer: every switch is off, so the sandbox (the Test partners above) serves every call, and partner
 	// webhooks enter at POST /v1/money/webhooks/{partner}. B46.4 — every agent's wallet is opened and read through it,
 	// and money leaving one is judged by the agent's rules first.
-	moneyLayer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
-		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)})
+	moneyCfg := money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
+		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)}
+	if cfg.PhysicalCards { // B53.19 — shortcut: the fake holds its cards in memory, so a restart forgets them; replaced by a live card issuer
+		moneyCfg.Issuer = issuerfake.New(dualToken.AuthorizeCardCharge).Adapter()
+	}
+	moneyLayer, err := money.NewRegistry(moneyCfg)
 	if err != nil {
 		return err
 	}
@@ -2043,6 +2056,8 @@ func run() error {
 	if travelRule != nil {
 		dualToken.SetTravelRule(travelRule)
 	}
+	// B30.33 — a company's USDC transfer over this carries the payer's and the payee's names.
+	dualToken.SetTravelRuleMinor(cfg.TravelRuleMinor)
 	// B30.16 — an outside payee is screened when it is saved and again before it is paid.
 	dualToken.SetPayeeScreener(screener)
 	// B30.13 — a company's accounts in pounds, euros and dollars open at the account partner (the Test one until cleared).
@@ -2065,6 +2080,10 @@ func run() error {
 	go haComps.leader.Run(ctx, "sanctions-lists", 30*time.Second, func(lctx context.Context) {
 		refreshSanctionsLists(lctx, screeningLists, sanctionsAlert)
 	})
+	// B54.25 — a frozen agent whose revoke calls could not be built is retried each minute, and the operator told.
+	go haComps.leader.Run(ctx, "revoke-calls", 30*time.Second, func(lctx context.Context) {
+		retryRevokeCalls(lctx, dualToken, sanctionsAlert.sink)
+	})
 	// B48.6 — agents' crypto wallets mirrored in the ledger: each movement seen, confirmed and reconciled nightly.
 	chainIdx, err := newChainIndex(dualToken, cfg.ChainIndex)
 	if err != nil {
@@ -2073,6 +2092,16 @@ func run() error {
 	if chainIdx != nil {
 		go haComps.leader.Run(ctx, "chain-indexer", 30*time.Second, func(lctx context.Context) {
 			chainIdx.indexChains(lctx, sanctionsAlert.sink)
+		})
+	}
+	// B54.26 — agents' smart-account payments settled from their operations' receipts.
+	agentPaymentChains, err := agentChains(cfg.AgentChains)
+	if err != nil {
+		return err
+	}
+	if len(agentPaymentChains) > 0 {
+		go haComps.leader.Run(ctx, "agent-payment-settle", 30*time.Second, func(lctx context.Context) {
+			settleAgentPayments(lctx, dualToken, agentPaymentChains)
 		})
 	}
 	taxProfiles := taxprofile.NewStore(pool, partnerRegistry)
@@ -2216,6 +2245,12 @@ func run() error {
 					slog.Warn("agents: loan instalments failed", slog.String("err", err.Error()))
 				} else if res != (economy.LoanRunResult{}) {
 					slog.Info("agents: loan instalments", slog.Int("paid", res.Paid), slog.Int("missed", res.Missed), slog.Int("defaulted", res.Defaulted))
+				}
+				// B30.27: agents' monthly allowances due, paid from the company's currency accounts.
+				if funded, refused, err := dualToken.RunMoneyAllowances(ctx, now); err != nil {
+					slog.Warn("agents: allowances failed", slog.String("err", err.Error()))
+				} else if funded+refused > 0 {
+					slog.Info("agents: allowances paid", slog.Int("funded", funded), slog.Int("refused", refused))
 				}
 				// B46.10: single-use cards unused 24 hours after issue, closed and their caps given back.
 				if n, err := dualToken.RunCardExpiries(ctx, now); err != nil {
@@ -2370,6 +2405,10 @@ func run() error {
 	// /v1/admin/reconciliation and /v1/admin/safeguarding.
 	go haComps.leader.Run(ctx, "reconciliation", 30*time.Second, func(lctx context.Context) {
 		reconcileDaily(lctx, dualToken, partnerRegistry, sanctionsAlert.sink)
+	})
+	// B30.15 — money in that matched no account goes back to its payer after LENS_SUSPENSE_RETURN_DAYS business days.
+	go haComps.leader.Run(ctx, "suspense-returns", 30*time.Second, func(lctx context.Context) {
+		returnSuspenseHourly(lctx, dualToken, cfg.SuspenseReturnDays)
 	})
 	// B30.8 — the compliance case file: the operator reviews a case, freezes or unfreezes the workspace's money
 	// capabilities, closes it with a reason and exports a report draft; every action behind step-up (a code from the
@@ -2629,6 +2668,13 @@ func run() error {
 	// OpenAPI spec — public, no auth, no version path prefix.
 	r.Get("/openapi.json", api.ServeOpenAPI)
 
+	// B54.45: while the synthetic key is set, a tester publishes a .test domain's DKIM key here, and the inbound
+	// email route reads it; otherwise nil, and that route reads DNS alone.
+	var syntheticDKIM *syntheticDKIMKeys
+	if cfg.SyntheticKey != "" {
+		syntheticDKIM = newSyntheticDKIMKeys()
+	}
+
 	// Public read-only API endpoints — no auth required, but rate-limited to
 	// prevent enumeration and DoS on the public economic surface.
 	r.Group(func(pub chi.Router) {
@@ -2664,6 +2710,8 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		// B41.178: the Talyvor connector — discovery, registration, authorize and token for Claude, ChatGPT and Cursor.
+		mountConnectorPublicRoutes(pub, connectorGrantStore, dualToken, tenantStore, cfg.PublicURL)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
 		// B45.24: every A2A request is checked against Web Bot Auth; a bad signature is 401.
 		pub.Group(func(a2a chi.Router) {
@@ -2675,6 +2723,8 @@ func run() error {
 		mountOutsideAgentPaymentRoutes(pub, agentSigs, dualToken)
 		// B54.7: the counterparty's agent confirms the deal a negotiation is in; only then does it hold it.
 		mountNegotiationAgentRoutes(pub, agentSigs, dualToken)
+		// B54.8: or by an email its domain's DKIM signature holds for, posted raw by whatever relays its mail to Lens.
+		mountNegotiationEmailRoutes(pub, rateLimiter, syntheticDKIM.resolver(net.DefaultResolver.LookupTXT), dualToken)
 		// B45.28: the key AP2 mandates and agents' approval evidence are signed with.
 		mountAP2PublicRoutes(pub, mandateSigner)
 		// B30.20: an invoice's pay link — the page, and its card button.
@@ -2736,6 +2786,9 @@ func run() error {
 	// B30.11 — the daily reconciliation runs with their breaks, and the safeguarding view. reconciliation_handler.go.
 	r.Get("/v1/admin/reconciliation", requireAdminOrOperatorRead(authManager, newReconciliationRunsHandler(dualToken)))
 	r.Get("/v1/admin/safeguarding", requireAdminOrOperatorRead(authManager, newSafeguardingHandler(dualToken)))
+	// B30.15 — money in that matched no account; the operator assigns it, behind step-up. payments_in_handler.go.
+	r.Get("/v1/admin/money/suspense", requireAdminOrOperatorRead(authManager, newSuspenseListHandler(dualToken, cfg.SuspenseReturnDays)))
+	r.Post("/v1/admin/money/suspense/{entryID}/assign", requireStepUp(authManager, stepUp, newSuspenseAssignHandler(dualToken)))
 	// B30.8 — the compliance case file: read with the admin key, every action behind step-up. compliance_handler.go.
 	r.Get("/v1/admin/compliance/cases", requireAdmin(authManager, newComplianceCasesHandler(caseFile)))
 	r.Get("/v1/admin/compliance/cases/{caseID}", requireAdmin(authManager, newComplianceCaseHandler(caseFile)))
@@ -2850,7 +2903,7 @@ func run() error {
 	mcpServer.SetPaymentRequests(dualToken)   // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
-	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, meter: marketMeter, agents: dualToken})
+	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
 	var approvalPusher economy.ApprovalPusher
 	if cfg.VAPIDPrivateKey != "" {
@@ -2898,6 +2951,10 @@ func run() error {
 	mcpAuth := auth.AuthMiddleware(keyStore, authManager)
 	r.With(mcpAuth).Post("/mcp", mcpServer.HandleRPC)
 	r.With(mcpAuth).Get("/mcp/sse", mcpServer.HandleSSE)
+	// B41.178: one listing as its own tool, for an assistant the connector added it to.
+	r.With(listingChallenge(cfg.PublicURL), connectorAuth(connectorGrantStore)).Post("/mcp/listings/{listingID}", func(w http.ResponseWriter, req *http.Request) {
+		mcpServer.HandleListingRPC(w, req, chi.URLParam(req, "listingID"))
+	})
 
 	// THE BROWSER SURFACE. This used to be a 41-panel dashboard; it is now one
 	// static status page, and the reason is in internal/dashboard/handler.go: ten
@@ -2959,6 +3016,9 @@ func run() error {
 		// B32.8 — every fee Talyvor charges, for /pricing.
 		pub.Get("/v1/public/fees", publicFeesHandler)
 
+		// B56.7 — each money capability Live or Sandbox, for every screen that shows money.
+		pub.Get("/v1/public/labels", publicLabelsHandler(dualToken, billing.CardPayments(cfg.BillingEnabled, cfg.StripeSecretKey)))
+
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
 
@@ -3015,6 +3075,9 @@ func run() error {
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
 		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken,
 		scan: scanWriter}
+	if cfg.PhysicalCards {
+		syntheticDue.physicalCards = dualToken // B53.19
+	}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -3054,6 +3117,8 @@ func run() error {
 		plans: pool,
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
 		due: syntheticDue,
+		// B54.45 — a .test domain's DKIM key, for an email confirming a deal.
+		dkim: syntheticDKIM,
 	})
 	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
@@ -3460,7 +3525,7 @@ func run() error {
 				return
 			case errors.Is(err, tenant.ErrRotationOpen):
 				writeJSONErr(w, http.StatusConflict, err.Error()+
-					" — complete or abandon it before starting another, or the holder cannot be told which key to take")
+					". Complete or abandon it before starting another, or the holder cannot be told which key to take")
 				return
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -3515,7 +3580,7 @@ func run() error {
 				// unmet. Nothing was changed — both keys are still live — and the message says
 				// what makes it true rather than only that it is false.
 				writeJSONErr(w, http.StatusPreconditionFailed, err.Error()+
-					" — nothing was revoked. Point the holder at the new key and let it make one real "+
+					". Nothing was revoked. Point the holder at the new key and let it make one real "+
 					"authenticated request; a health check does not count, because a health route answers "+
 					"200 with no credential at all.")
 				return
@@ -4871,6 +4936,7 @@ func run() error {
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
 		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
+		mountConnectorOwnerRoutes(authed, connectorGrantStore, dualToken)               // B41.178
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
@@ -4883,11 +4949,13 @@ func run() error {
 		mountSimTradingRoutes(authed, dualToken)                                        // B22.8
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
+		mountMoneyAllowanceRoutes(authed, dualToken)                                    // B30.27
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
+		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
@@ -4902,10 +4970,12 @@ func run() error {
 		mountDeviceKeyRoutes(authed, dualToken)                                         // B40.4
 		mountKeyEnrolmentRoutes(authed, dualToken)                                      // B55.1
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
+		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
+		mountPhysicalCardRoutes(authed, dualToken, cfg.PhysicalCards)                   // B53.19
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
@@ -4963,6 +5033,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
+		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
+			sweepAlertChannels(lctx, dualToken)
 		})
 		// B53.13: one replica reads the connected bank accounts in the background.
 		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {
@@ -5938,12 +6012,16 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 	// stack context — to the caller. For status >= 500 we log the full detail
 	// server-side (through the app's slog default, wired in main) and return a
 	// generic body. 4xx messages are legitimately client-facing (validation,
-	// not-found, auth) and pass through unchanged. Doing this in the ONE helper
-	// means no 500 call site (there are ~77 passing err.Error()) can forget to
-	// redact — the information-disclosure class is closed by construction.
+	// not-found, auth) and pass through, read as a person reads them (B55.51):
+	// no leading package name ("economy: ", "rooms: conflict: "), a capital first.
+	// Doing this in the ONE helper means no 500 call site (there are ~77 passing
+	// err.Error()) can forget to redact — the information-disclosure class is
+	// closed by construction.
 	if status >= http.StatusInternalServerError {
 		slog.Error("request failed", slog.Int("status", status), slog.String("detail", msg))
 		msg = "internal server error"
+	} else {
+		msg = api.Refusal(msg)
 	}
 	writeJSONOK(w, status, map[string]string{"error": msg})
 }

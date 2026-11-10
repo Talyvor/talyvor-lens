@@ -126,7 +126,7 @@ func parsePayoutCSV(r io.Reader) ([]economy.PayoutRow, error) {
 		return nil, fmt.Errorf("the CSV could not be read: %v", err)
 	}
 	if len(recs) < 2 {
-		return nil, errors.New("the CSV has a header row — payee_id,amount,currency,reference — and then a row per payment")
+		return nil, errors.New("the CSV has a header row (payee_id,amount,currency,reference) and then a row per payment")
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {
