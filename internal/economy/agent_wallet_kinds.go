@@ -161,8 +161,23 @@ func (s *DualTokenStore) SetAgentWalletKind(ctx context.Context, workspaceID, ag
 			return AgentWallets{}, err
 		}
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET wallet_kind = $3, wallet_fiat_currency = $4 WHERE id = $1 AND workspace_id = $2`,
+	// B59.6: under the agents lock a change of the workspace's kind takes, the kind is checked again as it is kept.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockWorkspaceAgents(ctx, tx, workspaceID); err != nil {
+		return AgentWallets{}, err
+	}
+	if err := checkAgentWalletKind(ctx, tx, workspaceID, kind); err != nil {
+		return AgentWallets{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_accounts SET wallet_kind = $3, wallet_fiat_currency = $4 WHERE id = $1 AND workspace_id = $2`,
 		agentID, workspaceID, kind, fiat); err != nil {
+		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
 	}
 	closed := []string{}

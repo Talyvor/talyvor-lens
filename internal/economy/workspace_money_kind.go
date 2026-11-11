@@ -202,7 +202,7 @@ func (s *DualTokenStore) widenMoneyKind(ctx context.Context, was WorkspaceAccoun
 // currency accounts, the owner's, pots and holds — hold anything. Each agent becomes kind's wallet kind, its other
 // wallet closed at its partner (B48.1), before the workspace changes, so a failure part way leaves it hybrid.
 func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccount, kind, by string) (WorkspaceAccount, error) {
-	held, err := s.otherSideBalances(ctx, was.WorkspaceID, kind)
+	held, err := otherSideBalances(ctx, s.pool, was.WorkspaceID, kind)
 	if err != nil {
 		return WorkspaceAccount{}, err
 	}
@@ -230,11 +230,30 @@ func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccou
 			return WorkspaceAccount{}, err
 		}
 	}
+	// Under the agents lock, which an agent made or changed takes too: no agent of another kind came, and nothing
+	// arrived on the other side, while the agents changed.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return WorkspaceAccount{}, fmt.Errorf("economy: change the kind of money: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockWorkspaceAgents(ctx, tx, was.WorkspaceID); err != nil {
+		return WorkspaceAccount{}, err
+	}
+	var others bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE workspace_id = $1 AND kind = 'agent'
+		AND archived_at IS NULL AND wallet_kind <> $2)`, was.WorkspaceID, walletKind).Scan(&others); err != nil {
+		return WorkspaceAccount{}, fmt.Errorf("economy: change the kind of money: %w", err)
+	}
+	if others {
+		return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind} // an agent changed under us: ask again
+	}
+	if held, err = otherSideBalances(ctx, tx, was.WorkspaceID, kind); err != nil {
+		return WorkspaceAccount{}, err
+	}
+	if len(held) > 0 {
+		return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind, Balances: held}
+	}
 	if err := setMoneyKindTx(ctx, tx, was, kind, by, agents); err != nil {
 		return WorkspaceAccount{}, err
 	}
@@ -264,8 +283,10 @@ func setMoneyKindTx(ctx context.Context, tx pgx.Tx, was WorkspaceAccount, kind, 
 
 // otherSideBalances is what workspaceID's open accounts hold, by asset, on the side a workspace of kind gives up: the
 // stablecoins for fiat, every other currency for stablecoin. Only assets holding something are named.
-func (s *DualTokenStore) otherSideBalances(ctx context.Context, workspaceID, kind string) (map[string]int64, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.currency, sum(b.balance_minor)::bigint FROM money_accounts a
+func otherSideBalances(ctx context.Context, q interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, workspaceID, kind string) (map[string]int64, error) {
+	rows, err := q.Query(ctx, `SELECT a.currency, sum(b.balance_minor)::bigint FROM money_accounts a
 		JOIN money_account_balances b ON b.account_id = a.id
 		WHERE a.workspace_id = $1 AND a.status = 'open' AND a.purpose IN ('company', 'agent', 'pot', 'hold')
 		AND (a.currency = ANY($2)) = $3
