@@ -199,7 +199,7 @@ func (p *Proxy) agentAllocate(ctx context.Context, apiKeyID, wsID, model, prompt
 		lcancel()
 		if lerr != nil {
 			slog.Error("economy: agent debit outcome unknown (a booked debit is swept back if nothing is served)",
-				slog.String("agent", apiKeyID), slog.String("debit_key", debitKey), slog.String("err", lerr.Error()))
+				slog.String("request_id", requestID), slog.String("debit_key", debitKey), slog.String("err", lerr.Error()))
 			return ctx, errAgentDebitUnknown
 		}
 		if booked {
