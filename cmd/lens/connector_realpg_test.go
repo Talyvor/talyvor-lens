@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/areas"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/connector"
 	"github.com/talyvor/lens/internal/economy"
@@ -57,6 +58,12 @@ func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 	}
 	mcpServer := mcp.New(pool, nil, nil, nil, nil, "test")
 	mcpServer.SetAgentBank(bank)
+	// B59.4: a listing's URL is the marketplace's, so the buyer has the marketplace.
+	areaStore := areas.NewStore(pool)
+	if err := areaStore.Switch(ctx, buyer, areas.Marketplace, true, "operator@talyvor.com"); err != nil {
+		t.Fatal(err)
+	}
+	mcpServer.SetAreas(areaStore)
 	// The model calls go through the in-process proxy, as the key behind the token; this one records who called and
 	// answers 4. Through the router (lens) they would carry the token, which opens nothing there.
 	var ranAs []string

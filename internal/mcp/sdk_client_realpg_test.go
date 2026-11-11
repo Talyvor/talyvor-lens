@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/areas"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 )
@@ -91,7 +92,7 @@ func TestOfficialTypeScriptSDKClient(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &got); err != nil {
 		t.Fatalf("the SDK client printed %q: %v", out, err)
 	}
-	want := len(srv.tools())
+	want := len(offered(srv.tools(), map[areas.Area]bool{})) // B59.4: the buyer's workspace has no areas
 	if got.ProtocolVersion != handshakeVersions[0] || got.SessionID == "" || got.Tools != want || got.SSETools != want {
 		t.Errorf("SDK client saw version %q, session %q, %d tools (SSE %d), want %s, a session and %d", got.ProtocolVersion,
 			got.SessionID, got.Tools, got.SSETools, handshakeVersions[0], want)
