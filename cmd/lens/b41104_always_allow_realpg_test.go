@@ -57,7 +57,7 @@ func TestB41104_ApprovingWithAlwaysAllowLetsTheNextPaymentToThatPayeeThroughWith
 	pay := func(to string, amount int64) (int, int) {
 		t.Helper()
 		code, body := call(http.MethodPost, base+payer+"/pay", `{"to_agent_id":"`+to+`","amount_ulxc":`+strconv.FormatInt(amount, 10)+`}`)
-		if code != http.StatusOK && code != http.StatusForbidden {
+		if code != http.StatusOK && code != http.StatusAccepted && code != http.StatusForbidden {
 			t.Fatalf("pay %s = %d %s", to, code, body)
 		}
 		var n int
@@ -93,8 +93,8 @@ func TestB41104_ApprovingWithAlwaysAllowLetsTheNextPaymentToThatPayeeThroughWith
 	if code, body := call(http.MethodPut, base+payer+"/rules", `{"approval_above_ulxc":2000000}`); code != http.StatusOK {
 		t.Fatalf("PUT rules = %d %s", code, body)
 	}
-	if code, n := pay(supplier, 3_000_000); code != http.StatusForbidden || n != 0 {
-		t.Fatalf("a payment above the approval amount = %d with %d pay postings, want 403 and none", code, n)
+	if code, n := pay(supplier, 3_000_000); code != http.StatusAccepted || n != 0 {
+		t.Fatalf("a payment above the approval amount = %d with %d pay postings, want 202 and none", code, n)
 	}
 	held := pending()
 	if len(held) != 1 || held[0].Payee == nil || held[0].Payee.ID != supplier {
@@ -132,12 +132,12 @@ func TestB41104_ApprovingWithAlwaysAllowLetsTheNextPaymentToThatPayeeThroughWith
 		t.Fatalf("the next payment within the allowance = %d with %d pay postings and %d pending approvals, want 200, two and none",
 			code, n, len(pending()))
 	}
-	if code, n := pay(supplier, 4_000_000); code != http.StatusForbidden || n != 2 || len(pending()) != 1 {
-		t.Errorf("a payment past the allowance = %d with %d pay postings and %d pending approvals, want 403, still two, and one",
+	if code, n := pay(supplier, 4_000_000); code != http.StatusAccepted || n != 2 || len(pending()) != 1 {
+		t.Errorf("a payment past the allowance = %d with %d pay postings and %d pending approvals, want 202, still two, and one",
 			code, n, len(pending()))
 	}
-	if code, n := pay(other, 3_000_000); code != http.StatusForbidden || n != 0 {
-		t.Errorf("a payment to another payee above the approval amount = %d with %d pay postings, want 403 and none", code, n)
+	if code, n := pay(other, 3_000_000); code != http.StatusAccepted || n != 0 {
+		t.Errorf("a payment to another payee above the approval amount = %d with %d pay postings, want 202 and none", code, n)
 	}
 
 	// Rules saved without them keep the allowances; the payee's monthly cap counts the month's 7 LXC.

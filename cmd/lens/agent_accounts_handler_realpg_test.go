@@ -789,8 +789,8 @@ func TestAgentRoutes_AnApprovalSaysWhoIsBeingPaidAndWhy(t *testing.T) {
 
 	code, body := call(http.MethodPost, "/v1/workspaces/"+ws+"/agents/"+buyer.ID+"/pay",
 		`{"to_agent_id":"`+seller.ID+`","amount_ulxc":3000000,"memo":"invoice 18"}`)
-	if code != http.StatusForbidden || !strings.Contains(body, "apr_") {
-		t.Fatalf("a 3 LXC payment above the 1 LXC approval amount = %d %s, want 403 naming the approval filed", code, body)
+	if code != http.StatusAccepted || !strings.Contains(body, `"approval_id":"apr_`) {
+		t.Fatalf("a 3 LXC payment above the 1 LXC approval amount = %d %s, want 202 naming the approval filed", code, body)
 	}
 	var row economy.Payee
 	var memo string

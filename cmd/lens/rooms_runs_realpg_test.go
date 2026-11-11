@@ -171,6 +171,28 @@ func TestRooms_RunsInARoom_OnTheRoomOrOnYourself(t *testing.T) {
 		t.Fatalf("a refused run left %d uses, %d run messages and %d model calls; want 1, 1 and 1", n, runMessages(), len(calls))
 	}
 
+	// B58.2: a run above the wallet's approval amount is held for the owner: 202 naming the approval it filed, and
+	// nothing is written.
+	must(http.StatusOK, owner, http.MethodPut, "/v1/workspaces/"+owner+"/agents/"+wallet+"/rules", `{"monthly_limit_ulxc":10000000,"max_per_request_ulxc":10000000,"approval_above_ulxc":500000}`)
+	code, body := call(runner, http.MethodPost, "/v1/rooms/"+room.ID+"/runs", `{"target":"`+c.ID+`","variables":{"product":"rooms"},"pay":"room"}`)
+	var held struct {
+		Status     string `json:"status"`
+		ApprovalID string `json:"approval_id"`
+		AmountULXC int64  `json:"amount_ulxc"`
+	}
+	var filed string
+	if err := pool.QueryRow(ctx, `SELECT id FROM agent_approvals WHERE agent_id = $1 AND status = 'pending'`, wallet).Scan(&filed); err != nil {
+		t.Fatalf("the held run's approval: %v (the answer was %d %s)", err, code, body)
+	}
+	if _ = json.Unmarshal([]byte(body), &held); code != http.StatusAccepted || held.Status != "pending_approval" || held.ApprovalID != filed || held.AmountULXC != 1_000_000 {
+		t.Fatalf("a run above the approval amount = %d %s, want 202 naming %s", code, body, filed)
+	}
+	if n := len(uses()); n != 1 || runMessages() != 1 || len(calls) != 1 {
+		t.Fatalf("a held run left %d uses, %d run messages and %d model calls; want 1, 1 and 1", n, runMessages(), len(calls))
+	}
+	must(http.StatusOK, owner, http.MethodPut, "/v1/workspaces/"+owner+"/agents/"+wallet+"/rules",
+		`{"monthly_limit_ulxc":1500000,"max_per_request_ulxc":10000000,"approval_above_ulxc":10000000}`)
+
 	// Paying self, the member's own workspace buys it and its own credential calls the model.
 	_ = json.Unmarshal([]byte(must(http.StatusOK, runner, http.MethodPost, "/v1/rooms/"+room.ID+"/runs",
 		`{"target":"`+c.ID+`","variables":{"product":"rooms"},"pay":"self"}`)), &res)

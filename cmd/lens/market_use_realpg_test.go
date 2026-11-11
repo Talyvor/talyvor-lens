@@ -296,8 +296,8 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 	var refused struct {
 		ApprovalID string `json:"approval_id"`
 	}
-	if _ = json.Unmarshal([]byte(body), &refused); code != http.StatusForbidden || refused.ApprovalID == "" {
-		t.Fatalf("an agent's use above its approval amount = %d %s, want 403 naming the approval", code, body)
+	if _ = json.Unmarshal([]byte(body), &refused); code != http.StatusAccepted || refused.ApprovalID == "" {
+		t.Fatalf("an agent's use above its approval amount = %d %s, want 202 naming the approval", code, body)
 	}
 	// B55.31: the approval reads as a sentence, and its fingerprint is the one an approval filed before it had.
 	var memo, fingerprint string
