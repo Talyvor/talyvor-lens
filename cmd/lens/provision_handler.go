@@ -64,6 +64,10 @@ type provisionRequest struct {
 	DisplayName   string `json:"display_name"`
 	CachePoolable *bool  `json:"cache_poolable"`
 	TTLHours      int    `json:"ttl_hours"`
+	// B59.6: who the account is for (business or personal) and the money it holds (fiat, stablecoin or hybrid), set
+	// on the call that makes the workspace and never by a later one; left out, they are business and hybrid.
+	AccountType string `json:"account_type"`
+	MoneyKind   string `json:"money_kind"`
 }
 
 type provisionResponse struct {
@@ -106,6 +110,20 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, "identity required")
 			return
 		}
+		if in.AccountType == "" {
+			in.AccountType = economy.AccountTypeBusiness
+		}
+		if in.MoneyKind == "" {
+			in.MoneyKind = economy.MoneyKindHybrid
+		}
+		if err := economy.CheckAccountType(in.AccountType); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := economy.CheckMoneyKind(in.MoneyKind); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		wsID := deriveWorkspaceID(in.Identity)
 		name := in.DisplayName
@@ -132,7 +150,7 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			// manager as silence and the new-workspace default applies. On an existing
 			// workspace no choice is passed at all — consent is created once, and only the
 			// dedicated setter changes it.
-			var opts []workspace.RegisterOption
+			opts := []workspace.RegisterOption{workspace.WithAccount(in.AccountType, in.MoneyKind)}
 			if in.CachePoolable != nil {
 				opts = append(opts, workspace.WithCachePoolableChoice(*in.CachePoolable))
 			}

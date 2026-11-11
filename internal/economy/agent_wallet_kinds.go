@@ -19,7 +19,8 @@ import (
 // details of its own where the partner gives the agent an account (the sandbox does), and otherwise at its owner's
 // details with the agent's payment reference (a B30.13 sub-account). The owner chooses the kind at creation and changes
 // it later: a kind added opens its wallet; a kind removed closes it, and is refused while the wallet holds money — the
-// owner sweeps it out first. Every change is in the audit trail.
+// owner sweeps it out first. Every change is in the audit trail. The workspace's kind of money is the limit for the
+// kinds its agents may be (B59.6, workspace_money_kind.go).
 //
 // The owner has a wallet of each asset their agents use — the workspace's account in it, where Lens knows a person only
 // as their workspace — opened through the same gate when first read; it is what they fund their agents from.
@@ -118,6 +119,9 @@ func (s *DualTokenStore) SetAgentWalletKind(ctx context.Context, workspaceID, ag
 		fiat = wasFiat
 	}
 	if fiat, err = checkWalletKind(kind, fiat); err != nil {
+		return AgentWallets{}, err
+	}
+	if err := checkAgentWalletKind(ctx, s.pool, workspaceID, kind); err != nil { // B59.6
 		return AgentWallets{}, err
 	}
 	var archived bool
