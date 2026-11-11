@@ -318,6 +318,7 @@ var Manifest = map[string]Entry{
 	"gas_budget_top_ups":           {Delete, ""},
 	"gas_sponsorships":             {Delete, ""},
 	"workspace_lockdowns":          {Delete, "B41.116: whether the workspace is locked down after a lost phone, since when and by whom"},
+	"workspace_areas":              {Delete, "B59.1: the areas the operator switched on for the workspace, by whom and when"},
 	"agent_smart_accounts":         {Delete, "B48.2: each crypto agent's smart account — its address, the owner's passkey public key, the address of the agent's key at the provider and the recovery address"},
 	"agent_spend_permissions":      {Delete, "B48.3: each permission the owner signed for a crypto agent's key — its limits, counterparties and the owner's passkey assertion"},
 	"agent_spend_permission_uses":  {Delete, "B48.3: each crypto payment the gate allowed under an agent's permission — token, counterparty and amount"},
