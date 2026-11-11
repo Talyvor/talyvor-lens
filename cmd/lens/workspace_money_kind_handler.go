@@ -16,7 +16,8 @@ import (
 // B59.6 — a workspace is Business or Personal, and Fiat only, Stablecoin and crypto only, or Hybrid
 // (internal/economy/workspace_money_kind.go):
 //
-//	GET /v1/workspaces/{wsID}/account              {"account_type", "money_kind"}
+//	GET /v1/workspaces/{wsID}/account              {"account_type", "money_kind", "country", "registration_number"}
+//	                                               the last two the sign-up profile (B59.40), "" when not given
 //	PUT /v1/workspaces/{wsID}/account/money-kind   {"money_kind"}   a single kind becomes hybrid at any time; hybrid
 //	                                               becomes a single kind only once the other side holds nothing: 409
 //	                                               wrong_money_kind, naming the balances to empty, otherwise

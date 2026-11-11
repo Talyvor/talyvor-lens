@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -39,15 +40,21 @@ var (
 	ErrAccountType = errors.New("economy: an account is business or personal")
 	// ErrMoneyKind: a kind that is not fiat, stablecoin or hybrid.
 	ErrMoneyKind = errors.New("economy: an account's money is fiat, stablecoin or hybrid")
+	// ErrSignupProfile: a country that is not an ISO 3166-1 alpha-2 code, or a registration number that is not a
+	// business's or is over 64 characters (B59.40).
+	ErrSignupProfile = errors.New("economy: a sign-up profile is a country code and, for a business, a registration number")
 	// ErrWorkspaceNotFound: no workspace by that id.
 	ErrWorkspaceNotFound = errors.New("economy: no such workspace")
 )
 
-// WorkspaceAccount is a workspace's type and kind of money.
+// WorkspaceAccount is a workspace's type and kind of money, and the country and (a business's) registration number it
+// signed up with (B59.40), each "" when not given.
 type WorkspaceAccount struct {
-	WorkspaceID string `json:"workspace_id"`
-	AccountType string `json:"account_type"`
-	MoneyKind   string `json:"money_kind"`
+	WorkspaceID        string `json:"workspace_id"`
+	AccountType        string `json:"account_type"`
+	MoneyKind          string `json:"money_kind"`
+	Country            string `json:"country"`
+	RegistrationNumber string `json:"registration_number"`
 }
 
 // MoneyKindRefusal refuses a change of kind, or an agent's wallet kind, that the workspace's kind does not allow: Field
@@ -91,6 +98,29 @@ func CheckMoneyKind(k string) error {
 	return nil
 }
 
+// maxRegistrationNumber is the longest registration number a business signs up with, in characters.
+const maxRegistrationNumber = 64
+
+// CheckSignupProfile checks the country and registration number an account of accountType signs up with (B59.40), and
+// returns them as kept: the country upper-case, the number trimmed. Either may be "". A registration number is a
+// business's alone, at most 64 characters, and the country an ISO 3166-1 alpha-2 code.
+func CheckSignupProfile(accountType, country, registrationNumber string) (string, string, error) {
+	country = strings.ToUpper(strings.TrimSpace(country))
+	if country != "" {
+		if _, err := countryCodes([]string{country}); err != nil {
+			return "", "", fmt.Errorf("%w: the country is an ISO 3166-1 alpha-2 code, like GB, not %q", ErrSignupProfile, country)
+		}
+	}
+	registrationNumber = strings.TrimSpace(registrationNumber)
+	if registrationNumber != "" && accountType != AccountTypeBusiness {
+		return "", "", fmt.Errorf("%w: only a business has a registration number", ErrSignupProfile)
+	}
+	if utf8.RuneCountInString(registrationNumber) > maxRegistrationNumber {
+		return "", "", fmt.Errorf("%w: a registration number is at most %d characters", ErrSignupProfile, maxRegistrationNumber)
+	}
+	return country, registrationNumber, nil
+}
+
 // agentKindOf is the wallet kind of a new agent in a workspace of kind.
 func agentKindOf(kind string) string {
 	switch kind {
@@ -132,10 +162,11 @@ func checkAgentWalletKind(ctx context.Context, q interface {
 	return nil
 }
 
-// WorkspaceAccount is workspaceID's type and kind of money.
+// WorkspaceAccount is workspaceID's type and kind of money, and its sign-up country and registration number.
 func (s *DualTokenStore) WorkspaceAccount(ctx context.Context, workspaceID string) (WorkspaceAccount, error) {
 	out := WorkspaceAccount{WorkspaceID: workspaceID}
-	err := s.pool.QueryRow(ctx, `SELECT account_type, money_kind FROM workspaces WHERE id = $1`, workspaceID).Scan(&out.AccountType, &out.MoneyKind)
+	err := s.pool.QueryRow(ctx, `SELECT account_type, money_kind, country, registration_number FROM workspaces WHERE id = $1`,
+		workspaceID).Scan(&out.AccountType, &out.MoneyKind, &out.Country, &out.RegistrationNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkspaceAccount{}, ErrWorkspaceNotFound
 	}

@@ -68,6 +68,10 @@ type provisionRequest struct {
 	// on the call that makes the workspace and never by a later one; left out, they are business and hybrid.
 	AccountType string `json:"account_type"`
 	MoneyKind   string `json:"money_kind"`
+	// B59.40: the sign-up profile, set like the type on the call that makes the workspace: an ISO 3166-1 alpha-2
+	// country, and a business's registration number (trimmed, at most 64 characters). Profile, not an identity check.
+	Country            string `json:"country"`
+	RegistrationNumber string `json:"registration_number"`
 }
 
 type provisionResponse struct {
@@ -124,6 +128,11 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		country, registrationNumber, err := economy.CheckSignupProfile(in.AccountType, in.Country, in.RegistrationNumber)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		wsID := deriveWorkspaceID(in.Identity)
 		name := in.DisplayName
@@ -150,7 +159,8 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			// manager as silence and the new-workspace default applies. On an existing
 			// workspace no choice is passed at all — consent is created once, and only the
 			// dedicated setter changes it.
-			opts := []workspace.RegisterOption{workspace.WithAccount(in.AccountType, in.MoneyKind)}
+			opts := []workspace.RegisterOption{workspace.WithAccount(in.AccountType, in.MoneyKind),
+				workspace.WithSignupProfile(country, registrationNumber)}
 			if in.CachePoolable != nil {
 				opts = append(opts, workspace.WithCachePoolableChoice(*in.CachePoolable))
 			}
