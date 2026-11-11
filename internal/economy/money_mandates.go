@@ -247,8 +247,9 @@ func (m Mandate) undecided() error {
 }
 
 // GrantMandate grants g on one of workspaceID's agent accounts — with agentID, the agent's own key asking for one on
-// its own account: requested, it pulls nothing until the owner approves it (B55.24). Without, it is the owner's
-// unsigned grant, which only a workspace with no passkey or device key makes.
+// its own account: requested, it pulls nothing until the owner approves it (B55.24), and named by its payee's own
+// name, whatever payee_name the agent sent (B50.42). Without, it is the owner's unsigned grant, which only a workspace
+// with no passkey or device key makes.
 func (s *DualTokenStore) GrantMandate(ctx context.Context, workspaceID, agentID string, g MandateGrant) (Mandate, error) {
 	return s.grantMandate(ctx, workspaceID, agentID, "", g, nil)
 }
@@ -291,6 +292,8 @@ func (s *DualTokenStore) grantMandate(ctx context.Context, workspaceID, agentID,
 			return Mandate{}, err
 		}
 		approved, m.DecidedBy, m.Status = time.Now(), by, MandateActive
+	} else {
+		m.PayeeName = "" // the owner is shown where an agent's money goes, never the agent's own words for it (B50.42)
 	}
 	var keySHA, hold any
 	if m.PayeeWorkspaceID != "" {
