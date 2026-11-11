@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -65,6 +66,7 @@ const (
 	syntheticMaxCount   = 1000
 	syntheticCallsPer   = time.Minute
 	syntheticMaxCalls   = 10
+	syntheticMaxBody    = 64 << 10 // every synthetic call's body is a few fields; past it, 413
 	// syntheticPurgeAge is how old a synthetic workspace is when the clean-up deletes it (B26.1).
 	syntheticPurgeAge   = 7 * 24 * time.Hour
 	syntheticPurgeEvery = 6 * time.Hour
@@ -159,6 +161,18 @@ func syntheticGuard(key, action string, limit *callLimiter, d syntheticDeps,
 			writeJSONErr(w, http.StatusTooManyRequests, fmt.Sprintf("at most %d synthetic calls a minute", syntheticMaxCalls))
 			return
 		}
+		// The body is read here, under the cap, so no action decodes an unbounded one.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, syntheticMaxBody))
+		if tooBig := (*http.MaxBytesError)(nil); errors.As(err, &tooBig) {
+			outcome = "too_large"
+			writeJSONErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("a synthetic call's body is at most %d bytes", syntheticMaxBody))
+			return
+		} else if err != nil {
+			outcome = "error: bad request"
+			writeJSONErr(w, http.StatusBadRequest, "the request body is unreadable")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		n, outcome = run(w, r)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -93,6 +94,9 @@ type AnthropicVerifier struct {
 // defaultModel is the cheap model the measurement ran on.
 const defaultModel = "claude-haiku-4-5"
 
+// maxVerdictBytes bounds the read of the verifier's answer (it is asked for 5 tokens).
+const maxVerdictBytes = 1 << 20
+
 func NewAnthropicVerifier(apiKey, model string) *AnthropicVerifier {
 	if model == "" {
 		model = defaultModel
@@ -141,7 +145,7 @@ func (v *AnthropicVerifier) ask(ctx context.Context, prompt string) (Verdict, er
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxVerdictBytes)).Decode(&out); err != nil {
 		return Verdict{}, err
 	}
 	var raw string
