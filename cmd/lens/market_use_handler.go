@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/market"
@@ -131,10 +130,8 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 		}
 		deps := market.LicenceDeps{Meter: m, Agents: agents, Capabilities: agents}
 		lic, again, err := store.License(req.Context(), deps, wsID, agentID, chi.URLParam(req, "listingID"), req.Header.Get("Idempotency-Key"), in)
-		var need *economy.ApprovalNeededError
 		switch {
-		case errors.As(err, &need):
-			writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(err.Error()), "approval_id": need.ApprovalID})
+		case writePendingApproval(w, err):
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, economy.ErrCapabilityNotCleared),
 			errors.Is(err, market.ErrNotSoldHere):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
@@ -261,11 +258,9 @@ func mountMarketUseRoutes(r chi.Router, store *market.Store, lens http.Handler, 
 
 // writeMarketUseErr answers a use Store.Use refused or could not run.
 func writeMarketUseErr(w http.ResponseWriter, err error, byKind stripeByKind, wsID string) {
-	var need *economy.ApprovalNeededError
 	var ran *runError
 	switch {
-	case errors.As(err, &need):
-		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(err.Error()), "approval_id": need.ApprovalID})
+	case writePendingApproval(w, err):
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, market.ErrNotSoldHere):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, market.ErrNotFound):

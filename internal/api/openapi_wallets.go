@@ -203,6 +203,31 @@ func openAPIWalletSchemas() map[string]any {
 				"source":             map[string]any{"type": "string", "enum": []string{"Model provider", "Cache", "Shared pool", "Node"}, "description": "on a call's lines: where its answer came from; absent until Lens has recorded it"},
 			},
 		},
+		"AgentPayment": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"entry_id":          str,
+				"from_agent_id":     str,
+				"to_agent_id":       str,
+				"amount_ulxc":       ulxc,
+				"from_balance_ulxc": ulxc,
+				"to_balance_ulxc":   ulxc,
+				"memo":              str,
+				"to_workspace_id":   str,
+				"via":               map[string]any{"type": "string", "description": "marketplace: on the company's monthly marketplace bill"},
+			},
+		},
+		"PendingApproval": map[string]any{
+			"type":        "object",
+			"description": "A request above the agent's approval amount, held for the workspace's owner (B58.2): nothing was paid. Retry it once the owner approves approval_id.",
+			"required":    []string{"status", "approval_id", "amount_ulxc", "message"},
+			"properties": map[string]any{
+				"status":      map[string]any{"type": "string", "enum": []string{"pending_approval"}},
+				"approval_id": str,
+				"amount_ulxc": ulxc,
+				"message":     str,
+			},
+		},
 		"AgentTransfer": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -557,6 +582,15 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent},
 				map[string]any{"200": ok("the transfer", ref("AgentTransfer")), "403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "409": map[string]any{"description": "the agent's balance cannot cover it"}}),
 				body(obj([]string{"to", "amount_ulxc"}, map[string]any{"to": map[string]any{"type": "string", "description": "a wallet id or @handle"}, "amount_ulxc": ulxc, "memo": str}))),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/pay": map[string]any{
+			"post": withBody(op("Pay another agent",
+				"By the agent's own key, a connected assistant, the workspace's owner or an admin. The agent's rules judge it like any other spend. Above the agent's approval amount it is held for the owner: 202, nothing is paid, and the same request goes through once the owner approves.",
+				[]map[string]any{ws, agent, idempotency},
+				map[string]any{"200": ok("the payment", ref("AgentPayment")), "202": ok("held for the owner's approval", ref("PendingApproval")),
+					"403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "404": map[string]any{"description": "no such agent"},
+					"409": map[string]any{"description": "the agent's balance cannot cover it, or the Idempotency-Key was used for another payment"}}),
+				body(obj([]string{"to_agent_id", "amount_ulxc"}, map[string]any{"to_agent_id": str, "amount_ulxc": ulxc, "memo": str}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/transfers": map[string]any{
 			"get": op("List what the agent sent and received", "",

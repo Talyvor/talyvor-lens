@@ -108,8 +108,8 @@ func TestB5518_ADeclinedRequestIsNotAskedAgain(t *testing.T) {
 	}
 
 	// The agent's pay route: the owner declines, and the identical retry is refused without asking again.
-	if code, body := pay(5_000_000, "march"); code != http.StatusForbidden {
-		t.Fatalf("the first payment: %d %s, want 403 waiting for approval", code, body)
+	if code, body := pay(5_000_000, "march"); code != http.StatusAccepted {
+		t.Fatalf("the first payment: %d %s, want 202 waiting for approval", code, body)
 	}
 	pushes(1)
 	deny(b5018Pending(t, pool, ag[0].ID, "march"), `{"reason": "not this month"}`)
