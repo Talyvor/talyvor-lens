@@ -37,10 +37,12 @@ func TestB597_TheGateReadsTheWorkspacesKind(t *testing.T) {
 			next.ServeHTTP(w, req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: ws})))
 		})
 	})
-	r.Use(moneyKindGate(bank))
-	reached := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", reached) // on-chain, the workspace in the path
-	r.Get("/v1/money/banks", reached)                               // fiat, the workspace the key's
+	r.Group(func(g chi.Router) { // as main.go's authed group: a group's middleware runs once the route is matched
+		g.Use(moneyKindGate(bank))
+		reached := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		g.Post("/v1/workspaces/{wsID}/agents/{agentID}/sweep", reached) // on-chain, the workspace in the path
+		g.Get("/v1/money/banks", reached)                               // fiat, the workspace the key's
+	})
 
 	for _, c := range []struct {
 		ws, method, path string

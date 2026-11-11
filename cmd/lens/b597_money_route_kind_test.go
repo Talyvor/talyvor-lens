@@ -128,10 +128,12 @@ func b597Router(t *testing.T, routes []b597Route, kind string) http.Handler {
 			next.ServeHTTP(w, req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{WorkspaceID: "ws-b597"})))
 		})
 	})
-	r.Use(moneyKindGate(b597Kinds{kind}))
-	for _, rt := range routes {
-		r.Method(rt.method, rt.pattern, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	}
+	r.Group(func(g chi.Router) { // as main.go's authed group: a group's middleware runs once the route is matched
+		g.Use(moneyKindGate(b597Kinds{kind}))
+		for _, rt := range routes {
+			g.Method(rt.method, rt.pattern, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		}
+	})
 	return r
 }
 
