@@ -171,7 +171,12 @@ ON CONFLICT (id) DO UPDATE SET
   -- Preserving them here also guards a replica whose in-memory cache doesn't yet hold
   -- the row from writing a default over consent it never knew about.
   updated_at             = NOW()
-RETURNING cache_poolable, distill_poolable, cost_optimize_routing, distill_policy, tare_policy, tare_model, tare_training`
+RETURNING cache_poolable, distill_poolable, cost_optimize_routing, distill_policy, tare_policy, tare_model, tare_training,
+  (xmax = 0) AS inserted`
+
+// setAccountSQL records a workspace's type and kind of money (B59.6) on the registration that made it, and on no other:
+// the type never changes, and the kind changes only through economy.SetWorkspaceMoneyKind.
+const setAccountSQL = `UPDATE workspaces SET account_type = $2, money_kind = $3 WHERE id = $1`
 
 const updateLoggingPolicySQL = `UPDATE workspaces
 SET logging_policy = $2, updated_at = NOW()
@@ -187,6 +192,16 @@ type registerOptions struct {
 	// omitted body field from a declined one, which is exactly why declining at creation used to be
 	// inexpressible (the zero value was indistinguishable from silence, so the default won).
 	cachePoolable *bool
+	// accountType and moneyKind are a NEW workspace's type and kind of money (B59.6); unset, the column defaults
+	// (business and hybrid, what every workspace made before them is) stand.
+	accountType, moneyKind string
+}
+
+// WithAccount records a NEW workspace's type (business or personal) and kind of money (fiat, stablecoin or hybrid);
+// the caller checks them (economy.CheckAccountType, economy.CheckMoneyKind). Like WithCachePoolableChoice it applies
+// only when the workspace is new: registering an existing one never changes either.
+func WithAccount(accountType, moneyKind string) RegisterOption {
+	return func(o *registerOptions) { o.accountType, o.moneyKind = accountType, moneyKind }
 }
 
 // WithCachePoolableChoice records an EXPLICIT cross-tenant-pooling choice made at registration.
@@ -285,7 +300,7 @@ func (m *Manager) RegisterWorkspace(ctx context.Context, ws Workspace, opts ...R
 		// re-registration on a replica whose cache didn't hold the row — which would otherwise write
 		// the body's values into memory — cannot change consent even transiently. The persisted
 		// boundary holds in memory too.
-		var dbPoolable, dbDistillPoolable, dbCostOptimizeRouting, dbTareModel, dbTareTraining bool
+		var dbPoolable, dbDistillPoolable, dbCostOptimizeRouting, dbTareModel, dbTareTraining, inserted bool
 		var dbDistillPolicy, dbTarePolicy string
 		if err := m.pool.QueryRow(ctx, insertWorkspaceSQL,
 			stored.ID, stored.Name, stored.CachePrefix, stored.SpendLimitUSD,
@@ -293,8 +308,13 @@ func (m *Manager) RegisterWorkspace(ctx context.Context, ws Workspace, opts ...R
 			stored.MaxOutputTokens, stored.MaxInputTokens, stored.Active, string(stored.LoggingPolicy),
 			string(stored.DistillPolicy), stored.CachePoolable, stored.DistillPoolable, stored.CostOptimizeRouting,
 			string(stored.CompressionPolicy), string(stored.TarePolicy),
-		).Scan(&dbPoolable, &dbDistillPoolable, &dbCostOptimizeRouting, &dbDistillPolicy, &dbTarePolicy, &dbTareModel, &dbTareTraining); err != nil {
+		).Scan(&dbPoolable, &dbDistillPoolable, &dbCostOptimizeRouting, &dbDistillPolicy, &dbTarePolicy, &dbTareModel, &dbTareTraining, &inserted); err != nil {
 			return fmt.Errorf("workspace: insert: %w", err)
+		}
+		if inserted && (o.accountType != "" || o.moneyKind != "") {
+			if _, err := m.pool.Exec(ctx, setAccountSQL, stored.ID, orDefault(o.accountType, "business"), orDefault(o.moneyKind, "hybrid")); err != nil {
+				return fmt.Errorf("workspace: set its type and kind of money: %w", err)
+			}
 		}
 		if dbPoolable != stored.CachePoolable ||
 			dbDistillPoolable != stored.DistillPoolable ||
@@ -317,6 +337,14 @@ func (m *Manager) RegisterWorkspace(ctx context.Context, ws Workspace, opts ...R
 		}
 	}
 	return nil
+}
+
+// orDefault is s, or def when s is "".
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // SetMaxStaleness configures the fail-closed bound: once the in-memory cache has

@@ -289,8 +289,16 @@ func (s *DualTokenStore) CreateAgent(ctx context.Context, workspaceID, name, own
 }
 
 // CreateAgentOfKind creates an agent that is kind — fiat, crypto or both — and opens its wallets (B48.1); its fiat
-// wallet is in fiat, EUR when "". colour and face, when not "", are its face (B57.10); Lens picks what is "".
+// wallet is in fiat, EUR when "". colour and face, when not "", are its face (B57.10); Lens picks what is "". A kind
+// of "" is the one the workspace's kind of money gives a new agent, and one it does not allow is refused (B59.6).
 func (s *DualTokenStore) CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (Agent, error) {
+	if kind == "" && s.pool != nil {
+		wsKind, err := workspaceMoneyKind(ctx, s.pool, workspaceID)
+		if err != nil {
+			return Agent{}, err
+		}
+		kind = agentKindOf(wsKind)
+	}
 	fiat, err := checkWalletKind(kind, fiat)
 	if err != nil {
 		return Agent{}, err
@@ -348,6 +356,10 @@ func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserI
 	}
 	if !plans.Within(n+1, plan.Agents) {
 		return Agent{}, plan.RefuseCount(plans.Current(), "agents", plan.Agents)
+	}
+	// B59.6: the workspace's kind of money is the limit for its agents' kinds; a change of it takes the same lock.
+	if err := checkAgentWalletKind(ctx, tx, workspaceID, kind); err != nil {
+		return Agent{}, err
 	}
 	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{}, OwnerUserID: ownerUserID, Kind: "agent", WalletKind: kind, FiatCurrency: fiat}
 	// A colour or face left NULL is picked by the insert's trigger (0360).
