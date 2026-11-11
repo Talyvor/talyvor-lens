@@ -43,6 +43,7 @@ import (
 	"github.com/talyvor/lens/internal/ap2"
 	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/approvalchat"
+	"github.com/talyvor/lens/internal/areas"
 	"github.com/talyvor/lens/internal/attest"
 	"github.com/talyvor/lens/internal/attribution"
 	"github.com/talyvor/lens/internal/audit"
@@ -2565,6 +2566,8 @@ func run() error {
 	// CREDITS LENS. Only with the flag off is the serve path byte-identical to capture-only.
 	p.SetPatternEarn(patternMiner, func() bool { return cfg.PatternEarningEnabled })
 
+	// B59.1 — the areas each workspace has; every area is off until the operator switches it on.
+	areaStore := areas.NewStore(pool)
 	r := chi.NewRouter()
 	// U3 master economy kill-switch: the single chokepoint for economy-route
 	// registration. econ.{get,post,del} register only when cfg.EconomyEnabled;
@@ -2826,6 +2829,8 @@ func run() error {
 	r.Get("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsGetHandler(workspaceRateLimits)))
 	r.Put("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsPutHandler(workspaceRateLimits)))
 	r.Delete("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsDeleteHandler(workspaceRateLimits)))
+	// B59.1 — the operator switches one area on or off for one workspace, recorded in the operator audit trail.
+	r.Put("/v1/admin/workspaces/{wsID}/areas/{area}", requireAdmin(authManager, newAreaSwitchHandler(areaStore)))
 	// B27.28 — the operator audit trail: the web app records each operator action on its moderator key
 	// (naming the operator), operators read it back filtered or as CSV. Append-only in the database (0182).
 	// operator_audit_handler.go.
@@ -3171,6 +3176,8 @@ func run() error {
 		// any valid workspace key could act on any {wsID} in the path — read or
 		// rewrite another tenant's config/budgets and mint API keys for it.
 		authed.Use(workspaceIsolationMiddleware)
+		// B59.1 — a route of an area the workspace does not have answers 404, as if it were not there.
+		authed.Use(areaGate(areaStore))
 
 		apiServer.MountAuthenticated(authed)
 
@@ -3700,6 +3707,7 @@ func run() error {
 
 		// B28.452: a chat shared from Chat as a link, kept until the link is turned off.
 		mountChatShareRoutes(authed, pool)
+		mountAreaRoutes(authed, areaStore) // B59.1
 
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider
