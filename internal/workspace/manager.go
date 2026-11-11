@@ -178,6 +178,10 @@ RETURNING cache_poolable, distill_poolable, cost_optimize_routing, distill_polic
 // the type never changes, and the kind changes only through economy.SetWorkspaceMoneyKind.
 const setAccountSQL = `UPDATE workspaces SET account_type = $2, money_kind = $3 WHERE id = $1`
 
+// setProfileSQL records a workspace's sign-up country and registration number (B59.40) on the registration that made it,
+// and on no other.
+const setProfileSQL = `UPDATE workspaces SET country = $2, registration_number = $3 WHERE id = $1`
+
 const updateLoggingPolicySQL = `UPDATE workspaces
 SET logging_policy = $2, updated_at = NOW()
 WHERE id = $1`
@@ -195,6 +199,8 @@ type registerOptions struct {
 	// accountType and moneyKind are a NEW workspace's type and kind of money (B59.6); unset, the column defaults
 	// (business and hybrid, what every workspace made before them is) stand.
 	accountType, moneyKind string
+	// country and registrationNumber are a NEW workspace's sign-up profile (B59.40); unset, they stay "".
+	country, registrationNumber string
 }
 
 // WithAccount records a NEW workspace's type (business or personal) and kind of money (fiat, stablecoin or hybrid);
@@ -202,6 +208,12 @@ type registerOptions struct {
 // only when the workspace is new: registering an existing one never changes either.
 func WithAccount(accountType, moneyKind string) RegisterOption {
 	return func(o *registerOptions) { o.accountType, o.moneyKind = accountType, moneyKind }
+}
+
+// WithSignupProfile records a NEW workspace's sign-up country and registration number; the caller checks them
+// (economy.CheckSignupProfile). Like WithAccount it applies only when the workspace is new.
+func WithSignupProfile(country, registrationNumber string) RegisterOption {
+	return func(o *registerOptions) { o.country, o.registrationNumber = country, registrationNumber }
 }
 
 // WithCachePoolableChoice records an EXPLICIT cross-tenant-pooling choice made at registration.
@@ -314,6 +326,11 @@ func (m *Manager) RegisterWorkspace(ctx context.Context, ws Workspace, opts ...R
 		if inserted && (o.accountType != "" || o.moneyKind != "") {
 			if _, err := m.pool.Exec(ctx, setAccountSQL, stored.ID, orDefault(o.accountType, "business"), orDefault(o.moneyKind, "hybrid")); err != nil {
 				return fmt.Errorf("workspace: set its type and kind of money: %w", err)
+			}
+		}
+		if inserted && (o.country != "" || o.registrationNumber != "") {
+			if _, err := m.pool.Exec(ctx, setProfileSQL, stored.ID, o.country, o.registrationNumber); err != nil {
+				return fmt.Errorf("workspace: set its sign-up profile: %w", err)
 			}
 		}
 		if dbPoolable != stored.CachePoolable ||
