@@ -298,7 +298,12 @@ func (s *DualTokenStore) spendLXCForAgent(ctx context.Context, scopedKeyID, work
 		return fmt.Errorf("economy: spend claim: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // idempotent replay — already debited under this request_id
+		// Idempotent replay — already debited under this request_id. Counted (B58.3): the debit may now pay for
+		// this request's answer, so another request's release must not give it back.
+		if _, err := tx.Exec(ctx, `UPDATE lxc_spend_claims SET replays = replays + 1 WHERE request_id = $1`, requestID); err != nil {
+			return fmt.Errorf("economy: count spend replay: %w", err)
+		}
+		return tx.Commit(ctx)
 	}
 
 	// (2) Ensure + LOCK the sub-budget row (FOR UPDATE serializes concurrent debits for this agent).

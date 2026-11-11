@@ -133,3 +133,33 @@ func TestB583_TheSweeperGivesBackOnlyADebitNothingWasServedFor(t *testing.T) {
 		t.Errorf("the workspace paid %d in all, want 400000 for the four debits that stand", bal0-bal)
 	}
 }
+
+// Two requests under one Idempotency-Key share one debit: the second is a replay and may be answering on it, so
+// the first one's release gives nothing back; if neither answer was served, the sweeper does.
+func TestB583_AReplayedDebitIsGivenBackOnlyByTheSweeper(t *testing.T) {
+	s, ws, key, agentID := b583Agent(t)
+	ctx := context.Background()
+	bal0, agent0 := b583Books(t, s, ws, agentID)
+	meta := AgentDebitMeta{RequestID: "q-shared", Question: true}
+	for range 2 { // the first try, and its retry replaying the same claim
+		if err := s.SpendLXCForAgent(ctx, key, ws, "shared", 100_000, "pre-serve estimate", meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ReleaseAgentDebit(ctx, ws, "shared", "upstream error"); err != nil {
+		t.Fatal(err)
+	}
+	if bal, agent := b583Books(t, s, ws, agentID); bal != bal0-100_000 || agent != agent0-100_000 {
+		t.Errorf("after a release under a replay: balance %d, agent %d — want the debit to stand (%d, %d)",
+			bal, agent, bal0-100_000, agent0-100_000)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE lxc_spend_claims SET created_at = now() - interval '1 hour'`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ReleaseStrandedAgentDebits(ctx, 15*time.Minute); err != nil || n != 1 {
+		t.Fatalf("swept %d, %v — want 1", n, err)
+	}
+	if bal, agent := b583Books(t, s, ws, agentID); bal != bal0 || agent != agent0 {
+		t.Errorf("after the sweep: balance %d, agent %d — want %d and %d", bal, agent, bal0, agent0)
+	}
+}

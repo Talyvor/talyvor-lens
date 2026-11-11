@@ -40,7 +40,7 @@ func (s *DualTokenStore) SettleAgentDebit(ctx context.Context, workspaceID, debi
 	var out AgentDebitSettlement
 	err := retryLocks(ctx, func() error { // B35.2: a settle Postgres cancels on a lock runs again
 		var err error
-		out, err = s.settleAgentDebit(ctx, workspaceID, debitKey, deliveredLXC, meta, "")
+		out, err = s.settleAgentDebit(ctx, workspaceID, debitKey, deliveredLXC, meta, "", false)
 		return err
 	})
 	return out, err
@@ -50,13 +50,19 @@ func (s *DualTokenStore) SettleAgentDebit(ctx context.Context, workspaceID, debi
 // question nothing was served for (B58.3): its settle to nothing, so the same rows reverse it (lxc_ledger, the
 // fee, agent_postings) and the same claim makes it once per debit — a second release, or a release after a
 // settle, moves nothing. reason is written on the refund row. The release frees debitKey: a retry under the same
-// Idempotency-Key is booked and charged as new, never served on the debit given back.
+// Idempotency-Key is booked and charged as new, never served on the debit given back. A debit an Idempotency-Key
+// retry was served on is not given back here — that retry may be answering on it — but by the sweeper.
 func (s *DualTokenStore) ReleaseAgentDebit(ctx context.Context, workspaceID, debitKey, reason string) error {
+	return s.releaseAgentDebit(ctx, workspaceID, debitKey, reason, false)
+}
+
+// releaseAgentDebit is ReleaseAgentDebit; swept gives back a replayed debit too (ReleaseStrandedAgentDebits).
+func (s *DualTokenStore) releaseAgentDebit(ctx context.Context, workspaceID, debitKey, reason string, swept bool) error {
 	if reason == "" {
 		reason = "nothing was served"
 	}
 	return retryLocks(ctx, func() error {
-		_, err := s.settleAgentDebit(ctx, workspaceID, debitKey, 0, AgentDebitMeta{}, reason)
+		_, err := s.settleAgentDebit(ctx, workspaceID, debitKey, 0, AgentDebitMeta{}, reason, swept)
 		return err
 	})
 }
@@ -108,7 +114,7 @@ func (s *DualTokenStore) ReleaseStrandedAgentDebits(ctx context.Context, olderTh
 	}
 	n := 0
 	for _, d := range debits {
-		if err := s.ReleaseAgentDebit(ctx, d.workspaceID, d.key, "stranded debit swept: no answer was served"); err != nil {
+		if err := s.releaseAgentDebit(ctx, d.workspaceID, d.key, "stranded debit swept: no answer was served", true); err != nil {
 			return n, err
 		}
 		n++
@@ -117,8 +123,8 @@ func (s *DualTokenStore) ReleaseStrandedAgentDebits(ctx context.Context, olderTh
 }
 
 // settleAgentDebit is one attempt of SettleAgentDebit, in one transaction. A non-empty release gives the debit
-// back in full (ReleaseAgentDebit) and says why on its refund row.
-func (s *DualTokenStore) settleAgentDebit(ctx context.Context, workspaceID, debitKey string, deliveredLXC int64, meta AgentDebitMeta, release string) (AgentDebitSettlement, error) {
+// back in full (ReleaseAgentDebit) and says why on its refund row; swept lets it give back a replayed debit.
+func (s *DualTokenStore) settleAgentDebit(ctx context.Context, workspaceID, debitKey string, deliveredLXC int64, meta AgentDebitMeta, release string, swept bool) (AgentDebitSettlement, error) {
 	var out AgentDebitSettlement
 	if workspaceID == "" || debitKey == "" {
 		return out, errors.New("economy: agent debit settle requires workspace_id, debit key")
@@ -137,10 +143,13 @@ func (s *DualTokenStore) settleAgentDebit(ctx context.Context, workspaceID, debi
 
 	// The pre-serve debit's claim is the estimate that was charged — from the row, not from the caller.
 	// So is the platform fee's rate (B32.11): the estimate was debited its fee at it.
+	// FOR UPDATE: a release judges the claim's replays against an Idempotency-Key retry counting itself in (B58.3).
 	var scopedKeyID, question string
 	var estimate, bps int64
-	err = tx.QueryRow(ctx, `SELECT scoped_key_id, lxc_amount, platform_fee_bps, COALESCE(question_id, '') FROM lxc_spend_claims WHERE request_id = $1`, debitKey).
-		Scan(&scopedKeyID, &estimate, &bps, &question)
+	var replays int
+	err = tx.QueryRow(ctx, `SELECT scoped_key_id, lxc_amount, platform_fee_bps, COALESCE(question_id, ''), replays
+		FROM lxc_spend_claims WHERE request_id = $1 FOR UPDATE`, debitKey).
+		Scan(&scopedKeyID, &estimate, &bps, &question, &replays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if release != "" {
 			return out, nil // released already, or never booked: nothing to give back
@@ -149,6 +158,9 @@ func (s *DualTokenStore) settleAgentDebit(ctx context.Context, workspaceID, debi
 	}
 	if err != nil {
 		return out, fmt.Errorf("economy: read agent debit claim: %w", err)
+	}
+	if release != "" && replays > 0 && !swept {
+		return out, nil // a retry may be answering on this debit: it settles it, or the sweeper gives it back
 	}
 	if meta.RequestID == "" {
 		meta.RequestID = question // a release knows its question from the claim (B58.3)
