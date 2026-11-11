@@ -163,7 +163,8 @@ import (
 // B48.1 — an agent is fiat, crypto or both, and owns one wallet of each kind it is (agent_wallet_kinds.go):
 //
 //	POST /v1/workspaces/{wsID}/agents  {"name", "wallet_kind"?: "fiat"|"crypto"|"both", "fiat_currency"?: "GBP"|"EUR"|"USD"}
-//	                                                     create an agent of a kind (default crypto; fiat wallet in EUR)
+//	                                                     create an agent of a kind (default the workspace's, B59.6;
+//	                                                     fiat wallet in EUR); 409 wrong_money_kind outside it
 //	GET  /v1/workspaces/{wsID}/agents/{id}/wallets       its wallets, their balances and how to pay into each
 //	PUT  /v1/workspaces/{wsID}/agents/{id}/wallet-kind  {"wallet_kind", "fiat_currency"?}   add or remove a kind:
 //	                                                     409 while a wallet it would close holds money
@@ -363,7 +364,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			Owner string `json:"owner_user_id"` // an admin credential names the person; anyone else owns what they create
 			// B28.29: the rule template it starts from; the agent is created with exactly its rules.
 			Template string `json:"template"`
-			// B48.1: fiat, crypto (the default) or both, and the currency of its fiat wallet.
+			// B48.1: fiat, crypto or both, and the currency of its fiat wallet; left out, the kind the workspace's
+			// kind of money gives a new agent (B59.6).
 			WalletKind   string `json:"wallet_kind"`
 			FiatCurrency string `json:"fiat_currency"`
 			// B57.10: its face; Lens picks whichever is left out.
@@ -386,10 +388,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				owner = in.Owner
 			}
 		}
-		if in.WalletKind == "" {
-			in.WalletKind = economy.WalletKindCrypto
-		}
 		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency, in.Colour, in.Face)
+		if writeMoneyKindRefusal(w, err) { // B59.6: a kind the workspace's kind of money does not allow
+			return
+		}
 		if errors.Is(err, economy.ErrWalletKind) || errors.Is(err, economy.ErrAgentDetails) {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -549,6 +551,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	})
 	writeWallets := func(w http.ResponseWriter, out economy.AgentWallets, err error) {
 		switch {
+		case writeMoneyKindRefusal(w, err): // B59.6
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrWalletKind):

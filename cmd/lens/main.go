@@ -4971,6 +4971,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountWorkspaceMoneyKindRoutes(authed, dualToken)                                // B59.6
 		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
 		mountConnectorOwnerRoutes(authed, connectorGrantStore, dualToken)               // B41.178
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
