@@ -70,6 +70,7 @@ import (
 
 const (
 	maxBodyBytes                = 4 << 20 // 4 MiB
+	maxNodeResponseBytes        = 8 << 20 // a node's /inference answer; past it the request falls through
 	openAIChatURL               = "https://api.openai.com/v1/chat/completions"
 	anthropicMessageURL         = "https://api.anthropic.com/v1/messages"
 	googleGenerativeLanguageURL = "https://generativelanguage.googleapis.com"
@@ -2463,7 +2464,7 @@ func (p *Proxy) tryNodeRouting(
 		return false
 	}
 	var nr nodeInferResp
-	if err := json.NewDecoder(resp.Body).Decode(&nr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxNodeResponseBytes)).Decode(&nr); err != nil { // an answer past the cap fails to decode and falls through
 		slog.Warn("node-autoroute: decode failed, falling through", slog.String("err", err.Error()))
 		return false
 	}

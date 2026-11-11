@@ -55,6 +55,8 @@ const (
 	rpcErrVersion      = -32022 // 2026-07-28 UnsupportedProtocolVersion
 
 	metaVersion = "io.modelcontextprotocol/protocolVersion"
+
+	maxRPCBody = 4 << 20 // one JSON-RPC message; past it /mcp answers 413
 )
 
 // pgxDB is the subset of *pgxpool.Pool the MCP tools need. nil pool is
@@ -213,7 +215,14 @@ func (s *Server) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	var req rpcRequest
 	var resp rpcResponse
-	err := json.NewDecoder(r.Body).Decode(&req)
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRPCBody)).Decode(&req)
+	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		body, _ := json.Marshal(rpcErr(nil, rpcErrInvalidReq, fmt.Sprintf("Request too large: at most %d bytes", maxRPCBody)))
+		_, _ = w.Write(append(body, '\n'))
+		return
+	}
 	header, modern := r.Header.Get("MCP-Protocol-Version"), req.metaVersion()
 	switch {
 	case err != nil:

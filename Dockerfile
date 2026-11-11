@@ -2,7 +2,7 @@
 
 # Every base is pinned by its multi-arch index digest, so a re-pushed tag cannot change what we
 # build or ship without a commit (B50.5). Bump the tag and the digest together.
-FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
+FROM golang:1.26.11-alpine3.24@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS builder
 WORKDIR /src
 
 RUN apk add --no-cache git ca-certificates
