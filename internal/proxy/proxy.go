@@ -1258,6 +1258,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				"violations": gr.Violations,
 				"risk_score": gr.RiskScore,
 			})
+			p.releaseReservation(ctx, "input guardrail block") // B58.3: nothing was served
 			return
 		}
 		for _, v := range gr.Violations {
@@ -1547,6 +1548,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		metrics.ModalityUnsupported()
 		writeError(w, http.StatusUnprocessableEntity,
 			"streaming request contains "+modSet.Label()+" content but model "+model+" does not support it")
+		p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 		return
 	}
 	// Output guardrails (Upgrade 13) can't inspect an in-flight stream. By
@@ -1769,6 +1771,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				metrics.ModalityUnsupported()
 				writeError(w, http.StatusUnprocessableEntity,
 					"request contains "+modSet.Label()+" content but no configured "+cfg.ProviderName()+" model supports it")
+				p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 				return
 			}
 			w.Header().Set("X-Talyvor-Vision-Redirect", upstreamModel+"→"+capable)
@@ -1780,6 +1783,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			metrics.ModalityUnsupported()
 			writeError(w, http.StatusUnprocessableEntity,
 				"request contains "+modSet.Label()+" content but the requested model "+model+" does not support it")
+			p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 			return
 		}
 	}
@@ -1818,6 +1822,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			if rerr != nil {
 				metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "error").Inc()
 				writeError(w, http.StatusBadGateway, "rebuild request body: "+rerr.Error())
+				p.releaseReservation(ctx, "request body not rebuilt") // B58.3: nothing was served
 				return
 			}
 			streamBody = rb
@@ -1856,6 +1861,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		if oerr != nil {
 			writeError(w, http.StatusBadRequest, oerr.Error())
 			metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "stream_unsupported").Inc()
+			p.releaseReservation(ctx, "stream unsupported") // B58.3: nothing was served
 			return
 		}
 		serr := sh.serve(w, r, cfg.ProviderName(), model, prompt, cachePrompt, streamBody, piiDetected, sc, ops)
@@ -1892,6 +1898,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	if err != nil {
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "error").Inc()
 		writeError(w, http.StatusBadGateway, "rebuild request body: "+err.Error())
+		p.releaseReservation(ctx, "request body not rebuilt") // B58.3: nothing was served
 		return
 	}
 

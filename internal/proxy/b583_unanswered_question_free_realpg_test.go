@@ -22,11 +22,19 @@ import (
 
 func b583Ask(t *testing.T, p *Proxy, id string, stream bool) *flushRecorder {
 	t.Helper()
+	return b583AskWith(t, p, id, stream, "")
+}
+
+func b583AskWith(t *testing.T, p *Proxy, id string, stream bool, idempotencyKey string) *flushRecorder {
+	t.Helper()
 	body := fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":%q}],"stream":%t}`, b2313Content(0), stream)
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talyvor-Workspace", b2313WS)
 	req.Header.Set("X-Talyvor-Request-ID", id)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	req = req.WithContext(auth.WithAuthContext(req.Context(), &auth.AuthContext{APIKeyID: b2313Key, WorkspaceID: b2313WS}))
 	w := newFlushRecorder()
 	p.HandleOpenAI(w, req)
@@ -112,5 +120,27 @@ func TestB583_ADebitThatCommittedAfterItsCallGaveUpIsNeverAnsweredNothingWasChar
 				}
 			}
 		})
+	}
+}
+
+// A release gives the debit's key up: the client's retry under the same Idempotency-Key is answered and charged
+// for its answer, never served on the debit that was given back.
+func TestB583_ARetryAfterAnUnansweredQuestionIsChargedForItsAnswer(t *testing.T) {
+	delivered := settleULXC(alerts.CostUSD("gpt-4o", 10000, 100))
+	p, _, pool, agentID := b2313Setup(t, false, 10000, 100, nil)
+	served := p.openAIURL
+	down := httptest.NewServer(http.NotFoundHandler())
+	p.openAIURL = down.URL
+	down.Close()
+	if w := b583AskWith(t, p, "first-try", false, "retry-me"); w.Code == http.StatusOK {
+		t.Fatalf("status 200; the upstream was meant to be down: %s", w.Body.String())
+	}
+	p.openAIURL = served
+	if w := b583AskWith(t, p, "second-try", false, "retry-me"); w.Code != http.StatusOK {
+		t.Fatalf("the retry: status %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	_, net, spent, _ := b2313Books(t, pool, agentID)
+	if net != -delivered || spent != delivered {
+		t.Errorf("one answer: ledger net %d, agent spent %d — want −%d and %d", net, spent, delivered, delivered)
 	}
 }

@@ -51,6 +51,7 @@ func agentAllocHarness(t *testing.T) (*Proxy, *economy.DualTokenStore, *pgxpool.
 		`CREATE TABLE IF NOT EXISTS lxc_spend_claims (request_id TEXT PRIMARY KEY, scoped_key_id TEXT NOT NULL,
 			lxc_amount BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`, // BIGINT µLXC (prod 0083)
 		`ALTER TABLE lxc_spend_claims ADD COLUMN IF NOT EXISTS platform_fee_bps INTEGER NOT NULL DEFAULT 0`, // 0197 (B32.11)
+		`ALTER TABLE lxc_spend_claims ADD COLUMN IF NOT EXISTS question_id TEXT`,                            // 0374 (B58.3)
 		// 0158: the LXC balance writer reads the workspace's open holds.
 		`CREATE TABLE IF NOT EXISTS lxc_reservations (reservation_id TEXT PRIMARY KEY, scoped_key_id TEXT NOT NULL,
 			workspace_id TEXT NOT NULL, held_ulxc BIGINT NOT NULL, settled_ulxc BIGINT,

@@ -51,6 +51,10 @@ type agentSpender interface {
 	ReleaseLXCReservation(ctx context.Context, reservationID, reason string) error
 	// B23.13: with reservations off, settles the pre-serve debit to the delivered cost within the agent's limit.
 	SettleAgentDebit(ctx context.Context, workspaceID, debitKey string, deliveredLXC int64, meta economy.AgentDebitMeta) (economy.AgentDebitSettlement, error)
+	// B58.3: gives the pre-serve debit back for a question nothing was served for, and tells whether a debit
+	// call that failed committed all the same.
+	ReleaseAgentDebit(ctx context.Context, workspaceID, debitKey, reason string) error
+	AgentDebitBooked(ctx context.Context, debitKey string) (bool, error)
 }
 
 // SetAgentSpender wires the agent-allocation debit + its enable flag, and mints the process-start salt used
@@ -127,6 +131,7 @@ type agentDebitedCtxKey struct{}
 
 // agentDebit is the pre-serve debit a request's charge was booked under, for the post-serve settle (B23.13).
 type agentDebit struct {
+	workspaceID    string
 	debitKey       string
 	requestedModel string
 	requestID      string
@@ -176,18 +181,37 @@ func (p *Proxy) agentAllocate(ctx context.Context, apiKeyID, wsID, model, prompt
 	// so the ledger is readable and joins to token_events. NEVER prompt text/hash/embedding (0055 immutable).
 	hctx, cancel := context.WithTimeout(ctx, preServeHoldTimeout)
 	err = p.agentSpender.SpendLXCForAgent(hctx, apiKeyID, wsID, debitKey, estLXC, "proof-of-agent-allocation: pre-serve estimate debit",
-		economy.AgentDebitMeta{RequestedModel: model, RequestID: requestID})
+		economy.AgentDebitMeta{RequestedModel: model, RequestID: requestID, Question: true})
 	cancel()
+	debited := context.WithValue(ctx, agentDebitedCtxKey{}, agentDebit{workspaceID: wsID, debitKey: debitKey, requestedModel: model, requestID: requestID})
 	if err == nil {
 		// debited ⇒ allow (serve)
-		return context.WithValue(ctx, agentDebitedCtxKey{}, agentDebit{debitKey: debitKey, requestedModel: model, requestID: requestID}), nil
+		return debited, nil
 	}
 	if !expectedAgentRefusal(err) {
 		// Unexpected (e.g. transient DB) error — fail CLOSED to keep the ceiling airtight.
 		slog.Warn("economy: agent debit failed (failing closed)", slog.String("agent", apiKeyID), slog.String("err", err.Error()))
+		// B58.3: a debit whose call failed may have committed before its context ran out. Booked, the question
+		// is paid for, so it is served and settled; unknown, Lens never says nothing was charged, and the sweeper
+		// gives back a debit nothing was served for.
+		lctx, lcancel := detachBounded(ctx)
+		booked, lerr := p.agentSpender.AgentDebitBooked(lctx, debitKey)
+		lcancel()
+		if lerr != nil {
+			slog.Error("economy: agent debit outcome unknown (a booked debit is swept back if nothing is served)",
+				slog.String("agent", apiKeyID), slog.String("debit_key", debitKey), slog.String("err", lerr.Error()))
+			return ctx, errAgentDebitUnknown
+		}
+		if booked {
+			return debited, nil
+		}
 	}
 	return ctx, err // ErrSubBudgetExceeded / ErrInsufficientLXC / a rule / any error ⇒ block
 }
+
+// errAgentDebitUnknown: a debit call failed and Lens could not read whether it committed (B58.3). Answered as a
+// failure, never as a refusal that says nothing was charged.
+var errAgentDebitUnknown = errors.New("proxy: agent debit outcome unknown")
 
 // expectedAgentRefusal: a refusal the agent's balance or rules make, as opposed to a failure.
 func expectedAgentRefusal(err error) bool {
@@ -494,16 +518,27 @@ func (p *Proxy) settleReservationPooled(ctx context.Context, chargedUSD float64,
 }
 
 // releaseReservation REFUNDS the held reservation in full (if any) — an own-cache hit (no upstream call, no
-// contributor ⇒ free) or a serve that delivered nothing. No-op without a reservation on the context.
+// contributor ⇒ free) or a serve that delivered nothing — and, with reservations off, gives back the pre-serve
+// agent debit of a question nothing was served for (B58.3). No-op without either on the context; a debit
+// already settled is not given back.
 func (p *Proxy) releaseReservation(ctx context.Context, reason string) {
-	h, ok := reservationFrom(ctx)
-	if !ok || p.agentSpender == nil {
+	h, held := reservationFrom(ctx)
+	d, debited := ctx.Value(agentDebitedCtxKey{}).(agentDebit)
+	if (!held && !debited) || p.agentSpender == nil {
 		return
 	}
 	ctx, cancel := detachBounded(ctx) // B27.4, B39.4: see settleReservationBasis
 	defer cancel()
-	if err := p.agentSpender.ReleaseLXCReservation(ctx, h.reservationID, reason); err != nil {
-		slog.Warn("economy: reservation release failed (hold will be swept/refunded)",
-			slog.String("reservation", h.reservationID), slog.String("err", err.Error()))
+	if held {
+		if err := p.agentSpender.ReleaseLXCReservation(ctx, h.reservationID, reason); err != nil {
+			slog.Warn("economy: reservation release failed (hold will be swept/refunded)",
+				slog.String("reservation", h.reservationID), slog.String("err", err.Error()))
+		}
+	}
+	if debited {
+		if err := p.agentSpender.ReleaseAgentDebit(ctx, d.workspaceID, d.debitKey, reason); err != nil {
+			slog.Warn("economy: agent debit release failed (the debit will be swept/refunded)",
+				slog.String("request_id", d.requestID), slog.String("debit_key", d.debitKey), slog.String("err", err.Error()))
+		}
 	}
 }
