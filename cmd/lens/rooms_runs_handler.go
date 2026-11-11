@@ -152,12 +152,10 @@ func mountRoomRunRoutes(r chi.Router, store *rooms.Store, lens, wallet http.Hand
 
 // writeRoomRunErr answers a run's refusal: the wallet's rules and the marketplace's first, then the room's.
 func writeRoomRunErr(w http.ResponseWriter, err error) {
-	var need *economy.ApprovalNeededError
 	var ran *runError
 	var refusal *rooms.ScanRefusal
 	switch {
-	case errors.As(err, &need):
-		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(err.Error()), "approval_id": need.ApprovalID})
+	case writePendingApproval(w, err):
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, workspace.ErrMoneyWall), errors.Is(err, rooms.ErrForbidden),
 		errors.Is(err, market.ErrNotSoldHere):
 		writeJSONErr(w, http.StatusForbidden, err.Error())

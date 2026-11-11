@@ -1757,14 +1757,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			ctx = economy.WithConnectClient(ctx, connect.ConnectClientID)
 		}
 		pay, err := bank.PayAgent(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
-		var need *economy.ApprovalNeededError
 		switch {
 		case errors.Is(err, economy.ErrConnectApprovalsWaiting):
 			writeJSONErr(w, http.StatusTooManyRequests, err.Error())
-		case connect != nil && connect.AuthMethod == auth.MethodConnect && errors.As(err, &need):
-			// The assistant is told it waits for the owner's passkey in Talyvor, and which approval it is.
-			writeJSONOK(w, http.StatusAccepted, map[string]any{"status": "pending_approval", "approval_id": need.ApprovalID,
-				"amount_ulxc": need.AmountULXC, "message": err.Error()})
+		case writePendingApproval(w, err):
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, errNoCompanyBill): // B17.15
@@ -1782,6 +1778,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, pay)
 		}
 	})
+}
+
+// writePendingApproval answers a request held for the owner (B58.2): 202 and the approval it filed, as fields, to
+// every caller of an agent's pay, a marketplace use or licence and a room's run. Nothing was posted; the caller
+// retries once the owner approves. False, having written nothing, when err is not a hold.
+func writePendingApproval(w http.ResponseWriter, err error) bool {
+	var need *economy.ApprovalNeededError
+	if !errors.As(err, &need) {
+		return false
+	}
+	writeJSONOK(w, http.StatusAccepted, map[string]any{"status": "pending_approval", "approval_id": need.ApprovalID,
+		"amount_ulxc": need.AmountULXC, "message": need.Error()})
+	return true
 }
 
 // declineReason carries what the owner wrote when declining (B55.18) on req's context; false, after a 400, when it goes
