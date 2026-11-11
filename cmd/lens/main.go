@@ -5192,6 +5192,10 @@ func run() error {
 			})
 		})
 
+		// B58.14: whether cross-workspace pooling is on for this deployment, and why not. The
+		// deployment's state only — never a workspace's setting — so any workspace may read it.
+		authed.Get("/v1/pooling", poolStateHandler(cfg, poolGate))
+
 		// Per-workspace CONSENT to cost-optimised routing on concrete (named)
 		// models. Default false: an explicitly named model is HONOURED exactly —
 		// never downgraded — unless the workspace opts in here (the founder's rule:
