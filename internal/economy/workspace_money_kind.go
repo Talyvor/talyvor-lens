@@ -148,6 +148,12 @@ func workspaceMoneyKind(ctx context.Context, q interface {
 	return kind, nil
 }
 
+// WorkspaceMoneyKind is workspaceID's kind of money; a workspace with no row is hybrid (B59.7: the kind a money route is
+// judged against).
+func (s *DualTokenStore) WorkspaceMoneyKind(ctx context.Context, workspaceID string) (string, error) {
+	return workspaceMoneyKind(ctx, s.pool, workspaceID)
+}
+
 // checkAgentWalletKind refuses an agent of walletKind in workspaceID unless its kind of money allows it.
 func checkAgentWalletKind(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
