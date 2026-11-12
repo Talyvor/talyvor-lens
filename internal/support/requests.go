@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -310,14 +311,15 @@ func (s *Store) Answer(ctx context.Context, id int64, state State, answer, actor
 	return out, nil
 }
 
-// secretColumn names the columns an export leaves out: what a key, a password or a sealed secret is kept as. The rest
-// of each row is the workspace's own.
-var secretColumn = regexp.MustCompile(`secret|hash|cipher|encrypt|password|private|_enc$|sealed`)
+// secretColumn names the columns an export leaves out: what a key, a password, a token or a sealed secret is kept as.
+// The rest of each row is the workspace's own.
+var secretColumn = regexp.MustCompile(`secret|hash|sha(1|256|512)|digest|cipher|encrypt|password|private|_enc$|sealed|` +
+	`credential|api_key|signing_key|refresh|access_token|token_ref|(^|_)otp(_|$)|recovery_code|nonce`)
 
 // Export writes request id's export of workspaceID as one JSON object: the workspace, when it was built, and
 // "tables", each table of the tenant data manifest that holds the workspace's rows, by name, with those rows. A row is
-// the workspace's when one of its workspace columns names it — the id itself for the tables keyed by it. Tables the
-// manifest marks not tenant scoped, and the columns secretColumn names, are left out. Refused with ErrNotReady until
+// the workspace's when its owner column names it (exportColumns). Tables the manifest marks not tenant scoped, any
+// other workspace's id in a row, and the columns secretColumn names, are left out. Refused with ErrNotReady until
 // Talyvor has marked the request done, and ErrNotFound for anything but this workspace's export request.
 func (s *Store) Export(ctx context.Context, w io.Writer, workspaceID string, id int64) error {
 	r, err := s.Get(ctx, workspaceID, id)
@@ -355,19 +357,15 @@ func (s *Store) WriteExport(ctx context.Context, w io.Writer, workspaceID string
 	}
 	first := true
 	for _, t := range tables {
-		keys, hidden, err := s.exportColumns(ctx, t, keyedByID[t])
+		owner, hidden, err := s.exportColumns(ctx, t, keyedByID[t])
 		if err != nil {
 			return err
 		}
-		if len(keys) == 0 {
-			continue // not in this schema, or reached only through a parent's cascade
-		}
-		where := make([]string, len(keys))
-		for i, k := range keys {
-			where[i] = pgx.Identifier{k}.Sanitize() + "::text = $1"
+		if owner == "" {
+			continue
 		}
 		rows, err := s.pool.Query(ctx, `SELECT (to_jsonb(t) - $2::text[])::text FROM `+pgx.Identifier{t}.Sanitize()+
-			` t WHERE `+strings.Join(where, " OR "), workspaceID, hidden)
+			` t WHERE `+pgx.Identifier{owner}.Sanitize()+`::text = $1`, workspaceID, hidden)
 		if err != nil {
 			return fmt.Errorf("support: export %s: %w", t, err)
 		}
@@ -406,26 +404,45 @@ func (s *Store) WriteExport(ctx context.Context, w io.Writer, workspaceID string
 	return err
 }
 
-// exportColumns is table's workspace columns — the ones whose name holds "workspace", and id for a table keyed by the
-// workspace — and the columns its export leaves out; none for a table this schema does not have.
-func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool) (keys, hidden []string, err error) {
+// exportColumns is the column naming the workspace that owns each of table's rows, and the columns its export leaves
+// out. The owner is workspace_id; id for a table keyed by the workspace; otherwise the table's one column whose name
+// holds "workspace". A table with two such columns and no workspace_id — two parties and no owner — is left out, as is
+// a table this schema does not have or one reached only through a parent's cascade: owner "". Every other workspace
+// column is left out of the rows, so an export never names another workspace.
+func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool) (owner string, hidden []string, err error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.attname FROM pg_attribute a WHERE a.attrelid = to_regclass($1)
 		AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`, pgx.Identifier{table}.Sanitize())
 	if err != nil {
-		return nil, nil, fmt.Errorf("support: export %s: %w", table, err)
+		return "", nil, fmt.Errorf("support: export %s: %w", table, err)
 	}
 	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, nil, fmt.Errorf("support: export %s: %w", table, err)
+		return "", nil, fmt.Errorf("support: export %s: %w", table, err)
 	}
+	var tenant []string
 	hidden = []string{}
 	for _, n := range names {
 		switch {
-		case strings.Contains(n, "workspace"), keyedByID && n == "id":
-			keys = append(keys, n)
+		case strings.Contains(n, "workspace"):
+			tenant = append(tenant, n)
 		case secretColumn.MatchString(n):
 			hidden = append(hidden, n)
 		}
 	}
-	return keys, hidden, nil
+	switch {
+	case keyedByID:
+		owner = "id"
+	case slices.Contains(tenant, "workspace_id"):
+		owner = "workspace_id"
+	case len(tenant) == 1:
+		owner = tenant[0]
+	default:
+		return "", nil, nil
+	}
+	for _, n := range tenant {
+		if n != owner {
+			hidden = append(hidden, n)
+		}
+	}
+	return owner, hidden, nil
 }

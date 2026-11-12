@@ -223,6 +223,16 @@ func TestB5927_RequestsFileAndListPerWorkspaceAndTheExportHoldsOnlyItsRows(t *te
 		t.Fatalf("the answer in the operator audit trail = %q %q (%v)", actor, detail, err)
 	}
 
+	// Two parties in one table: ws-b's payout to ws-a stays ws-b's, and ws-a's payout to ws-b is exported without
+	// naming ws-b.
+	for i, owners := range [][2]string{{wsB, wsA}, {wsA, wsB}} {
+		if _, err := pool.Exec(ctx, `INSERT INTO money_earnings_payouts (id, workspace_id, kind, source, recipient_workspace_id, amount_minor,
+			currency, funding, account_id, hold_account_id, status) VALUES ($1, $2, 'sale', 'b5927', $3, 100, 'EUR', 'test', 'macc_x', 'macc_y', 'held')`,
+			fmt.Sprintf("mep_b5927_%d_%s", i, stamp), owners[0], owners[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// The export: the owner's alone, and every row in it is ws-a's.
 	if code, body := call(member, http.MethodGet, exportPath, ""); code != http.StatusForbidden {
 		t.Fatalf("a member downloads the export = %d %s; want 403", code, body)
@@ -245,6 +255,9 @@ func TestB5927_RequestsFileAndListPerWorkspaceAndTheExportHoldsOnlyItsRows(t *te
 		if len(dump.Tables[want]) == 0 {
 			t.Fatalf("ws-a's export has no %s rows; tables: %d", want, len(dump.Tables))
 		}
+	}
+	if n := len(dump.Tables["money_earnings_payouts"]); n != 1 {
+		t.Fatalf("ws-a's export holds %d payouts; want only the one it owns", n)
 	}
 	if n := len(dump.Tables["workspace_requests"]); n != 5 {
 		t.Fatalf("ws-a's export holds %d requests; want its 5", n)
