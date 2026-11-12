@@ -11,6 +11,7 @@ import (
 	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // B59.6 — a workspace is Business or Personal, and Fiat only, Stablecoin and crypto only, or Hybrid
@@ -18,22 +19,30 @@ import (
 //
 //	GET /v1/workspaces/{wsID}/account              {"account_type", "money_kind", "country", "registration_number"}
 //	                                               the last two the sign-up profile (B59.40), "" when not given
-//	PUT /v1/workspaces/{wsID}/account/money-kind   {"money_kind"}   a single kind becomes hybrid at any time; hybrid
-//	                                               becomes a single kind only once the other side holds nothing: 409
-//	                                               wrong_money_kind, naming the balances to empty, otherwise
+//	POST /v1/workspaces/{wsID}/account/money-kind/challenge   {"money_kind"}   B59.46: the challenge changing to it
+//	                                               is signed over, and the passkeys that may sign it
+//	PUT /v1/workspaces/{wsID}/account/money-kind   {"money_kind", "assertion"}   a single kind becomes hybrid at any
+//	                                               time; hybrid becomes a single kind only once the other side holds
+//	                                               nothing: 409 wrong_money_kind, naming the balances to empty,
+//	                                               otherwise. The assertion is the owner's passkey or phone key over
+//	                                               that challenge: 403 without one, or with one over another
+//	                                               challenge, a used or an expired one, and the kind is unchanged
 //
 // The type has no route: it is set when the workspace is made (/v1/provision) and never changes. Mounted in the authed
 // group, so {wsID} is bound to the caller's credential; changing the kind takes the workspace's owner or an admin.
 
 type workspaceMoneyKindBank interface {
 	WorkspaceAccount(ctx context.Context, workspaceID string) (economy.WorkspaceAccount, error)
-	SetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, by string) (economy.WorkspaceAccount, error)
+	SetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, by string, a *passkey.Assertion) (economy.WorkspaceAccount, error)
+	MoneyKindChallenge(ctx context.Context, workspaceID, kind string) (challenge string, credentialIDs []string, err error)
 }
 
 func mountWorkspaceMoneyKindRoutes(r chi.Router, bank workspaceMoneyKindBank) {
 	write := func(w http.ResponseWriter, out economy.WorkspaceAccount, err error) {
 		switch {
 		case writeMoneyKindRefusal(w, err):
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrWorkspaceNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrMoneyKind):
@@ -48,9 +57,30 @@ func mountWorkspaceMoneyKindRoutes(r chi.Router, bank workspaceMoneyKindBank) {
 		out, err := bank.WorkspaceAccount(req.Context(), chi.URLParam(req, "wsID"))
 		write(w, out, err)
 	})
-	r.Put("/v1/workspaces/{wsID}/account/money-kind", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/account/money-kind/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			MoneyKind string `json:"money_kind"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.MoneyKind == "" {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"money_kind": "fiat"|"stablecoin"|"hybrid"}`)
+			return
+		}
+		c, creds, err := bank.MoneyKindChallenge(req.Context(), chi.URLParam(req, "wsID"), in.MoneyKind)
+		switch {
+		case errors.Is(err, economy.ErrWorkspaceNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrMoneyKind):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+		}
+	}))
+	r.Put("/v1/workspaces/{wsID}/account/money-kind", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			MoneyKind string             `json:"money_kind"`
+			Assertion *passkey.Assertion `json:"assertion"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.MoneyKind == "" {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"money_kind": "fiat"|"stablecoin"|"hybrid"}`)
@@ -60,7 +90,7 @@ func mountWorkspaceMoneyKindRoutes(r chi.Router, bank workspaceMoneyKindBank) {
 		if actx := auth.GetAuthContext(req.Context()); actx != nil {
 			by = actx.UserID
 		}
-		out, err := bank.SetWorkspaceMoneyKind(req.Context(), chi.URLParam(req, "wsID"), in.MoneyKind, by)
+		out, err := bank.SetWorkspaceMoneyKind(req.Context(), chi.URLParam(req, "wsID"), in.MoneyKind, by, in.Assertion)
 		write(w, out, err)
 	}))
 }
