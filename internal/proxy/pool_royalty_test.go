@@ -38,6 +38,8 @@ func (fundingSpender) ReleaseLXCReservation(context.Context, string, string) err
 func (fundingSpender) SettleAgentDebit(context.Context, string, string, int64, economy.AgentDebitMeta) (economy.AgentDebitSettlement, error) {
 	return economy.AgentDebitSettlement{}, nil
 }
+func (fundingSpender) ReleaseAgentDebit(context.Context, string, string, string) error { return nil }
+func (fundingSpender) AgentDebitBooked(context.Context, string) (bool, error)          { return false, nil }
 
 // wireFunding turns the reservation seam on so an agent-key dispatch is METERED (a real charge exists to
 // fund the royalty).
