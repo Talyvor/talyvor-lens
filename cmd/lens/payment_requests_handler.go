@@ -25,6 +25,8 @@ import (
 //	                                           hash, and the approval links (201; the same key and body again: 200, the
 //	                                           same request; the same key with another body: 409)
 //	GET  /v1/money/payment-requests?status=pending_approval — {"requests": […]} waiting for approval, newest first (B40.38)
+//	GET  /v1/money/payment-requests?status=decided — {"requests": […]} approved, cancelled or expired, each with its
+//	                                           decided_at, newest decision first, at most 50 (B57.148)
 //	GET  /v1/money/payment-requests/{id}       — its status
 //	POST /v1/money/payment-requests/{id}/cancel — cancelled
 //
@@ -55,6 +57,7 @@ type paymentRequestBank interface {
 	PreparePaymentRequest(ctx context.Context, workspaceID, by, idempotencyKey string, in economy.PaymentRequestIn) (economy.PaymentRequest, bool, error)
 	PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentRequest, error)
 	PendingPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]economy.PaymentRequest, error)
+	DecidedPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]economy.PaymentRequest, error)
 	CancelPaymentRequest(ctx context.Context, workspaceID, agentID, id, by string) (economy.PaymentRequest, error)
 	PrepareRequestApproval(ctx context.Context, workspaceID, id string, positions []int, reason string) (statement, challenge string, credentialIDs []string, err error)
 	ApprovePaymentRequest(ctx context.Context, workspaceID, id, by, statement string, a *passkey.Assertion) (economy.PaymentRequest, error)
@@ -144,11 +147,16 @@ func mountPaymentRequestRoutes(r chi.Router, bank paymentRequestBank) {
 		if !ok {
 			return
 		}
-		if req.URL.Query().Get("status") != "pending_approval" {
-			writeJSONErr(w, http.StatusBadRequest, "list with ?status=pending_approval")
+		list := bank.PendingPaymentRequests
+		switch req.URL.Query().Get("status") {
+		case "pending_approval":
+		case "decided":
+			list = bank.DecidedPaymentRequests
+		default:
+			writeJSONErr(w, http.StatusBadRequest, "list with ?status=pending_approval or ?status=decided")
 			return
 		}
-		prs, err := bank.PendingPaymentRequests(req.Context(), ws, agentID)
+		prs, err := list(req.Context(), ws, agentID)
 		if refuse(w, err) {
 			return
 		}
