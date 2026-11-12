@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -44,5 +45,22 @@ func TestCheck_RedisDownStillRefusesAbuseAndCountsTheError(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal) - before; got < 5 {
 		t.Errorf("lens_rate_limit_redis_errors_total rose by %v over 5 checks with Redis down; want at least 5", got)
+	}
+}
+
+// Once the in-memory windows are full, a new key is counted in one shared overflow window instead of growing
+// the map, so rotating addresses during an outage neither grows memory nor escapes the limit.
+func TestLocalWindows_FullMapCountsNewKeysTogether(t *testing.T) {
+	var lw localWindows
+	for i := 0; i < maxLocalWindows; i++ {
+		lw.incr(fmt.Sprintf("k%d", i), 60)
+	}
+	lw.incr("new-a", 60)
+	lw.incr("new-a", 60)
+	if n, _ := lw.incr("new-b", 60); n != 3 {
+		t.Errorf("third hit across two new keys counted %d; want 3 in the shared overflow window", n)
+	}
+	if got := len(lw.counts); got > maxLocalWindows+1 {
+		t.Errorf("map holds %d windows; want at most %d", got, maxLocalWindows+1)
 	}
 }

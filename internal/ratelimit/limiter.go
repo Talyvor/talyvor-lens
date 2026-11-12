@@ -31,6 +31,10 @@ type localWindows struct {
 	lastSweep time.Time
 }
 
+// maxLocalWindows caps localWindows so a caller rotating addresses during an outage cannot grow it without
+// bound; once it is full, every new key shares one overflow window of the same length.
+const maxLocalWindows = 100_000
+
 type localCount struct {
 	n       int
 	resetAt time.Time
@@ -44,13 +48,18 @@ func (lw *localWindows) incr(key string, secs int) (int, int) {
 	if lw.counts == nil {
 		lw.counts = map[string]*localCount{}
 	}
-	if now.Sub(lw.lastSweep) > time.Minute {
+	_, known := lw.counts[key]
+	full := !known && len(lw.counts) >= maxLocalWindows
+	if since := now.Sub(lw.lastSweep); since > time.Minute || (full && since > time.Second) {
 		for k, c := range lw.counts {
 			if !now.Before(c.resetAt) {
 				delete(lw.counts, k)
 			}
 		}
 		lw.lastSweep = now
+	}
+	if _, ok := lw.counts[key]; !ok && len(lw.counts) >= maxLocalWindows {
+		key = fmt.Sprintf("lens:rl:overflow:%d", secs)
 	}
 	c, ok := lw.counts[key]
 	if !ok || !now.Before(c.resetAt) {
