@@ -1,5 +1,5 @@
 // Package support is B59.27: what a workspace asks Talyvor for — support, a complaint, closing the account, an export
-// of its data, or deleting it — kept per workspace in workspace_requests (migration 0376).
+// of its data, or deleting it — kept per workspace in workspace_requests (migration 0377).
 //
 // Each request is received, in progress or done, with when and by whom it was filed, and reaches the operator's inbox.
 // A complaint has its reference from the moment it is filed. Closing the account is refused while any of its accounts

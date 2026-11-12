@@ -1,4 +1,4 @@
--- 0376: B59.27 — what a workspace asks Talyvor for: support, a complaint, closing the account, an export of its data,
+-- 0377: B59.27 — what a workspace asks Talyvor for: support, a complaint, closing the account, an export of its data,
 -- or deleting it. Each is received, in progress or done, with when and by whom it was filed, and reaches the
 -- operator's inbox (GET /v1/admin/requests). A complaint has its reference from the moment it is filed. A person at
 -- Talyvor answers each one and moves its state (PUT /v1/admin/requests/{id}, recorded in operator_audit in the same
