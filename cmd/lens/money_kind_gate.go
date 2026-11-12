@@ -231,6 +231,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/card-spends":    moneySideEither,
 	"/v1/money/card-spends/{}": moneySideEither,
 
+	// B59.22: card_challenges_handler.go, 3-D Secure challenges on agents' cards
+	"/v1/money/card-challenges": moneySideEither,
+
 	// money_coach_handler.go
 	"/v1/money/coach":     moneySideEither,
 	"/v1/money/coach/ask": moneySideEither,

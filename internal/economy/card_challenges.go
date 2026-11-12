@@ -98,7 +98,8 @@ func (s *DualTokenStore) ReceiveCardChallenge(ctx context.Context, partner strin
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('card_challenge:' || $1 || ':' || $2, 0))`, partner, c.ID); err != nil {
 		return CardChallenge{}, fmt.Errorf("economy: card challenge: %w", err)
 	}
-	if ch, err := cardChallenge(ctx, tx, `partner = $1 AND id = $2`, partner, c.ID); !errors.Is(err, ErrApprovalNotFound) {
+	if ch, err := cardChallenge(tx.QueryRow(ctx, `SELECT `+cardChallengeCols+` FROM money_card_challenges WHERE partner = $1 AND id = $2`,
+		partner, c.ID)); !errors.Is(err, ErrApprovalNotFound) {
 		return ch, err
 	}
 	if !c.ExpiresAt.After(time.Now()) {
@@ -162,7 +163,7 @@ func (s *DualTokenStore) SandboxCardChallenge(ctx context.Context, workspaceID, 
 	if err != nil {
 		return CardChallenge{}, err
 	}
-	return cardChallenge(ctx, s.pool, `partner = $1 AND id = $2`, partner, c.ID)
+	return cardChallenge(s.pool.QueryRow(ctx, `SELECT `+cardChallengeCols+` FROM money_card_challenges WHERE partner = $1 AND id = $2`, partner, c.ID))
 }
 
 // DecideCardChallenge decides the card challenge filed as approvalID in workspaceID with the owner's assertion a, by
@@ -175,7 +176,8 @@ func (s *DualTokenStore) DecideCardChallenge(ctx context.Context, workspaceID, a
 		return AgentApproval{}, fmt.Errorf("economy: card challenge: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ch, err := cardChallenge(ctx, tx, `approval_id = $1 AND workspace_id = $2 FOR UPDATE`, approvalID, workspaceID)
+	ch, err := cardChallenge(tx.QueryRow(ctx, `SELECT `+cardChallengeCols+` FROM money_card_challenges WHERE approval_id = $1 AND workspace_id = $2
+		FOR UPDATE`, approvalID, workspaceID))
 	if errors.Is(err, ErrApprovalNotFound) {
 		return AgentApproval{}, ErrNotCardChallenge
 	}
@@ -299,12 +301,10 @@ func (s *DualTokenStore) CardChallenges(ctx context.Context, workspaceID string)
 	return list, nil
 }
 
-// cardChallenge reads the one card challenge where holds; ErrApprovalNotFound when there is none.
-func cardChallenge(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, where string, args ...any) (CardChallenge, error) {
+// cardChallenge scans the card challenge row reads; ErrApprovalNotFound when there is none.
+func cardChallenge(row pgx.Row) (CardChallenge, error) {
 	var c CardChallenge
-	err := q.QueryRow(ctx, `SELECT `+cardChallengeCols+` FROM money_card_challenges WHERE `+where, args...).Scan(c.fields()...)
+	err := row.Scan(c.fields()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CardChallenge{}, ErrApprovalNotFound
 	}
