@@ -175,14 +175,15 @@ func mountConnectorPublicRoutes(r chi.Router, grants connectorGrants, bank agent
 	})
 }
 
-// mountConnectorOwnerRoutes is what the connect page calls, as the signed-in owner.
+// mountConnectorOwnerRoutes is what the connect page calls, as the signed-in owner. Approving gives the agent a key
+// through /oauth/token, so approve and deny take keyOwnerOnly, as minting a key directly does: no key decides (B50.41).
 func mountConnectorOwnerRoutes(r chi.Router, grants connectorGrants, bank agentBank) {
 	const base = "/v1/workspaces/{wsID}/connector-requests/{requestID}"
 	r.Get(base, func(w http.ResponseWriter, req *http.Request) {
 		p, err := grants.Pending(req.Context(), chi.URLParam(req, "requestID"))
 		writeConnectorAnswer(w, p, err)
 	})
-	r.Post(base+"/approve", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post(base+"/approve", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
 		var in struct {
 			AgentID string `json:"agent_id"`
@@ -198,7 +199,7 @@ func mountConnectorOwnerRoutes(r chi.Router, grants connectorGrants, bank agentB
 		to, err := grants.Decide(req.Context(), chi.URLParam(req, "requestID"), wsID, in.AgentID, true)
 		writeConnectorAnswer(w, map[string]string{"redirect_to": to}, err)
 	}))
-	r.Post(base+"/deny", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post(base+"/deny", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		to, err := grants.Decide(req.Context(), chi.URLParam(req, "requestID"), chi.URLParam(req, "wsID"), "", false)
 		writeConnectorAnswer(w, map[string]string{"redirect_to": to}, err)
 	}))
