@@ -695,21 +695,22 @@ func (s *DualTokenStore) GrantLXCUpTo(ctx context.Context, workspaceIDs []string
 		return 0, fmt.Errorf("economy: ensure lxc balance rows: %w", err)
 	}
 	// The balance row is locked, the ledger row written and the balance moved in one statement; the
-	// test-funded clamp is writeLXCBalance's.
+	// test-funded clamp is writeLXCBalance's. The row's seq is taken here, not by the ledger's insert trigger,
+	// because the trigger would move the balance row this statement is already moving (B58.4).
 	tag, err := tx.Exec(ctx, `
 		WITH short AS (
-		    SELECT b.workspace_id, $2::bigint + h.held AS goal, $2::bigint + h.held - b.balance AS delta
+		    SELECT b.workspace_id, $2::bigint + h.held AS goal, $2::bigint + h.held - b.balance AS delta, b.ledger_seq + 1 AS seq
 		    FROM lxc_balances b
 		    CROSS JOIN LATERAL (SELECT COALESCE(sum(a.balance_ulxc), 0)::bigint AS held FROM agent_account_balances a
 		        WHERE a.workspace_id = b.workspace_id AND (a.account LIKE 'agent:%' OR a.account LIKE 'pot:%')) h
 		    WHERE b.workspace_id = ANY($1::text[]) AND b.balance < $2::bigint + h.held
 		    FOR UPDATE OF b
 		), ledger AS (
-		    INSERT INTO lxc_ledger (workspace_id, amount, balance_after, type, description, metadata)
-		    SELECT workspace_id, delta, goal, $3, $4, $5::jsonb FROM short
+		    INSERT INTO lxc_ledger (workspace_id, amount, balance_after, type, description, metadata, seq)
+		    SELECT workspace_id, delta, goal, $3, $4, $5::jsonb, seq FROM short
 		)
 		UPDATE lxc_balances b
-		SET balance = s.goal, lifetime_minted = b.lifetime_minted + s.delta, updated_at = NOW(),
+		SET balance = s.goal, lifetime_minted = b.lifetime_minted + s.delta, updated_at = NOW(), ledger_seq = s.seq,
 		    test_funded_ulxc = CASE WHEN b.test_funded_ulxc <= s.goal THEN b.test_funded_ulxc ELSE LEAST(b.test_funded_ulxc, GREATEST(
 		        s.goal + (SELECT COALESCE(sum(held_ulxc), 0) FROM lxc_reservations r WHERE r.workspace_id = b.workspace_id AND r.status = 'held'), 0)) END
 		FROM short s WHERE b.workspace_id = s.workspace_id`,
@@ -764,10 +765,13 @@ func (s *DualTokenStore) GetLXCSnapshot(ctx context.Context, workspaceID string)
 }
 
 // LXCLedgerEntry is one row of the fiat LXC ledger — µLXC, integer. Mirrors mining.LedgerEntry with _ulxc
-// units. amount is +credit / −spend; balance_after is the running balance after the row.
+// units. amount is +credit / −spend; balance_after is the running balance after the row. seq numbers the
+// workspace's rows in the order their balances were written (B58.4): created_at is the transaction's start
+// and can disagree with it.
 type LXCLedgerEntry struct {
 	ID           string                 `json:"id"`
 	WorkspaceID  string                 `json:"workspace_id"`
+	Seq          int64                  `json:"seq"`
 	Amount       int64                  `json:"amount_ulxc"`
 	BalanceAfter int64                  `json:"balance_after_ulxc"`
 	Type         string                 `json:"type"`
@@ -776,7 +780,7 @@ type LXCLedgerEntry struct {
 	CreatedAt    time.Time              `json:"created_at"`
 }
 
-// GetLXCHistory returns the workspace's LXC ledger rows, newest-first, paginated (limit+offset). It mirrors
+// GetLXCHistory returns the workspace's LXC ledger rows, newest-first by seq, paginated (limit+offset). It mirrors
 // the LENS tokens/history read (mining.LedgerStore.GetHistory) for the fiat ledger, and is the FIRST reader
 // of lxc_ledger (all prior access was INSERT-only). Scope is intra-tenant (WHERE workspace_id = $1). Same
 // clamp policy as the LENS ledger: default 20, max 200, offset floored at 0. There is no counterparty-masking
@@ -795,10 +799,10 @@ func (s *DualTokenStore) GetLXCHistory(ctx context.Context, workspaceID string, 
 		offset = 0
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workspace_id, amount, balance_after, type, description, metadata, created_at
+		SELECT id, workspace_id, seq, amount, balance_after, type, description, metadata, created_at
 		FROM lxc_ledger
 		WHERE workspace_id = $1
-		ORDER BY created_at DESC
+		ORDER BY seq DESC
 		LIMIT $2 OFFSET $3`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("economy: query lxc history: %w", err)
@@ -808,7 +812,7 @@ func (s *DualTokenStore) GetLXCHistory(ctx context.Context, workspaceID string, 
 	for rows.Next() {
 		var e LXCLedgerEntry
 		var meta []byte
-		if err := rows.Scan(&e.ID, &e.WorkspaceID, &e.Amount, &e.BalanceAfter,
+		if err := rows.Scan(&e.ID, &e.WorkspaceID, &e.Seq, &e.Amount, &e.BalanceAfter,
 			&e.Type, &e.Description, &meta, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("economy: scan lxc history: %w", err)
 		}
