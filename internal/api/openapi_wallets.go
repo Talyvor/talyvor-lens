@@ -91,6 +91,8 @@ func openAPIWalletSchemas() map[string]any {
 				"allowed_models":         strs,
 				"allowed_providers":      strs,
 				"allowed_listings":       map[string]any{"type": "array", "items": str, "description": "marketplace listings it may use; empty allows any"},
+				"allowed_currencies":     map[string]any{"type": "array", "items": str, "description": "the currencies it may convert between, the one sold and the one bought, of GBP, EUR, USD and USDC; empty allows any. Absent keeps the stored list"},
+				"fx_daily_limit_ulxc":    map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, valued as its payments are; 0 is no limit. Absent keeps the stored maximum"},
 				"allowed_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the agents, listings, companies (a company names its agents and listings) and card merchants it may pay; once it names any, a payment to another is refused. Absent keeps the stored list"},
 				"blocked_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the payees it may not pay; a payment to one is refused and posts nothing. Absent keeps the stored list"},
 				"active_from":            map[string]any{"type": "string", "example": "09:00", "description": "HH:MM in timezone; with active_until, the hours it may spend"},

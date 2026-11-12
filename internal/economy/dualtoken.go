@@ -400,8 +400,9 @@ type DualTokenStore struct {
 	partnerRails railReader
 	// B32.11: the platform fee's rate on a workspace's AI spend; nil, no fee.
 	platformFee PlatformFeeResolver
-	// B56.23: the FX margin on a workspace's currency conversions, in basis points; nil, nothing is converted.
-	fxMargin PlatformFeeResolver
+	// B56.23: the FX margin on a workspace's currency conversions, in basis points, and its plan (B30.29); nil, nothing
+	// is converted.
+	fxMargin FXMarginResolver
 	// B32.32: what judges a room wallet's monthly limit against the room owner's plan; nil, a room wallet's rules
 	// cannot be saved.
 	roomBudgets RoomBudgets
