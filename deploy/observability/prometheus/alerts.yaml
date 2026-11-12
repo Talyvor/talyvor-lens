@@ -59,6 +59,17 @@ groups:
           description: "Lens is rejecting {{ $value | humanize }} req/s with HTTP 429 (sustained >10m). A tenant may be over budget or misbehaving."
           runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensRateLimitSpike.md"
 
+      - alert: LensRateLimitRedisDown
+        # The limiter's Redis calls are failing, so each instance is counting limits in its own memory.
+        expr: sum(increase(lens_rate_limit_redis_errors_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limiter cannot reach Redis"
+          description: "{{ $value | humanize }} rate-limiter Redis calls failed in the last 5m. Limits still hold, but each instance counts on its own, so a caller can get up to one limit per instance."
+          runbook_url: "https://github.com/Talyvor/talyvor-lens/blob/main/deploy/observability/runbooks/LensRateLimitRedisDown.md"
+
       - alert: LensInstanceDown
         # Fires when the active HA instance count drops at least 1 below its
         # 15m peak (an instance disappeared). No-op when HA is off (gauge stays 0).

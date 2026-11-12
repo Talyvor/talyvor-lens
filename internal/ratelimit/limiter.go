@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/talyvor/lens/internal/metrics"
 )
 
 type Limiter struct {
@@ -15,6 +18,59 @@ type Limiter struct {
 	rules  []RateRule
 	shared SharedChecker
 	perWS  WorkspaceRuleSource
+	keyed  localWindows // windows of validated API keys: one per issued key, so no cap
+	anon   localWindows // keyless windows (client IP, inbound email): capped at maxLocalWindows
+}
+
+// localWindows holds the same fixed windows as the Redis script, in this instance's memory. Check counts a
+// request here only when its Redis call fails, so a Redis outage still refuses a caller past its limit
+// instead of letting every request through. Each instance counts on its own, so with N instances a caller
+// can get up to N times its limit while Redis is down.
+type localWindows struct {
+	mu        sync.Mutex
+	counts    map[string]*localCount
+	lastSweep time.Time
+}
+
+// maxLocalWindows caps the keyless windows so a caller rotating addresses during an outage cannot grow them
+// without bound; once full, every new keyless key shares one overflow window. A workspace's API keys are
+// counted apart and never land in it.
+const maxLocalWindows = 100_000
+
+type localCount struct {
+	n       int
+	resetAt time.Time
+}
+
+// incr mirrors incrScript: it counts one hit on key's window and returns the count and the seconds left.
+// max caps the number of windows held (0 = no cap).
+func (lw *localWindows) incr(key string, secs, max int) (int, int) {
+	now := time.Now()
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.counts == nil {
+		lw.counts = map[string]*localCount{}
+	}
+	_, known := lw.counts[key]
+	full := max > 0 && !known && len(lw.counts) >= max
+	if since := now.Sub(lw.lastSweep); since > time.Minute || (full && since > time.Second) {
+		for k, c := range lw.counts {
+			if !now.Before(c.resetAt) {
+				delete(lw.counts, k)
+			}
+		}
+		lw.lastSweep = now
+	}
+	if _, ok := lw.counts[key]; full && !ok && len(lw.counts) >= max {
+		key = fmt.Sprintf("lens:rl:overflow:%d", secs)
+	}
+	c, ok := lw.counts[key]
+	if !ok || !now.Before(c.resetAt) {
+		c = &localCount{resetAt: now.Add(time.Duration(secs) * time.Second)}
+		lw.counts[key] = c
+	}
+	c.n++
+	return c.n, int(c.resetAt.Sub(now).Seconds() + 0.999)
 }
 
 // SharedChecker is an optional authoritative cross-instance limiter (the HA
@@ -153,8 +209,9 @@ func windowsFor(rule RateRule) []window {
 // LimitType. If every window passes, Remaining is the minimum across
 // windows so the client sees the tightest budget.
 //
-// On Redis errors we fail open — better to overshoot a limit than block
-// every request when Redis is briefly unavailable.
+// On a Redis error the window is counted in this instance's memory instead
+// (localWindows), and lens_rate_limit_redis_errors_total moves so the
+// outage alerts (LensRateLimitRedisDown).
 func (l *Limiter) Check(ctx context.Context, wsID, keyID string) RateLimitResult {
 	rule := l.matchRule(wsID, keyID)
 	l.mu.RLock()
@@ -176,19 +233,27 @@ func (l *Limiter) Check(ctx context.Context, wsID, keyID string) RateLimitResult
 			continue // no limit configured for this window
 		}
 		key := fmt.Sprintf("lens:rl:%s:%s:%s", wsID, keyID, w.name)
+		var count, ttl int64
 		raw, err := incrScript.Run(ctx, l.redis, []string{key}, w.secs).Slice()
-		if err != nil {
-			slog.Warn("ratelimit: redis script failed; failing open",
+		switch {
+		case err != nil:
+			metrics.RateLimitRedisError()
+			slog.Warn("ratelimit: redis script failed; counting in memory",
 				slog.String("key", key),
 				slog.String("err", err.Error()),
 			)
+			local, max := &l.keyed, 0
+			if wsID == "" {
+				local, max = &l.anon, maxLocalWindows
+			}
+			n, left := local.incr(key, w.secs, max)
+			count, ttl = int64(n), int64(left)
+		case len(raw) < 2:
 			continue
+		default:
+			count, _ = raw[0].(int64)
+			ttl, _ = raw[1].(int64)
 		}
-		if len(raw) < 2 {
-			continue
-		}
-		count, _ := raw[0].(int64)
-		ttl, _ := raw[1].(int64)
 
 		if int(count) > w.limit {
 			retry := int(ttl)
