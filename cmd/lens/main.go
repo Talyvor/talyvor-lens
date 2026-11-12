@@ -3197,6 +3197,8 @@ func run() error {
 		authed.Use(workspaceIsolationMiddleware)
 		// B59.1 — a route of an area the workspace does not have answers 404, as if it were not there.
 		authed.Use(areaGate(areaStore))
+		// B59.7 — a fiat workspace is refused an on-chain money route, and a stablecoin workspace a fiat one.
+		authed.Use(moneyKindGate(dualToken))
 
 		apiServer.MountAuthenticated(authed)
 
