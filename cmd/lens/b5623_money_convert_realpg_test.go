@@ -32,7 +32,7 @@ func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
 	store := economy.NewDualTokenStore(nil, pool, nil)
 	store.SetAccountPartners(registry)
 	store.SetScreener(screener)
-	store.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, error) {
+	store.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, string, error) {
 		return billing.FXMarginBPS(ctx, q, workspaceID, fees.Defaults())
 	})
 	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, 'Convert Ltd', $1)`, ws); err != nil {

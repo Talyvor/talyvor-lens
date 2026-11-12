@@ -86,6 +86,13 @@ func (r *Registry) UseTaxData(d TaxData) {
 	r.tax = &TestTaxPartner{Data: d}
 }
 
+// UseFXRates is where the Test FX partner reads its rates (B30.29): the ECB reference rates.
+func (r *Registry) UseFXRates(rates FXRates) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fx = &TestFXPartner{Rates: rates}
+}
+
 // UseScreeningList is the sanctions lists the Test screening provider screens against (internal/screening, B30.6).
 func (r *Registry) UseScreeningList(l ScreeningList) {
 	r.mu.Lock()

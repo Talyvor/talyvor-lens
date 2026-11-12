@@ -233,6 +233,15 @@ func (b *Book) USDRate(ctx context.Context, currency string, at time.Time) (USDR
 	return USDRate{currency: ccy, rate: new(big.Rat).Quo(perRat, usdRat), date: &date, source: "ecb"}, nil
 }
 
+// PerUSD is how many units of currency one US dollar buys at the latest ECB day (B30.29: the Test FX partner's rate).
+func (b *Book) PerUSD(ctx context.Context, currency string) (*big.Rat, error) {
+	r, err := b.USDRate(ctx, currency, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return new(big.Rat).Set(r.rate), nil
+}
+
 // Date is the ECB day the rate is from; nil for USD.
 func (r USDRate) Date() *time.Time { return r.date }
 
