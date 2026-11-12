@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // Allow lets every call through the owner's limits.
@@ -68,15 +69,60 @@ func (e env) transfers(t *testing.T) money.Transfers {
 // wallet is a new wallet in the case's asset, holding fund minor units.
 func (e env) wallet(t *testing.T, key string, fund int64) money.Wallet {
 	t.Helper()
-	w := must(e.wallets(t).Create(context.Background(), money.CreateWallet{Key: key, AgentID: "agent-" + key, Asset: e.asset}))(t)
+	return e.walletIn(t, key, e.asset, fund)
+}
+
+// walletIn is a new wallet in asset, holding fund minor units.
+func (e env) walletIn(t *testing.T, key, asset string, fund int64) money.Wallet {
+	t.Helper()
+	w := must(e.wallets(t).Create(context.Background(), money.CreateWallet{Key: key, AgentID: "agent-" + key, Asset: asset}))(t)
 	if fund > 0 {
 		if e.deposit != nil {
-			e.deposit.Deposit(w.Ref, "in-"+key, money.Amount{Minor: fund, Asset: e.asset})
+			e.deposit.Deposit(w.Ref, "in-"+key, money.Amount{Minor: fund, Asset: asset})
 		}
 		must(e.transfers(t).Credit(context.Background(), money.Credit{Key: "fund-" + key, To: w.Ref,
-			Amount: money.Amount{Minor: fund, Asset: e.asset}, PartnerRef: "in-" + key}))(t)
+			Amount: money.Amount{Minor: fund, Asset: asset}, PartnerRef: "in-" + key}))(t)
 	}
 	return w
+}
+
+// hundred is a hundred whole units of asset, in its minor units.
+func hundred(asset string) int64 {
+	if asset == money.USDC {
+		return 100_000_000
+	}
+	return 100_00
+}
+
+// across is the asset a conversion from asset buys: the stablecoin for a currency, pounds for the stablecoin.
+func across(asset string) string {
+	if asset == money.USDC {
+		return money.GBP
+	}
+	return money.USDC
+}
+
+// alongside is an asset a conversion from asset may not buy: another currency for a currency, the stablecoin itself.
+func alongside(asset string) string {
+	switch asset {
+	case money.USDC:
+		return money.USDC
+	case money.GBP:
+		return money.EUR
+	}
+	return money.GBP
+}
+
+func onlyStablecoin(t *testing.T, e env) {
+	if e.asset != money.USDC {
+		t.Skip("on chain moves the stablecoin")
+	}
+}
+
+func onlyCurrency(t *testing.T, e env) {
+	if e.asset == money.USDC {
+		t.Skip("a bank account is paid in a currency")
+	}
 }
 
 func (e env) balance(t *testing.T, ref string) int64 {
@@ -266,6 +312,113 @@ var contract = map[money.Capability][]contractCase{
 			wantErr(t, err, money.ErrInvalid)
 		}},
 	},
+	money.CapConvert: {
+		{"a quote converts once between a currency and the stablecoin", func(t *testing.T, e env) {
+			fund, buy := hundred(e.asset), across(e.asset)
+			from, to := e.wallet(t, "cv-1a", fund), e.walletIn(t, "cv-1b", buy, 0)
+			cv := must(e.reg.Convert(ctx, e.rt))(t)
+			q := must(cv.Quote(ctx, money.ConvertQuoteRequest{Key: "cvq-1", Sell: money.Amount{Minor: fund / 4, Asset: e.asset}, Buy: buy}))(t)
+			if q.Ref == "" || q.Sell != (money.Amount{Minor: fund / 4, Asset: e.asset}) || q.Buy.Asset != buy || q.Buy.Minor <= 0 || q.Rate == "" {
+				t.Fatalf("quote = %+v", q)
+			}
+			req := money.Conversion{Key: "cv-1", Transfer: "it-1", Quote: q.Ref, From: from.Ref, To: to.Ref}
+			if r := must(cv.Convert(ctx, req))(t); r.Ref == "" || r.Status != money.StatusCompleted {
+				t.Fatalf("conversion = %+v", r)
+			}
+			must(cv.Convert(ctx, req))(t)
+			if e.balance(t, from.Ref) != fund-fund/4 || e.balance(t, to.Ref) != q.Buy.Minor {
+				t.Fatalf("balances %d and %d, want %d and %d", e.balance(t, from.Ref), e.balance(t, to.Ref), fund-fund/4, q.Buy.Minor)
+			}
+		}},
+		{"two currencies, or the stablecoin twice, are not a conversion", func(t *testing.T, e env) {
+			_, err := must(e.reg.Convert(ctx, e.rt))(t).Quote(ctx, money.ConvertQuoteRequest{Key: "cvq-2",
+				Sell: money.Amount{Minor: hundred(e.asset), Asset: e.asset}, Buy: alongside(e.asset)})
+			wantErr(t, err, money.ErrInvalid)
+		}},
+		{"more than the account holds is insufficient funds", func(t *testing.T, e env) {
+			fund, buy := hundred(e.asset), across(e.asset)
+			from, to := e.wallet(t, "cv-3a", fund), e.walletIn(t, "cv-3b", buy, 0)
+			cv := must(e.reg.Convert(ctx, e.rt))(t)
+			q := must(cv.Quote(ctx, money.ConvertQuoteRequest{Key: "cvq-3", Sell: money.Amount{Minor: 2 * fund, Asset: e.asset}, Buy: buy}))(t)
+			_, err := cv.Convert(ctx, money.Conversion{Key: "cv-3", Transfer: "it-3", Quote: q.Ref, From: from.Ref, To: to.Ref})
+			wantErr(t, err, money.ErrInsufficientFunds)
+			if e.balance(t, from.Ref) != fund || e.balance(t, to.Ref) != 0 {
+				t.Fatalf("a refused conversion moved money: %d and %d", e.balance(t, from.Ref), e.balance(t, to.Ref))
+			}
+		}},
+	},
+	money.CapOnchain: {
+		{"the stablecoin moves once to an address", func(t *testing.T, e env) {
+			onlyStablecoin(t, e)
+			fund, to := hundred(e.asset), PayeeFor(money.USDC)
+			w := e.wallet(t, "oc-1", fund)
+			req := money.OnchainSend{Key: "oc-1", Transfer: "it-1", From: w.Ref, Network: to.Network, Address: to.Address,
+				Amount: money.Amount{Minor: fund / 4, Asset: money.USDC}, Originator: money.Party{Name: "Ada Ltd", Country: "GB"},
+				Beneficiary: money.Party{Name: to.Name, Country: "US"}}
+			oc := must(e.reg.Onchain(ctx, e.rt))(t)
+			if r := must(oc.Send(ctx, req))(t); r.Ref == "" || r.Status == money.StatusFailed {
+				t.Fatalf("send = %+v", r)
+			}
+			must(oc.Send(ctx, req))(t)
+			if got := e.balance(t, w.Ref); got != fund-fund/4 {
+				t.Fatalf("balance = %d, want %d", got, fund-fund/4)
+			}
+		}},
+		{"the stablecoin moves to an account", func(t *testing.T, e env) {
+			onlyStablecoin(t, e)
+			fund := hundred(e.asset)
+			a, b := e.wallet(t, "oc-2a", fund), e.wallet(t, "oc-2b", 0)
+			must(must(e.reg.Onchain(ctx, e.rt))(t).Send(ctx, money.OnchainSend{Key: "oc-2", Transfer: "it-2", From: a.Ref, To: b.Ref,
+				Amount: money.Amount{Minor: fund / 4, Asset: money.USDC}, Originator: money.Party{Name: "Ada Ltd", Country: "GB"},
+				Beneficiary: money.Party{Name: "Ada Ltd", Country: "GB"}}))(t)
+			if e.balance(t, a.Ref) != fund-fund/4 || e.balance(t, b.Ref) != fund/4 {
+				t.Fatalf("balances %d and %d", e.balance(t, a.Ref), e.balance(t, b.Ref))
+			}
+		}},
+		{"a currency does not move on chain", func(t *testing.T, e env) {
+			onlyCurrency(t, e)
+			to := PayeeFor(money.USDC)
+			w := e.wallet(t, "oc-3", hundred(e.asset))
+			_, err := must(e.reg.Onchain(ctx, e.rt))(t).Send(ctx, money.OnchainSend{Key: "oc-3", Transfer: "it-3", From: w.Ref,
+				Network: to.Network, Address: to.Address, Amount: money.Amount{Minor: 1_00, Asset: e.asset},
+				Originator: money.Party{Name: "Ada Ltd", Country: "GB"}, Beneficiary: money.Party{Name: to.Name, Country: "US"}})
+			wantErr(t, err, money.ErrInvalid)
+		}},
+	},
+	money.CapBankPayout: {
+		{"a currency is paid into a bank account once", func(t *testing.T, e env) {
+			onlyCurrency(t, e)
+			fund := hundred(e.asset)
+			w := e.wallet(t, "bp-1", fund)
+			req := money.BankPayout{Key: "bp-1", Transfer: "it-1", From: w.Ref, To: PayeeFor(e.asset), Country: e.rt.Country,
+				Amount: money.Amount{Minor: fund / 4, Asset: e.asset}, Reference: "invoice 1"}
+			bp := must(e.reg.BankPayouts(ctx, e.rt))(t)
+			if r := must(bp.Pay(ctx, req))(t); r.Ref == "" || r.Status == money.StatusFailed {
+				t.Fatalf("payout = %+v", r)
+			}
+			must(bp.Pay(ctx, req))(t)
+			if got := e.balance(t, w.Ref); got != fund-fund/4 {
+				t.Fatalf("balance = %d, want %d", got, fund-fund/4)
+			}
+		}},
+		{"the rail says how long it takes", func(t *testing.T, e env) {
+			r, err := must(e.reg.BankPayouts(ctx, e.rt))(t).Rail(ctx, e.asset, e.rt.Country)
+			if e.asset == money.USDC {
+				wantErr(t, err, money.ErrInvalid)
+				return
+			}
+			if err != nil || r.Name == "" || r.Seconds <= 0 {
+				t.Fatalf("rail = %+v, %v", r, err)
+			}
+		}},
+		{"the stablecoin is not paid into a bank account", func(t *testing.T, e env) {
+			onlyStablecoin(t, e)
+			w := e.wallet(t, "bp-3", hundred(e.asset))
+			_, err := must(e.reg.BankPayouts(ctx, e.rt))(t).Pay(ctx, money.BankPayout{Key: "bp-3", Transfer: "it-3", From: w.Ref,
+				To: PayeeFor(money.GBP), Country: "GB", Amount: money.Amount{Minor: 1_000_000, Asset: e.asset}})
+			wantErr(t, err, money.ErrInvalid)
+		}},
+	},
 	money.CapKYC: {
 		{"a verification starts and is read back", func(t *testing.T, e env) {
 			kyc := must(e.reg.KYC(ctx, e.rt))(t)
@@ -304,7 +457,7 @@ func ContractWithDeposits(t *testing.T, newPartner func() (*money.Adapter, Depos
 			for _, asset := range assets {
 				t.Run(string(c)+"/"+asset+"/"+cc.name, func(t *testing.T) {
 					a, dep := newPartner()
-					reg, err := money.NewRegistry(money.Config{Sandbox: a, Limits: Allow{}, Audit: &Trail{}})
+					reg, err := money.NewRegistry(money.Config{Sandbox: a, Limits: Allow{}, Audit: &Trail{}, Hooks: &partners.TestTransferHooks{}})
 					if err != nil {
 						t.Fatal(err)
 					}
