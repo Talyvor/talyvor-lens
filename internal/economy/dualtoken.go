@@ -341,6 +341,8 @@ type DualTokenStore struct {
 	approvalPusher ApprovalPusher
 	approvalChat   ApprovalChat  // B56.16
 	approvalTTL    time.Duration // B50.18: how long an approval lasts; 0 is defaultApprovalTTL
+	// B59.21: each card programme's mode by its issuer's adapter name; one not named is preapproved.
+	cardProgrammes map[string]string
 	// B40.4: how the phone app's device keys are checked when they are registered.
 	deviceVerifier devicekey.Verifier
 	// B40.15: the native push sent to each phone with a push token for each approval filed or request prepared.
