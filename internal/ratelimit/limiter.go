@@ -18,7 +18,8 @@ type Limiter struct {
 	rules  []RateRule
 	shared SharedChecker
 	perWS  WorkspaceRuleSource
-	local  localWindows
+	keyed  localWindows // windows of validated API keys: one per issued key, so no cap
+	anon   localWindows // keyless windows (client IP, inbound email): capped at maxLocalWindows
 }
 
 // localWindows holds the same fixed windows as the Redis script, in this instance's memory. Check counts a
@@ -31,8 +32,9 @@ type localWindows struct {
 	lastSweep time.Time
 }
 
-// maxLocalWindows caps localWindows so a caller rotating addresses during an outage cannot grow it without
-// bound; once it is full, every new key shares one overflow window of the same length.
+// maxLocalWindows caps the keyless windows so a caller rotating addresses during an outage cannot grow them
+// without bound; once full, every new keyless key shares one overflow window. A workspace's API keys are
+// counted apart and never land in it.
 const maxLocalWindows = 100_000
 
 type localCount struct {
@@ -41,7 +43,8 @@ type localCount struct {
 }
 
 // incr mirrors incrScript: it counts one hit on key's window and returns the count and the seconds left.
-func (lw *localWindows) incr(key string, secs int) (int, int) {
+// max caps the number of windows held (0 = no cap).
+func (lw *localWindows) incr(key string, secs, max int) (int, int) {
 	now := time.Now()
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
@@ -49,7 +52,7 @@ func (lw *localWindows) incr(key string, secs int) (int, int) {
 		lw.counts = map[string]*localCount{}
 	}
 	_, known := lw.counts[key]
-	full := !known && len(lw.counts) >= maxLocalWindows
+	full := max > 0 && !known && len(lw.counts) >= max
 	if since := now.Sub(lw.lastSweep); since > time.Minute || (full && since > time.Second) {
 		for k, c := range lw.counts {
 			if !now.Before(c.resetAt) {
@@ -58,7 +61,7 @@ func (lw *localWindows) incr(key string, secs int) (int, int) {
 		}
 		lw.lastSweep = now
 	}
-	if _, ok := lw.counts[key]; !ok && len(lw.counts) >= maxLocalWindows {
+	if _, ok := lw.counts[key]; full && !ok && len(lw.counts) >= max {
 		key = fmt.Sprintf("lens:rl:overflow:%d", secs)
 	}
 	c, ok := lw.counts[key]
@@ -239,7 +242,11 @@ func (l *Limiter) Check(ctx context.Context, wsID, keyID string) RateLimitResult
 				slog.String("key", key),
 				slog.String("err", err.Error()),
 			)
-			n, left := l.local.incr(key, w.secs)
+			local, max := &l.keyed, 0
+			if wsID == "" {
+				local, max = &l.anon, maxLocalWindows
+			}
+			n, left := local.incr(key, w.secs, max)
 			count, ttl = int64(n), int64(left)
 		case len(raw) < 2:
 			continue

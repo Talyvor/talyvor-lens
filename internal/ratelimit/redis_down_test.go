@@ -48,17 +48,30 @@ func TestCheck_RedisDownStillRefusesAbuseAndCountsTheError(t *testing.T) {
 	}
 }
 
-// Once the in-memory windows are full, a new key is counted in one shared overflow window instead of growing
-// the map, so rotating addresses during an outage neither grows memory nor escapes the limit.
-func TestLocalWindows_FullMapCountsNewKeysTogether(t *testing.T) {
-	var lw localWindows
-	for i := 0; i < maxLocalWindows; i++ {
-		lw.incr(fmt.Sprintf("k%d", i), 60)
+// Once the keyless windows are full, a new keyless caller is counted in one shared overflow window instead of
+// growing the map, so rotating addresses during an outage neither grows memory nor escapes the limit, and a
+// workspace's API key still gets its own window.
+func TestCheck_RedisDownFullKeylessWindowsShareOverflow(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
 	}
-	lw.incr("new-a", 60)
-	lw.incr("new-a", 60)
-	if n, _ := lw.incr("new-b", 60); n != 3 {
-		t.Errorf("third hit across two new keys counted %d; want 3 in the shared overflow window", n)
+	rc := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rc.Close() })
+	mr.Close()
+	limiter := New(rc, []RateRule{{RequestsPerMinute: 2}})
+	lw := &limiter.anon
+	for i := 0; i < maxLocalWindows; i++ {
+		lw.incr(fmt.Sprintf("k%d", i), 60, maxLocalWindows)
+	}
+	ctx := context.Background()
+	limiter.Check(ctx, "", "ip:198.51.100.1")
+	limiter.Check(ctx, "", "ip:198.51.100.2")
+	if limiter.Check(ctx, "", "ip:198.51.100.3").Allowed {
+		t.Error("third new keyless caller allowed; want refused by the shared overflow window")
+	}
+	if !limiter.Check(ctx, "ws-1", "key-1").Allowed {
+		t.Error("a workspace key was refused; it must keep its own window when the keyless ones are full")
 	}
 	if got := len(lw.counts); got > maxLocalWindows+1 {
 		t.Errorf("map holds %d windows; want at most %d", got, maxLocalWindows+1)
