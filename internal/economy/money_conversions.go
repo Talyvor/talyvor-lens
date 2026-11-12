@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,10 +33,21 @@ import (
 // cleared: in the currency sold the amount leaves the agent's account, the margin goes to Talyvor's revenue and the
 // rest to the partner's conversion account; in the currency bought, what it buys comes from the partner's conversion
 // account into the agent's. Each currency sums to zero, and both legs are lines on the agent's account statements.
+//
+// B30.29: a quote is good for 30 seconds at most, and the free plan converts test money only. Two of the agent's rules
+// bound its conversions on top of its spending rules: the currencies it may convert between (the one sold and the one
+// bought), and its daily conversion maximum, on what it converted since the start of its day, in its time zone.
 
 // ErrConversion: a conversion asked for between currencies, of an amount or with a funding it cannot have, or with
 // no idempotency key.
 var ErrConversion = errors.New("economy: invalid conversion")
+
+// conversionQuoteLife is the longest a quote is good for (B30.29), however long the partner holds its own.
+const conversionQuoteLife = 30 * time.Second
+
+// FXMarginResolver answers a workspace's FX margin in basis points, and the plan it is on (B30.29: free converts test
+// money only).
+type FXMarginResolver func(ctx context.Context, q FeeQuerier, workspaceID string) (bps int64, plan string, err error)
 
 // The states of a conversion.
 const (
@@ -86,9 +98,9 @@ func scanConversion(row pgx.Row) (Conversion, error) {
 	return c, err
 }
 
-// SetFXMargin is what answers a workspace's FX margin in basis points (B56.23): billing.FXMarginBPS, wired in
-// cmd/lens. Until it is set, no conversion is quoted.
-func (s *DualTokenStore) SetFXMargin(r PlatformFeeResolver) { s.fxMargin = r }
+// SetFXMargin is what answers a workspace's FX margin in basis points and its plan (B56.23, B30.29):
+// billing.FXMarginBPS, wired in cmd/lens. Until it is set, no conversion is quoted.
+func (s *DualTokenStore) SetFXMargin(r FXMarginResolver) { s.fxMargin = r }
 
 // QuoteConversion prices selling in.SellMinor of in.SellCurrency from agentID's account in it for in.BuyCurrency,
 // into its account in that: the reference rate, the plan's margin and what it buys. The quote is kept, and converted
@@ -119,12 +131,14 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	if err != nil {
 		return Conversion{}, err
 	}
-	bps, err := s.fxMargin(ctx, s.pool, workspaceID)
+	bps, plan, err := s.fxMargin(ctx, s.pool, workspaceID)
 	switch {
 	case err != nil:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s: %w", workspaceID, err)
 	case bps < 0 || bps > feeDenominator:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s is %d basis points, outside 0 to %d", workspaceID, bps, feeDenominator)
+	case in.Funding == FundingLive && (plan == "" || plan == "free"):
+		return Conversion{}, fmt.Errorf("%w: live conversions come with the Team, Business and Enterprise plans", ErrConversion)
 	}
 	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: agentID, FromAccountID: from, ToAccountID: to,
 		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: PlatformFee(in.SellMinor, bps),
@@ -149,6 +163,9 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	}
 	// GBP, EUR and USD all count hundredths, so minor units divide as whole units do.
 	c.BuyMinor, c.ReferenceRate, c.partnerRef, c.ExpiresAt = pq.Buy.Minor, pq.Rate, pq.Ref, pq.ExpiresAt
+	if latest := time.Now().Add(conversionQuoteLife); c.ExpiresAt.After(latest) {
+		c.ExpiresAt = latest
+	}
 	c.Rate = big.NewRat(c.BuyMinor, c.SellMinor).FloatString(8)
 	c, err = scanConversion(s.pool.QueryRow(ctx, `INSERT INTO money_conversions (id, workspace_id, agent_id, from_account_id, to_account_id,
 		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at)
@@ -250,6 +267,9 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
+	if err := judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
+		return Conversion{}, s.refusedMovement(ctx, tx, err)
+	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
 	if err != nil {
 		return Conversion{}, err
@@ -308,6 +328,40 @@ func (c Conversion) usable() error {
 		return fmt.Errorf("%w: quote %s has converted already, under another key", ErrQuote, c.ID)
 	case !c.ExpiresAt.After(time.Now()):
 		return fmt.Errorf("%w: quote %s expired at %s. Ask for a new one", ErrQuote, c.ID, c.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// judgeConversion refuses c, worth value µLXC, when its agent's rules do not allow it (B30.29): a currency it may not
+// convert between, or what it converted since the start of its day, in its time zone, and c together over its daily
+// conversion maximum.
+func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, now time.Time) error {
+	r, err := getAgentRules(ctx, tx, c.WorkspaceID, c.AgentID)
+	if err != nil {
+		return err
+	}
+	for _, cur := range []string{c.SellCurrency, c.BuyCurrency} {
+		if len(r.AllowedCurrencies) > 0 && !slices.Contains(r.AllowedCurrencies, cur) {
+			return ruleRefusal("this agent converts only between %s, not %s", strings.Join(r.AllowedCurrencies, ", "), cur)
+		}
+	}
+	limit := limitOf(r.FXDailyLimitULXC)
+	if limit == 0 {
+		return nil
+	}
+	loc, err := r.location()
+	if err != nil {
+		return ruleRefusal("the agent's timezone %q cannot be read", r.Timezone)
+	}
+	t := now.In(loc)
+	var done int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(value_ulxc), 0)::bigint FROM money_conversions WHERE agent_id = $1
+		AND status = 'converted' AND converted_at >= $2`, c.AgentID, time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)).Scan(&done); err != nil {
+		return fmt.Errorf("economy: agent conversions: %w", err)
+	}
+	if done+value > limit {
+		return ruleRefusal("converting %s would take today's conversions to %s LXC, over this agent's daily conversion maximum of %s LXC",
+			Money(c.SellMinor, c.SellCurrency), lxcString(done+value), lxcString(limit))
 	}
 	return nil
 }

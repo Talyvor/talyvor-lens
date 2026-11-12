@@ -1895,7 +1895,7 @@ func run() error {
 		return billing.PlatformFeeBPS(ctx, q, workspaceID, fees.Current())
 	})
 	// B56.23: every currency conversion carries its plan's FX margin (LENS_FX_MARGIN_BPS), or its contract's.
-	dualToken.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, error) {
+	dualToken.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, string, error) {
 		return billing.FXMarginBPS(ctx, q, workspaceID, fees.Current())
 	})
 	// MODEL 2 (W4.6.1 step 1). Subscriptions are a SECOND gate on top of billing: a
@@ -2439,6 +2439,7 @@ func run() error {
 	// quotes every instrument from it, so the rates are fetched at start and every three hours (the ECB
 	// publishes once a working day).
 	ecbRates := ecbrate.New(pool, ecbrate.DailyURL)
+	partnerRegistry.UseFXRates(ecbRates) // B30.29: the Test FX partner converts at the ECB reference rate
 	// B30.7 — transaction monitoring: its rules judge each payment in or out through a partner once it has moved, and
 	// nightly over the last day's; a hit opens or extends the workspace's monitoring case, which the operator sees at
 	// /v1/admin/screening, with its alerts at /v1/admin/compliance/alerts. It never moves or stops money.

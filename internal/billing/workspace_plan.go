@@ -62,27 +62,27 @@ func PlatformFeeBPS(ctx context.Context, db PlanQuerier, workspaceID string, s f
 
 // FXMarginBPS is the margin over the reference rate on workspaceID's currency conversions, in basis points (B56.23):
 // the Enterprise contract's own figure where the operator recorded one; else its plan's in s.FXMarginBPS, the plans
-// mapped as PlatformFeeBPS maps them.
-func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, error) {
-	c, err := ContractOf(ctx, db, workspaceID)
-	if err != nil {
-		return 0, err
-	}
-	if c != nil && c.FXMarginBPS != nil {
-		return *c.FXMarginBPS, nil
-	}
+// mapped as PlatformFeeBPS maps them. It answers the plan too, mapped the same way (B30.29: free converts test money only).
+func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, string, error) {
 	plan, err := PlanOf(ctx, db, workspaceID)
 	if err != nil {
-		return 0, err
+		return 0, "", err
+	}
+	c, err := ContractOf(ctx, db, workspaceID)
+	if err != nil {
+		return 0, "", err
+	}
+	if c != nil && c.FXMarginBPS != nil {
+		return *c.FXMarginBPS, plan, nil
 	}
 	switch plan {
 	case "plus", "pro", "max", BYOKPlan:
 		plan = TeamPlan
 	}
 	if bps, ok := s.FXMarginBPS[plan]; ok {
-		return bps, nil
+		return bps, plan, nil
 	}
-	return s.FXMarginBPS[FreePlan], nil
+	return s.FXMarginBPS[FreePlan], FreePlan, nil
 }
 
 // Contract is an Enterprise contract as the operator records it: the contract's own platform fee and FX

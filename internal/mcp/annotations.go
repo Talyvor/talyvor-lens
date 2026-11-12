@@ -65,6 +65,8 @@ var toolAnnotations = map[string]toolAnnotation{
 	"wallet_account_open":    {"Open a currency account", writes},
 	"wallet_account_details": {"Account details", reads},
 	"wallet_pay_external":    {"Pay a saved payee", moves},
+	"wallet_fx_quote":        {"Price a conversion", writes},
+	"wallet_convert":         {"Convert currencies", moves},
 	"wallet_invoice_create":  {"Issue an invoice", moves},
 	"wallet_invoices":        {"Invoices", reads},
 	"wallet_invoice_pay":     {"Pay an invoice", moves},
