@@ -29,7 +29,8 @@ type Adapter struct {
 	Onchain     OnchainProvider
 	BankPayouts PayoutProvider
 
-	ThreeDS ThreeDSProvider // B59.22: the issuer's 3-D Secure; nil answers no challenge
+	ThreeDS  ThreeDSProvider // B59.22: the issuer's 3-D Secure; nil answers no challenge
+	Disputes DisputeProvider // B59.24: the issuer's card disputes; nil takes none
 }
 
 func (a *Adapter) offers(c Capability) bool {
