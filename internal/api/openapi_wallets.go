@@ -169,6 +169,43 @@ func openAPIWalletSchemas() map[string]any {
 				"budget_left_after_ulxc": map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the monthly limit less the month's spend and this amount, when it was filed; null with no monthly limit"},
 			},
 		},
+		"AgentSummary": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"as_of":         map[string]any{"type": "string", "format": "date-time", "description": "the one moment every figure is read at"},
+				"agent":         map[string]any{"$ref": "#/components/schemas/Agent"},
+				"made_at":       at,
+				"owner_user_id": map[string]any{"type": "string", "description": "who made it, which the apps name from the session"},
+				"all_paused_at": map[string]any{"type": "string", "format": "date-time", "description": "set while every agent of the workspace is paused"},
+				"safe_to_spend": map[string]any{"type": "array", "description": "LXC (µLXC) first, then GBP, EUR, USD (minor units)", "items": map[string]any{"type": "object", "properties": map[string]any{
+					"currency": str, "balance": map[string]any{"type": "integer", "format": "int64"}, "scheduled": map[string]any{"type": "integer", "format": "int64"},
+					"bills_due": map[string]any{"type": "integer", "format": "int64"}, "pending_approvals": map[string]any{"type": "integer", "format": "int64"},
+					"safe_to_spend": map[string]any{"type": "integer", "format": "int64"},
+				}}},
+				"month": map[string]any{"type": "object", "properties": map[string]any{
+					"start": at, "end": at, "spent_ulxc": ulxc, "forecast_ulxc": ulxc,
+					"runs_out_at":        map[string]any{"type": "string", "format": "date-time", "nullable": true},
+					"runs_out_on":        map[string]any{"type": "string", "format": "date", "nullable": true},
+					"monthly_limit_ulxc": map[string]any{"type": "integer", "format": "int64", "description": "µLXC; 0 is no limit"},
+				}},
+				"approvals":           map[string]any{"type": "array", "description": "its requests waiting for approval, newest first", "items": map[string]any{"$ref": "#/components/schemas/AgentApproval"}},
+				"statement":           map[string]any{"type": "array", "description": "its statement's three newest lines this month, by model and day", "items": map[string]any{"$ref": "#/components/schemas/AgentStatementLine"}},
+				"statement_time_zone": map[string]any{"type": "string", "description": "the zone its days are counted in: its rules', else UTC"},
+				"rules":               map[string]any{"type": "object", "nullable": true, "description": "the version in force; null when its rules were never set", "properties": map[string]any{"version": map[string]any{"type": "integer", "minimum": 1}, "saved_at": at}},
+				"card": map[string]any{"type": "object", "properties": map[string]any{
+					"status":   map[string]any{"type": "string", "enum": []string{"none", "active", "frozen"}},
+					"currency": str,
+					"last4":    str,
+					"last_declined": map[string]any{"type": "object", "nullable": true, "properties": map[string]any{
+						"merchant_name": str, "amount_minor": map[string]any{"type": "integer", "format": "int64"}, "currency": str,
+						"words":  map[string]any{"type": "string", "description": "why, in words: \"Declined: not one of its payees\""},
+						"reason": map[string]any{"type": "string", "description": "the reason as it was recorded"},
+						"at":     at,
+					}},
+				}},
+				"currency_accounts": map[string]any{"type": "array", "description": "its currency accounts, each with balance_minor", "items": map[string]any{"type": "object"}},
+			},
+		},
 		"AgentRulesVersion": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -413,6 +450,13 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent},
 				map[string]any{"200": ok("the rules as stored", ref("AgentRules")), "400": map[string]any{"description": "an unknown field or an invalid rule"}, "404": map[string]any{"description": "no such agent"}}),
 				body(ref("AgentRules"))),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/summary": map[string]any{
+			"get": op("Read one agent's page in one read",
+				"Owner or admin. Every figure is read in one transaction at one moment, as_of: the agent's balance less what waits for approval is its safe-to-spend figure. Another workspace's agent is 404.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": ok("the agent's page", ref("AgentSummary")), "403": map[string]any{"description": "not the workspace's owner or an admin"},
+					"404": map[string]any{"description": "no such agent"}}),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/rules/history": map[string]any{
 			"get": op("List the versions of the agent's rules",
