@@ -115,13 +115,14 @@ func TestReconcileSpent_PerScope(t *testing.T) {
 	})
 }
 
-func TestDelete_Idempotent(t *testing.T) {
+// B28.246: a delete that removes nothing is ErrNotFound, so the route answers 404.
+func TestDelete_MissingIsNotFound(t *testing.T) {
 	st, pool := newTestStore(t)
 	pool.ExpectExec(`DELETE FROM budgets`).
 		WithArgs("bid-1", "ws1").
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
-	if err := st.Delete(context.Background(), "ws1", "bid-1"); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := st.Delete(context.Background(), "ws1", "bid-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete of a missing budget = %v, want ErrNotFound", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
