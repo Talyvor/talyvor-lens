@@ -24,6 +24,10 @@ type Adapter struct {
 	Webhooks  Webhooks // verifies the partner's notifications; nil takes none
 	Signers   Signers  // agents' keys in the partner's enclave (B48.2); nil holds none
 	Spenders  Spenders // B48.24: agents' keys spend under the owner's on-chain permission; nil spends none
+
+	Convert     ConvertProvider // B59.13: an Instant transfer's legs
+	Onchain     OnchainProvider
+	BankPayouts PayoutProvider
 }
 
 func (a *Adapter) offers(c Capability) bool {
@@ -40,6 +44,12 @@ func (a *Adapter) offers(c Capability) bool {
 		return a.Payouts != nil
 	case CapKYC:
 		return a.KYC != nil
+	case CapConvert:
+		return a.Convert != nil
+	case CapOnchain:
+		return a.Onchain != nil
+	case CapBankPayout:
+		return a.BankPayouts != nil
 	}
 	return false
 }
@@ -104,9 +114,10 @@ type Config struct {
 	Clearances partners.Clearances
 	Limits     Limits
 	Audit      Audit
-	Ledger     Ledger   // where a verified webhook's money is posted
-	Replays    Replays  // the webhook ids already taken
-	Issuer     *Adapter // B53.19: the card issuer for physical cards while the sandbox serves cards (the fake, while LENS_PHYSICAL_CARDS is on)
+	Ledger     Ledger                 // where a verified webhook's money is posted
+	Replays    Replays                // the webhook ids already taken
+	Issuer     *Adapter               // B53.19: the card issuer for physical cards while the sandbox serves cards (the fake, while LENS_PHYSICAL_CARDS is on)
+	Hooks      partners.TransferHooks // B59.13: asked on every leg of an Instant transfer; nil hands out no leg
 }
 
 // Registry routes every call to the adapter switched on for it, or the sandbox.

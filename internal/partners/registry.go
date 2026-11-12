@@ -325,3 +325,6 @@ func (r *Registry) TestStablecoin() StablecoinPartner {
 }
 
 func (r *Registry) TestKYC() KYCProvider { return observedKYC{r.kyc, r.observer(ServiceKYC)} }
+
+// TestFX is the registry's Test FX partner, observed: the sandbox's conversions (B59.13) quote and convert with it.
+func (r *Registry) TestFX() FXPartner { return observedFX{r.fx, r.observer(ServiceFX)} }

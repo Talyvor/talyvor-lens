@@ -92,7 +92,7 @@ func Outcome(err error) string {
 		err  error
 		name string
 	}{{ErrInsufficientFunds, "insufficient_funds"}, {ErrLimit, "limit"}, {ErrApprovalNeeded, "approval_needed"},
-		{ErrPartnerDown, "partner_down"}, {ErrRefused, "refused"}, {ErrInvalid, "invalid"}, {ErrNotFound, "not_found"},
+		{ErrPartnerDown, "partner_down"}, {ErrRefused, "refused"}, {ErrHeld, "held"}, {ErrInvalid, "invalid"}, {ErrNotFound, "not_found"},
 		{ErrKeyReused, "key_reused"}} {
 		if errors.Is(err, k.err) {
 			return k.name
@@ -117,6 +117,8 @@ func refOf(res any) (string, string) {
 		return v.Ref, ""
 	case Card:
 		return v.Ref, v.State
+	case ConvertQuote:
+		return v.Ref, ""
 	}
 	return "", ""
 }

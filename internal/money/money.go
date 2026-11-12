@@ -10,7 +10,7 @@
 // Amounts are int64 minor units of an explicit asset — pence, cents, or millionths of a USDC — never a float. Every
 // call that changes anything carries the caller's idempotency key: asked again, it does nothing new and answers as it
 // did the first time. Errors are typed: ErrInsufficientFunds, ErrLimit, ErrApprovalNeeded, ErrPartnerDown, ErrRefused,
-// ErrInvalid, ErrNotFound and ErrKeyReused, tested with errors.Is.
+// ErrHeld, ErrInvalid, ErrNotFound and ErrKeyReused, tested with errors.Is.
 package money
 
 import (
@@ -67,6 +67,7 @@ var (
 	ErrApprovalNeeded    = errors.New("money: the owner must approve this first")
 	ErrPartnerDown       = errors.New("money: the partner did not answer")
 	ErrRefused           = errors.New("money: the partner refused")
+	ErrHeld              = errors.New("money: held for a compliance review") // B59.13: a screening's close match
 )
 
 // Capability is one thing money does; a switch is per capability.
@@ -80,10 +81,14 @@ const (
 	CapCards     Capability = "cards"
 	CapPayouts   Capability = "payouts"
 	CapKYC       Capability = "kyc"
+
+	CapConvert    Capability = "convert"     // B59.13: between a currency and the stablecoin
+	CapOnchain    Capability = "onchain"     // B59.13: the stablecoin to an account or an address
+	CapBankPayout Capability = "bank_payout" // B59.13: a currency into an outside bank account
 )
 
 // Capabilities is every capability, in order.
-var Capabilities = []Capability{CapAccounts, CapWallets, CapTransfers, CapCards, CapPayouts, CapKYC}
+var Capabilities = []Capability{CapAccounts, CapWallets, CapTransfers, CapCards, CapPayouts, CapKYC, CapConvert, CapOnchain, CapBankPayout}
 
 // Status is where an operation with a partner stands.
 type Status string
