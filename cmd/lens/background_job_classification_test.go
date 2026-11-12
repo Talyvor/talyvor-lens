@@ -58,6 +58,11 @@ var perReplica = map[string]string{
 		"`FOR UPDATE` inside a transaction and returns early when status != 'held', so the second " +
 		"refund is a no-op. Its own comment says \"a double-sweep ... is a safe no-op\". Double " +
 		"refund is impossible.",
+	"stranded agent debit sweep": "IDEMPOTENT BY ROW CLAIM, and it MOVES MONEY (B58.3). ReleaseStrandedAgentDebits " +
+		"reads unsettled question debits and then gives each back through ReleaseAgentDebit, whose transaction first " +
+		"inserts the debit's agent_debit_settlements row ON CONFLICT (debit_key) DO NOTHING and moves nothing when it " +
+		"inserted none: a second replica waits on the first's uncommitted key, then finds it. Measured by " +
+		"TestB583_AReleaseGivesTheDebitAndItsFeeBackOnce, which releases twice and gives back once.",
 	"localRouterMulti.CheckHealth": "PER-REQUEST. Started inside an HTTP handler.",
 	"audit export POST":            "PER-REQUEST. Started inside an HTTP handler.",
 	"agent schedule run": "IDEMPOTENT BY ROW LOCK, and it MOVES MONEY (B19.8). Each schedule tick is paid " +
@@ -105,6 +110,7 @@ var perReplicaMatch = map[string]string{
 	// The three closures, each identified by the one call that is its whole point.
 	"detector staleness":         "patternDetectorHealth.PublishAge",
 	"stranded reservation sweep": "dualToken.ReleaseStrandedReservations",
+	"stranded agent debit sweep": "dualToken.ReleaseStrandedAgentDebits",
 	"audit export POST":          "auditExporter.ExportWebhook",
 	"agent schedule run":         "dualToken.RunAgentSchedules",
 	"scheduled prompt run":       "dualToken.RunPromptSchedules",

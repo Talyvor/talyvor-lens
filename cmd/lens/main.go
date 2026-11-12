@@ -2232,6 +2232,24 @@ func run() error {
 			}
 		}()
 	}
+	// B58.3: the same for a question's pre-serve agent debit (reservations off): one neither settled nor served
+	// after the same threshold is given back. Runs whatever the flag says now, as debits outlive a flag flip.
+	go func() {
+		t := time.NewTicker(2 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := dualToken.ReleaseStrandedAgentDebits(ctx, 15*time.Minute); err != nil {
+					slog.Warn("billing: stranded agent-debit sweep failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("billing: gave back agent debits nothing was served for", slog.Int("released", n))
+				}
+			}
+		}
+	}()
 	// B19.8: scheduled agent payments and automatic top-ups. Every tick runs once however many Lens
 	// processes run it (the schedule's row is held while its tick is paid and advanced).
 	go func() {
