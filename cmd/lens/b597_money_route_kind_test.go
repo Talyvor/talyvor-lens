@@ -188,3 +188,23 @@ func TestB597_TheGateIsOnTheAuthedGroup(t *testing.T) {
 		t.Fatal("main.go does not put moneyKindGate(dualToken) on the authed group after workspaceIsolationMiddleware")
 	}
 }
+
+var b597CardRoute = regexp.MustCompile(`(^|/|-)cards?(/|$)`)
+
+// Every kind gets cards (launch pack 3.3): a stablecoin workspace's card spends from its stablecoin balance, so no card
+// route is fiat. The test above then proves each kind reaches them.
+func TestB597_EveryKindGetsCards(t *testing.T) {
+	cards := 0
+	for p, side := range moneyRoutes {
+		if !b597CardRoute.MatchString(p) {
+			continue
+		}
+		cards++
+		if side != moneySideEither {
+			t.Errorf("moneyRoutes names the card route %s %s: every kind gets cards, so it is either", p, side)
+		}
+	}
+	if cards < 10 {
+		t.Fatalf("matched %d card routes in moneyRoutes: the match is not finding them", cards)
+	}
+}
