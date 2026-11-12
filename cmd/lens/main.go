@@ -149,6 +149,7 @@ import (
 	"github.com/talyvor/lens/internal/status"
 	"github.com/talyvor/lens/internal/stepup"
 	"github.com/talyvor/lens/internal/storedanswers"
+	"github.com/talyvor/lens/internal/support"
 	"github.com/talyvor/lens/internal/tare"
 	"github.com/talyvor/lens/internal/tare/kompress"
 	"github.com/talyvor/lens/internal/taxprofile"
@@ -2586,6 +2587,8 @@ func run() error {
 
 	// B59.1 — the areas each workspace has; every area is off until the operator switches it on.
 	areaStore := areas.NewStore(pool)
+	// B59.27 — support, complaints, closing the account and the workspace's data, answered by a person at Talyvor.
+	supportStore := support.NewStore(pool)
 	r := chi.NewRouter()
 	// U3 master economy kill-switch: the single chokepoint for economy-route
 	// registration. econ.{get,post,del} register only when cfg.EconomyEnabled;
@@ -2849,6 +2852,10 @@ func run() error {
 	r.Delete("/v1/admin/workspaces/{wsID}/rate-limits", requireAdmin(authManager, newRateLimitsDeleteHandler(workspaceRateLimits)))
 	// B59.1 — the operator switches one area on or off for one workspace, recorded in the operator audit trail.
 	r.Put("/v1/admin/workspaces/{wsID}/areas/{area}", requireAdmin(authManager, newAreaSwitchHandler(areaStore)))
+	// B59.27 — the operator's inbox of every workspace's requests, and the operator's answer, recorded in the
+	// operator audit trail.
+	r.Get("/v1/admin/requests", requireAdminOrOperatorRead(authManager, newRequestInboxHandler(supportStore)))
+	r.Put("/v1/admin/requests/{id}", requireAdmin(authManager, newRequestAnswerHandler(supportStore)))
 	// B27.28 — the operator audit trail: the web app records each operator action on its moderator key
 	// (naming the operator), operators read it back filtered or as CSV. Append-only in the database (0182).
 	// operator_audit_handler.go.
@@ -3726,7 +3733,8 @@ func run() error {
 
 		// B28.452: a chat shared from Chat as a link, kept until the link is turned off.
 		mountChatShareRoutes(authed, pool)
-		mountAreaRoutes(authed, areaStore) // B59.1
+		mountAreaRoutes(authed, areaStore)              // B59.1
+		mountSupportRequestRoutes(authed, supportStore) // B59.27
 
 		// ─── Workspace tenant config + keys ─────────────────
 		// Per-workspace policy bundle (spend cap, model + provider
