@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
 
@@ -24,7 +25,14 @@ import (
 //	                                    or CSV (Content-Type: text/csv) with the columns payee_id (or payee), amount — a
 //	                                    decimal such as 12.34 — currency and reference, and the key as the Idempotency-Key
 //	                                    header. Answers the batch with every row: valid, or invalid with the reason.
-//	POST /v1/money/payouts/{id}/approve the owner or an admin approves it: every valid row is paid, with a result each
+//	POST /v1/money/payouts/{id}/approve the owner or an admin approves it: every valid row is paid, with a result each.
+//	                                    B58.5: once the workspace has a passkey or device key, the body is {"assertion"},
+//	                                    that key's signature over the challenge below for the batch as it stands; without
+//	                                    it, signed over another batch, or over this one before it changed, nothing is paid (403)
+//	POST /v1/money/payouts/{id}/approve/challenge
+//	                                    B58.5: {challenge, allow_credentials, payout}, the challenge approving the batch is
+//	                                    signed over (a passkey's, or the phone's device key's), and the batch it names:
+//	                                    its id, its rows and its totals by currency
 //	GET  /v1/money/payouts              ?agent_id= — the batches, newest first, without their rows
 //	GET  /v1/money/payouts/{id}         one batch with every row: its validation, or its payment and where it stood
 //
@@ -34,7 +42,8 @@ import (
 type moneyPayoutBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	CreatePayoutBatch(ctx context.Context, workspaceID string, in economy.PayoutBatch) (economy.PayoutBatch, error)
-	ApprovePayoutBatch(ctx context.Context, workspaceID, id, by string) (economy.PayoutBatch, error)
+	ApprovePayoutBatch(ctx context.Context, workspaceID, id, by string, a *passkey.Assertion) (economy.PayoutBatch, error)
+	PayoutBatchChallenge(ctx context.Context, workspaceID, id string) (string, []string, economy.PayoutBatch, error)
 	PayoutBatch(ctx context.Context, workspaceID, agentID, id string) (economy.PayoutBatch, error)
 	PayoutBatches(ctx context.Context, workspaceID, agentID string) ([]economy.PayoutBatch, error)
 }
@@ -80,12 +89,36 @@ func mountMoneyPayoutRoutes(r chi.Router, bank moneyPayoutBank) {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin approves a payout batch")
 			return
 		}
-		b, err := bank.ApprovePayoutBatch(req.Context(), ws, chi.URLParam(req, "id"), who)
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"assertion"}: the key's signature over POST /v1/money/payouts/{id}/approve/challenge`)
+			return
+		}
+		b, err := bank.ApprovePayoutBatch(req.Context(), ws, chi.URLParam(req, "id"), who, in.Assertion)
 		if err != nil {
 			writePayoutErr(w, err)
 			return
 		}
 		writeJSONOK(w, http.StatusOK, b)
+	})
+	r.Post("/v1/money/payouts/{id}/approve/challenge", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := caller(w, req)
+		if !ok {
+			return
+		}
+		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin approves a payout batch")
+			return
+		}
+		c, creds, b, err := bank.PayoutBatchChallenge(req.Context(), ws, chi.URLParam(req, "id"))
+		if err != nil {
+			writePayoutErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required",
+			"payout": map[string]any{"id": b.ID, "rows_total": b.RowsTotal, "rows_valid": b.RowsValid, "totals_minor": b.TotalsMinor}})
 	})
 	r.Get("/v1/money/payouts", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
@@ -180,6 +213,10 @@ func writePayoutErr(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrPayoutBatchNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, economy.ErrPasskeyRequired):
+		writeJSONErr(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, economy.ErrPayoutBatchDecided):
+		writeJSONErr(w, http.StatusConflict, err.Error())
 	default:
 		writePaymentErr(w, err)
 	}
