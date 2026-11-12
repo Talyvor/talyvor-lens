@@ -296,7 +296,7 @@ func TestB5241_ARaiseProposalWaitsForThePasskey(t *testing.T) {
 	}
 	// Signed over its own challenge, it applies, and the rules read the new limit.
 	code, c := call(proposals+"/"+id+"/challenge", "")
-	if code != http.StatusOK || c["looser"] != true || c["challenge"] == nil || jsonOf(c["changes"]) != `["Daily limit: was 5 LXC, now 9 LXC"]` {
+	if code != http.StatusOK || c["looser"] != true || c["challenge"] == nil || jsonOf(c["changes"]) != `["Daily limit: was $0.50 (5 LXC), now $0.90 (9 LXC)"]` {
 		t.Fatalf("the proposal's challenge = %d %v, want looser with the change in words", code, c)
 	}
 	challenge := c["challenge"].(string)

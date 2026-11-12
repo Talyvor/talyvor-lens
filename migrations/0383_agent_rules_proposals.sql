@@ -1,4 +1,4 @@
--- 0345_agent_rules_proposals.sql — B52.41: a raise of an agent's limits, filed for the owner's passkey.
+-- 0383_agent_rules_proposals.sql — B52.41: a raise of an agent's limits, filed for the owner's passkey.
 --
 -- agent_rules_proposals: rules filed for an agent (by the owner's token, for a connected assistant) that loosen what
 --                        is in force. Nothing applies until POST …/rules/proposals/{id}/approve, signed with the
