@@ -210,8 +210,8 @@ var cardContract = []struct {
 	}},
 }
 
-// cardNumber is a run of digits as long as the shortest card number.
-var cardNumber = regexp.MustCompile(`\d{12,}`)
+// CardNumber is a run of digits as long as the shortest card number: nothing a card partner answers may match it.
+var CardNumber = regexp.MustCompile(`\d{12,}`)
 
 // CardContract runs every card-partner case (B53.10) on a fresh issuer and its fake from newPartner, which asks decide
 // about every charge Lens is asked about; here Lens approves every charge, so a decline is the partner's own. After each
@@ -231,7 +231,7 @@ func CardContract(t *testing.T, newPartner func(decide Decide) (money.CardIssuer
 			if err != nil {
 				t.Fatal(err)
 			}
-			if n := cardNumber.Find(b); n != nil {
+			if n := CardNumber.Find(b); n != nil {
 				t.Fatalf("the partner answered something that reads as a card number (%d digits)", len(n))
 			}
 		})
