@@ -26,9 +26,9 @@ import (
 type moneySide string
 
 const (
-	moneySideFiat    moneySide = "fiat"     // cards, other banks, cash-outs to a bank: refused to a stablecoin workspace
+	moneySideFiat    moneySide = "fiat"     // other banks, cash-outs to a bank: refused to a stablecoin workspace
 	moneySideOnChain moneySide = "on_chain" // smart accounts, keys and sweeps on chain, gas: refused to a fiat workspace
-	moneySideEither  moneySide = "either"   // serves both kinds
+	moneySideEither  moneySide = "either"   // serves both kinds: every kind gets cards (launch pack 3.3)
 )
 
 // moneyRoutes is every money route's side, by its chi pattern with every parameter written {}, grouped by the file
@@ -117,9 +117,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/agent-card/rotate": moneySideEither,
 
 	// agent_cards_handler.go
-	"/v1/workspaces/{}/agents/{}/card":          moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/card":          moneySideEither,
 	"/v1/workspaces/{}/agents/{}/card/freeze":   moneySideEither, // a control that stops money is never refused
-	"/v1/workspaces/{}/agents/{}/card/unfreeze": moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/card/unfreeze": moneySideEither,
 
 	// agent_cash_outs_handler.go
 	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
@@ -223,9 +223,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/budgets/{}":     moneySideEither,
 
 	// money_cards_handler.go
-	"/v1/money/cards":            moneySideFiat,
-	"/v1/money/cards/{}":         moneySideFiat,
-	"/v1/money/cards/{}/approve": moneySideFiat,
+	"/v1/money/cards":            moneySideEither,
+	"/v1/money/cards/{}":         moneySideEither,
+	"/v1/money/cards/{}/approve": moneySideEither,
 
 	// money_coach_handler.go
 	"/v1/money/coach":     moneySideEither,
@@ -282,17 +282,17 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/payouts/{}/approve": moneySideEither,
 
 	// money_physical_cards_handler.go
-	"/v1/money/physical-cards":             moneySideFiat,
-	"/v1/money/physical-cards/{}/activate": moneySideFiat,
-	"/v1/money/physical-cards/{}/replace":  moneySideFiat,
+	"/v1/money/physical-cards":             moneySideEither,
+	"/v1/money/physical-cards/{}/activate": moneySideEither,
+	"/v1/money/physical-cards/{}/replace":  moneySideEither,
 
 	// money_plan_handler.go
 	"/v1/money/plan":        moneySideEither,
 	"/v1/money/plan/income": moneySideEither,
 
 	// money_reusable_cards_handler.go
-	"/v1/money/reusable-cards":    moneySideFiat,
-	"/v1/money/reusable-cards/{}": moneySideFiat,
+	"/v1/money/reusable-cards":    moneySideEither,
+	"/v1/money/reusable-cards/{}": moneySideEither,
 
 	// money_search_handler.go
 	"/v1/money/search": moneySideEither,
