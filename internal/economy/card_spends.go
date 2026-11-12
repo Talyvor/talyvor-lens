@@ -360,7 +360,7 @@ func (s *DualTokenStore) moveStandingLimit(ctx context.Context, sp CardSpend, de
 }
 
 // RunCardSpendExpiries lowers back the limit of each standing card whose raise is past its time at now, and marks the
-// raise expired. It answers how many it lowered.
+// raise expired. It answers how many it lowered, and why any it could not lower stays raised until the next run.
 func (s *DualTokenStore) RunCardSpendExpiries(ctx context.Context, now time.Time) (int, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+cardSpendCols+` FROM money_card_spends WHERE status = $1 AND standing_card_id <> '' AND expires_at <= $2
 		ORDER BY expires_at LIMIT 200`, CardSpendActive, now)
@@ -375,16 +375,18 @@ func (s *DualTokenStore) RunCardSpendExpiries(ctx context.Context, now time.Time
 		return 0, fmt.Errorf("economy: card spend expiries: %w", err)
 	}
 	n := 0
-	for _, sp := range due {
+	var errs []error
+	for _, sp := range due { // one card the issuer will not lower does not keep the others raised: each is asked again next run
 		moved, err := s.moveStandingLimit(ctx, sp, -sp.AmountMinor, CardSpendActive, CardSpendExpired)
 		if err != nil {
-			return n, err
+			errs = append(errs, fmt.Errorf("card spend %s: %w", sp.ID, err))
+			continue
 		}
 		if moved {
 			n++
 		}
 	}
-	return n, nil
+	return n, errors.Join(errs...)
 }
 
 const cardSpendCols = `id, workspace_id, agent_id, idempotency_key, merchant, amount_minor, currency, funding, standing_card_id, status,
