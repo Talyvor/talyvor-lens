@@ -38,6 +38,12 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{id}/fund     {"amount_ulxc"}   move the workspace's LXC to the agent
 //	POST /v1/workspaces/{wsID}/agents/{id}/withdraw {"amount_ulxc"}   take it back
 //
+// B57.12 — one agent's page in one read:
+//
+//	GET  /v1/workspaces/{wsID}/agents/{id}/summary   owner only: the agent, its safe to spend, month, approvals waiting,
+//	                                                  newest statement lines, rules version, card and currency accounts,
+//	                                                  every figure from one snapshot, with as_of
+//
 // B19.2 — each agent's spending rules, and the approvals its rules ask a person for:
 //
 //	GET  /v1/workspaces/{wsID}/agents/{id}/rules              the agent's rules
@@ -330,6 +336,7 @@ type agentBank interface {
 	ListAgentSpendAlerts(ctx context.Context, workspaceID string) ([]economy.AgentSpendAlert, error)
 	AgentSpendForecast(ctx context.Context, workspaceID string, at time.Time) (economy.SpendForecast, error)
 	SafeToSpend(ctx context.Context, workspaceID string, at time.Time) (economy.SafeToSpend, error)
+	AgentSummary(ctx context.Context, workspaceID, agentID string) (economy.AgentSummary, error)
 	DailyBriefing(ctx context.Context, workspaceID string, at time.Time) (economy.Briefing, error)
 }
 
@@ -538,6 +545,17 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		rules, err := bank.GetAgentRules(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeRules(w, rules, err)
 	})
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/summary", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		sum, err := bank.AgentSummary(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		switch {
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, sum)
+		}
+	}))
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet", func(w http.ResponseWriter, req *http.Request) {
 		wallet, err := bank.AgentWallet(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		switch {
