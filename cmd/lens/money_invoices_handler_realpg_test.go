@@ -21,6 +21,11 @@ import (
 
 type fakeInvoiceCards struct{ asked billing.InvoiceCheckout }
 
+// invoiceStripe is Stripe keeping £2.00 for processing each card payment.
+type invoiceStripe struct{ marketStripe }
+
+func (*invoiceStripe) ProcessingFee(context.Context, string) (int64, error) { return 200, nil }
+
 func (f *fakeInvoiceCards) CreateInvoiceCheckoutSession(_ context.Context, p billing.InvoiceCheckout) (string, error) {
 	f.asked = p
 	return "https://checkout.stripe.test/c/pay/cs_test_b3020", nil
@@ -31,6 +36,8 @@ func (f *fakeInvoiceCards) CreateInvoiceCheckoutSession(_ context.Context, p bil
 // however often Stripe sends it, and the invoice reads paid. Another company's agent pays a £30.00 invoice from its own
 // account: £30.00 moves from its account to the issuer's, once, and the invoice reads paid. A transfer quoting the
 // invoice's reference marks a third one paid; a fourth, past its due date, reads overdue and is sent one reminder.
+// B56.21: each payment is charged its fee once, 0.75% of the card payment and Stripe's £2.00, and 1% of the agent's
+// payment and of the transfer; Stripe's charge.refunded of the card payment returns it and gives its fee back.
 func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -81,7 +88,7 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	r := chi.NewRouter()
 	mountInvoiceRoutes(r, store)
 	mountInvoicePayRoutes(r, store, cards, func(id string) bool { return id == ws })
-	r.Post("/v1/billing/webhook", billing.New(pool, store, nil, secret).WithInvoices(store).HandleWebhook)
+	r.Post("/v1/billing/webhook", billing.New(pool, store, &invoiceStripe{}, secret).WithInvoices(store).HandleWebhook)
 	call := func(asWS, method, path, body string) (int, map[string]any) {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -132,21 +139,25 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	}
 	session, _ := json.Marshal(map[string]any{"id": "evt_b3020_card", "object": "event", "type": "checkout.session.completed",
 		"livemode": false, "created": time.Now().Unix(), "data": map[string]any{"object": map[string]any{"id": "cs_test_b3020", "object": "checkout.session",
-			"mode": "payment", "payment_status": "paid", "amount_total": 12000, "currency": "gbp", "livemode": false,
+			"mode": "payment", "payment_status": "paid", "amount_total": 12000, "currency": "gbp", "livemode": false, "payment_intent": "pi_test_b3020",
 			"customer_details": map[string]any{"name": "Buyer Ltd", "email": "ap@buyer.test"},
 			"metadata":         map[string]string{"talyvor_invoice_id": byCard["id"].(string)}}}})
-	for range 2 { // Stripe sends it twice: it posts once
-		signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: session, Secret: secret})
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", strings.NewReader(string(session)))
+	deliver := func(event []byte) {
+		t.Helper()
+		signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: event, Secret: secret})
+		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", strings.NewReader(string(event)))
 		req.Header.Set("Stripe-Signature", signed.Header)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("checkout.session.completed = %d %s", w.Code, w.Body.String())
+			t.Fatalf("%s = %d %s", event, w.Code, w.Body.String())
 		}
 	}
-	if got := held(ws, sellerGBP.ID); got != 12000 {
-		t.Fatalf("the seller's account holds %d after the card payment; want 12000", got)
+	for range 2 { // Stripe sends it twice: it posts once
+		deliver(session)
+	}
+	if got := held(ws, sellerGBP.ID); got != 12000-290 {
+		t.Fatalf("the seller's account holds %d after the card payment; want 11710, £120.00 less 90p and Stripe's £2.00", got)
 	}
 	var postings int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
@@ -186,8 +197,8 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 			t.Fatalf("the buyer pays = %d %v", code, out)
 		}
 	}
-	if s, b := held(ws, sellerGBP.ID), held(payerWS, buyerGBP.ID); s != 15000 || b != 7000 {
-		t.Fatalf("after the agent's payment the seller holds %d and the buyer %d; want 15000 and 7000", s, b)
+	if s, b := held(ws, sellerGBP.ID), held(payerWS, buyerGBP.ID); s != 11710+3000-30 || b != 7000 {
+		t.Fatalf("after the agent's payment the seller holds %d and the buyer %d; want 14680 and 7000", s, b)
 	}
 	if code, _ := call(payerWS, http.MethodPost, "/v1/pay/"+token(byCard)+"/agent", `{"agent_id":"`+buyer.ID+`"}`); code != http.StatusConflict {
 		t.Fatalf("paying a paid invoice = %d; want 409", code)
@@ -235,7 +246,15 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 			t.Errorf("the overdue invoice shows %v; want its one reminder", inv["reminders"])
 		}
 	}
-	if got := held(ws, sellerGBP.ID); got != 17500 {
-		t.Fatalf("the seller's account holds %d after the transfer; want 17500", got)
+	if got := held(ws, sellerGBP.ID); got != 14680+2500-25 {
+		t.Fatalf("the seller's account holds %d after the transfer; want 17155", got)
+	}
+
+	refund, _ := json.Marshal(map[string]any{"id": "evt_b5621_refund", "object": "event", "type": "charge.refunded", "livemode": false,
+		"created": time.Now().Unix(), "data": map[string]any{"object": map[string]any{"id": "ch_test_b3020", "object": "charge",
+			"payment_intent": "pi_test_b3020", "amount": 12000, "amount_refunded": 12000, "refunded": true, "currency": "gbp"}}})
+	deliver(refund)
+	if got := held(ws, sellerGBP.ID); got != 17155-12000+290 {
+		t.Fatalf("the seller's account holds %d after the card payment is refunded; want 5445, the £120.00 gone and its £2.90 fee back", got)
 	}
 }

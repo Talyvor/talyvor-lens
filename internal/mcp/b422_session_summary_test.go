@@ -15,6 +15,7 @@ func TestMCP_GetSessionSummary_OtherWorkspacesSessionIsNotFound(t *testing.T) {
 	tracker.GetOrCreate(context.Background(), "sess-a", "ws-a", "agent-a")    // workspace A's session
 	tracker.GetOrCreate(context.Background(), "sess-own", "default", "agent") // the caller's own
 	s := newServer(nil, nil, nil, nil, tracker, "test-version")
+	s.SetAreas(everyArea{})
 
 	for _, id := range []string{"sess-a", "sess-missing"} {
 		resp := rpcCall(t, s, "tools/call", map[string]any{

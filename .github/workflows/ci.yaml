@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       # A `finally` DOES NOT RUN ON SIGTERM, and 16 of this repo's control scripts mutate a
       # tracked file and restore it in one. NONE installed a handler before this step, and
@@ -174,7 +174,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - name: fetch kompress-small at the Dockerfile's pinned revision
         run: |
@@ -218,7 +218,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       # B43.27: foundryup downloads from github.com releases and gives up after ~30s of 5xx; on 8 Nov a GitHub
       # outage (502/504) failed this install on main and two PRs. One more attempt a minute later rides that out.
@@ -238,12 +238,14 @@ jobs:
       - name: agents' smart accounts on a local devnet
         env:
           LENS_TEST_DEVNET_CONTRACTS: /tmp/devnet-contracts
+          # B54.26: a token-paid fee settled from its receipt is checked on the database's allowance rows.
+          LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable
         run: go test -count=1 -v -run TestAgentSmartAccountOnDevnet ./internal/money/smartaccount/
-      - name: every movement of an agent's wallet seen, confirmed, reversed by a reorg and reconciled (B48.6)
+      - name: every movement of an agent's wallet seen, confirmed, reversed by a reorg and reconciled (B48.6), every token valued (B48.28)
         env:
           LENS_TEST_DEVNET_CONTRACTS: /tmp/devnet-contracts
           LENS_TEST_DATABASE_URL: postgres://postgres:lens_test@localhost:5432/lens_test?sslmode=disable
-        run: go test -count=1 -v -run TestB486_ ./cmd/lens/
+        run: go test -count=1 -v -run 'TestB486_|TestB4828_' ./cmd/lens/
 
   # Formal static-analysis gate: golangci-lint (errcheck, govet, ineffassign,
   # staticcheck, unused). Config in .golangci.yml. Blocking — a finding fails the
@@ -254,14 +256,14 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          # Must EQUAL go.mod's `toolchain` (go1.26.10): golangci-lint refuses to run if it
+          # Must EQUAL go.mod's `toolchain` (go1.26.11): golangci-lint refuses to run if it
           # was built with a Go older than the module's targeted version. (Every job pins it
           # too since go.mod's go line reached 1.26: setup-go sets GOTOOLCHAIN=local, so a
           # 1.25 job refuses the module rather than fetching the toolchain.)
           # ">=" was the old wording and it is too weak to be checkable: go.mod's toolchain
           # is a FLOOR, so a pin ABOVE it is not pulled back down. internal/toolchainaudit
           # asserts equality — change this and go.mod together or the guard reds.
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - name: golangci-lint
         run: |
@@ -307,7 +309,7 @@ jobs:
       # the real proxy handler. Needs the Python and Node installs above, so it runs here.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - name: SDKs through the real proxy handler
         env:
@@ -339,7 +341,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -363,7 +365,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10" # keep in lockstep with go.mod toolchain so stdlib vulns are assessed against the shipped runtime — ENFORCED by internal/toolchainaudit, because a pin ABOVE go.mod's toolchain grades a stdlib nothing ships and this gate would go green over a vulnerable binary
+          go-version: "1.26.11" # keep in lockstep with go.mod toolchain so stdlib vulns are assessed against the shipped runtime — ENFORCED by internal/toolchainaudit, because a pin ABOVE go.mod's toolchain grades a stdlib nothing ships and this gate would go green over a vulnerable binary
           cache: false
       - name: govulncheck
         run: |
@@ -393,7 +395,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - name: Build binary
         run: |

@@ -28,7 +28,7 @@ import (
 
 var (
 	// ErrTermsNotAccepted: the capability's latest terms are not accepted for the workspace.
-	ErrTermsNotAccepted = errors.New("economy: refused — this capability's terms are not accepted")
+	ErrTermsNotAccepted = errors.New("economy: refused: this capability's terms are not accepted")
 	// ErrNoTerms: no terms are published for the capability.
 	ErrNoTerms = errors.New("economy: this capability has no terms")
 	// ErrTermsVersionStale: an acceptance of a version that is no longer the latest.
@@ -242,7 +242,7 @@ func (s *DualTokenStore) AcceptTerms(ctx context.Context, workspaceID, capabilit
 	case latest == 0:
 		return TermsAcceptance{}, fmt.Errorf("%w: %q", ErrNoTerms, capability)
 	case version != latest:
-		return TermsAcceptance{}, fmt.Errorf("%w: version %d of %s's terms is the latest, not %d — read it and accept it",
+		return TermsAcceptance{}, fmt.Errorf("%w: version %d of %s's terms is the latest, not %d. Read it and accept it",
 			ErrTermsVersionStale, latest, capability, version)
 	}
 	hash, err := ipHash(ctx, tx, ip)
@@ -290,6 +290,11 @@ func ipHash(ctx context.Context, tx pgx.Tx, ip string) (string, error) {
 // termsRefusal refuses capability c for workspaceID while c has terms whose latest version the workspace has not
 // accepted — test money or live, whatever c's class. A capability with no terms asks nothing.
 func termsRefusal(ctx context.Context, q pgxDB, workspaceID string, c Capability) (*CapabilityRefusal, error) {
+	// B17.354: the terms are what a customer accepts from Talyvor, so Talyvor's own workspace — which pays the marketplace's
+	// sellers — has none to accept. No customer's workspace is named it: theirs are "u" and a hash (deriveWorkspaceID).
+	if workspaceID == TalyvorWorkspace {
+		return nil, nil
+	}
 	var version int
 	var accepted bool
 	err := q.QueryRow(ctx, `SELECT t.version, EXISTS (SELECT 1 FROM capability_terms_acceptances a

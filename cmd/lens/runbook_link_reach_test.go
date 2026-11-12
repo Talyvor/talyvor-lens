@@ -59,6 +59,7 @@ var alertsWithRunbooks = []string{
 	"LensHighLatencyP99",
 	"LensInstanceDown",
 	"LensProviderDown",
+	"LensRateLimitRedisDown",
 	"LensRateLimitSpike",
 	"LensTokenLedgerSlow",
 }

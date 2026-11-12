@@ -268,7 +268,7 @@ func (p *TestAccountPartner) QuoteInternational(_ context.Context, req Internati
 	if err := checkMoney(req.Amount); err != nil {
 		return InternationalQuote{}, err
 	}
-	rate, delivers, err := testConvert(req.Amount, req.Deliver)
+	rate, delivers, err := testConvert(req.Amount, req.Deliver, nil)
 	if err != nil {
 		return InternationalQuote{}, err
 	}

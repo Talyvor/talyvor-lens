@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/talyvor-logo-dark-notag.svg">
-    <img alt="Talyvor" src="docs/brand/talyvor-logo-light-notag.svg" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/talyvor-logo-on-dark.svg">
+    <img alt="Talyvor" src="docs/brand/talyvor-logo-on-light.svg" width="360">
   </picture>
 </p>
 
@@ -319,7 +319,8 @@ exactly these fields, and no secret, reference id, error text, host name or work
 - `status`, `version`, `uptime_hours`, `updated_at`
 - `components[]`: `name`, `status`, `latency_ms`, `measured`, `message` (a fixed phrase, when there is one), `checked_at`
 - `providers[]`: `name`, `status`, `latency_ms`, `checked_at`
-- `rails[]`: `service`, `name`, `mode`, `status`, `last_success`, `last_failure`, `capabilities[]` (`key`, `cleared`), and on
+- `rails[]`: `service`, `name`, `mode`, `status`, `last_success`, `last_failure`, `capabilities[]` (`key`, `cleared`, and
+  `label`: `live` or `sandbox`, B56.7), and on
   the screening rail `lists_age_hours`: how many whole hours ago the sanctions lists last downloaded
 - `rails_summary`: `up`, `down`, `idle`, `down_names`
 - `card_payments`: whether a card can be charged — `live` (billing on with a live Stripe key), `test` (billing on with a

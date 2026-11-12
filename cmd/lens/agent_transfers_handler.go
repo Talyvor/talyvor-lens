@@ -68,7 +68,7 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 			Handle string `json:"handle"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"handle": "<3–32 of a–z, 0–9, . _ ->"}`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"handle": "<3 to 32 of a to z, 0 to 9, . _ ->"}`)
 			return
 		}
 		a, err := bank.SetAgentHandle(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Handle)

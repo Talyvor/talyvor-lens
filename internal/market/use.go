@@ -78,7 +78,7 @@ type Meter interface {
 // use in the same transaction so its daily and monthly limits count it — and a licence it takes against its licence
 // rules (B32.22).
 type AgentJudge interface {
-	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c economy.Commitment, what string,
+	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c economy.Commitment, what, memo string,
 		record func(pgx.Tx) error) error
 }
 
@@ -263,8 +263,8 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 			}
 		}
 		if most := req.MaxPriceUSDMicros; most != nil && total/ulxcPerUSDMicro > *most {
-			return Use{}, fmt.Errorf("%w: it costs %d µUSD now, above your %d — nothing ran and nothing was charged",
-				ErrOverMaxPrice, total/ulxcPerUSDMicro, *most)
+			return Use{}, fmt.Errorf("%w: it costs %s now, above your %s. Nothing ran and nothing was charged",
+				ErrOverMaxPrice, usdText(total/ulxcPerUSDMicro), usdText(*most))
 		}
 		if len(billed) > 0 && deps.Meter == nil {
 			return Use{}, ErrNoBill
@@ -273,7 +273,8 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 		// pipeline is judged once, for all it bills.
 		if agentID != "" && deps.Agents != nil {
 			what := fmt.Sprintf("market:%s:%s:%d:%d", agentID, l.ID, version, total)
-			err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, total, economy.Commitment{}, what, record)
+			memo := fmt.Sprintf("One use of %s (version %d), %s on your monthly marketplace bill", l.Title, version, economy.LXCMoney(total))
+			err = deps.Agents.JudgeAgentPurchase(ctx, buyerWorkspaceID, agentID, l.ID, total, economy.Commitment{}, what, memo, record)
 		} else if err = pgx.BeginFunc(ctx, s.pool, record); err != nil {
 			err = fmt.Errorf("market: record use: %w", err)
 		}

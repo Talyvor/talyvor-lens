@@ -19,7 +19,7 @@ import (
 
 // B30.13 — accounts in pounds, euros and dollars for a company and each of its agents (economy/currency_accounts.go).
 //
-//	POST /v1/money/accounts   {currency, agent_id, funding} — the company's account in GBP, EUR or USD, or with
+//	POST /v1/money/accounts   {currency, agent_id, funding} — the company's account in GBP, EUR, USD or USDC, or with
 //	                          agent_id that agent's sub-account of it; funding is test (the default) or live
 //	GET  /v1/money/accounts   ?agent_id= — the accounts and what each holds, test and live apart
 //	GET  /v1/money/accounts/{id}/details — what a payer pays into it (B30.14): the company account's details, and an
@@ -28,6 +28,8 @@ import (
 //	                          test money into a company account, a payment in from the Test partner
 //	GET  /v1/money/accounts/{id}/statement?from=&to=&format=json|csv — B56.14: every posting to it in [from, to), with
 //	                          the opening, in, out and closing balances
+//	GET  /v1/money/overview   ?agent_id= — B30.28: the cash view: totals per currency for the company and each agent,
+//	                          money in and out this month, the next 30 days of standing orders and mandates, the runway
 //
 // The workspace is the key's. Its owner or an admin opens and reads any of its accounts; an agent's own key only the
 // agent's, and opens them with no agent_id. Mounted in the authed group.
@@ -39,6 +41,7 @@ type moneyAccountBank interface {
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
 	AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (economy.MoneyStatement, error)
+	MoneyOverview(ctx context.Context, workspaceID, agentID string, now time.Time) (economy.MoneyOverview, error)
 }
 
 func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
@@ -106,6 +109,18 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"accounts": accounts})
 	})
+	r.Get("/v1/money/overview", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req, req.URL.Query().Get("agent_id"))
+		if !ok {
+			return
+		}
+		o, err := bank.MoneyOverview(req.Context(), ws, agentID, time.Now())
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, o)
+	})
 	r.Post("/v1/money/accounts/{id}/test-money", func(w http.ResponseWriter, req *http.Request) {
 		ws, _ := auth.WorkspaceIdentity(req.Context())
 		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); ws == "" || !owner {
@@ -135,7 +150,10 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		if !ok {
 			return
 		}
-		from, to, asCSV, err := statementPeriod(req, time.Now())
+		from, to, format, err := statementPeriod(req, time.Now())
+		if err == nil && format != "json" && format != "csv" {
+			err = errors.New("format must be json or csv")
+		}
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -146,7 +164,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-		case !asCSV:
+		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
 		default:
 			writeMoneyStatement(w, st)

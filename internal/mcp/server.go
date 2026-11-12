@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/talyvor/lens/internal/alerts"
+	"github.com/talyvor/lens/internal/areas"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/learner"
@@ -55,6 +56,8 @@ const (
 	rpcErrVersion      = -32022 // 2026-07-28 UnsupportedProtocolVersion
 
 	metaVersion = "io.modelcontextprotocol/protocolVersion"
+
+	maxRPCBody = 4 << 20 // one JSON-RPC message; past it /mcp answers 413
 )
 
 // pgxDB is the subset of *pgxpool.Pool the MCP tools need. nil pool is
@@ -85,6 +88,7 @@ type Server struct {
 	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact; nil leaves them out
 	paymentRequests PaymentRequester
 	recurring       RecurringPlanner // B45.13: prepare_recurring_payments; nil leaves it out
+	areas           AreaReader       // B59.4: the workspace's areas, whose tools it is offered; nil offers none
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
@@ -213,7 +217,14 @@ func (s *Server) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	var req rpcRequest
 	var resp rpcResponse
-	err := json.NewDecoder(r.Body).Decode(&req)
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRPCBody)).Decode(&req)
+	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		body, _ := json.Marshal(rpcErr(nil, rpcErrInvalidReq, fmt.Sprintf("Request too large: at most %d bytes", maxRPCBody)))
+		_, _ = w.Write(append(body, '\n'))
+		return
+	}
 	header, modern := r.Header.Get("MCP-Protocol-Version"), req.metaVersion()
 	switch {
 	case err != nil:
@@ -299,9 +310,26 @@ func (s *Server) dispatch(ctx context.Context, req rpcRequest) rpcResponse {
 		return rpcOK(req.ID, map[string]any{"supportedVersions": supportedVersions, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "ping":
 		return rpcOK(req.ID, map[string]any{})
-	case "tools/list":
-		return rpcOK(req.ID, map[string]any{"tools": s.tools()})
-	case "tools/call":
+	case "tools/list", "tools/call":
+		open, err := s.openAreas(ctx) // B59.4: an area's tools only for a workspace that has it
+		if err != nil {
+			return rpcErr(req.ID, rpcErrInternal, "could not read the workspace's areas")
+		}
+		if id, ok := listingOf(ctx); ok { // B41.178: /mcp/listings/{id}
+			if !open[areas.Marketplace] {
+				if req.Method == "tools/list" {
+					return rpcOK(req.ID, map[string]any{"tools": []map[string]any{}})
+				}
+				return rpcErr(req.ID, rpcErrMethodNotFnd, "unknown tool: "+req.toolName())
+			}
+			return s.dispatchListing(ctx, req, id)
+		}
+		if req.Method == "tools/list" {
+			return rpcOK(req.ID, map[string]any{"tools": offered(s.tools(), open)})
+		}
+		if a, ok := toolArea(req.toolName()); ok && !open[a] {
+			return rpcErr(req.ID, rpcErrMethodNotFnd, "unknown tool: "+req.toolName())
+		}
 		return s.handleToolsCall(ctx, req.ID, req.Params)
 	default:
 		return rpcErr(req.ID, rpcErrMethodNotFnd, "method not found: "+req.Method)

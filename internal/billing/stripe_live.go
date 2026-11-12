@@ -159,6 +159,27 @@ func (l *LiveStripe) CardFingerprint(ctx context.Context, paymentIntentID string
 	return pi.PaymentMethod.Card.Fingerprint, nil
 }
 
+// ProcessingFee is the fee on the balance transaction of the payment intent's charge. Stripe takes it in the currency
+// the charge settled in; when that is not the charge's own, it is the same share of the charge's amount.
+func (l *LiveStripe) ProcessingFee(ctx context.Context, paymentIntentID string) (int64, error) {
+	params := &stripe.PaymentIntentParams{}
+	params.Context = ctx
+	params.AddExpand("latest_charge.balance_transaction")
+	pi, err := paymentintent.Client{B: l.backend(), Key: l.key}.Get(paymentIntentID, params)
+	if err != nil {
+		return 0, err
+	}
+	ch := pi.LatestCharge
+	if ch == nil || ch.BalanceTransaction == nil || ch.BalanceTransaction.Amount <= 0 {
+		return 0, fmt.Errorf("billing: payment intent %s has no settled charge yet", paymentIntentID)
+	}
+	bt := ch.BalanceTransaction
+	if strings.EqualFold(string(bt.Currency), string(ch.Currency)) {
+		return bt.Fee, nil
+	}
+	return (bt.Fee*ch.Amount + bt.Amount/2) / bt.Amount, nil
+}
+
 // CreateSubscriptionCheckoutSession creates a mode=subscription Checkout Session for
 // the configured Price. W4.6.1 step 1.
 //

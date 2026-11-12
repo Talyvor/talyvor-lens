@@ -176,7 +176,7 @@ func (s *DualTokenStore) usableQuote(ctx context.Context, workspaceID string, in
 	case q.AccountID != from.id || q.PayeeID != in.PayeeID || q.AmountMinor != in.AmountMinor || q.Currency != in.Currency || q.Funding != in.Funding:
 		return q, fmt.Errorf("%w: quote %s priced %s to %s from %s", ErrQuote, q.ID, minorString(q.AmountMinor, q.Currency), q.PayeeName, q.AccountID)
 	case !q.ExpiresAt.After(time.Now()):
-		return q, fmt.Errorf("%w: quote %s expired at %s — ask for a new one", ErrQuote, q.ID, q.ExpiresAt.UTC().Format(time.RFC3339))
+		return q, fmt.Errorf("%w: quote %s expired at %s. Ask for a new one", ErrQuote, q.ID, q.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	return q, nil
 }

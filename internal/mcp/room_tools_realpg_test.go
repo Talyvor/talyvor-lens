@@ -75,6 +75,7 @@ func TestRoomTools_AnAgentTakesPartInARoomWithinItsRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newServer(pool, nil, nil, nil, nil, "test")
+	srv.SetAreas(everyArea{})
 	srv.SetAgentBank(bank)
 	srv.SetRooms(store, roomTestDeps{agents: bank})
 

@@ -108,6 +108,7 @@ var shipped = map[string]recorded{
 	"eval.DefaultEstOutputTokens":                 {eval.DefaultEstOutputTokens, 256, "pre-serve cost estimate"},
 	"keel.DefaultMinWorkspaces":                   {keel.DefaultMinWorkspaces, 3, "k-anonymity floor"},
 	"localrouter.DefaultHealthCheckInterval":      {localrouter.DefaultHealthCheckInterval, 30 * time.Second, "health check interval"},
+	"market.DefaultAgeRating":                     {market.DefaultAgeRating, "18+", "rating of a listing published without one, so none reaches a family filter unrated (B41.185)"},
 	"market.DefaultTrialMax":                      {market.DefaultTrialMax, 5, "most free trial uses an offer may give (B32.21)"},
 	"market.DefaultLineageMaxShareBPS":            {market.DefaultLineageMaxShareBPS, 3000, "largest remix share a royalty listing may ask (B32.24)"},
 	"market.DefaultLineageMaxDepth":               {market.DefaultLineageMaxDepth, 5, "generations the lineage read walks up (B32.24)"},

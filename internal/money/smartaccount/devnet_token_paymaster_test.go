@@ -16,6 +16,7 @@ import (
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 
+	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/coinbase/cdpfake"
 )
 
@@ -62,11 +63,19 @@ func tokenSponsorer(t *testing.T, c Chain, paymaster, usdc string, key *secp256k
 	return srv.URL
 }
 
-// B48.25 — on a network where no one sponsors its fees, an agent whose account holds no ETH sends USDC and pays the
-// network fee in USDC to an ERC-20 paymaster: the fee is quoted in USDC before the agent's key signs and counted with the
-// payment against the owner's permission, the paymaster takes no more than quoted, and the fee read back from the chain
-// (what the agent's history shows) is exactly what the paymaster took.
-func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
+// TokenFeeDevnet is the devnet below, for tests outside the package too (B54.26): a chain whose ERC-20 paymaster
+// takes network fees in USDC at the local service's price, and an agent's account holding 100 USDC that Signers signs
+// for with AgentKey.
+type TokenFeeDevnet struct {
+	Chain           Chain
+	USDC, Paymaster string
+	Account         Account
+	AgentKey        string
+	Signers         money.Signers
+}
+
+// NewTokenFeeDevnet starts the devnet; without LENS_TEST_DEVNET_CONTRACTS it skips the test.
+func NewTokenFeeDevnet(t *testing.T) TokenFeeDevnet {
 	dir := contracts(t)
 	ctx := context.Background()
 	c := bundle(t, anvil(t, 31337))
@@ -94,14 +103,28 @@ func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
 	}
 	aw, _ := addressW(acct.Address)
 	transact(t, c, usdc, call("mint(address,uint256)", aw, uintW(100_000_000)))
-	tokens := func(addr string) int64 {
-		w, _ := addressW(addr)
-		out, err := ethCall(c, usdc, call("balanceOf(address)", w))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return new(big.Int).SetBytes(out).Int64()
+	return TokenFeeDevnet{Chain: c, USDC: usdc, Paymaster: paymaster, Account: acct, AgentKey: agentKey, Signers: signers}
+}
+
+// Tokens is what addr holds of the devnet's USDC.
+func (d TokenFeeDevnet) Tokens(t *testing.T, addr string) int64 {
+	w, _ := addressW(addr)
+	out, err := ethCall(d.Chain, d.USDC, call("balanceOf(address)", w))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return new(big.Int).SetBytes(out).Int64()
+}
+
+// B48.25 — on a network where no one sponsors its fees, an agent whose account holds no ETH sends USDC and pays the
+// network fee in USDC to an ERC-20 paymaster: the fee is quoted in USDC before the agent's key signs and counted with the
+// payment against the owner's permission, the paymaster takes no more than quoted, and the fee read back from the chain
+// (what the agent's history shows) is exactly what the paymaster took.
+func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
+	d := NewTokenFeeDevnet(t)
+	ctx := context.Background()
+	c, usdc, paymaster, acct, agentKey, signers := d.Chain, d.USDC, d.Paymaster, d.Account, d.AgentKey, d.Signers
+	tokens := func(addr string) int64 { return d.Tokens(t, addr) }
 
 	pw, _ := addressW(payee)
 	data, err := Execute(usdc, nil, call("transfer(address,uint256)", pw, uintW(250_000)))
@@ -173,4 +196,10 @@ func TestAgentSmartAccountOnDevnetTokenPaymaster(t *testing.T) {
 	if left, err := c.FeeApprovalLeft(ctx, op); err != nil || left.Int64() != quote.Int64()-took {
 		t.Fatalf("still approved to the paymaster: %v, %v; want the quote %s less the %d taken", left, err, quote, took)
 	}
+}
+
+// TransferCall is the token's transfer(to, amount), for tests outside the package.
+func TransferCall(to string, amount *big.Int) ([]byte, error) {
+	w, err := addressW(to)
+	return call("transfer(address,uint256)", w, bigW(amount)), err
 }

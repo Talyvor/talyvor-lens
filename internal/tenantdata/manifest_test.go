@@ -346,6 +346,7 @@ var w626PopulationDelta = []string{
 	"room_reports",       // B32.52: keyed reporter_workspace_id, classified in the manifest
 	"room_reviews",       // B41.144: keyed reviewer_workspace_id, classified in the manifest
 	"room_takeovers",     // B41.148: keyed owner_/noticed_by_/elected_workspace_id, classified in the manifest
+	"room_tasks",         // B41.152: keyed poster_/claimant_workspace_id, classified in the manifest
 	"rooms",              // B32.28: keyed owner_workspace_id, classified in the manifest
 	"routing_prediction_mints", "royalty_detector_findings",
 	"test_crossing_reversals", // B26.15: keyed from_/to_workspace_id, classified in the manifest

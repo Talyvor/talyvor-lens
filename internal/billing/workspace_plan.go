@@ -60,6 +60,31 @@ func PlatformFeeBPS(ctx context.Context, db PlanQuerier, workspaceID string, s f
 	return s.PlatformFeeBPS[FreePlan], nil
 }
 
+// FXMarginBPS is the margin over the reference rate on workspaceID's currency conversions, in basis points (B56.23):
+// the Enterprise contract's own figure where the operator recorded one; else its plan's in s.FXMarginBPS, the plans
+// mapped as PlatformFeeBPS maps them. It answers the plan too, mapped the same way (B30.29: free converts test money only).
+func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, string, error) {
+	plan, err := PlanOf(ctx, db, workspaceID)
+	if err != nil {
+		return 0, "", err
+	}
+	c, err := ContractOf(ctx, db, workspaceID)
+	if err != nil {
+		return 0, "", err
+	}
+	if c != nil && c.FXMarginBPS != nil {
+		return *c.FXMarginBPS, plan, nil
+	}
+	switch plan {
+	case "plus", "pro", "max", BYOKPlan:
+		plan = TeamPlan
+	}
+	if bps, ok := s.FXMarginBPS[plan]; ok {
+		return bps, plan, nil
+	}
+	return s.FXMarginBPS[FreePlan], FreePlan, nil
+}
+
 // Contract is an Enterprise contract as the operator records it: the contract's own platform fee and FX
 // margin, in basis points, where it agreed one (nil follows the enterprise figure in internal/fees), and its own
 // limits on agents and seats, -1 unlimited (nil follows enterprise's gates in LENS_PLAN_GATES, B32.12).
@@ -110,11 +135,11 @@ func SetContract(ctx context.Context, pool *pgxpool.Pool, c Contract, actor stri
 	case c.WorkspaceID == "":
 		return nil, fmt.Errorf("%w: no workspace", ErrInvalidContract)
 	case actor == "":
-		return nil, fmt.Errorf("%w: no operator named — X-Talyvor-Operator or the body's actor", ErrInvalidContract)
+		return nil, fmt.Errorf("%w: no operator named. Name one in X-Talyvor-Operator or the body's actor", ErrInvalidContract)
 	}
 	for name, v := range map[string]*int64{"platform_fee_bps": c.PlatformFeeBPS, "fx_margin_bps": c.FXMarginBPS} {
 		if v != nil && (*v < 0 || *v > fees.BPSDenominator) {
-			return nil, fmt.Errorf("%w: %s is %d, outside 0–%d basis points", ErrInvalidContract, name, *v, fees.BPSDenominator)
+			return nil, fmt.Errorf("%w: %s is %d, outside 0 to %d basis points", ErrInvalidContract, name, *v, fees.BPSDenominator)
 		}
 	}
 	for name, v := range map[string]*int64{"agents": c.Agents, "seats": c.Seats} {
@@ -159,7 +184,7 @@ func SetContract(ctx context.Context, pool *pgxpool.Pool, c Contract, actor stri
 // the operator who did it in the operator audit trail — in one transaction.
 func EndContract(ctx context.Context, pool *pgxpool.Pool, workspaceID, actor string) error {
 	if actor = strings.TrimSpace(actor); actor == "" {
-		return fmt.Errorf("%w: no operator named — X-Talyvor-Operator or the body's actor", ErrInvalidContract)
+		return fmt.Errorf("%w: no operator named. Name one in X-Talyvor-Operator or the body's actor", ErrInvalidContract)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {

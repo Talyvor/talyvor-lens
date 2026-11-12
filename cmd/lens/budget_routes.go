@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/talyvor/lens/internal/budgets"
 )
@@ -48,6 +49,18 @@ func writeBudgetWriteErr(w http.ResponseWriter, err error) {
 	}
 }
 
+// budgetIDParam reads the {id} a budget route names. An id that is not a UUID
+// is the caller's mistake and answers 400 here, before Postgres turns it into
+// a cast error and a 500.
+func budgetIDParam(w http.ResponseWriter, req *http.Request) (string, bool) {
+	id := chi.URLParam(req, "id")
+	if _, err := uuid.Parse(id); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "budget id must be a UUID")
+		return "", false
+	}
+	return id, true
+}
+
 func budgetCreateHandler(store *budgets.Store, reload func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
@@ -70,10 +83,33 @@ func budgetCreateHandler(store *budgets.Store, reload func(context.Context) erro
 	}
 }
 
+func budgetGetHandler(store *budgets.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		wsID := chi.URLParam(req, "wsID")
+		id, ok := budgetIDParam(w, req)
+		if !ok {
+			return
+		}
+		b, err := store.Get(req.Context(), wsID, id)
+		if errors.Is(err, budgets.ErrNotFound) {
+			writeJSONErr(w, http.StatusNotFound, "budget not found")
+			return
+		}
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, b)
+	}
+}
+
 func budgetUpdateHandler(store *budgets.Store, reload func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
-		id := chi.URLParam(req, "id")
+		id, ok := budgetIDParam(w, req)
+		if !ok {
+			return
+		}
 		// A field the body leaves out keeps its value.
 		var in budgets.Patch
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
@@ -96,8 +132,16 @@ func budgetUpdateHandler(store *budgets.Store, reload func(context.Context) erro
 func budgetDeleteHandler(store *budgets.Store, reload func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
-		id := chi.URLParam(req, "id")
-		if err := store.Delete(req.Context(), wsID, id); err != nil {
+		id, ok := budgetIDParam(w, req)
+		if !ok {
+			return
+		}
+		err := store.Delete(req.Context(), wsID, id)
+		if errors.Is(err, budgets.ErrNotFound) {
+			writeJSONErr(w, http.StatusNotFound, "budget not found")
+			return
+		}
+		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

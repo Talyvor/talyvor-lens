@@ -158,7 +158,7 @@ func TestB277_BudgetWriteErrorsCarryNoDatabaseText(t *testing.T) {
 		}
 	}
 	check("second budget for the same scope", http.MethodPost, base, `{"scope":"workspace","limit_usd":9}`, http.StatusConflict)
-	check("malformed budget id", http.MethodPatch, base+"/not-a-uuid", `{"limit_usd":1}`, http.StatusNotFound)
+	check("malformed budget id", http.MethodPatch, base+"/not-a-uuid", `{"limit_usd":1}`, http.StatusBadRequest) // B28.246: refused before the database
 
 	// With the table gone every write is a server fault, answered plainly.
 	if _, err := pool.Exec(ctx, `DROP TABLE budgets`); err != nil {

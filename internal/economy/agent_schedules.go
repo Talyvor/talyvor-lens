@@ -209,7 +209,7 @@ type ListingCharger interface {
 // LicenceJudge is what renewing a marketplace licence asks of the economy (B32.20), as its first charge did: its
 // agent's rules, and the capability its charge is recorded under. *DualTokenStore satisfies it.
 type LicenceJudge interface {
-	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c Commitment, what string,
+	JudgeAgentPurchase(ctx context.Context, workspaceID, agentID, listingID string, amount int64, c Commitment, what, memo string,
 		record func(pgx.Tx) error) error
 	RequireBilledCapability(ctx context.Context, workspaceID, key string) error
 }
@@ -368,7 +368,7 @@ func (s *DualTokenStore) CancelAgentSchedule(ctx context.Context, workspaceID, s
 func (s *DualTokenStore) SetAgentTopUp(ctx context.Context, workspaceID, agentID string, belowULXC, toULXC int64) (AgentTopUp, error) {
 	t := AgentTopUp{AgentID: agentID, BelowULXC: belowULXC, ToULXC: toULXC}
 	if belowULXC <= 0 || toULXC <= belowULXC {
-		return t, fmt.Errorf("%w: a top-up needs 0 < below_ulxc < to_ulxc", ErrAgentRule)
+		return t, fmt.Errorf("%w: a top-up starts below an amount above zero and fills to a larger one", ErrAgentRule)
 	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO agent_topups (agent_id, workspace_id, below_ulxc, to_ulxc)
 		SELECT id, workspace_id, $3, $4 FROM agent_accounts WHERE id = $1 AND workspace_id = $2

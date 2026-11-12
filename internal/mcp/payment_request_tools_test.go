@@ -45,6 +45,7 @@ func (f *fakeRequests) CancelPaymentRequest(context.Context, string, string, str
 // details in the arguments are refused before anything is prepared.
 func TestMCP_PaymentRequestToolsPrepareOnly(t *testing.T) {
 	s := newServer(nil, nil, nil, nil, nil, "test")
+	s.SetAreas(everyArea{})
 	f := &fakeRequests{}
 	s.SetPaymentRequests(f)
 	owner := &auth.AuthContext{WorkspaceID: "ws-owner", AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,7 +48,8 @@ type AgentCard struct {
 	ExpYear            int       `json:"exp_year"`
 	Currency           string    `json:"currency"`
 	Livemode           bool      `json:"livemode"`
-	Frozen             bool      `json:"frozen"` // B17.111: every purchase on it is declined
+	Frozen             bool      `json:"frozen"`          // B17.111: every purchase on it is declined
+	Label              string    `json:"label,omitempty"` // B56.7: live or sandbox
 	CreatedAt          time.Time `json:"created_at"`
 }
 
@@ -73,7 +75,11 @@ func (s *DualTokenStore) SaveAgentCard(ctx context.Context, workspaceID string, 
 	if err != nil {
 		return c, fmt.Errorf("economy: save agent card: %w", err)
 	}
-	return c, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return c, err
+	}
+	c.Label = s.cardLabel(ctx, workspaceID, c)
+	return c, nil
 }
 
 // GetAgentCard reads the card agentID holds; ErrAgentNotFound for an agent not in workspaceID, ErrNoAgentCard
@@ -94,7 +100,20 @@ func (s *DualTokenStore) GetAgentCard(ctx context.Context, workspaceID, agentID 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNoAgentCard
 	}
-	return c, err
+	if err != nil {
+		return c, err
+	}
+	c.Label = s.cardLabel(ctx, workspaceID, c)
+	return c, nil
+}
+
+// cardLabel is c's label (B56.7): agent_card's for the workspace, and Sandbox while c is a test-mode card.
+func (s *DualTokenStore) cardLabel(ctx context.Context, workspaceID string, c AgentCard) string {
+	mode := DetailsTest
+	if c.Livemode {
+		mode = DetailsLive
+	}
+	return s.objectLabel(ctx, workspaceID, CapabilityAgentCard, mode)
 }
 
 // SetAgentCardFrozen freezes or unfreezes the card agentID holds (B17.111). It takes the agent's row lock, as a
@@ -107,6 +126,11 @@ func (s *DualTokenStore) SetAgentCardFrozen(ctx context.Context, workspaceID, ag
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return AgentCard{}, err
+	}
+	if !frozen {
+		if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil { // B41.116
+			return AgentCard{}, err
+		}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = $3 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, frozen)
 	if err != nil {
@@ -174,7 +198,7 @@ func (s *DualTokenStore) AuthorizeAgentCard(ctx context.Context, a CardAuthoriza
 	case err != nil:
 		return d, fmt.Errorf("economy: card's agent: %w", err)
 	case a.Livemode:
-		return s.declineCard(ctx, a, d, "agent cards take no real money until a licensed partner issues them (class RED)")
+		return s.declineCard(ctx, a, d, "agent cards are in Sandbox: they move no real money yet, so a real payment is declined")
 	case a.Refusal != "":
 		return s.declineCard(ctx, a, d, a.Refusal)
 	case a.AmountMinor <= 0:
@@ -193,7 +217,8 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 
 	fp := sha256.Sum256([]byte("card\x00" + a.CardID + "\x00" + a.MerchantID + "\x00" + a.Currency + "\x00" + strconv.FormatInt(a.AmountMinor, 10)))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), At: a.At,
-		Payee: Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName}})
+		Payee:    Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName},
+		PaidFrom: PaidFrom{Kind: "card", AccountID: a.CardID, Currency: strings.ToUpper(a.Currency), AmountMinor: a.AmountMinor}})
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return d, err

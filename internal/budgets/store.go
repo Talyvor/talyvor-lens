@@ -51,7 +51,7 @@ var (
 	ErrNegativeLimit      = errors.New("budgets: limit_usd must be >= 0")
 	ErrNotFound           = errors.New("budgets: not found")
 	ErrScopeTaken         = errors.New("budgets: a budget for this scope already exists")
-	ErrUnknownScope       = errors.New("budgets: unknown scope — refusing to sum spend without a scope predicate")
+	ErrUnknownScope       = errors.New("budgets: unknown scope, so no spend is summed without a scope predicate")
 )
 
 // IsInvalid reports whether err is a budget the caller sent that the store
@@ -331,13 +331,18 @@ func (s *Store) Update(ctx context.Context, workspaceID, id string, p Patch) (*B
 
 const deleteBudgetSQL = `DELETE FROM budgets WHERE id = $1 AND workspace_id = $2`
 
-// Delete removes a budget. Idempotent: missing rows are not an error.
+// Delete removes a budget. ErrNotFound when the workspace has no budget with
+// that id, so a caller can tell a delete that removed nothing.
 func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 	if s.pool == nil {
 		return nil
 	}
-	if _, err := s.pool.Exec(ctx, deleteBudgetSQL, id, workspaceID); err != nil {
+	tag, err := s.pool.Exec(ctx, deleteBudgetSQL, id, workspaceID)
+	if err != nil {
 		return fmt.Errorf("budgets: delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

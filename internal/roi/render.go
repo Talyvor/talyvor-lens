@@ -118,7 +118,7 @@ func signedUSD(v float64) string { return fmt.Sprintf("%+.2f", v) } //nolint:goc
 // htmlReportTmpl is a self-contained, printable HTML document — inline CSS,
 // no external assets, print-to-PDF-able by the recipient. It wears the brand
 // (internal/brand): dark on screen unless the viewer prefers light, light on
-// paper, the flat mark beside the title, IBM Plex Mono for every figure.
+// paper, the symbol beside the title, IBM Plex Mono for every figure.
 var htmlReportTmpl = template.Must(template.New("roi").Funcs(template.FuncMap{
 	"usd":    func(v float64) string { return fmt.Sprintf("$%.2f", v) },
 	"pct":    func(v float64) string { return fmt.Sprintf("%.1f%%", v) },

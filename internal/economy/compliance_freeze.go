@@ -10,7 +10,7 @@ import (
 )
 
 // ErrWorkspaceFrozen: an operator froze the workspace's money capabilities on a compliance case (B30.8).
-var ErrWorkspaceFrozen = errors.New("economy: refused — an operator has frozen this workspace's money capabilities")
+var ErrWorkspaceFrozen = errors.New("economy: refused: an operator has frozen this workspace's money capabilities")
 
 // Freeze is an operator's freeze on a workspace's money capabilities, on a compliance case: while it stands every
 // AMBER and RED capability refuses the workspace's money, test or live, and the GREEN ones — Talyvor's own

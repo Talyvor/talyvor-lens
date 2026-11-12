@@ -1,0 +1,269 @@
+package economy
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// lockdown.go — B41.116: LOST-PHONE LOCKDOWN. From any signed-in session, one step — in one transaction — revokes the
+// lost phone's device keys and passkeys, freezes every agent card, pauses every agent and records the lockdown.
+// Stopping takes nothing but the session, as pausing does (B41.108). Nothing restarts while the lockdown stands: no
+// agent resumes and no card unfreezes. Lifting it takes an identity check (L2, B30.4) passed after the lockdown began —
+// by a real provider, or by the Test provider for a synthetic workspace, of the person checked before it — so a stolen
+// session cannot lift it. Lifting restarts nothing, and a resume still takes a live key's signature (B41.108). A
+// lockdown that left no live key would leave none to sign with, so a lift by the person checked before it returns a
+// challenge one new key may enrol over, within reenrolWindow, with no other key's signature (reenrolAfterLift). The
+// lockdown ends every other session of the workspace, and only the session that started the re-check may lift it.
+
+// ErrLockedDown: the workspace is locked down, so nothing restarts until the lockdown is lifted.
+var ErrLockedDown = errors.New("economy: this workspace is locked down after a lost phone: pass a new identity check and lift the lockdown before anything restarts")
+
+// ErrIdentityRecheck: no identity check has passed since the lockdown began.
+var ErrIdentityRecheck = errors.New("economy: lifting the lockdown takes an identity check of the workspace's person, passed since it began")
+
+// ErrLiftOtherSession: the identity check since the lockdown was started by another sign-in than the one lifting it.
+var ErrLiftOtherSession = errors.New("economy: only the sign-in that passed the identity check since the lockdown may lift it")
+
+// ErrPasskeyNotFound: no such passkey in the workspace.
+var ErrPasskeyNotFound = errors.New("economy: no such passkey in this workspace")
+
+// WorkspaceLockdown is where a workspace's lockdown stands, and what starting it changed.
+type WorkspaceLockdown struct {
+	Active          bool       `json:"active"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	StartedBy       string     `json:"started_by,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	RevokedDevices  []string   `json:"revoked_devices"`
+	RevokedPasskeys []string   `json:"revoked_passkeys"`
+	FrozenCards     int64      `json:"frozen_cards"`
+}
+
+// LockDown revokes the named device keys and passkeys — every one of them when none is named — freezes every agent
+// card, pauses every agent, ends every session of the workspace but session, the one running it, and records the
+// lockdown, all at once. Locking down again restarts its clock.
+func (s *DualTokenStore) LockDown(ctx context.Context, workspaceID, by, session, reason string, deviceIDs, passkeyIDs []string) (WorkspaceLockdown, error) {
+	all := len(deviceIDs) == 0 && len(passkeyIDs) == 0
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The enrolment lock: no key registers half-way through.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	if err := allIn(ctx, tx, `SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND id = ANY($2)`, workspaceID, deviceIDs, ErrDeviceKeyNotFound); err != nil {
+		return WorkspaceLockdown{}, err
+	}
+	if err := allIn(ctx, tx, `SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND credential_id = ANY($2)`, workspaceID, passkeyIDs, ErrPasskeyNotFound); err != nil {
+		return WorkspaceLockdown{}, err
+	}
+	l := WorkspaceLockdown{Active: true, StartedBy: by, Reason: reason}
+	if l.RevokedDevices, err = collectIDs(ctx, tx, `UPDATE workspace_device_keys SET revoked_at = now(), revoked_by = $2
+		WHERE workspace_id = $1 AND revoked_at IS NULL AND ($3 OR id = ANY($4)) RETURNING id`, workspaceID, by, all, deviceIDs); err != nil {
+		return WorkspaceLockdown{}, err
+	}
+	if l.RevokedPasskeys, err = collectIDs(ctx, tx, `UPDATE workspace_passkeys SET revoked_at = now(), revoked_by = $2
+		WHERE workspace_id = $1 AND revoked_at IS NULL AND ($3 OR credential_id = ANY($4)) RETURNING credential_id`, workspaceID, by, all, passkeyIDs); err != nil {
+		return WorkspaceLockdown{}, err
+	}
+	// Every agent's row lock, as a card purchase takes it (SetAgentCardFrozen): one being decided finishes first.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM agent_accounts WHERE workspace_id = $1 ORDER BY id FOR UPDATE`, workspaceID); err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = true WHERE workspace_id = $1 AND NOT frozen`, workspaceID)
+	if err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: freeze cards: %w", err)
+	}
+	l.FrozenCards = tag.RowsAffected()
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_workspace_pauses (workspace_id, reason) VALUES ($1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET reason = EXCLUDED.reason`, workspaceID, "lockdown: "+reason); err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: pause every agent: %w", err)
+	}
+	if err := revokeWorkspaceKYA(ctx, tx, workspaceID, KYARevokedFrozen); err != nil {
+		return WorkspaceLockdown{}, err
+	}
+	// The browser chat's session keys carry no sign-in to keep, so every one ends; the chat mints another.
+	if _, err := tx.Exec(ctx, `DELETE FROM session_keys WHERE workspace_id = $1`, workspaceID); err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: end sessions: %w", err)
+	}
+	var at time.Time
+	if err := tx.QueryRow(ctx, `INSERT INTO workspace_lockdowns (workspace_id, started_by, reason, sessions_ended_at, kept_session) VALUES ($1, $2, $3, now(), $4)
+		ON CONFLICT (workspace_id) DO UPDATE SET started_at = now(), started_by = EXCLUDED.started_by, reason = EXCLUDED.reason, lifted_at = NULL, reenrol_challenge = NULL,
+			sessions_ended_at = now(), kept_session = EXCLUDED.kept_session
+		RETURNING started_at`, workspaceID, by, reason, session).Scan(&at); err != nil {
+		return WorkspaceLockdown{}, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	l.StartedAt = &at
+	return l, tx.Commit(ctx)
+}
+
+// allIn refuses with notFound unless every one of ids is a row count(q) finds in workspaceID.
+func allIn(ctx context.Context, tx pgx.Tx, q, workspaceID string, ids []string, notFound error) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	var n int
+	if err := tx.QueryRow(ctx, q, workspaceID, ids).Scan(&n); err != nil {
+		return fmt.Errorf("economy: lockdown: %w", err)
+	}
+	if n != len(slices.Compact(slices.Sorted(slices.Values(ids)))) {
+		return notFound
+	}
+	return nil
+}
+
+func collectIDs(ctx context.Context, tx pgx.Tx, q string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return append([]string{}, ids...), nil
+}
+
+// LockdownStatus reads whether workspaceID is locked down, and since when.
+func (s *DualTokenStore) LockdownStatus(ctx context.Context, workspaceID string) (WorkspaceLockdown, error) {
+	l := WorkspaceLockdown{RevokedDevices: []string{}, RevokedPasskeys: []string{}}
+	var at time.Time
+	err := s.pool.QueryRow(ctx, `SELECT started_at, started_by, reason FROM workspace_lockdowns WHERE workspace_id = $1 AND lifted_at IS NULL`,
+		workspaceID).Scan(&at, &l.StartedBy, &l.Reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return l, nil
+	}
+	if err != nil {
+		return l, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	l.Active, l.StartedAt = true, &at
+	return l, nil
+}
+
+// SessionEnded is whether a lockdown of workspaceID ended session, issued at issuedAt: every session issued before
+// the latest lockdown is ended but the one that ran it. It stays ended after the lift.
+func (s *DualTokenStore) SessionEnded(ctx context.Context, workspaceID, session string, issuedAt time.Time) (bool, error) {
+	var ended bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_lockdowns WHERE workspace_id = $1
+		AND sessions_ended_at > $3 AND ($2 = '' OR kept_session <> $2))`, workspaceID, session, issuedAt).Scan(&ended); err != nil {
+		return false, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return ended, nil
+}
+
+// refuseIfLockedDown is ErrLockedDown while workspaceID is locked down.
+func refuseIfLockedDown(ctx context.Context, q pgxDB, workspaceID string) error {
+	var locked bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_lockdowns WHERE workspace_id = $1 AND lifted_at IS NULL)`, workspaceID).Scan(&locked); err != nil {
+		return fmt.Errorf("economy: lockdown: %w", err)
+	}
+	if locked {
+		return ErrLockedDown
+	}
+	return nil
+}
+
+// lockdownGate takes the lock LockDown takes, inside tx, and is ErrLockedDown while workspaceID is locked down: a
+// restart in tx then either finishes before a lockdown starts or sees it.
+func lockdownGate(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return refuseIfLockedDown(ctx, tx, workspaceID)
+}
+
+// LiftLockdown lifts workspaceID's lockdown once an identity check started by session has passed since it began; one
+// passed by another session is ErrLiftOtherSession, so a thief signed in elsewhere, polling, never wins the owner's
+// lift. It restarts nothing: each agent and card is then resumed or unfrozen on its own, as before. When the check
+// matched the person checked before the lockdown it returns reenrol, the challenge a new key registers over to enrol
+// with no other key's signature (reenrolAfterLift); it goes only to session.
+func (s *DualTokenStore) LiftLockdown(ctx context.Context, workspaceID, session string) (reenrol string, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("economy: lockdown: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var started time.Time
+	err = tx.QueryRow(ctx, `SELECT started_at FROM workspace_lockdowns WHERE workspace_id = $1 AND lifted_at IS NULL FOR UPDATE`, workspaceID).Scan(&started)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("economy: lockdown: %w", err)
+	}
+	checks, err := readVerificationChecks(ctx, tx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	synthetic, err := syntheticWorkspace(ctx, tx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	// The re-check is of the workspace's first person checked, when there was one: a thief passes only as themself, and
+	// a check the thief passed as themself before locking down is not the first (checks are newest first).
+	var first *VerificationCheck
+	for i := range checks {
+		if c := checks[i]; c.Level == LevelIdentity && c.Status == "completed" && !c.StartedAt.After(started) && (!c.Test || synthetic) {
+			first = &checks[i]
+		}
+	}
+	// A date of birth is matched when the first check kept one; checks from before B41.116 kept none.
+	passed := func(c VerificationCheck) bool {
+		return c.Level == LevelIdentity && c.Status == "completed" && c.StartedAt.After(started) && (!c.Test || synthetic) &&
+			(first == nil || strings.EqualFold(first.VerifiedName, c.VerifiedName) && first.Country == c.Country &&
+				(first.DateOfBirthDigest == "" || first.DateOfBirthDigest == c.DateOfBirthDigest))
+	}
+	if !slices.ContainsFunc(checks, passed) {
+		return "", ErrIdentityRecheck
+	}
+	if session == "" || !slices.ContainsFunc(checks, func(c VerificationCheck) bool { return passed(c) && c.RequestedSession == session }) {
+		return "", ErrLiftOtherSession
+	}
+	// A re-check with no earlier check to match proves only that someone has an identity: it lifts, but enrols nothing.
+	if first != nil {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		reenrol = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE workspace_lockdowns SET lifted_at = now(), reenrol_challenge = NULLIF($2, '') WHERE workspace_id = $1`,
+		workspaceID, reenrol); err != nil {
+		return "", fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return reenrol, tx.Commit(ctx)
+}
+
+// reenrolWindow is how long after a lift its challenge enrols a key: one challenge's lifetime, as the lift and the
+// enrolment are one step on the owner's screen.
+const reenrolWindow = challengeTTL
+
+// reenrolAfterLift is whether the key registered over challenge may enrol in workspaceID, inside tx, with no other
+// key's signature because a lockdown left it none: challenge is the one its lift returned, within reenrolWindow, and no
+// passkey or device key is live. It spends the challenge, so exactly one key enrols this way, and records it on the
+// lockdown's audit chain.
+func reenrolAfterLift(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string) (bool, error) {
+	var lifted time.Time
+	err := tx.QueryRow(ctx, `UPDATE workspace_lockdowns l SET reenrol_challenge = NULL WHERE l.workspace_id = $1
+		AND l.reenrol_challenge = $3 AND l.lifted_at > now() - make_interval(secs => $2)
+		AND NOT EXISTS (SELECT 1 FROM workspace_passkeys k WHERE k.workspace_id = $1 AND k.removed_at IS NULL AND k.revoked_at IS NULL)
+		AND NOT EXISTS (SELECT 1 FROM workspace_device_keys d WHERE d.workspace_id = $1 AND d.revoked_at IS NULL)
+		RETURNING l.lifted_at`, workspaceID, reenrolWindow.Seconds(), challenge).Scan(&lifted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("economy: lockdown: %w", err)
+	}
+	return true, appendAudit(ctx, tx, workspaceID, "lockdown:"+workspaceID, "key_enrolled_after_lockdown",
+		map[string]any{"purpose": purpose, "lifted_at": lifted.UTC().Format(time.RFC3339Nano)})
+}

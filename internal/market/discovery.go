@@ -182,6 +182,7 @@ type DiscoverQuery struct {
 	VerifiedOnly   bool
 	Sort           string // relevance | trending | new | price; "" is relevance with Q, trending without
 	Page           int    // from 1; 0 is 1
+	Viewer         string // the workspace searching: its content filter and blocks apply (B41.185); "" none
 }
 
 // DiscoverHit is one listing a search found, with what it was ranked by.
@@ -276,6 +277,9 @@ func (s *Store) Discover(ctx context.Context, q DiscoverQuery) (DiscoverPage, er
 				near = `CASE WHEN f.embedding_model = ` + arg(model) + ` AND f.embedding IS NOT NULL THEN 1 - (f.embedding <=> ` + arg(vectorText(v)) + `::vector) END`
 			}
 		}
+	}
+	if q.Viewer != "" {
+		where = append(where, contentShown(arg(q.Viewer), true))
 	}
 	if q.Kind != "" {
 		where = append(where, `l.kind = `+arg(q.Kind))

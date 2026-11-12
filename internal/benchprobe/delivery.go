@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,9 @@ type nodeInferMsg struct {
 type nodeInferResp struct {
 	Text string `json:"text"`
 }
+
+// maxNodeAnswerBytes bounds the read of a node's /inference answer; a longer one fails to decode.
+const maxNodeAnswerBytes = 8 << 20
 
 // HTTPDelivery is the live ProbeDelivery: it POSTs the input to the node's /inference with a
 // gateway-signed node-auth token (#242) bound to the probe request_id, and returns the node's answer.
@@ -86,7 +90,7 @@ func (d *HTTPDelivery) Deliver(ctx context.Context, nodeID, requestID string, re
 		return "", fmt.Errorf("benchprobe: node %q /inference status %d", nodeID, resp.StatusCode)
 	}
 	var nr nodeInferResp
-	if err := json.NewDecoder(resp.Body).Decode(&nr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxNodeAnswerBytes)).Decode(&nr); err != nil {
 		return "", fmt.Errorf("benchprobe: decode node answer: %w", err)
 	}
 	return nr.Text, nil

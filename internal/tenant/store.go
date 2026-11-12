@@ -585,7 +585,7 @@ func ValidateScopes(scopes []string) error {
 	// can be created. CreateAPIKey is the only non-test caller, so the blast radius is exactly key
 	// minting.
 	if len(scopes) == 0 {
-		return fmt.Errorf("%w: at least one scope is required (%s) — a key with no scopes would "+
+		return fmt.Errorf("%w: at least one scope is required (%s), because a key with no scopes would "+
 			"pass every scope check", ErrInvalidScope, "proxy, analytics, admin")
 	}
 	for _, s := range scopes {

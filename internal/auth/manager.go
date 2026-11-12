@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 
 	"github.com/talyvor/lens/internal/moderatorkey"
 	"github.com/talyvor/lens/internal/sessionkey"
@@ -194,6 +195,23 @@ type AuthContext struct {
 	ConnectClientID string `json:"connect_client_id,omitempty"`
 	// ConnectIssuedAt is when the Connect token was minted (B54.13): a revocation recorded at or after it stops it.
 	ConnectIssuedAt time.Time `json:"connect_issued_at,omitempty"`
+	// TokenID is a JWT's jti: one per sign-in, so a lockdown (B41.116) can end every session but the one that ran it.
+	// EMPTY for every other method, and for a JWT minted before tokens carried one.
+	TokenID string `json:"token_id,omitempty"`
+}
+
+// Session names the sign-in a request came from — a JWT's own id, or the scoped API key's — and is "" when the
+// credential names none.
+func (a *AuthContext) Session() string {
+	switch {
+	case a == nil:
+		return ""
+	case a.AuthMethod == MethodJWT && a.TokenID != "":
+		return "jwt:" + a.TokenID
+	case a.APIKeyID != "":
+		return "key:" + a.APIKeyID
+	}
+	return ""
 }
 
 // HasScope reports whether the resolved identity carries `scope`.
@@ -233,6 +251,7 @@ func GenerateToken(workspaceID, userID string, scopes []string, key *ecdsa.Priva
 			NotBefore: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			Subject:   userID,
+			ID:        uuid.NewString(), // one per sign-in: what a lockdown keeps or ends (B41.116)
 		},
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
@@ -294,6 +313,7 @@ type Manager struct {
 	tenantStore     *tenant.Store
 	sessionKeys     sessionKeyValidator
 	moderatorKeys   moderatorKeyValidator
+	sessionCutoff   sessionCutoff
 
 	mu       sync.RWMutex
 	jwtCache map[string]*jwtCacheEntry
@@ -338,6 +358,14 @@ type moderatorKeyValidator interface {
 // WithModeratorKeys attaches the marketplace moderator key store (B20.13). Unset ⇒ every tlv_mod_
 // bearer is refused.
 func (m *Manager) WithModeratorKeys(v moderatorKeyValidator) *Manager { m.moderatorKeys = v; return m }
+
+// sessionCutoff says whether a workspace's lockdown (B41.116) ended the session a JWT issued at issuedAt belongs to.
+type sessionCutoff interface {
+	SessionEnded(ctx context.Context, workspaceID, session string, issuedAt time.Time) (bool, error)
+}
+
+// WithSessionCutoff attaches the lockdown's session cutoff. Unset ⇒ a JWT is valid until it expires, as before.
+func (m *Manager) WithSessionCutoff(c sessionCutoff) *Manager { m.sessionCutoff = c; return m }
 
 func NewManager(globalKey string, privateKey *ecdsa.PrivateKey, keyStore *KeyStore, tenantStore *tenant.Store) *Manager {
 	var pub *ecdsa.PublicKey
@@ -415,9 +443,23 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 			Scopes:      claims.Scopes,
 			AuthMethod:  MethodJWT,
 			IsAdmin:     false,
+			TokenID:     claims.ID,
 		}
 		if claims.ExpiresAt != nil {
 			actx.ExpiresAt = claims.ExpiresAt.Time
+		}
+		if m.sessionCutoff != nil {
+			var issued time.Time // a token with no iat is older than any lockdown
+			if claims.IssuedAt != nil {
+				issued = claims.IssuedAt.Time
+			}
+			ended, err := m.sessionCutoff.SessionEnded(r.Context(), claims.WorkspaceID, actx.Session(), issued)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+			}
+			if ended {
+				return nil, ErrInvalidAuth
+			}
 		}
 		return actx, nil
 	}

@@ -24,9 +24,9 @@ import (
 var ErrAgentArchived = errors.New("economy: this agent is archived")
 
 // ErrAgentPotsHeld: the agent still keeps LXC in its pots, which may be locked; it must move them back first.
-var ErrAgentPotsHeld = errors.New("economy: this agent keeps LXC in its pots — move it back to its balance before archiving")
+var ErrAgentPotsHeld = errors.New("economy: this agent keeps money in its pots. Move it back to its balance before archiving")
 
-// ErrAgentDetails: a blank name, or a description longer than MaxAgentDescription.
+// ErrAgentDetails: a blank name, a description longer than MaxAgentDescription, or a colour or face not on its list (B57.10).
 var ErrAgentDetails = errors.New("economy: invalid agent details")
 
 // MaxAgentDescription is the longest description an agent takes, in characters.
@@ -52,9 +52,15 @@ func requireNotArchived(ctx context.Context, tx pgx.Tx, agentID string) error {
 	return nil
 }
 
-// UpdateAgent renames and/or describes an agent; a nil field is left as it is. A name cannot be blank, and a
-// description is at most MaxAgentDescription characters. Returns the agent as the book reads it.
-func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description *string) (Agent, error) {
+// UpdateAgent renames, describes and/or recolours an agent; a nil field is left as it is. A name cannot be blank, a
+// description is at most MaxAgentDescription characters, and a colour or face is one on its list (B57.10). Returns the agent as the book reads it.
+func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description, colour, face *string) (Agent, error) {
+	if (colour != nil && *colour == "") || (face != nil && *face == "") {
+		return Agent{}, fmt.Errorf("%w: an agent's colour and face cannot be blank", ErrAgentDetails)
+	}
+	if err := checkAgentLook(deref(colour), deref(face)); err != nil {
+		return Agent{}, err
+	}
 	if name != nil {
 		trimmed := strings.TrimSpace(*name)
 		if trimmed == "" {
@@ -69,8 +75,9 @@ func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID s
 		}
 		description = &trimmed
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET name = COALESCE($3, name), description = COALESCE($4, description)
-		WHERE id = $1 AND workspace_id = $2`, agentID, workspaceID, name, description)
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET name = COALESCE($3, name), description = COALESCE($4, description),
+		colour = COALESCE($5, colour), face = COALESCE($6, face)
+		WHERE id = $1 AND workspace_id = $2`, agentID, workspaceID, name, description, colour, face)
 	if err != nil {
 		return Agent{}, fmt.Errorf("economy: update agent: %w", err)
 	}

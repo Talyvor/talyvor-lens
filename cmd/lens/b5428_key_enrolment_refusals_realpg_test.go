@@ -8,7 +8,7 @@ import (
 )
 
 // B54.28 — a passkey already registered is refused in words at once, never kept waiting to fail on approval with a 500;
-// and a workspace whose every key is revoked gets no code no key could approve, but words pointing to recovery.
+// and a workspace whose every key is revoked gets no code no key could approve, but words saying so.
 func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 	h := newB551Harness(t, "ws-b5428-known")
 	phone, laptop := newB551Phone(), newB551Passkey()
@@ -20,8 +20,8 @@ func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 		t.Fatalf("letting the passkey in = %d %v", code, out)
 	}
 	code, out := h.registerPasskey(laptop)
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already registered") {
-		t.Fatalf("registering a passkey this workspace already has = %d %v, want 409 saying it is already registered", code, out)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already added") {
+		t.Fatalf("registering a passkey this workspace already has = %d %v, want 409 saying it is already added", code, out)
 	}
 	if n := h.countOf("key_enrolments"); n != 1 {
 		t.Fatalf("%d enrolments, want only the one approved: a known passkey was kept waiting", n)
@@ -36,8 +36,8 @@ func TestKeyEnrolment_AKnownPasskeyIsRefusedAtOnce(t *testing.T) {
 	}
 	h.ws = "ws-b5428-known"
 	code, out = h.approveEnrolment(idDesk, phone.sign)
-	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already registered") {
-		t.Fatalf("approving a passkey registered meanwhile elsewhere = %d %v, want 409 saying it is already registered", code, out)
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "already added") {
+		t.Fatalf("approving a passkey registered meanwhile elsewhere = %d %v, want 409 saying it is already added", code, out)
 	}
 	if n := h.countOf("workspace_passkeys"); n != 1 {
 		t.Fatalf("%d passkeys here, want 1", n)
@@ -50,8 +50,9 @@ func TestKeyEnrolment_OnlyRevokedKeysGetNoCode(t *testing.T) {
 	if code, out := h.registerPhone(phone); code != http.StatusCreated {
 		t.Fatalf("first key = %d %v", code, out)
 	}
-	if code, out := h.call(http.MethodPost, "/v1/money/devices/"+phone.id+"/revoke", nil); code != http.StatusOK {
-		t.Fatalf("revoking the phone = %d %v", code, out)
+	// Revoked as a workspace's last key could be before B55.15, which now refuses it.
+	if _, err := h.pool.Exec(context.Background(), `UPDATE workspace_device_keys SET revoked_at = now() WHERE workspace_id = $1`, h.ws); err != nil {
+		t.Fatal(err)
 	}
 	laptop, newPhone := newB551Passkey(), newB551Phone()
 	for name, reg := range map[string]func() (int, map[string]any){
@@ -59,8 +60,8 @@ func TestKeyEnrolment_OnlyRevokedKeysGetNoCode(t *testing.T) {
 		"a phone key": func() (int, map[string]any) { return h.registerPhone(newPhone) },
 	} {
 		code, out := reg()
-		if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "recover") {
-			t.Fatalf("%s registered where every key is revoked = %d %v, want 409 pointing to recovery", name, code, out)
+		if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "no key can let a new one in") {
+			t.Fatalf("%s registered where every key is revoked = %d %v, want 409 saying no key can let it in", name, code, out)
 		}
 	}
 	var n int
@@ -70,5 +71,20 @@ func TestKeyEnrolment_OnlyRevokedKeysGetNoCode(t *testing.T) {
 	if n != 0 || h.countOf("workspace_passkeys") != 0 || h.countOf("workspace_device_keys") != 1 {
 		t.Fatalf("%d enrolments, %d passkeys, %d phone keys; want none waiting and nothing added", n,
 			h.countOf("workspace_passkeys"), h.countOf("workspace_device_keys"))
+	}
+}
+
+// B55.15: a removed passkey is no live key either, so a workspace whose only passkey was removed gets no code.
+func TestKeyEnrolment_OnlyRemovedPasskeysGetNoCode(t *testing.T) {
+	h := newB551Harness(t, "ws-b5515-removed")
+	if code, out := h.registerPasskey(newB551Passkey()); code != http.StatusCreated {
+		t.Fatalf("first key = %d %v", code, out)
+	}
+	if _, err := h.pool.Exec(context.Background(), `UPDATE workspace_passkeys SET removed_at = now() WHERE workspace_id = $1`, h.ws); err != nil {
+		t.Fatal(err)
+	}
+	code, out := h.registerPhone(newB551Phone())
+	if msg, _ := out["error"].(string); code != http.StatusConflict || !strings.Contains(msg, "no key can let a new one in") {
+		t.Fatalf("a phone key registered where the only passkey was removed = %d %v, want 409 saying no key can let it in", code, out)
 	}
 }
