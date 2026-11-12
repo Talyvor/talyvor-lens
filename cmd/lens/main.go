@@ -3837,20 +3837,7 @@ func run() error {
 			writeJSONOK(w, http.StatusOK, budgetService.Status(wsID, team, sprint))
 		})
 
-		authed.Get("/v1/workspaces/{wsID}/budgets/{id}", func(w http.ResponseWriter, req *http.Request) {
-			wsID := chi.URLParam(req, "wsID")
-			id := chi.URLParam(req, "id")
-			b, err := budgetStore.Get(req.Context(), wsID, id)
-			if errors.Is(err, budgets.ErrNotFound) {
-				writeJSONErr(w, http.StatusNotFound, "budget not found")
-				return
-			}
-			if err != nil {
-				writeJSONErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeJSONOK(w, http.StatusOK, b)
-		})
+		authed.Get("/v1/workspaces/{wsID}/budgets/{id}", budgetGetHandler(budgetStore))
 
 		authed.Patch("/v1/workspaces/{wsID}/budgets/{id}", budgetUpdateHandler(budgetStore, budgetService.Reload))
 
