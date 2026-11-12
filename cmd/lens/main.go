@@ -2035,6 +2035,10 @@ func run() error {
 	// and money leaving one is judged by the agent's rules first.
 	moneyCfg := money.Config{Sandbox: money.NewSandbox(partnerRegistry, cfg.MoneySandboxWebhookSecret),
 		Clearances: dualToken, Limits: dualToken.MoneyLimits(), Audit: dualToken, Ledger: moneyLedger{dualToken}, Replays: money.NewReplayStore(pool)}
+	// B59.22 — the Sandbox's 3-D Secure: its challenges on the Sandbox's cards wait for the owner's signed answer.
+	sandboxThreeDS := &money.SandboxThreeDS{Partner: money.SandboxName}
+	moneyCfg.Sandbox.ThreeDS = sandboxThreeDS
+	dualToken.SetSandboxThreeDS(sandboxThreeDS)
 	if cfg.PhysicalCards { // B53.19 — shortcut: the fake holds its cards in memory, so a restart forgets them; replaced by a live card issuer
 		moneyCfg.Issuer = issuerfake.New(dualToken.AuthorizeCardCharge).Adapter()
 	}
@@ -2296,6 +2300,12 @@ func run() error {
 					slog.Warn("agents: card spend expiries failed", slog.String("err", err.Error()))
 				} else if n > 0 {
 					slog.Info("agents: standing card limits lowered back", slog.Int("lowered", n))
+				}
+				// B59.22: 3-D Secure challenges unanswered at their deadline, declined, and every answer an issuer has not taken sent again.
+				if n, err := dualToken.RunCardChallengeTimeouts(ctx, now); err != nil {
+					slog.Warn("agents: card challenge timeouts failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: card challenges declined at their deadline", slog.Int("declined", n))
 				}
 				// B22.6: escrows whose deadline passed without a dispute, released to their payees.
 				if n, err := dualToken.RunEscrowDeadlines(ctx, now); err != nil {
@@ -5037,6 +5047,7 @@ func run() error {
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountCardSpendRoutes(authed, dualToken)                                         // B59.21
+		mountCardChallengeRoutes(authed, dualToken)                                     // B59.22
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
 		mountPhysicalCardRoutes(authed, dualToken, cfg.PhysicalCards)                   // B53.19
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20

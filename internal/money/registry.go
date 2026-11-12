@@ -28,6 +28,8 @@ type Adapter struct {
 	Convert     ConvertProvider // B59.13: an Instant transfer's legs
 	Onchain     OnchainProvider
 	BankPayouts PayoutProvider
+
+	ThreeDS ThreeDSProvider // B59.22: the issuer's 3-D Secure; nil answers no challenge
 }
 
 func (a *Adapter) offers(c Capability) bool {

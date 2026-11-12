@@ -260,7 +260,7 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 		return AgentApproval{}, err
 	}
 	a, err := scanAgentApproval(tx.QueryRow(ctx, `SELECT `+agentApprovalColumns+` FROM agent_approvals
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() FOR UPDATE`, approvalID, workspaceID))
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' FOR UPDATE`, approvalID, workspaceID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
 	}
@@ -357,7 +357,7 @@ func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID,
 	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
 		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 			deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
+			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns, approvalID, workspaceID,
 			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ap, ErrApprovalNotFound
@@ -368,7 +368,7 @@ func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID,
 		return ap, nil
 	}
 	ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = 'approved', decided_at = now(), expires_at = now() + $3 * interval '1 microsecond'
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns, approvalID, workspaceID,
 		s.approvalLife().Microseconds()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ap, ErrApprovalNotFound

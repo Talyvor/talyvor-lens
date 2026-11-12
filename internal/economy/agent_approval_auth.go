@@ -550,12 +550,13 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		var agentID, agentName, model, reason, payeeName, memo string
+		var agentID, agentName, model, reason, payeeName, memo, kind, currency string
 		var amount int64
+		var amountMinor *int64
 		var expires time.Time
-		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo, a.expires_at
-			FROM agent_approvals a JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = $1`, approvalID).
-			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo, &expires); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo, a.expires_at, a.kind,
+			a.paid_from_currency, a.paid_from_amount_minor FROM agent_approvals a JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = $1`, approvalID).
+			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo, &expires, &kind, &currency, &amountMinor); err != nil {
 			slog.Warn("agents: approval push: read approval", slog.String("err", err.Error()))
 			return
 		}
@@ -570,6 +571,16 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		body := agentName + " wants to spend " + LXCMoney(amount)
 		if to != "" {
 			body = agentName + " wants to pay " + to + " " + LXCMoney(amount)
+		}
+		if kind == ApprovalCardChallenge && amountMinor != nil { // B59.22: the card's own payment, in its currency
+			body = agentName + "’s card: confirm " + minorString(*amountMinor, currency) + " at " + payeeName
+			payload, _ := json.Marshal(map[string]any{"type": ApprovalCardChallenge, "approval_id": approvalID, "workspace_id": workspaceID,
+				"agent_id": agentID, "agent_name": agentName, "merchant": payeeName, "currency": currency, "amount_minor": *amountMinor, "body": body})
+			s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Confirm a card payment", Body: body, Category: "agent_approval", Data: map[string]string{
+				"type": ApprovalCardChallenge, "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID, "agent_name": agentName,
+				"payee_name": payeeName, "currency": currency, "amount_minor": strconv.FormatInt(*amountMinor, 10)}})
+			s.pushWeb(ctx, workspaceID, payload)
+			return
 		}
 		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
 			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
