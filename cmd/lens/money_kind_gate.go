@@ -100,6 +100,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/spend-permission":          moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/spend-permission/prepare":  moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/statement":                 moneySideEither,
+	"/v1/workspaces/{}/agents/{}/summary":                   moneySideEither,
 	"/v1/workspaces/{}/agents/{}/sweep":                     moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/topup":                     moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet":                    moneySideEither,
