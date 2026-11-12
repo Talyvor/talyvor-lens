@@ -258,3 +258,54 @@ func TestB41178_AListingAddedThroughTheConnectorIsOneBilledUse(t *testing.T) {
 		t.Fatalf("after the key was revoked = %d; want 401", w.Code)
 	}
 }
+
+// B50.41 — approving a connector request is how an assistant gets an agent key, so it is the owner's signed-in session
+// or nothing, like minting the key directly (B50.33): an admin-scoped workspace key cannot approve or deny one, and the
+// request it touched stays pending, so /oauth/token has nothing to issue until the owner decides it.
+func TestB5041_OnlyTheSignedInOwnerDecidesAConnectorRequest(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5041"
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic, company) VALUES ($1, $1, $1, true, true)`, ws); err != nil {
+		t.Fatal(err)
+	}
+	bank := economy.NewDualTokenStore(nil, pool, nil)
+	agent, err := bank.CreateAgent(ctx, ws, "Claude", "owner-"+ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := connector.NewStore(pool)
+	client, err := grants.Register(ctx, "Claude", []string{"https://claude.ai/api/mcp/auth_callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountConnectorOwnerRoutes(r, grants, bank)
+	do := func(who *auth.AuthContext, method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	adminKey := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-admin", Scopes: []string{auth.ScopeAdmin}}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+
+	id, err := grants.Begin(ctx, client.ID, client.RedirectURIs[0], strings.Repeat("c", 43), "s1", "https://lens.test/mcp/listings/l1", "l1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqPath := "/v1/workspaces/" + ws + "/connector-requests/" + id
+	for _, step := range []string{"/approve", "/deny"} {
+		if w := do(adminKey, http.MethodPost, reqPath+step, `{"agent_id":"`+agent.ID+`"}`); w.Code != http.StatusForbidden {
+			t.Fatalf("an admin workspace key on %s = %d %s; want 403", step, w.Code, w.Body.String())
+		}
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM connector_grants WHERE id = $1`, id).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("after the admin key the request is %q (%v); want pending", status, err)
+	}
+	if w := do(owner, http.MethodPost, reqPath+"/approve", `{"agent_id":"`+agent.ID+`"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "code=") {
+		t.Fatalf("the signed-in owner's approve = %d %s; want 200 with a code", w.Code, w.Body.String())
+	}
+}
