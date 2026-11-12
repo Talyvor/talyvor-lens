@@ -179,6 +179,7 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 
 func writePaymentErr(w http.ResponseWriter, err error) {
 	switch {
+	case writeMoneyKindRefusal(w, err): // B59.42
 	case errors.Is(err, economy.ErrOutsidePayment):
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrOutsidePaymentNotFound), errors.Is(err, economy.ErrPayeeNotFound),
