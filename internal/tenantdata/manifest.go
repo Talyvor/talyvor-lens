@@ -176,6 +176,10 @@ var Manifest = map[string]Entry{
 	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
 	"money_quarantined_deposits": {Retain, "B48.7: each payment in from a flagged payer held for an operator — who it was from, how much, its partner's reference and case — and when it posted once released; it explains money_entries; financial-record retention"},
 
+	// B59.30 (0379): their keys are longer than the rest, so they stand apart rather than realign them.
+	"workspace_business_details": {Delete, "B59.30: a Business workspace's company name and who last saved it; its number and country are on workspaces"},
+	"workspace_business_people":  {Delete, "B59.30: the company's people with control — each one's name, role and share; deleting the details row deletes these too (ON DELETE CASCADE)"},
+
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
 

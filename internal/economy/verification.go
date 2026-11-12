@@ -225,6 +225,11 @@ func checkVerificationRequest(in *VerificationRequest) error {
 // failed, or pending until a later read finds it decided.
 func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partners.Verifiers, workspaceID, by string,
 	in VerificationRequest) (VerificationCheck, error) {
+	if in.Level == LevelCompany { // B59.30: what the company check is not given comes from the saved business details
+		if err := fillCompanyCheck(ctx, s.pool, workspaceID, &in); err != nil {
+			return VerificationCheck{}, err
+		}
+	}
 	if err := checkVerificationRequest(&in); err != nil {
 		return VerificationCheck{}, err
 	}
