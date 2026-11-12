@@ -345,6 +345,8 @@ type DualTokenStore struct {
 	cardProgrammes map[string]string
 	// sandboxThreeDS is the Sandbox's 3-D Secure (B59.22), which SandboxCardChallenge asks; nil is off.
 	sandboxThreeDS *money.SandboxThreeDS
+	// sandboxDisputes is the Sandbox's card disputes (B59.24), which the Sandbox's outcome and refund ask; nil is off.
+	sandboxDisputes *money.SandboxDisputes
 	// B40.4: how the phone app's device keys are checked when they are registered.
 	deviceVerifier devicekey.Verifier
 	// B40.15: the native push sent to each phone with a push token for each approval filed or request prepared.

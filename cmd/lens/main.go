@@ -2039,6 +2039,10 @@ func run() error {
 	sandboxThreeDS := &money.SandboxThreeDS{Partner: money.SandboxName}
 	moneyCfg.Sandbox.ThreeDS = sandboxThreeDS
 	dualToken.SetSandboxThreeDS(sandboxThreeDS)
+	// B59.24 — the Sandbox's card disputes: it takes the owner's disputes on the Sandbox's cards and reports outcomes and refunds.
+	sandboxDisputes := &money.SandboxDisputes{Partner: money.SandboxName}
+	moneyCfg.Sandbox.Disputes = sandboxDisputes
+	dualToken.SetSandboxDisputes(sandboxDisputes)
 	if cfg.PhysicalCards { // B53.19 — shortcut: the fake holds its cards in memory, so a restart forgets them; replaced by a live card issuer
 		moneyCfg.Issuer = issuerfake.New(dualToken.AuthorizeCardCharge).Adapter()
 	}
@@ -5048,6 +5052,7 @@ func run() error {
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountCardSpendRoutes(authed, dualToken)                                         // B59.21
 		mountCardChallengeRoutes(authed, dualToken)                                     // B59.22
+		mountCardDisputeRoutes(authed, dualToken)                                       // B59.24
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
 		mountPhysicalCardRoutes(authed, dualToken, cfg.PhysicalCards)                   // B53.19
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20

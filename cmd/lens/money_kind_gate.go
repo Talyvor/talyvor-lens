@@ -234,6 +234,12 @@ var moneyRoutes = map[string]moneySide{
 	// B59.22: card_challenges_handler.go, 3-D Secure challenges on agents' cards
 	"/v1/money/card-challenges": moneySideEither,
 
+	// B59.24: card_disputes_handler.go, card disputes and refunds and the card export
+	"/v1/money/card-disputes":                    moneySideEither,
+	"/v1/money/card-disputes/{}/sandbox-outcome": moneySideEither,
+	"/v1/money/card-refunds":                     moneySideEither,
+	"/v1/money/card-exports":                     moneySideEither,
+
 	// money_coach_handler.go
 	"/v1/money/coach":     moneySideEither,
 	"/v1/money/coach/ask": moneySideEither,
