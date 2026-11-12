@@ -227,6 +227,10 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/cards/{}":         moneySideEither,
 	"/v1/money/cards/{}/approve": moneySideEither,
 
+	// B59.21: card_spends_handler.go, an agent asking before it pays by card
+	"/v1/money/card-spends":    moneySideEither,
+	"/v1/money/card-spends/{}": moneySideEither,
+
 	// money_coach_handler.go
 	"/v1/money/coach":     moneySideEither,
 	"/v1/money/coach/ask": moneySideEither,

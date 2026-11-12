@@ -220,6 +220,10 @@ type Config struct {
 	// ApprovalTTL (LENS_APPROVAL_TTL, Go duration, default 24h) is how long an approval lasts (B50.18): an agent's
 	// request or a payment request waits that long for its tap, and once approved may be used that long.
 	ApprovalTTL time.Duration
+	// CardProgrammes (LENS_CARD_PROGRAMMES, "issuer=mode,…", default unset) is each card programme's mode by its
+	// issuer's adapter name (B59.21): realtime, where the issuer asks Lens at each payment, or preapproved, where the
+	// agent asks first and the issuer is given a card or a limit for what was approved. A programme not named is preapproved.
+	CardProgrammes map[string]string
 	// BriefingPushHour (LENS_BRIEFING_PUSH_HOUR, a UTC hour 0-23, default unset = -1) is when each morning the daily
 	// briefing's line is pushed to the owner's web push subscriptions (B41.205); unset, none is sent.
 	BriefingPushHour int
@@ -1788,6 +1792,17 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid LENS_APPROVAL_TTL (Go duration > 0, e.g. 24h): %s", v)
 		}
 		c.ApprovalTTL = d
+	}
+	if v := os.Getenv("LENS_CARD_PROGRAMMES"); v != "" {
+		c.CardProgrammes = map[string]string{}
+		for _, part := range strings.Split(v, ",") {
+			issuer, mode, ok := strings.Cut(strings.TrimSpace(part), "=")
+			issuer, mode = strings.TrimSpace(issuer), strings.TrimSpace(mode)
+			if !ok || issuer == "" || (mode != "realtime" && mode != "preapproved") {
+				return nil, fmt.Errorf("invalid LENS_CARD_PROGRAMMES (issuer=realtime or issuer=preapproved, comma-separated): %s", v)
+			}
+			c.CardProgrammes[issuer] = mode
+		}
 	}
 	c.PoolMintCapWindow = 24 * time.Hour
 	if v := os.Getenv("LENS_POOL_MINT_CAP_WINDOW"); v != "" {

@@ -2291,6 +2291,12 @@ func run() error {
 				} else if n > 0 {
 					slog.Info("agents: unused cards closed", slog.Int("closed", n))
 				}
+				// B59.21: standing cards' raises past their time, their limits lowered back.
+				if n, err := dualToken.RunCardSpendExpiries(ctx, now); err != nil {
+					slog.Warn("agents: card spend expiries failed", slog.String("err", err.Error()))
+				} else if n > 0 {
+					slog.Info("agents: standing card limits lowered back", slog.Int("lowered", n))
+				}
 				// B22.6: escrows whose deadline passed without a dispute, released to their payees.
 				if n, err := dualToken.RunEscrowDeadlines(ctx, now); err != nil {
 					slog.Warn("agents: escrow deadlines failed", slog.String("err", err.Error()))
@@ -2959,6 +2965,7 @@ func run() error {
 	}
 	dualToken.SetApprovalAuth(passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins}, approvalPusher)
 	dualToken.SetApprovalTTL(cfg.ApprovalTTL)
+	dualToken.SetCardProgrammeModes(cfg.CardProgrammes)                                                                 // B59.21
 	dualToken.SetDeviceKeys(devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}) // B40.4
 	// B40.15: and a native push to each phone with a push token, for whichever of APNs and FCM is configured.
 	var native nativepush.Senders
@@ -5028,6 +5035,7 @@ func run() error {
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
+		mountCardSpendRoutes(authed, dualToken)                                         // B59.21
 		mountReusableCardRoutes(authed, dualToken, reusableCardsOn)                     // B53.2
 		mountPhysicalCardRoutes(authed, dualToken, cfg.PhysicalCards)                   // B53.19
 		mountInvoiceRoutes(authed, dualToken)                                           // B30.20
