@@ -65,6 +65,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/approvals/{id}/deny      refuse it; {"reason"} (up to 200 characters, B55.18) is
 //	                                                           told to the agent, whose identical request is refused
 //	                                                           without asking again for the approval life (24 hours)
+//	                                                           B59.22: a 3-D Secure challenge (kind card_challenge) is
+//	                                                           decided only with {"assertion"}, whatever the workspace's keys,
+//	                                                           and the answer goes back to the card's issuer
 //
 // B19.3 — one company's agents pay each other, inside the closed loop:
 //
@@ -282,6 +285,7 @@ type agentBank interface {
 	ListAgentApprovals(ctx context.Context, workspaceID string) ([]economy.AgentApproval, error)
 	DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (economy.AgentApproval, error)
 	DecideAgentApprovalSigned(ctx context.Context, workspaceID, approvalID string, approve bool, allow *economy.PayeeAllowance, a passkey.Assertion) (economy.AgentApproval, error)
+	DecideCardChallenge(ctx context.Context, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (economy.AgentApproval, error)
 	AllowPayee(ctx context.Context, workspaceID, approvalID string, a economy.PayeeAllowance) (economy.AgentRules, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
@@ -1010,17 +1014,22 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
 				return
 			}
-			var a economy.AgentApproval
-			var err error
-			if in.Assertion != nil {
+			// B59.22: a 3-D Secure challenge is the owner's signed answer to the card's issuer, decided alone and never a rule.
+			a, err := bank.DecideCardChallenge(ctx, wsID, approvalID, approve, in.Assertion)
+			switch {
+			case !errors.Is(err, economy.ErrNotCardChallenge):
+				in.AlwaysAllow = nil
+			case in.Assertion != nil:
 				// B45.28: checked and spent in the same transaction that keeps a signed approval as the owner's AP2 v0.2
 				// closed Payment Mandate, so a mandate never carries a signature Lens did not verify.
 				a, err = bank.DecideAgentApprovalSigned(ctx, wsID, approvalID, approve, in.AlwaysAllow, *in.Assertion)
-			} else if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.AlwaysAllow, nil); err == nil {
-				a, err = bank.DecideAgentApproval(ctx, wsID, approvalID, approve)
+			default:
+				if err = bank.AuthorizeApprovalDecision(req.Context(), wsID, approvalID, in.AlwaysAllow, nil); err == nil {
+					a, err = bank.DecideAgentApproval(ctx, wsID, approvalID, approve)
+				}
 			}
 			switch {
-			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrCardChallengeUnsigned):
 				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())

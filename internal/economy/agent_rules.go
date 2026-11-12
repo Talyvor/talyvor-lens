@@ -1166,6 +1166,8 @@ type AgentApproval struct {
 	// spend and this amount, both when it was filed; null with no monthly limit, and both on one filed before they were kept.
 	AsksAboveULXC       *int64 `json:"asks_above_ulxc"`
 	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
+	// Kind is "" for a request of the agent's, and ApprovalCardChallenge for a 3-D Secure challenge on its card (B59.22).
+	Kind string `json:"kind,omitempty"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1178,7 +1180,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
-	END::bigint, asks_above_ulxc, budget_left_after_ulxc`
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1189,7 +1191,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1240,7 +1242,7 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	}
 	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns,
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns,
 		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
