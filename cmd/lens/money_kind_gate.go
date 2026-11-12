@@ -281,6 +281,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/payouts/{}":         moneySideEither,
 	"/v1/money/payouts/{}/approve": moneySideEither,
 
+	// B58.5: the challenge a payout batch's approval is signed over
+	"/v1/money/payouts/{}/approve/challenge": moneySideEither,
+
 	// money_physical_cards_handler.go
 	"/v1/money/physical-cards":             moneySideEither,
 	"/v1/money/physical-cards/{}/activate": moneySideEither,
