@@ -58,8 +58,9 @@ func spendStartedEarly(ctx context.Context, dt *DualTokenStore, ws string, amoun
 func TestLXCHistory_OverlappingSpendsListInBalanceOrder(t *testing.T) {
 	ctx := context.Background()
 	dt := NewDualTokenStore(nil, lxcHistPool(t), nil)
-	const ws = "ws-b584-overlap"
-	if _, err := dt.GrantLXC(ctx, ws, 1_000_000_000, "seed", nil); err != nil {
+	ws := fmt.Sprintf("ws-b584-overlap-%d", time.Now().UnixNano())
+	// The bulk grant numbers its own row; the spends are numbered by the ledger's insert trigger.
+	if _, err := dt.GrantLXCUpTo(ctx, []string{ws}, 1_000_000_000, "seed", nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -89,7 +90,7 @@ func TestLXCHistory_OverlappingSpendsListInBalanceOrder(t *testing.T) {
 func TestLXCHistory_TwentyConcurrentWritersKeepTheChain(t *testing.T) {
 	ctx := context.Background()
 	dt := NewDualTokenStore(nil, lxcHistPool(t), nil)
-	const ws = "ws-b584-twenty"
+	ws := fmt.Sprintf("ws-b584-twenty-%d", time.Now().UnixNano())
 	if _, err := dt.GrantLXC(ctx, ws, 1_000_000_000, "seed", nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
