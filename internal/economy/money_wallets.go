@@ -115,8 +115,9 @@ func (s *DualTokenStore) QuoteSideConversion(ctx context.Context, workspaceID st
 		in.Funding = FundingTest
 	}
 	fiat := func(c string) bool { return c == CurrencyGBP || c == CurrencyEUR || c == CurrencyUSD }
+	across := fiat(in.SellCurrency) && in.BuyCurrency == CurrencyUSDC || in.SellCurrency == CurrencyUSDC && fiat(in.BuyCurrency)
 	switch {
-	case !(fiat(in.SellCurrency) && in.BuyCurrency == CurrencyUSDC) && !(in.SellCurrency == CurrencyUSDC && fiat(in.BuyCurrency)):
+	case !across:
 		return Conversion{}, fmt.Errorf("%w: a conversion between the two sides sells GBP, EUR or USD for USDC, or USDC for one of them, not %q for %q",
 			ErrConversion, in.SellCurrency, in.BuyCurrency)
 	case in.SellMinor <= 0:
