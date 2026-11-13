@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -78,6 +79,10 @@ type Book struct {
 	pool   *pgxpool.Pool
 	client *http.Client
 	url    string
+
+	mu        sync.Mutex
+	fetchedAt *time.Time // this replica's last fetch that stored the file
+	lastErr   string     // the last fetch's error; "" once one succeeds
 }
 
 // New keeps rates in pool, fetched from url (DailyURL in production).
@@ -87,6 +92,19 @@ func New(pool *pgxpool.Pool, url string) *Book {
 
 // Refresh fetches the ECB's file and stores every day in it; a day already stored is left as it is.
 func (b *Book) Refresh(ctx context.Context) error {
+	err := b.refresh(ctx)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err != nil {
+		b.lastErr = err.Error()
+		return err
+	}
+	now := time.Now().UTC()
+	b.fetchedAt, b.lastErr = &now, ""
+	return nil
+}
+
+func (b *Book) refresh(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.url, nil)
 	if err != nil {
 		return err
@@ -112,6 +130,23 @@ func (b *Book) Refresh(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// Health is what the status page says of the rates (B59.49): the latest ECB day held, when this replica last fetched
+// the file, and the last fetch's error if it failed.
+type Health struct {
+	LatestDay *time.Time // nil while none are held
+	FetchedAt *time.Time // nil until this replica has fetched them
+	LastError string
+}
+
+// Health reads the latest ECB day held and this replica's last fetch.
+func (b *Book) Health(ctx context.Context) (Health, error) {
+	b.mu.Lock()
+	h := Health{FetchedAt: b.fetchedAt, LastError: b.lastErr}
+	b.mu.Unlock()
+	err := b.pool.QueryRow(ctx, `SELECT max(rate_date) FROM ecb_reference_rates`).Scan(&h.LatestDay)
+	return h, err
 }
 
 // Conversion is an amount's USD value at the day's reference rate, and the rate it was priced at.

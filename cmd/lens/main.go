@@ -2440,6 +2440,7 @@ func run() error {
 	// publishes once a working day).
 	ecbRates := ecbrate.New(pool, ecbrate.DailyURL)
 	partnerRegistry.UseFXRates(ecbRates) // B30.29: the Test FX partner converts at the ECB reference rate
+	statusPage.UseECBRates(ecbRates)     // B59.49: /status says how old they are
 	// B30.7 — transaction monitoring: its rules judge each payment in or out through a partner once it has moved, and
 	// nightly over the last day's; a hit opens or extends the workspace's monitoring case, which the operator sees at
 	// /v1/admin/screening, with its alerts at /v1/admin/compliance/alerts. It never moves or stops money.
