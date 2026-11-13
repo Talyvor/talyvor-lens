@@ -110,6 +110,14 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	if in.Funding == "" {
 		in.Funding = FundingTest
 	}
+	for _, c := range []string{in.SellCurrency, in.BuyCurrency} { // B59.42: a single kind converts on its own side only
+		if MoneyCurrencies[c] == 0 {
+			continue
+		}
+		if err := checkMoneySide(ctx, s.pool, workspaceID, "currency", moneyKindOf(c)); err != nil {
+			return Conversion{}, err
+		}
+	}
 	held := func(c string) bool { return c == CurrencyGBP || c == CurrencyEUR || c == CurrencyUSD }
 	switch {
 	case !held(in.SellCurrency) || !held(in.BuyCurrency) || in.SellCurrency == in.BuyCurrency:
