@@ -27,7 +27,8 @@ import (
 // fakeChain is one chain's node and ERC-4337 bundler as a send sees them: the account's code and nonce, a gas price,
 // and a bundler that takes each operation once per nonce — a second at a taken nonce is refused, as the EntryPoint
 // refuses it — refuses any paying refuseTo, takes the first paying hangUpTo and then drops the line before answering,
-// and answers each one's receipt with its own transaction.
+// and answers each one's receipt with its own transaction; every operation it took is in a finalized block, read
+// from the EntryPoint's logs as SettleAgentCryptoPayments reads them.
 type fakeChain struct {
 	t        *testing.T
 	chainID  int64
@@ -36,6 +37,7 @@ type fakeChain struct {
 	mu       sync.Mutex
 	paid     []smartaccount.Payment
 	hashes   map[string]string
+	logs     []map[string]any
 }
 
 func (f *fakeChain) serve() string {
@@ -62,6 +64,29 @@ func (f *fakeChain) serve() string {
 			answer(fmt.Sprintf("0x%x", len(f.paid)), nil)
 		case "eth_gasPrice":
 			answer("0x3b9aca00", nil)
+		case "eth_blockNumber":
+			answer("0x1", nil)
+		case "eth_getBlockByNumber":
+			answer(map[string]string{"number": "0x100"}, nil)
+		case "eth_getLogs": // UserOperationEvent logs, matched on the topics asked for
+			var filter struct {
+				Topics []*string `json:"topics"`
+			}
+			_ = json.Unmarshal(req.Params[0], &filter)
+			out := []map[string]any{}
+			for _, l := range f.logs {
+				topics, match := l["topics"].([]string), true
+				for i, want := range filter.Topics {
+					if i > 0 && want != nil && !strings.EqualFold(*want, topics[i]) {
+						match = false
+					}
+				}
+				if match {
+					topics[0] = *filter.Topics[0]
+					out = append(out, l)
+				}
+			}
+			answer(out, nil)
 		case "eth_sendUserOperation":
 			var op smartaccount.UserOp
 			if err := json.Unmarshal(req.Params[0], &op); err != nil {
@@ -84,6 +109,9 @@ func (f *fakeChain) serve() string {
 			hash := fmt.Sprintf("0x%x", h)
 			f.paid = append(f.paid, pay)
 			f.hashes[hash] = fmt.Sprintf("0x%064x", len(f.paid))
+			f.logs = append(f.logs, map[string]any{"address": smartaccount.EntryPoint, "transactionHash": f.hashes[hash],
+				"topics": []string{"", hash, "0x000000000000000000000000" + strings.ToLower(strings.TrimPrefix(op.Sender, "0x")), "0x" + strings.Repeat("0", 64)},
+				"data":   fmt.Sprintf("0x%064x%064x%064x%064x", op.Nonce, 1, 1, 1)})
 			if strings.EqualFold(pay.To, f.hangUpTo) {
 				f.hangUpTo = ""
 				http.Error(w, "upstream connection reset", http.StatusBadGateway)
@@ -333,14 +361,32 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 		t.Fatalf("a refused send counted: %d/%d → %d/%d", n, sum, n2, sum2)
 	}
 
-	// 6. One the network refuses: failed, and its use of the allowance given back.
+	// 6. One the network refuses: failed, and it counts until the chain shows it never moved — its nonce taken by the
+	// next send — and then its use of the allowance is given back.
 	var failed economy.CryptoSend
 	if code := call(http.MethodPost, base+"/crypto-sends", "to-broken", send(broken, 1_000_000), &failed); code != http.StatusBadGateway ||
 		failed.Status != "failed" || len(chain.payments()) != 6 {
 		t.Fatalf("a send the network refused = %d %+v", code, failed)
 	}
-	if n2, sum2 := uses(); n2 != n || sum2 != sum {
-		t.Fatalf("a send the network refused still counts: %d/%d → %d/%d", n, sum, n2, sum2)
+	if n2, sum2 := uses(); n2 != n+1 || sum2 != sum+1_000_000 {
+		t.Fatalf("a send the network refused before the chain shows it never moved: %d/%d → %d/%d", n, sum, n2, sum2)
+	}
+	var next economy.CryptoSend
+	if code := call(http.MethodPost, base+"/crypto-sends", "after-broken", send(shop, 1_000_000), &next); code != http.StatusOK ||
+		next.Status != "landed" || len(chain.payments()) != 7 {
+		t.Fatalf("the next send = %d %+v", code, next)
+	}
+	settled, err := store.SettleAgentCryptoPayments(ctx, smartaccount.Chain{ID: chain.chainID, RPCURL: url, BundlerURL: url})
+	if err != nil || settled != 8 {
+		t.Fatalf("settled %d, %v; want the 7 that landed and the 1 that never did", settled, err)
+	}
+	var outcome string
+	if err := pool.QueryRow(ctx, `SELECT u.outcome FROM agent_crypto_sends s JOIN agent_spend_permission_uses u ON u.id = s.use_id
+		WHERE s.id = $1`, failed.ID).Scan(&outcome); err != nil || outcome != "dropped" {
+		t.Fatalf("the refused send's use = %q, %v; want dropped", outcome, err)
+	}
+	if n2, sum2 := uses(); n2 != n+2 || sum2 != sum+1_000_000 {
+		t.Fatalf("after settling, the refused send still counts: %d/%d → %d/%d", n, sum, n2, sum2)
 	}
 
 	// 7. The owner declines one: nothing is sent.
@@ -350,11 +396,11 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 		t.Fatalf("the agent's send to a stranger = %+v %v", declined, err)
 	}
 	if code := call(http.MethodPost, base+"/crypto-sends/"+declined.ID+"/decline", "", "", &declined); code != http.StatusForbidden ||
-		declined.Status != "refused" || len(chain.payments()) != 6 {
+		declined.Status != "refused" || len(chain.payments()) != 7 {
 		t.Fatalf("declined = %d %+v", code, declined)
 	}
 	var kept int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_crypto_sends WHERE agent_id = $1 AND status = 'landed'`, agent.ID).Scan(&kept); err != nil || kept != 6 {
-		t.Fatalf("%d sends landed, %v; want 6", kept, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_crypto_sends WHERE agent_id = $1 AND status = 'landed'`, agent.ID).Scan(&kept); err != nil || kept != 7 {
+		t.Fatalf("%d sends landed, %v; want 7", kept, err)
 	}
 }

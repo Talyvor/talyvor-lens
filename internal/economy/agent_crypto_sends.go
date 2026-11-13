@@ -385,16 +385,21 @@ func (s *DualTokenStore) screenCryptoSend(ctx context.Context, workspaceID strin
 	return c, err
 }
 
-// endCryptoSend marks c refused or failed for reason and gives back its use of the allowance, if the gate kept one.
+// endCryptoSend marks c refused or failed for reason and gives back its use of the allowance, if the gate kept one and
+// no bundler was handed its operation. A use whose operation was handed over is settled from the chain only
+// (SettleAgentCryptoPayments): it counts until the chain shows it never moved, and the send keeps it to be read.
 func (s *DualTokenStore) endCryptoSend(ctx context.Context, c CryptoSend, status, reason string) (CryptoSend, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		released := c.useID == nil
 		if c.useID != nil {
-			if _, err := tx.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`, *c.useID, c.AgentID); err != nil {
+			tag, err := tx.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2 AND op IS NULL`, *c.useID, c.AgentID)
+			if err != nil {
 				return err
 			}
+			released = tag.RowsAffected() == 1
 		}
-		_, err := tx.Exec(ctx, `UPDATE agent_crypto_sends SET status = $2, reason = $3, use_id = NULL, updated_at = now() WHERE id = $1`,
-			c.ID, status, reason)
+		_, err := tx.Exec(ctx, `UPDATE agent_crypto_sends SET status = $2, reason = $3, use_id = CASE WHEN $4 THEN NULL ELSE use_id END,
+			updated_at = now() WHERE id = $1`, c.ID, status, reason, released)
 		return err
 	})
 	if err != nil {
@@ -452,7 +457,7 @@ func (s *DualTokenStore) carryOn(ctx context.Context, workspaceID string, n Cryp
 			return c, nil
 		}
 		// Sent again as signed: its nonce lets it land once. A refusal now may be its landing: it stays to be read.
-		if _, err := s.handToBundler(ctx, workspaceID, n, op); err != nil {
+		if _, err := s.handToBundler(ctx, workspaceID, n, c, op); err != nil {
 			return c, nil
 		}
 		return s.markCryptoSent(ctx, workspaceID, n, c)
@@ -494,7 +499,7 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 		}
 	}
 	err = n.Chain.SignPaymentAsAgent(ctx, s.smartAccounts.signers, a, a.AgentKey, &op, func(pay smartaccount.Payment) error {
-		use, err := s.AuthoriseAgentCryptoPayment(ctx, workspaceID, c.AgentID, pay)
+		use, err := s.AuthoriseAgentCryptoPayment(ctx, workspaceID, c.AgentID, n.Chain.ID, pay)
 		if err == nil {
 			c.useID = &use // kept on the send with its signed operation, below
 		}
@@ -531,19 +536,34 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 		return s.cryptoSend(ctx, workspaceID, c.AgentID, c.ID)
 	}
 	c.UserOpHash = fmt.Sprintf("0x%x", h)
-	if _, err := s.handToBundler(ctx, workspaceID, n, op); err != nil {
-		// Only a bundler's own refusal, or a budget that cannot cover the fee, is known not to reach the chain. Any other
-		// error may follow its taking the operation: the send stays to be sent again, as signed, and still counts.
-		if errors.Is(err, smartaccount.ErrRefused) || errors.Is(err, smartaccount.ErrGasBudgetSpent) {
+	if _, err := s.handToBundler(ctx, workspaceID, n, c, op); err != nil {
+		switch {
+		case errors.Is(err, smartaccount.ErrGasBudgetSpent):
+			// Refused before any bundler saw it, and never sent again: its use is given back.
+			if _, err := s.pool.Exec(ctx, `UPDATE agent_spend_permission_uses SET op = NULL, op_hash = NULL, sent_block = NULL
+				WHERE id = $1 AND agent_id = $2 AND outcome IS NULL`, *c.useID, c.AgentID); err != nil {
+				return c, fmt.Errorf("economy: crypto send: %w", err)
+			}
+			return s.endCryptoSend(ctx, c, "failed", err.Error())
+		case errors.Is(err, smartaccount.ErrRefused):
+			// The bundler refused it: failed, though it counts until the chain shows it never moved (endCryptoSend).
 			return s.endCryptoSend(ctx, c, "failed", err.Error())
 		}
+		// Any other error may follow its taking the operation: the send stays to be sent again, as signed.
 		return c, nil
 	}
 	return s.markCryptoSent(ctx, workspaceID, n, c)
 }
 
-// handToBundler sends op, sponsored out of the workspace's gas budget when the chain's paymaster pays it.
-func (s *DualTokenStore) handToBundler(ctx context.Context, workspaceID string, n CryptoSendNetwork, op smartaccount.UserOp) (string, error) {
+// handToBundler keeps op with c's use, so it is settled from the chain, and sends it, sponsored out of the workspace's
+// gas budget when the chain's paymaster pays it.
+func (s *DualTokenStore) handToBundler(ctx context.Context, workspaceID string, n CryptoSendNetwork, c CryptoSend, op smartaccount.UserOp) (string, error) {
+	if c.useID == nil {
+		return "", fmt.Errorf("%w: send %s has no payment the gate allowed", ErrCryptoSend, c.ID)
+	}
+	if _, err := s.keepAgentCryptoOp(ctx, n.Chain, workspaceID, c.AgentID, *c.useID, op); err != nil {
+		return "", err
+	}
 	if n.Chain.PaymasterURL != "" {
 		return n.Chain.SendSponsored(ctx, s.SponsoredGas(workspaceID, n.Chain.ID), op)
 	}
@@ -562,17 +582,31 @@ func (s *DualTokenStore) markCryptoSent(ctx context.Context, workspaceID string,
 	return s.readCryptoReceipt(ctx, workspaceID, n, c)
 }
 
-// readCryptoReceipt reads sent c's receipt: landed with its transaction, failed (its use given back) when the chain
-// reverted it, or still sent while it is not on the chain.
-//
-// shortcut: an operation the bundler took that never lands stays sent, and its use counts; upgrade by dropping it, and
-// giving the use back, once its nonce is taken by another operation.
+// readCryptoReceipt reads sent c's receipt: landed with its transaction, failed when the chain reverted it, or still
+// sent while it is not on the chain. One the chain shows never landed, its nonce taken by another operation, is failed.
+// Its use is given back by SettleAgentCryptoPayments, from finalized blocks, never from the bundler's receipt.
 func (s *DualTokenStore) readCryptoReceipt(ctx context.Context, workspaceID string, n CryptoSendNetwork, c CryptoSend) (CryptoSend, error) {
 	r, err := n.Chain.Receipt(ctx, c.UserOpHash)
-	if err != nil || r == nil {
-		return c, nil
+	if err == nil && r != nil {
+		return s.landCryptoSend(ctx, workspaceID, c, r)
 	}
-	return s.landCryptoSend(ctx, workspaceID, c, r)
+	if outcome, _ := s.cryptoSendOutcome(ctx, c); outcome == outcomeDropped {
+		return s.endCryptoSend(ctx, c, "failed", "it never reached the chain: nothing was sent")
+	}
+	return c, nil
+}
+
+// cryptoSendOutcome is how c's payment ended as SettleAgentCryptoPayments read it from the chain; "" while not known.
+func (s *DualTokenStore) cryptoSendOutcome(ctx context.Context, c CryptoSend) (string, error) {
+	if c.useID == nil {
+		return "", nil
+	}
+	var outcome *string
+	if err := s.pool.QueryRow(ctx, `SELECT outcome FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`,
+		*c.useID, c.AgentID).Scan(&outcome); err != nil || outcome == nil {
+		return "", err
+	}
+	return *outcome, nil
 }
 
 func (s *DualTokenStore) landCryptoSend(ctx context.Context, workspaceID string, c CryptoSend, r *smartaccount.Receipt) (CryptoSend, error) {
@@ -582,7 +616,7 @@ func (s *DualTokenStore) landCryptoSend(ctx context.Context, workspaceID string,
 		}
 		return s.endCryptoSend(ctx, c, "failed", "the chain reverted the payment: nothing was sent")
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET status = 'landed', tx_hash = $2, updated_at = now() WHERE id = $1`,
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET status = 'landed', reason = '', tx_hash = $2, updated_at = now() WHERE id = $1`,
 		c.ID, r.Receipt.TransactionHash); err != nil {
 		return c, fmt.Errorf("economy: crypto send: %w", err)
 	}
@@ -596,6 +630,16 @@ func (s *DualTokenStore) AgentCryptoSend(ctx context.Context, workspaceID, agent
 		return c, err
 	}
 	if n, ok := s.cryptoSendNets[c.Network]; ok && s.smartAccounts != nil {
+		if c.Status == "failed" && c.UserOpHash != "" {
+			// The bundler refused it, yet the chain shows it paid: it landed.
+			if outcome, err := s.cryptoSendOutcome(ctx, c); err != nil || outcome != outcomePaid {
+				return c, err
+			}
+			if r, err := n.Chain.Receipt(ctx, c.UserOpHash); err == nil && r != nil && r.Success {
+				return s.landCryptoSend(ctx, workspaceID, c, r)
+			}
+			return c, nil
+		}
 		return s.carryOn(ctx, workspaceID, n, c)
 	}
 	return c, nil

@@ -339,6 +339,23 @@ func tokenFee(pay smartaccount.Payment) (fee *int64, paymaster *string) {
 // bundler answers: an operation the bundler refuses could still reach the chain, so it counts until its account uses its
 // nonce for another. op must be exactly the payment the gate allowed, on c, out of the agent's own account.
 func (s *DualTokenStore) SendAgentCryptoPayment(ctx context.Context, c smartaccount.Chain, workspaceID, agentID string, use int64, op smartaccount.UserOp) (string, error) {
+	hash, err := s.keepAgentCryptoOp(ctx, c, workspaceID, agentID, use, op)
+	if err != nil {
+		return "", err
+	}
+	sent, err := c.Send(ctx, op)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(sent, hash) {
+		return "", fmt.Errorf("smartaccount: the bundler hashes the operation %s, Lens %s", sent, hash)
+	}
+	return hash, nil
+}
+
+// keepAgentCryptoOp keeps op with use, agentID's payment the gate allowed, before any bundler sees it, and answers its
+// hash: from then on the use is settled from the chain. Keeping the same operation again changes nothing.
+func (s *DualTokenStore) keepAgentCryptoOp(ctx context.Context, c smartaccount.Chain, workspaceID, agentID string, use int64, op smartaccount.UserOp) (string, error) {
 	pay, err := smartaccount.PaymentOf(op.CallData)
 	if err != nil {
 		return "", err
@@ -368,13 +385,6 @@ func (s *DualTokenStore) SendAgentCryptoPayment(ctx context.Context, c smartacco
 	}
 	if tag.RowsAffected() == 0 {
 		return "", fmt.Errorf("%w: the operation is not the agent's payment %d on chain %d, still to be sent", smartaccount.ErrInvalid, use, c.ID)
-	}
-	sent, err := c.Send(ctx, op)
-	if err != nil {
-		return "", err
-	}
-	if !strings.EqualFold(sent, hash) {
-		return "", fmt.Errorf("smartaccount: the bundler hashes the operation %s, Lens %s", sent, hash)
 	}
 	return hash, nil
 }

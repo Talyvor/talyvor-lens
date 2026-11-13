@@ -1,4 +1,4 @@
--- 0346_agent_crypto_sends.sql — B48.9: an agent's smart account sends USDC to another Talyvor agent or to any address
+-- 0383_agent_crypto_sends.sql — B48.9: an agent's smart account sends USDC to another Talyvor agent or to any address
 -- (internal/economy/agent_crypto_sends.go).
 --
 -- agent_crypto_sends: one row per send, keyed by the caller's idempotency key, so a retry answers the same send and
