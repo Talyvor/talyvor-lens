@@ -246,7 +246,7 @@ func (t PermissionMandateTerms) validate() error {
 			strings.HasPrefix(c, ClientSchedulePrefix) && len(c) > len(ClientSchedulePrefix) // B45.13: a recurring plan's standing orders
 		// a2a:<signing domain> is an outside agent asking to be paid (B45.29); it never pays without the owner.
 		named = named || strings.HasPrefix(c, "a2a:") && len(c) > 4
-		if c != ClientChat && c != ClientVoice && !named {
+		if c != ClientChat && c != ClientVoice && c != ClientCounter && !named { // B52.13: Counter paying a deal it closed
 			return bad("%q is not a client: use \"chat\", \"voice\", \"mcp:<client id>\", \"key:<api key id>\" or \"a2a:<signing domain>\"", c)
 		}
 	}

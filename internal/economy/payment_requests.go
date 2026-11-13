@@ -263,6 +263,10 @@ func (s *DualTokenStore) PreparePaymentRequest(ctx context.Context, workspaceID,
 	if strings.HasPrefix(idempotencyKey, ClientSchedulePrefix) != strings.HasPrefix(in.Client, ClientSchedulePrefix) {
 		return r, false, fmt.Errorf("%w: an Idempotency-Key starting %q is reserved for recurring payments", ErrPaymentRequest, ClientSchedulePrefix)
 	}
+	// B52.13: "counter:" keys are a Counter deal's payment, so no caller can take a deal's key before it is paid.
+	if strings.HasPrefix(idempotencyKey, ClientCounter+":") != (in.Client == ClientCounter) {
+		return r, false, fmt.Errorf("%w: an Idempotency-Key starting %q is reserved for Counter's deals", ErrPaymentRequest, ClientCounter+":")
+	}
 	kind, err := in.normalise()
 	if err != nil {
 		return r, false, err
