@@ -87,6 +87,21 @@ type OutsidePayment struct {
 	at            time.Time          // when the agent's rules judge it (B30.18: a standing order's run); zero means now
 	signed        bool               // B54.33: a person's payment, made only with the signature its workspace needs
 	assertion     *passkey.Assertion // that signature
+	lensKey       bool               // B50.48: Lens pays it under a key of its own (lensPaymentKeyPrefixes)
+}
+
+// lensPaymentKeyPrefixes start the keys Lens pays its own payments under — a request's item, a standing order's tick, a
+// payout batch's row — and its other money's. A caller's key may not start with one (B50.48): a payment under a
+// request's key would leave the owner's approved payment refused as ErrIdempotencyKeyReused.
+var lensPaymentKeyPrefixes = []string{"preq:", "schedule:", "payout:", "payment_in:", "fx:", "card_", "money:"}
+
+func lensPaymentKey(key string) bool {
+	for _, prefix := range lensPaymentKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // debit is what leaves the account: the amount, and an international payment's partner cost and fee.
@@ -118,6 +133,8 @@ func (in *OutsidePayment) normalise(withKey bool) error {
 		return bad(fmt.Sprintf("funding is test or live, not %q", in.Funding))
 	case withKey && (in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200):
 		return bad("a payment carries an idempotency key (the Idempotency-Key header, or idempotency_key), up to 200 characters")
+	case withKey && !in.lensKey && lensPaymentKey(in.IdempotencyKey):
+		return bad(fmt.Sprintf("an idempotency key may not start with %q: Lens pays its own payments under those", lensPaymentKeyPrefixes))
 	case len(in.Reference) > 140:
 		return bad("a payment's reference is up to 140 characters")
 	}

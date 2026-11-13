@@ -316,7 +316,7 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 			continue
 		}
 		p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: b.AgentID, PayeeID: r.PayeeID, AmountMinor: r.AmountMinor,
-			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line)})
+			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line), lensKey: true})
 		if err != nil {
 			r.Status, r.Detail = PaymentFailed, err.Error()
 			continue
