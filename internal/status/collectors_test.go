@@ -56,11 +56,11 @@ func TestStatus_ECBReferenceRates(t *testing.T) {
 			[]string{`<span class="pill good">collecting</span>`, "latest ECB day " + today.Format("02 Jan 2006"), fetched.Format("02 Jan 15:04")}},
 		{"four days old, a long weekend", ecbrate.Health{LatestDay: day(4), FetchedAt: &fetched}, false,
 			[]string{`<span class="pill good">collecting</span>`, "latest ECB day " + day(4).Format("02 Jan 2006")}},
-		{"none held", ecbrate.Health{LastError: "ecbrate: fetch: 503 Service Unavailable"}, true,
-			[]string{`<span class="pill bad">failing</span>`, "no rates held", "last fetch failed: ecbrate: fetch: 503 Service Unavailable"}},
-		{"only rates five days old", ecbrate.Health{LatestDay: day(5), FetchedAt: &fetched, LastError: "ecbrate: fetch: 503 Service Unavailable"}, true,
+		{"none held", ecbrate.Health{LastError: "the ECB answered 503 Service Unavailable"}, true,
+			[]string{`<span class="pill bad">failing</span>`, "no rates held", "last fetch failed: the ECB answered 503 Service Unavailable"}},
+		{"only rates five days old", ecbrate.Health{LatestDay: day(5), FetchedAt: &fetched, LastError: "the ECB answered 503 Service Unavailable"}, true,
 			[]string{`<span class="pill bad">failing</span>`, "latest ECB day " + day(5).Format("02 Jan 2006") + ", more than four days old",
-				"last fetch failed: ecbrate: fetch: 503 Service Unavailable"}},
+				"last fetch failed: the ECB answered 503 Service Unavailable"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			page := newStatusPage(&fakePinger{}, nil, nil, "test")

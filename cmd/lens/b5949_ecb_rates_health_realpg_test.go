@@ -35,7 +35,7 @@ func TestB5949_ECBRatesHealth(t *testing.T) {
 		t.Fatal("a 503 refreshed the rates")
 	}
 	h, err := book.Health(ctx)
-	if err != nil || h.LatestDay != nil || h.FetchedAt != nil || h.LastError != "ecbrate: fetch: 503 Service Unavailable" {
+	if err != nil || h.LatestDay != nil || h.FetchedAt != nil || h.LastError != "the ECB answered 503 Service Unavailable" {
 		t.Fatalf("after a failed fetch with none held: %+v, %v", h, err)
 	}
 

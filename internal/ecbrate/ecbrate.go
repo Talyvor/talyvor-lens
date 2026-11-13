@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -82,7 +83,7 @@ type Book struct {
 
 	mu        sync.Mutex
 	fetchedAt *time.Time // this replica's last fetch that stored the file
-	lastErr   string     // the last fetch's error; "" once one succeeds
+	lastErr   string     // the last fetch's failure as a fixed public phrase; "" once one succeeds
 }
 
 // New keeps rates in pool, fetched from url (DailyURL in production).
@@ -92,11 +93,11 @@ func New(pool *pgxpool.Pool, url string) *Book {
 
 // Refresh fetches the ECB's file and stores every day in it; a day already stored is left as it is.
 func (b *Book) Refresh(ctx context.Context) error {
-	err := b.refresh(ctx)
+	failure, err := b.refresh(ctx)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err != nil {
-		b.lastErr = err.Error()
+		b.lastErr = failure
 		return err
 	}
 	now := time.Now().UTC()
@@ -104,36 +105,42 @@ func (b *Book) Refresh(ctx context.Context) error {
 	return nil
 }
 
-func (b *Book) refresh(ctx context.Context) error {
+// refresh is Refresh, and on failure also the fixed phrase the public status page shows for it: an error's own text
+// can carry an internal address or a database name, so it goes only to the log.
+func (b *Book) refresh(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.url, nil)
 	if err != nil {
-		return err
+		return "cannot connect", err
 	}
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("ecbrate: fetch: %w", err)
+		var ne net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+			return "timed out", fmt.Errorf("ecbrate: fetch: %w", err)
+		}
+		return "cannot connect", fmt.Errorf("ecbrate: fetch: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ecbrate: fetch: %s", resp.Status)
+		return "the ECB answered " + resp.Status, fmt.Errorf("ecbrate: fetch: %s", resp.Status)
 	}
 	days, err := Parse(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return "the ECB's file could not be read", err
 	}
 	for _, d := range days {
 		for ccy, rate := range d.PerEUR {
 			if _, err := b.pool.Exec(ctx, `INSERT INTO ecb_reference_rates (rate_date, currency, per_eur) VALUES ($1, $2, $3::numeric)
 				ON CONFLICT (rate_date, currency) DO NOTHING`, d.Date, ccy, rate); err != nil {
-				return fmt.Errorf("ecbrate: store: %w", err)
+				return "the rates could not be stored", fmt.Errorf("ecbrate: store: %w", err)
 			}
 		}
 	}
-	return nil
+	return "", nil
 }
 
 // Health is what the status page says of the rates (B59.49): the latest ECB day held, when this replica last fetched
-// the file, and the last fetch's error if it failed.
+// the file, and, if the last fetch failed, a fixed phrase for why (the error itself is in the log).
 type Health struct {
 	LatestDay *time.Time // nil while none are held
 	FetchedAt *time.Time // nil until this replica has fetched them
