@@ -53,6 +53,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/keys":                         moneySideEither,
 	"/v1/workspaces/{}/agents/lockdown":                     moneySideEither,
 	"/v1/workspaces/{}/agents/owner-wallets":                moneySideEither,
+	"/v1/workspaces/{}/agents/owner-wallets/moves":          moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys":                     moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/challenge":           moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/{}":                  moneySideEither,
@@ -107,6 +108,10 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/topup":                     moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet":                    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet-kind":               moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves":              moneySideEither, // B48.8: the body names the route, wallet to card to cash-out
+	"/v1/workspaces/{}/agents/{}/wallet-moves/quote":        moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/confirm":   moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/return":    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallets":                   moneySideEither,
 	"/v1/workspaces/{}/agents/{}/withdraw":                  moneySideEither,
 

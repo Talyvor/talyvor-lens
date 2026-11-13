@@ -2855,6 +2855,15 @@ func run() error {
 	// B30.15 — money in that matched no account; the operator assigns it, behind step-up. payments_in_handler.go.
 	r.Get("/v1/admin/money/suspense", requireAdminOrOperatorRead(authManager, newSuspenseListHandler(dualToken, cfg.SuspenseReturnDays)))
 	r.Post("/v1/admin/money/suspense/{entryID}/assign", requireStepUp(authManager, stepUp, newSuspenseAssignHandler(dualToken)))
+	// B48.8 — agents' top-ups and cash-outs held with their money out: the operators' cases.
+	r.Get("/v1/admin/wallet-moves/held", requireAdminOrOperatorRead(authManager, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		moves, err := dualToken.HeldWalletMoves(req.Context())
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"moves": moves})
+	})))
 	// B30.8 — the compliance case file: read with the admin key, every action behind step-up. compliance_handler.go.
 	r.Get("/v1/admin/compliance/cases", requireAdmin(authManager, newComplianceCasesHandler(caseFile)))
 	r.Get("/v1/admin/compliance/cases/{caseID}", requireAdmin(authManager, newComplianceCaseHandler(caseFile)))
@@ -3022,6 +3031,9 @@ func run() error {
 	// B22.9: cash-outs are paid through the partner-neutral interface; only the test partner exists, and it pays
 	// nothing — the real one waits for a licensed partner.
 	dualToken.SetCashOutPartner(economy.TestCashOutPartner{})
+	// B48.8: agents' wallets are topped up with a card, a bank transfer or a fiat wallet, and cashed out, through the
+	// ramp's partner-neutral interface; only the Test ramp exists, and it buys and sells nothing.
+	dualToken.SetRampPartner(&partners.TestRampPartner{})
 	mcpAuth := auth.AuthMiddleware(keyStore, authManager)
 	r.With(mcpAuth).Post("/mcp", mcpServer.HandleRPC)
 	r.With(mcpAuth).Get("/mcp/sse", mcpServer.HandleSSE)
