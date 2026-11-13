@@ -24,7 +24,7 @@ func TestB5940_BusinessWorkspaceKeepsItsCountryAndRegistrationNumber(t *testing.
 	ctx := context.Background()
 	bank := economy.NewDualTokenStore(nil, pool, nil)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint, nil)
 	stamp := time.Now().Format("150405.000000")
 
 	rec, out := doProvision(t, r, provisionSecret, `{"identity":"b5940-biz-`+stamp+`","display_name":"Acme Ltd",
@@ -66,7 +66,7 @@ func TestB5940_PersonalWorkspaceAndRefusedProfiles(t *testing.T) {
 	ctx := context.Background()
 	bank := economy.NewDualTokenStore(nil, pool, nil)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint, nil)
 	stamp := time.Now().Format("150405.000000")
 
 	for name, body := range map[string]string{

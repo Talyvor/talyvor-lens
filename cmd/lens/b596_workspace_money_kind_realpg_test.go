@@ -48,7 +48,7 @@ func TestB596_NewWorkspaceIsItsTypeAndKindAndItsFirstAgentFollowsIt(t *testing.T
 	ctx := context.Background()
 	bank, _ := b596Bank(t, pool, "whsec_b596_start")
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, 0), newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, 0), newKeyFixture(t).mint, nil)
 	stamp := time.Now().Format("150405.000000")
 
 	for _, bad := range []string{`"account_type":"charity"`, `"money_kind":"gold"`} {

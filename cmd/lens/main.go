@@ -98,6 +98,7 @@ import (
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/mcp"
+	"github.com/talyvor/lens/internal/members"
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/modality"
@@ -3153,6 +3154,10 @@ func run() error {
 		syntheticDue.physicalCards = dualToken // B53.19
 	}
 
+	// B52.35 — a person joins another workspace by invite; POST /v1/provision mints a member's read-only token for it.
+	workspaceMembers := members.New(pool)
+	authManager.WithMemberCheck(workspaceMembers.LiveMember)
+
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
 	// (LENS_PROVISION_SECRET) rather than an API key: its whole purpose is to serve a caller that
@@ -3198,7 +3203,8 @@ func run() error {
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
-		})
+		}, workspaceMembers.MemberID)
+	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
@@ -5069,6 +5075,7 @@ func run() error {
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38
+		mountWorkspaceMemberRoutes(authed, workspaceMembers)                            // B52.35
 		mountSellerTaxRoutes(authed, sellerTax)                                         // B32.41
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9
