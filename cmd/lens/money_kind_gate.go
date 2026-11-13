@@ -248,7 +248,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/coach/ask": moneySideEither,
 
 	// instant_transfer_handler.go
-	"/v1/workspaces/{}/money/instant-transfers/quote": moneySideBoth,
+	"/v1/workspaces/{}/money/instant-transfers/quote":     moneySideBoth,
+	"/v1/workspaces/{}/agents/{}/money/instant-transfers": moneySideBoth, // B59.15
+	"/v1/workspaces/{}/money/instant-transfers/{}":        moneySideBoth,
 
 	// money_convert_handler.go
 	"/v1/workspaces/{}/agents/{}/money/convert":       moneySideEither,
