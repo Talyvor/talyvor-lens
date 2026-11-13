@@ -359,6 +359,11 @@ var moneyRoutes = map[string]moneySide{
 	// workspace_money_kind_handler.go
 	"/v1/workspaces/{}/account":            moneySideEither,
 	"/v1/workspaces/{}/account/money-kind": moneySideEither,
+
+	// agent_accounts_handler.go, B52.41: a raise filed for the owner's passkey
+	"/v1/workspaces/{}/agents/{}/rules/proposals":              moneySideEither,
+	"/v1/workspaces/{}/agents/{}/rules/proposals/{}/approve":   moneySideEither,
+	"/v1/workspaces/{}/agents/{}/rules/proposals/{}/challenge": moneySideEither,
 }
 
 // moneyKindReader is what moneyKindGate asks; *economy.DualTokenStore answers it.
