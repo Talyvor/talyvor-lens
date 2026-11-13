@@ -96,7 +96,7 @@ func (p *TestRampPartner) Quote(_ context.Context, req RampQuoteRequest) (RampQu
 	if fee.Minor >= req.Sell.Minor {
 		return RampQuote{}, fmt.Errorf("%w: %s is all fee", ErrInvalid, req.Sell)
 	}
-	rate, buy, err := testConvert(Money{Minor: req.Sell.Minor - fee.Minor, Currency: req.Sell.Currency}, req.Buy)
+	rate, buy, err := testConvert(Money{Minor: req.Sell.Minor - fee.Minor, Currency: req.Sell.Currency}, req.Buy, nil)
 	if err != nil {
 		return RampQuote{}, err
 	}

@@ -136,6 +136,19 @@ func TestDeviceKeys_SignApprovalsAndMandatesUntilRevoked(t *testing.T) {
 		t.Fatalf("£90 under the device-signed mandate = %v, want allow", d)
 	}
 
+	// A second phone, signed in by the first, so revoking the first is not revoking the last key (B55.15).
+	spare, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	spareSPKI, _ := x509.MarshalPKIXPublicKey(&spare.PublicKey)
+	_, ch = call(http.MethodPost, "/v1/money/devices/challenge", "")
+	spareChallenge, _ := ch["challenge"].(string)
+	h := sha256.Sum256(devicekey.Message(spareChallenge))
+	spareSig, _ := ecdsa.SignASN1(rand.Reader, spare, h[:])
+	if code, out := call(http.MethodPost, "/v1/money/devices", jsonOf(map[string]any{"platform": "test", "name": "Ada's tablet",
+		"public_key": b64(spareSPKI), "challenge": spareChallenge, "signature": b64(spareSig), "attestation": "",
+		"assertion": assertion(spareChallenge)})); code != http.StatusCreated {
+		t.Fatalf("register a second device = %d %v", code, out)
+	}
+
 	// Revoked: from now on its signatures are refused.
 	if code, out := call(http.MethodPost, "/v1/money/devices/"+deviceID+"/revoke", ""); code != http.StatusOK || out["revoked_at"] == nil {
 		t.Fatalf("revoke = %d %v", code, out)
@@ -148,7 +161,7 @@ func TestDeviceKeys_SignApprovalsAndMandatesUntilRevoked(t *testing.T) {
 		t.Errorf("approve signed by the revoked device = %d %v, want 403", code, out)
 	}
 	if code, out := decide(second.ID, false); code != http.StatusForbidden {
-		t.Errorf("approve with no signature after the only device was revoked = %d %v, want 403", code, out)
+		t.Errorf("approve with no signature after a device was revoked = %d %v, want 403", code, out)
 	}
 	if s := status(second.ID); s != "pending" {
 		t.Errorf("after refused decisions the approval is %q, want pending", s)

@@ -108,13 +108,13 @@ func TestB5518_ADeclinedRequestIsNotAskedAgain(t *testing.T) {
 	}
 
 	// The agent's pay route: the owner declines, and the identical retry is refused without asking again.
-	if code, body := pay(5_000_000, "march"); code != http.StatusForbidden {
-		t.Fatalf("the first payment: %d %s, want 403 waiting for approval", code, body)
+	if code, body := pay(5_000_000, "march"); code != http.StatusAccepted {
+		t.Fatalf("the first payment: %d %s, want 202 waiting for approval", code, body)
 	}
 	pushes(1)
 	deny(b5018Pending(t, pool, ag[0].ID, "march"), `{"reason": "not this month"}`)
 	code, body := pay(5_000_000, "march")
-	if code != http.StatusForbidden || !strings.Contains(body, "the workspace's owner declined this request on ") ||
+	if code != http.StatusForbidden || !strings.Contains(body, "The workspace's owner declined this request on ") ||
 		!strings.Contains(body, ": not this month; the same request is refused until ") || strings.Contains(body, "spending rules") {
 		t.Errorf("the identical retry: %d %s, want 403 naming the owner's decline and reason, not the spending rules", code, body)
 	}

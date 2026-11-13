@@ -38,6 +38,7 @@ func TestServedOpenAPIDescribesAgentWallets(t *testing.T) {
 
 	for _, want := range []struct{ method, path string }{
 		{"get", "/v1/workspaces/{wsID}/agents"},
+		{"get", "/v1/workspaces/{wsID}/agents/{agentID}/summary"},
 		{"post", "/v1/workspaces/{wsID}/agents"},
 		{"post", "/v1/workspaces/{wsID}/agents/{agentID}/keys"},
 		{"post", "/v1/workspaces/{wsID}/agents/{agentID}/fund"},
@@ -57,6 +58,7 @@ func TestServedOpenAPIDescribesAgentWallets(t *testing.T) {
 		{"get", "/v1/workspaces/{wsID}/agents/{agentID}/statement"},
 		{"get", "/v1/workspaces/{wsID}/agents/statement"},
 		{"post", "/v1/workspaces/{wsID}/agents/{agentID}/send"},
+		{"post", "/v1/workspaces/{wsID}/agents/{agentID}/pay"},
 		{"get", "/v1/workspaces/{wsID}/agents/{agentID}/transfers"},
 		{"get", "/v1/workspaces/{wsID}/agents/{agentID}/card"},
 	} {

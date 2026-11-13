@@ -54,6 +54,7 @@ func TestB391_AnAgentsMCPToolIsAnsweredBehindPgBouncer(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newServer(pool, nil, nil, nil, nil, "test")
+	srv.SetAreas(everyArea{})
 	srv.SetAgentBank(bank)
 	srv.SetMarket(store, marketTestDeps{agents: bank})
 

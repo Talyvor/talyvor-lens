@@ -366,6 +366,10 @@ func (anthropicStreamOps) synthesizeCachePayload(accumulated string) []byte {
 	return out
 }
 
+// streamMaxDuration bounds one streamed answer, connection and upstream call alike (B28.79). It replaces the
+// server's 30 s timeouts and the client's 120 s cap for a stream, which a slow model outlives.
+const streamMaxDuration = 10 * time.Minute
+
 func (s *StreamHandler) serve(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -409,8 +413,20 @@ func (s *StreamHandler) serve(
 	// Measure the upstream connection/initial-response latency (the
 	// retry.Do block), NOT the whole stream forward. Record on every outcome
 	// with a bounded provider+status label; never alters control flow/errors.
+	//
+	// B28.79: a slow model streams for minutes, past the server's 30 s write and read timeouts (the read one
+	// cancels the request) and the client's 120 s cap; both cut a 90 s answer blank. This stream gets its own
+	// streamMaxDuration on the connection and on the upstream call instead, and keeps the client's transport.
+	streamDeadline := time.Now().Add(streamMaxDuration)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(streamDeadline)
+	_ = rc.SetReadDeadline(streamDeadline)
+	streamCtx, cancelStream := context.WithDeadline(r.Context(), streamDeadline)
+	defer cancelStream()
+	streamClient := *s.proxy.httpClient
+	streamClient.Timeout = 0
 	upstreamStart := time.Now()
-	result := retry.Do(r.Context(), retry.DefaultConfig(), func(c context.Context) (*http.Response, error) {
+	result := retry.Do(streamCtx, retry.DefaultConfig(), func(c context.Context) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(c, http.MethodPost, ops.upstreamURL(), bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -435,7 +451,7 @@ func (s *StreamHandler) serve(
 		if poolKey != nil {
 			ops.applyPoolKey(req, poolKey.Key)
 		}
-		return s.proxy.httpClient.Do(req)
+		return streamClient.Do(req)
 	})
 	if poolKey != nil {
 		if result.LastError != nil {

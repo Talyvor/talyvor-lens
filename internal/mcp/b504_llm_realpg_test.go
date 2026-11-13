@@ -117,6 +117,7 @@ func newB504World(t *testing.T, model market.Runner) *b504World {
 
 	deps := b504Deps{agents: bank, runner: model}
 	w.srv = newServer(pool, nil, nil, nil, nil, "test")
+	w.srv.SetAreas(everyArea{})
 	w.srv.SetAgentBank(bank)
 	w.srv.SetMandates(bank)
 	w.srv.SetSearcher(bank)

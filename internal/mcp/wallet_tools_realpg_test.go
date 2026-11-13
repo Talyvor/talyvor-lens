@@ -71,6 +71,7 @@ func TestWalletTools_AnAgentUsesEveryWalletCapabilityThroughMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newServer(pool, nil, nil, nil, nil, "test")
+	srv.SetAreas(everyArea{})
 	srv.SetAgentBank(store)
 
 	calls, refusals := 0, 0

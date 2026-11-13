@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/approvalchat"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/webpush"
@@ -44,6 +45,14 @@ type ApprovalPusher interface {
 	PublicKey() string
 }
 
+// ApprovalChat posts an approval to the workspace's Slack or Teams (internal/approvalchat.Store, B56.16).
+type ApprovalChat interface {
+	Post(ctx context.Context, workspaceID string, a approvalchat.Approval) error
+}
+
+// SetApprovalChat turns on the Slack or Teams post sent for each approval filed, to a workspace that saved a webhook.
+func (s *DualTokenStore) SetApprovalChat(c ApprovalChat) { s.approvalChat = c }
+
 // SetApprovalAuth sets the relying party passkeys are checked for and, when pusher is not nil, turns on
 // the push sent for each approval filed.
 func (s *DualTokenStore) SetApprovalAuth(rp passkey.RelyingParty, pusher ApprovalPusher) {
@@ -56,6 +65,8 @@ type Passkey struct {
 	Name         string     `json:"name"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`    // B41.116: revoked by a lockdown, it signs nothing
+	RecoveryCode string     `json:"recovery_code,omitempty"` // B55.48: answered once, with the workspace's first key
 }
 
 func (s *DualTokenStore) newChallenge(ctx context.Context, workspaceID, purpose string) (string, error) {
@@ -111,9 +122,14 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// B54.28: a known passkey is refused now; one still waiting may be registered signed, and its enrolment then 409s.
-	var known bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1)`, r.CredentialID).Scan(&known); err != nil {
+	// B55.15: a removed passkey keeps its row, so it is never registered again.
+	var known, removed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1),
+		EXISTS (SELECT 1 FROM workspace_passkeys WHERE credential_id = $1 AND removed_at IS NOT NULL)`, r.CredentialID).Scan(&known, &removed); err != nil {
 		return Passkey{}, fmt.Errorf("economy: register passkey: %w", err)
+	}
+	if removed {
+		return Passkey{}, ErrPasskeyRemoved
 	}
 	if known {
 		return Passkey{}, ErrPasskeyRegistered
@@ -130,13 +146,16 @@ func (s *DualTokenStore) RegisterPasskey(ctx context.Context, workspaceID, name 
 		VALUES ($1, $2, $3, $4, $5) RETURNING created_at`, r.CredentialID, workspaceID, name, r.PublicKey, int64(count)).Scan(&p.CreatedAt); err != nil {
 		return p, fmt.Errorf("economy: register passkey: %w", err)
 	}
+	if p.RecoveryCode, err = firstKeyRecoveryCode(ctx, tx, workspaceID); err != nil {
+		return Passkey{}, err
+	}
 	return p, tx.Commit(ctx)
 }
 
-// ListPasskeys reads a workspace's passkeys.
+// ListPasskeys reads a workspace's passkeys, removed ones left out.
 func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) ([]Passkey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at FROM workspace_passkeys
-		WHERE workspace_id = $1 ORDER BY created_at`, workspaceID)
+	rows, err := s.pool.Query(ctx, `SELECT credential_id, name, created_at, last_used_at, revoked_at FROM workspace_passkeys
+		WHERE workspace_id = $1 AND removed_at IS NULL ORDER BY created_at`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
 	}
@@ -144,10 +163,125 @@ func (s *DualTokenStore) ListPasskeys(ctx context.Context, workspaceID string) (
 	out := []Passkey{}
 	for rows.Next() {
 		var p Passkey
-		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt); err != nil {
+		if err := rows.Scan(&p.CredentialID, &p.Name, &p.CreatedAt, &p.LastUsedAt, &p.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ErrLastKey (B55.15): removing this key would leave the workspace with none that can approve.
+var ErrLastKey = errors.New("economy: this is the workspace's last key")
+
+// LastKeySentence is what the owner is told when a removal is refused with ErrLastKey.
+const LastKeySentence = "This is your last key. With none, nobody could approve, so add another first."
+
+// ErrKeyOwnsAccount (B55.15): the key owns an agent's smart account, and only it signs for that account.
+var ErrKeyOwnsAccount = errors.New("economy: this key owns an agent's smart account")
+
+// KeyOwnsAccountSentence is what the owner is told when a removal is refused with ErrKeyOwnsAccount.
+const KeyOwnsAccountSentence = "This key owns an agent's account, so it stays. Without it, nobody could sign for that account."
+
+// refuseAccountOwner is ErrKeyOwnsAccount when the passkey credentialID or the device key deviceID (the other one "")
+// owns one of workspaceID's agent smart accounts.
+func refuseAccountOwner(ctx context.Context, tx pgx.Tx, workspaceID, credentialID, deviceID string) error {
+	var owns bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agent_smart_accounts WHERE workspace_id = $1
+		AND ((owner_credential_id = $2 AND $2 <> '') OR (owner_device_id = $3 AND $3 <> '')))`,
+		workspaceID, credentialID, deviceID).Scan(&owns); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	if owns {
+		return ErrKeyOwnsAccount
+	}
+	return nil
+}
+
+// refuseLastKey (B55.15) is ErrLastKey when workspaceID has no active passkey or phone key but the one being removed.
+// It holds the workspace's enrolment lock (authorizeEnrol's) until tx ends, so two removals at once cannot both pass.
+func refuseLastKey(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspace_passkeys WHERE workspace_id = $1 AND removed_at IS NULL AND revoked_at IS NULL)
+		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1 AND revoked_at IS NULL)`, workspaceID).Scan(&n); err != nil {
+		return fmt.Errorf("economy: keys: %w", err)
+	}
+	if n <= 1 {
+		return ErrLastKey
+	}
+	return nil
+}
+
+// RemovePasskey (B55.15) removes a passkey at once, with no signature, unless it is the workspace's last key or owns an
+// agent's smart account; removing it
+// again changes nothing. A removed passkey signs nothing, and still counts as a key, as a revoked phone key does.
+func (s *DualTokenStore) RemovePasskey(ctx context.Context, workspaceID, credentialID, by string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	last := refuseLastKey(ctx, tx, workspaceID)
+	if last != nil && !errors.Is(last, ErrLastKey) {
+		return last
+	}
+	var removedAt, revokedAt *time.Time
+	// FOR UPDATE waits for a signature by this passkey already being checked; every later one sees it removed.
+	err = tx.QueryRow(ctx, `SELECT removed_at, revoked_at FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+		credentialID, workspaceID).Scan(&removedAt, &revokedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrPasskeyNotFound
+	case err != nil:
+		return fmt.Errorf("economy: passkey: %w", err)
+	case removedAt != nil:
+		return nil
+	case last != nil && revokedAt == nil: // a passkey a lockdown revoked (B41.116) is not live, so removing it leaves as many
+		return last
+	}
+	if err := refuseAccountOwner(ctx, tx, workspaceID, credentialID, ""); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE workspace_passkeys SET removed_at = now(), removed_by = $3 WHERE credential_id = $1 AND workspace_id = $2`,
+		credentialID, workspaceID, by); err != nil {
+		return fmt.Errorf("economy: remove passkey: %w", err)
+	}
+	if err := appendAudit(ctx, tx, workspaceID, credentialID, "key_removed", map[string]any{"by": by, "kind": "passkey"}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Key (B55.15) is one of a workspace's active keys: a passkey or a phone key.
+type Key struct {
+	Kind       string     `json:"kind"` // "passkey" or "phone"
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Platform   string     `json:"platform"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ListKeys reads a workspace's active passkeys and phone keys, oldest first.
+func (s *DualTokenStore) ListKeys(ctx context.Context, workspaceID string) ([]Key, error) {
+	rows, err := s.pool.Query(ctx, `SELECT 'passkey', credential_id, name, '', created_at, last_used_at FROM workspace_passkeys
+		WHERE workspace_id = $1 AND removed_at IS NULL AND revoked_at IS NULL
+		UNION ALL SELECT 'phone', id, name, platform, created_at, last_used_at FROM workspace_device_keys
+		WHERE workspace_id = $1 AND revoked_at IS NULL ORDER BY 5, 2`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("economy: keys: %w", err)
+	}
+	defer rows.Close()
+	out := []Key{}
+	for rows.Next() {
+		var k Key
+		if err := rows.Scan(&k.Kind, &k.ID, &k.Name, &k.Platform, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }
@@ -185,7 +319,7 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 }
 
 // ErrApprovalsChanged: one of the approvals a batch decision names is no longer pending, so none is decided.
-var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending — none was decided")
+var ErrApprovalsChanged = errors.New("economy: one of these approvals is no longer pending, so none was decided")
 
 // batchApprovalPurpose (B41.204) is the purpose one challenge over several approvals is issued for: the decision and
 // the set of ids, sorted, so the signature covers exactly that decision on exactly those approvals.
@@ -298,7 +432,9 @@ func (s *DualTokenStore) authorizeSignedTx(ctx context.Context, tx pgx.Tx, works
 // authorizeEnrol (B50.20) spends the challenge a new passkey or device key answers: at once for a workspace with no
 // passkey or device key, and otherwise only with a's assertion, by one of them, over that same challenge — so a session
 // alone cannot add a key and then pass every passkey gate. It holds the workspace's enrolment lock until tx ends, so two
-// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned.
+// keys registering at once cannot both be the free first one. A revoked device key counts, as in authorizeSigned —
+// except for the one key registered over the challenge a lift returned, after a lockdown left no key live
+// (reenrolAfterLift).
 func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspaceID, purpose, challenge string, a *passkey.Assertion) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('key_enrol:' || $1, 0))`, workspaceID); err != nil {
 		return fmt.Errorf("economy: passkeys: %w", err)
@@ -310,6 +446,9 @@ func (s *DualTokenStore) authorizeEnrol(ctx context.Context, tx pgx.Tx, workspac
 	}
 	if n == 0 {
 		return useChallenge(ctx, tx, workspaceID, purpose, challenge)
+	}
+	if free, err := reenrolAfterLift(ctx, tx, workspaceID, purpose, challenge); free || err != nil {
+		return err
 	}
 	if a == nil {
 		return ErrPasskeyRequired
@@ -336,10 +475,10 @@ func (s *DualTokenStore) spendAssertion(ctx context.Context, tx pgx.Tx, workspac
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+		return fmt.Errorf("%w: not a passkey of this workspace, or it was removed", passkey.ErrInvalid)
 	}
 	if err != nil {
 		return fmt.Errorf("economy: passkey: %w", err)
@@ -402,20 +541,22 @@ func (s *DualTokenStore) DeletePushSubscription(ctx context.Context, workspaceID
 }
 
 // notifyApproval sends, in the background, one push per subscription of workspaceID for a newly filed
-// approval: which agent, how much, to whom and why.
+// approval: which agent, how much, to whom and why — and, B56.16, one post to its Slack or Teams.
 func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 	pusher := s.approvalPusher
-	if pusher == nil && s.nativePusher == nil {
+	if pusher == nil && s.nativePusher == nil && s.approvalChat == nil {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		var agentID, agentName, model, reason, payeeName, memo string
+		var agentID, agentName, model, reason, payeeName, memo, kind, currency string
 		var amount int64
-		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo
-			FROM agent_approvals a JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = $1`, approvalID).
-			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo); err != nil {
+		var amountMinor *int64
+		var expires time.Time
+		if err := s.pool.QueryRow(ctx, `SELECT a.agent_id, g.name, a.amount_ulxc, a.model, a.reason, a.payee_name, a.memo, a.expires_at, a.kind,
+			a.paid_from_currency, a.paid_from_amount_minor FROM agent_approvals a JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = $1`, approvalID).
+			Scan(&agentID, &agentName, &amount, &model, &reason, &payeeName, &memo, &expires, &kind, &currency, &amountMinor); err != nil {
 			slog.Warn("agents: approval push: read approval", slog.String("err", err.Error()))
 			return
 		}
@@ -431,6 +572,16 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		if to != "" {
 			body = agentName + " wants to pay " + to + " " + LXCMoney(amount)
 		}
+		if kind == ApprovalCardChallenge && amountMinor != nil { // B59.22: the card's own payment, in its currency
+			body = agentName + "’s card: confirm " + minorString(*amountMinor, currency) + " at " + payeeName
+			payload, _ := json.Marshal(map[string]any{"type": ApprovalCardChallenge, "approval_id": approvalID, "workspace_id": workspaceID,
+				"agent_id": agentID, "agent_name": agentName, "merchant": payeeName, "currency": currency, "amount_minor": *amountMinor, "body": body})
+			s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Confirm a card payment", Body: body, Category: "agent_approval", Data: map[string]string{
+				"type": ApprovalCardChallenge, "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID, "agent_name": agentName,
+				"payee_name": payeeName, "currency": currency, "amount_minor": strconv.FormatInt(*amountMinor, 10)}})
+			s.pushWeb(ctx, workspaceID, payload)
+			return
+		}
 		payload, _ := json.Marshal(map[string]any{"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID,
 			"agent_id": agentID, "agent_name": agentName, "amount_ulxc": amount, "amount_lxc": lxcString(amount), "reason": reason,
 			"payee_name": payeeName, "memo": memo, "body": body}) // B55.30: body is the sentence the phones show
@@ -440,6 +591,12 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID,
 			"agent_name": agentName, "payee_name": payeeName, "currency": "LXC", "amount_minor": strconv.FormatInt(amount, 10)}})
 		s.pushWeb(ctx, workspaceID, payload)
+		if s.approvalChat != nil {
+			if err := s.approvalChat.Post(ctx, workspaceID, approvalchat.Approval{ID: approvalID, Agent: agentName, To: to,
+				Amount: LXCMoney(amount), Reason: reason, URL: ApprovalURLBase + approvalID, ExpiresAt: expires}); err != nil {
+				slog.Warn("approval chat", slog.String("err", err.Error()))
+			}
+		}
 	}()
 }
 

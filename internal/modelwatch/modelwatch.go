@@ -420,14 +420,14 @@ func (w *Watcher) listModels(ctx context.Context, p provider, released map[strin
 	if payload.HasMore {
 		// A truncated list must NOT be diffed. Every id on the unread pages would be silently treated as
 		// "not serving a new model", which is exactly the false all-clear this check exists to prevent.
-		return nil, fmt.Errorf("model list was TRUNCATED (has_more=true) after %d ids — refusing to "+
+		return nil, fmt.Errorf("model list was TRUNCATED (has_more=true) after %d ids, so it refuses to "+
 			"report 'no drift' from a partial list; raise the page limit or add pagination", len(ids))
 	}
 	if len(ids) == 0 {
 		// An empty list from a 200 is not "no new models" — it is a response we do not understand, and
 		// reporting no drift on it would be an absence read as a value, the bug class this whole
 		// change exists to remove.
-		return nil, fmt.Errorf("model list was empty or unparseable — treating as a failed poll, not as 'no drift'")
+		return nil, fmt.Errorf("model list was empty or unparseable, so it is treated as a failed poll, not as 'no drift'")
 	}
 	return ids, nil
 }

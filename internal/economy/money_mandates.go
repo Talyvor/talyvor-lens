@@ -68,7 +68,7 @@ var (
 	// ErrMandateDeclined: the owner declined the mandate an agent's key asked for.
 	ErrMandateDeclined = errors.New("economy: the owner declined this mandate, so it pulls nothing")
 	// ErrMandateUnsigned: the workspace signs its mandates and this grant or approval carried no signature.
-	ErrMandateUnsigned = errors.New("economy: this workspace signs its mandates with a passkey or the phone app — sign this mandate's challenge (POST /v1/money/mandates/challenge)")
+	ErrMandateUnsigned = errors.New("economy: this workspace signs its mandates with a passkey or the phone app. Sign this mandate's challenge (POST /v1/money/mandates/challenge)")
 )
 
 // The states of a mandate.
@@ -171,7 +171,7 @@ func (g *MandateGrant) normalise(workspaceID string) error {
 	case (g.PayeeWorkspaceID == "") == (g.PayeeBusinessID == ""):
 		return fmt.Errorf("%w: name one payee: payee_workspace_id for a Talyvor company, or payee_business_id for an outside business", ErrMandate)
 	case g.PayeeBusinessID != "" && g.PayeeID == "":
-		return fmt.Errorf("%w: a mandate to an outside business names the saved payee (payee_id) its pulls are paid out to — save one at /v1/money/payees first", ErrMandate)
+		return fmt.Errorf("%w: a mandate to an outside business names the saved payee (payee_id) its pulls are paid out to. Save one at /v1/money/payees first", ErrMandate)
 	case g.PayeeWorkspaceID == workspaceID:
 		return fmt.Errorf("%w: a mandate is for another company to pull, not this one", ErrMandate)
 	case len(g.PayeeBusinessID) > 200 || len(g.PayeeName) > 200:
@@ -247,8 +247,9 @@ func (m Mandate) undecided() error {
 }
 
 // GrantMandate grants g on one of workspaceID's agent accounts — with agentID, the agent's own key asking for one on
-// its own account: requested, it pulls nothing until the owner approves it (B55.24). Without, it is the owner's
-// unsigned grant, which only a workspace with no passkey or device key makes.
+// its own account: requested, it pulls nothing until the owner approves it (B55.24), and named by its payee's own
+// name, whatever payee_name the agent sent (B50.42). Without, it is the owner's unsigned grant, which only a workspace
+// with no passkey or device key makes.
 func (s *DualTokenStore) GrantMandate(ctx context.Context, workspaceID, agentID string, g MandateGrant) (Mandate, error) {
 	return s.grantMandate(ctx, workspaceID, agentID, "", g, nil)
 }
@@ -291,6 +292,8 @@ func (s *DualTokenStore) grantMandate(ctx context.Context, workspaceID, agentID,
 			return Mandate{}, err
 		}
 		approved, m.DecidedBy, m.Status = time.Now(), by, MandateActive
+	} else {
+		m.PayeeName = "" // the owner is shown where an agent's money goes, never the agent's own words for it (B50.42)
 	}
 	var keySHA, hold any
 	if m.PayeeWorkspaceID != "" {
@@ -560,7 +563,7 @@ func (s *DualTokenStore) mandatePayout(ctx context.Context, tx pgx.Tx, m Mandate
 	case len(ref) > 140:
 		return out, fmt.Errorf("%w: a pull's memo is its bank reference, up to 140 characters", ErrMandate)
 	case m.PayeeID == "":
-		return out, fmt.Errorf("%w: the mandate names no saved payee to pay out to — grant a new one with payee_id", ErrMandate)
+		return out, fmt.Errorf("%w: the mandate names no saved payee to pay out to. Grant a new one with payee_id", ErrMandate)
 	case s.accountPartners == nil:
 		return out, fmt.Errorf("%w: no account partner is set", ErrAccountNotOpened)
 	case s.screener == nil:

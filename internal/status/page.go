@@ -22,6 +22,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/talyvor/lens/internal/brand"
+	"github.com/talyvor/lens/internal/ecbrate"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/scan"
@@ -135,10 +136,11 @@ type MoneyRail struct {
 }
 
 // RailCapability is a wallet capability and whether it has a clearance in force; Cleared is null when the
-// clearances could not be read.
+// clearances could not be read. Label is live or sandbox (B56.7), left out when the labels could not be read.
 type RailCapability struct {
 	Key     string `json:"key"`
 	Cleared *bool  `json:"cleared"`
+	Label   string `json:"label,omitempty"`
 }
 
 // RailsSummary counts the money rails from the same snapshot as their rows (B37.1): answering, down, and not called
@@ -174,12 +176,22 @@ type collectorReader interface {
 	Status(ctx context.Context) []scan.CollectorStatus
 }
 
+// ecbHealth is the ECB reference rates the FX partner prices at: *ecbrate.Book.
+type ecbHealth interface {
+	Health(ctx context.Context) (ecbrate.Health, error)
+}
+
+// ecbMaxAgeDays is how many calendar days old the latest ECB day may be before its row reads failing: a long weekend.
+const ecbMaxAgeDays = 4
+
 // railReader is the partners registry.
 type railReader interface{ Rails() []partners.Rail }
 
-// clearanceReader says which wallet capabilities have a clearance in force: *economy.DualTokenStore.
+// clearanceReader says which wallet capabilities have a clearance in force, and each one's label (B56.7):
+// *economy.DualTokenStore.
 type clearanceReader interface {
 	WalletCapabilities(ctx context.Context) ([]economy.CapabilityStatus, error)
+	Labels(ctx context.Context) (map[string]string, error)
 }
 
 // railNames and railCapabilities are how the page names each service and the capabilities whose money it moves.
@@ -225,6 +237,14 @@ type StatusPage struct {
 	lists      screeningLists
 	cards      string
 	collectors collectorReader
+	ecb        ecbHealth
+}
+
+// UseECBRates adds the ECB reference rates to the data collectors (B59.49). Like a collector, it never moves the banner.
+func (s *StatusPage) UseECBRates(r ecbHealth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ecb = r
 }
 
 // UseCollectors adds Scan's data collectors to the page. A collector off or failing never moves the banner.
@@ -411,14 +431,46 @@ func (s *StatusPage) Check(ctx context.Context) StatusResponse {
 
 func (s *StatusPage) dataCollectors(ctx context.Context) []scan.CollectorStatus {
 	s.mu.RLock()
-	c := s.collectors
+	c, ecb := s.collectors, s.ecb
 	s.mu.RUnlock()
+	var out []scan.CollectorStatus
+	if ecb != nil {
+		readCtx, cancel := context.WithTimeout(ctx, postgresTimeout)
+		h, err := ecb.Health(readCtx)
+		cancel()
+		out = append(out, ecbRow(h, err, time.Now().UTC()))
+	}
 	if c == nil {
-		return nil
+		return out
 	}
 	readCtx, cancel := context.WithTimeout(ctx, postgresTimeout)
 	defer cancel()
-	return c.Status(readCtx)
+	return append(out, c.Status(readCtx)...)
+}
+
+// ecbRow is the ECB reference rates' row: collecting with the latest ECB day held and when this replica fetched them,
+// failing when none are held or the latest is more than ecbMaxAgeDays calendar days old, with the last fetch's error.
+func ecbRow(h ecbrate.Health, err error, now time.Time) scan.CollectorStatus {
+	row := scan.CollectorStatus{Source: "ecb", Name: "ECB reference rates", On: true, LastRetrieved: h.FetchedAt}
+	var notes []string
+	switch {
+	case err != nil:
+		row.Failing = true
+		notes = append(notes, "the rates held could not be read")
+	case h.LatestDay == nil:
+		row.Failing = true
+		notes = append(notes, "no rates held")
+	case h.LatestDay.Before(now.Truncate(24*time.Hour).AddDate(0, 0, -ecbMaxAgeDays)):
+		row.Failing = true
+		notes = append(notes, "latest ECB day "+h.LatestDay.Format("02 Jan 2006")+", more than four days old")
+	default:
+		notes = append(notes, "latest ECB day "+h.LatestDay.Format("02 Jan 2006"))
+	}
+	if h.LastError != "" {
+		notes = append(notes, "last fetch failed: "+h.LastError)
+	}
+	row.Note = strings.Join(notes, " · ")
+	return row
 }
 
 func (s *StatusPage) cardPayments() string {
@@ -456,16 +508,18 @@ func (s *StatusPage) moneyRails(ctx context.Context) []MoneyRail {
 		return nil
 	}
 	var cleared map[string]bool
+	var labels map[string]string
 	if clearances != nil {
 		readCtx, cancel := context.WithTimeout(ctx, postgresTimeout)
 		caps, err := clearances.WalletCapabilities(readCtx)
-		cancel()
 		if err == nil {
 			cleared = map[string]bool{}
 			for _, c := range caps {
 				cleared[c.Key] = c.Clearance != nil
 			}
 		}
+		labels, _ = clearances.Labels(readCtx)
+		cancel()
 	}
 	out := []MoneyRail{}
 	for _, r := range rails.Rails() {
@@ -493,7 +547,7 @@ func (s *StatusPage) moneyRails(ctx context.Context) []MoneyRail {
 		}
 		anyCleared := false
 		for _, key := range railCapabilities[r.Service] {
-			c := RailCapability{Key: key}
+			c := RailCapability{Key: key, Label: labels[key]}
 			if v, ok := cleared[key]; ok {
 				c.Cleared = &v
 				anyCleared = anyCleared || v
@@ -864,8 +918,8 @@ func renderHTML(s *StatusResponse) string {
 <div class="tbl"><table class="rails"><thead><tr><th>Rail</th><th>Status</th></tr></thead><tbody>`)
 		// The times sit under the status rather than in columns of their own, so the table fits a 390px phone.
 		for _, r := range s.Rails {
-			fmt.Fprintf(&b, `<tr><td>%s<div class="msg">%s · %s</div></td><td>%s%s<div class="msg">last success <span class="num">%s</span></div><div class="msg">last failure <span class="num">%s</span></div></td></tr>`,
-				htmlEscape(r.Name), modeWord(r.Mode), clearedWord(r.Capabilities), railPill(r.Status), listsAge(r), railTime(r.LastSuccess), railTime(r.LastFailure))
+			fmt.Fprintf(&b, `<tr><td>%s<div class="msg">%s · %s%s</div></td><td>%s%s<div class="msg">last success <span class="num">%s</span></div><div class="msg">last failure <span class="num">%s</span></div></td></tr>`,
+				htmlEscape(r.Name), modeWord(r.Mode), clearedWord(r.Capabilities), labelWord(r.Capabilities), railPill(r.Status), listsAge(r), railTime(r.LastSuccess), railTime(r.LastFailure))
 		}
 		b.WriteString(`</tbody></table></div></section>`)
 	}
@@ -974,6 +1028,21 @@ func clearedWord(caps []RailCapability) string {
 		return "cleared"
 	}
 	return fmt.Sprintf("%d of %d cleared", n, len(caps))
+}
+
+// labelWord is a rail's label (B56.7): Live while any of its capabilities moves real money, Sandbox while none does,
+// and nothing for a rail that moves no money or whose labels could not be read.
+func labelWord(caps []RailCapability) string {
+	word := ""
+	for _, c := range caps {
+		switch c.Label {
+		case economy.LabelLive:
+			return " · Live"
+		case economy.LabelSandbox:
+			word = " · Sandbox"
+		}
+	}
+	return word
 }
 
 // railPill is a rail's status; a rail nothing has called yet says so rather than "unknown".

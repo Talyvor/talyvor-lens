@@ -118,6 +118,11 @@ type AgentRules struct {
 	MaxCommitmentULXC *int64   `json:"max_commitment_ulxc"`
 	AllowedLicences   []string `json:"allowed_licences"`
 	MaySubscribe      *bool    `json:"may_subscribe"`
+	// AllowedCurrencies and FXDailyLimitULXC (B30.29) bound its currency conversions: the currencies it may convert
+	// between — the one sold and the one bought; empty allows any — and the most it may convert in a day, valued as its
+	// payments are. Read, they are never nil; nil (absent from the JSON) saves the rules without changing them.
+	AllowedCurrencies []string `json:"allowed_currencies"`
+	FXDailyLimitULXC  *int64   `json:"fx_daily_limit_ulxc"`
 }
 
 // PayeeAllowance is one payee's "always allow" (B41.104): up to ULXC a day or a month (Per) without approval.
@@ -150,10 +155,40 @@ type AgentRequest struct {
 	Payee       Payee     // who a payment goes to, and Memo why: the approval it files names both (B23.5)
 	Memo        string
 	Commitment  Commitment // the marketplace licence a payment takes, if it takes one (B32.22)
+	PaidFrom    PaidFrom   // what pays it, for the approval it files (B57.11); zero is the agent's LXC, or the bill for a listing
 	// Approved: the owner signed for this payment in advance — a pull within the mandate they approved (B55.24) — so
 	// it needs no approval of its own. Every other rule still judges it.
 	Approved bool
 }
+
+// PaidFrom is what pays an approval's payment (B57.11): the agent's LXC balance, one of its currency accounts, the
+// company's monthly marketplace bill or the agent's card, and the amount in that one's currency. Name and BalanceMinor
+// are read with the approval: a bill has no balance, nor has a card, which draws on the agent's LXC.
+type PaidFrom struct {
+	Kind         string `json:"kind"` // lxc | account | marketplace_bill | card
+	AccountID    string `json:"account_id"`
+	Name         string `json:"name"`
+	Currency     string `json:"currency"`
+	AmountMinor  int64  `json:"amount_minor"`
+	BalanceMinor *int64 `json:"balance_minor"`
+	funding      string // an account's test or live money, whose balance is shown
+}
+
+// paidFromName names what pays in words, as the approval sheet shows it.
+func paidFromName(kind, agent, currency string) string {
+	switch kind {
+	case "account":
+		return agent + "’s " + cmp.Or(currencyWords[currency], currency) + " account"
+	case "marketplace_bill":
+		return "Your monthly marketplace bill"
+	case "card":
+		return agent + "’s card"
+	}
+	return agent + "’s LXC balance"
+}
+
+// currencyWords are the currencies an agent's account holds, by their ISO 4217 names.
+var currencyWords = map[string]string{"USD": "US dollar", "EUR": "euro", "GBP": "pound sterling", "USDC": "USDC"}
 
 // Payee is who a payment goes to. Name is the one it had when the approval was filed; empty until then
 // (namePayee reads it) unless the caller already knows it.
@@ -215,6 +250,8 @@ type ApprovalNeededError struct {
 	workspaceID string
 	agentID     string
 	req         AgentRequest
+	asksAbove   int64  // the approval amount it is above (B57.11)
+	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
 }
 
 func (e *ApprovalNeededError) Error() string {
@@ -222,7 +259,7 @@ func (e *ApprovalNeededError) Error() string {
 		return fmt.Sprintf("the approval expired, ask again: this request would cost up to %s, and approval %s, a fresh one, must be approved by the workspace's owner before it is retried",
 			LXCMoney(e.AmountULXC), e.ApprovalID)
 	}
-	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount — approval %s must be approved by the workspace's owner before it is retried",
+	return fmt.Sprintf("this request would cost up to %s, above the agent's approval amount. Approval %s must be approved by the workspace's owner before it is retried",
 		LXCMoney(e.AmountULXC), e.ApprovalID)
 }
 
@@ -259,7 +296,7 @@ func limitOf(v *int64) int64 {
 
 func (r AgentRules) validate() error {
 	for _, v := range []int64{r.MaxPerRequestULXC, limitOf(r.HourlyLimitULXC), r.DailyLimitULXC, limitOf(r.WeeklyLimitULXC),
-		r.MonthlyLimitULXC, r.ApprovalAboveULXC, limitOf(r.RequestsPerMinute), limitOf(r.MaxCommitmentULXC)} {
+		r.MonthlyLimitULXC, r.ApprovalAboveULXC, limitOf(r.RequestsPerMinute), limitOf(r.MaxCommitmentULXC), limitOf(r.FXDailyLimitULXC)} {
 		if v < 0 {
 			return errors.New("a limit cannot be negative (0 means no limit)")
 		}
@@ -314,6 +351,11 @@ func (r AgentRules) validate() error {
 			return fmt.Errorf("an agent may hold commercial and enterprise licences, not %q: a personal licence is one person's", licence)
 		}
 	}
+	for _, c := range r.AllowedCurrencies {
+		if MoneyCurrencies[c] == 0 {
+			return fmt.Errorf("an agent converts between GBP, EUR, USD and USDC, not %q", c)
+		}
+	}
 	if (r.ActiveFrom == "") != (r.ActiveUntil == "") {
 		return errors.New("active_from and active_until go together")
 	}
@@ -348,18 +390,18 @@ const agentRulesColumns = `COALESCE(max_per_request_ulxc, 0), COALESCE(daily_lim
 	pause_on_unusual_spend, allowed_listings, COALESCE(hourly_limit_ulxc, 0), COALESCE(weekly_limit_ulxc, 0), model_daily_limits_ulxc,
 	COALESCE(requests_per_minute, 0), allowed_payees, blocked_payees, payee_daily_limits_ulxc,
 	COALESCE(max_commitment_ulxc, 0), COALESCE(allowed_licences, '{}'), COALESCE(may_subscribe, false),
-	COALESCE(payee_monthly_limits_ulxc, '{}'), COALESCE(payee_allowances, '{}')`
+	COALESCE(payee_monthly_limits_ulxc, '{}'), COALESCE(payee_allowances, '{}'), allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0)`
 
 func scanAgentRules(row pgx.Row) (AgentRules, error) {
 	var r AgentRules
-	var hourly, weekly, rpm, commitment int64
+	var hourly, weekly, rpm, commitment, fxDaily int64
 	var maySubscribe bool
 	err := row.Scan(&r.MaxPerRequestULXC, &r.DailyLimitULXC, &r.MonthlyLimitULXC, &r.ApprovalAboveULXC,
 		&r.AllowedModels, &r.AllowedProviders, &r.ActiveFrom, &r.ActiveUntil, &r.Timezone, &r.PauseOnUnusualSpend, &r.AllowedListings,
 		&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
-		&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances)
+		&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily)
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
-	r.MaxCommitmentULXC, r.MaySubscribe = &commitment, &maySubscribe
+	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC = &commitment, &maySubscribe, &fxDaily
 	return r, err
 }
 
@@ -420,9 +462,10 @@ func allowancesJSON(allowances map[string]PayeeAllowance) (*string, error) {
 
 // SetAgentRules replaces an agent's rules — all but AllowedListings, HourlyLimitULXC, WeeklyLimitULXC,
 // ModelDailyLimitsULXC, RequestsPerMinute, AllowedPayees, BlockedPayees, PayeeDailyLimitsULXC, MaxCommitmentULXC,
-// AllowedLicences, MaySubscribe, PayeeMonthlyLimitsULXC and PayeeAllowances when they are nil (absent from the JSON): a
-// client that predates them (B19.14, B28.300, B28.301, B28.302, B28.303, B28.304, B32.22, B41.104) must not clear an agent's listings, caps, payees or licence
-// rules by saving its other rules. An empty list or a zero clears them. A save
+// AllowedLicences, MaySubscribe, PayeeMonthlyLimitsULXC, PayeeAllowances, AllowedCurrencies and FXDailyLimitULXC when
+// they are nil (absent from the JSON): a client that predates them (B19.14, B28.300, B28.301, B28.302, B28.303, B28.304,
+// B32.22, B41.104, B30.29) must not clear an agent's listings, caps, payees, licence or conversion rules by saving its
+// other rules. An empty list or a zero clears them. A save
 // that changes them is their next version (B28.307), recorded with who ctx names (WithRulesChange).
 func (s *DualTokenStore) SetAgentRules(ctx context.Context, workspaceID, agentID string, r AgentRules) (AgentRules, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -477,21 +520,22 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	if err := s.checkRoomBudget(ctx, tx, workspaceID, agentID, r.MonthlyLimitULXC); err != nil {
 		return r, err
 	}
-	// $14 to $25 are NULL when absent, which keeps the stored caps, payees and licence rules; a zero or an empty list
-	// clears one.
-	var hourly, weekly, rpm, commitment int64
+	// $14 to $27 are NULL when absent, which keeps the stored caps, payees, licence and conversion rules; a zero or an
+	// empty list clears one.
+	var hourly, weekly, rpm, commitment, fxDaily int64
 	var maySubscribe bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO agent_rules (agent_id, workspace_id, max_per_request_ulxc, daily_limit_ulxc, monthly_limit_ulxc,
 		       approval_above_ulxc, allowed_models, allowed_providers, active_from, active_until, timezone, pause_on_unusual_spend,
 		       allowed_listings, hourly_limit_ulxc, weekly_limit_ulxc, model_daily_limits_ulxc, requests_per_minute,
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, max_commitment_ulxc, allowed_licences, may_subscribe,
-		       payee_monthly_limits_ulxc, payee_allowances)
+		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, fx_daily_limit_ulxc)
 		SELECT id, workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::text[], '{}'),
 		       NULLIF($14::bigint, 0), NULLIF($15::bigint, 0), COALESCE($16::text::jsonb, '{}'), NULLIF($17::integer, 0),
 		       COALESCE($18::text[], '{}'), COALESCE($19::text[], '{}'), COALESCE($20::text::jsonb, '{}'),
 		       NULLIF($21::bigint, 0), COALESCE($22::text[], '{}'), COALESCE($23::boolean, false),
-		       COALESCE($24::text::jsonb, '{}'), COALESCE($25::text::jsonb, '{}')
+		       COALESCE($24::text::jsonb, '{}'), COALESCE($25::text::jsonb, '{}'),
+		       COALESCE($26::text[], '{}'), NULLIF($27::bigint, 0)
 		  FROM agent_accounts WHERE id = $1 AND workspace_id = $2
 		ON CONFLICT (agent_id) DO UPDATE SET max_per_request_ulxc = EXCLUDED.max_per_request_ulxc,
 		       daily_limit_ulxc = EXCLUDED.daily_limit_ulxc, monthly_limit_ulxc = EXCLUDED.monthly_limit_ulxc,
@@ -510,16 +554,18 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 		       allowed_licences = COALESCE($22::text[], agent_rules.allowed_licences),
 		       may_subscribe = COALESCE($23::boolean, agent_rules.may_subscribe),
 		       payee_monthly_limits_ulxc = COALESCE($24::text::jsonb, agent_rules.payee_monthly_limits_ulxc),
-		       payee_allowances = COALESCE($25::text::jsonb, agent_rules.payee_allowances), updated_at = now()
+		       payee_allowances = COALESCE($25::text::jsonb, agent_rules.payee_allowances),
+		       allowed_currencies = COALESCE($26::text[], agent_rules.allowed_currencies),
+		       fx_daily_limit_ulxc = NULLIF(COALESCE($27::bigint, agent_rules.fx_daily_limit_ulxc), 0), updated_at = now()
 		RETURNING COALESCE(hourly_limit_ulxc, 0), COALESCE(weekly_limit_ulxc, 0), model_daily_limits_ulxc, COALESCE(requests_per_minute, 0),
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, COALESCE(max_commitment_ulxc, 0), allowed_licences, may_subscribe,
-		       payee_monthly_limits_ulxc, payee_allowances`,
+		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0)`,
 		agentID, workspaceID, nullIfZero(r.MaxPerRequestULXC), nullIfZero(r.DailyLimitULXC), nullIfZero(r.MonthlyLimitULXC),
 		nullIfZero(r.ApprovalAboveULXC), r.AllowedModels, r.AllowedProviders, from, until, r.Timezone, r.PauseOnUnusualSpend,
 		r.AllowedListings, r.HourlyLimitULXC, r.WeeklyLimitULXC, models, r.RequestsPerMinute, r.AllowedPayees, r.BlockedPayees, payeeCaps,
-		r.MaxCommitmentULXC, r.AllowedLicences, r.MaySubscribe, payeeMonthlyCaps, allowances).
+		r.MaxCommitmentULXC, r.AllowedLicences, r.MaySubscribe, payeeMonthlyCaps, allowances, r.AllowedCurrencies, r.FXDailyLimitULXC).
 		Scan(&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
-			&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances)
+			&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrAgentNotFound
 	}
@@ -530,7 +576,7 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 		return r, err
 	}
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
-	r.MaxCommitmentULXC, r.MaySubscribe = &commitment, &maySubscribe
+	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC = &commitment, &maySubscribe, &fxDaily
 	return r, nil
 }
 
@@ -550,13 +596,14 @@ func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 	}
 	r, err := scanAgentRules(q.QueryRow(ctx, `SELECT `+agentRulesColumns+` FROM agent_rules WHERE agent_id = $1`, agentID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		var hourly, weekly, rpm, commitment int64
+		var hourly, weekly, rpm, commitment, fxDaily int64
 		var maySubscribe bool
 		return AgentRules{HourlyLimitULXC: &hourly, WeeklyLimitULXC: &weekly, RequestsPerMinute: &rpm, ModelDailyLimitsULXC: map[string]int64{},
 			AllowedModels: []string{}, AllowedProviders: []string{}, AllowedListings: []string{}, AllowedPayees: []string{},
 			BlockedPayees: []string{}, PayeeDailyLimitsULXC: map[string]int64{}, Timezone: "UTC",
 			MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
-			PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{}}, nil
+			PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
+			AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily}, nil
 	}
 	if err != nil {
 		return r, fmt.Errorf("economy: agent rules: %w", err)
@@ -800,6 +847,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		return ruleRefusal("this %s would cost up to %s; the agent's limit per request is %s",
 			what, LXCMoney(amount), LXCMoney(r.MaxPerRequestULXC))
 	}
+	var monthLeft *int64
 	for _, limit := range r.periodLimits(now, loc) {
 		if limit.ulxc == 0 {
 			continue
@@ -811,6 +859,10 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		if spent+amount > limit.ulxc {
 			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
 				LXCMoney(spent), limit.name, LXCMoney(limit.ulxc), what, LXCMoney(amount))
+		}
+		if limit.name == "monthly" {
+			left := limit.ulxc - spent - amount
+			monthLeft = &left
 		}
 	}
 	if limit, since := r.modelDailyLimit(req.Model, now, loc); limit > 0 && !req.Payment {
@@ -844,6 +896,8 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		}
 	}
 	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved {
+		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
+			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
@@ -869,13 +923,13 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 					return fmt.Errorf("economy: waiting approval: %w", err)
 				}
 				if waiting {
-					return &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req}
+					return need
 				}
 			case allowed:
 			case req.Fingerprint == "":
 				return ruleRefusal("this %s needs approval and carries nothing to approve it by", what)
 			default:
-				return &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req}
+				return need
 			}
 		}
 	}
@@ -998,6 +1052,10 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if need.Expired, err = s.expireApprovals(ctx, need.agentID, need.req.Fingerprint); err != nil {
 		return err
 	}
+	from, err := s.paidFrom(ctx, need)
+	if err != nil {
+		return err
+	}
 	client, _ := ctx.Value(connectClientKey{}).(string)
 	var filed string
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -1023,11 +1081,13 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 			return err
 		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12)
+			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
+				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
-			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
+			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
@@ -1042,6 +1102,27 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		return fmt.Errorf("economy: read approval: %w", err)
 	}
 	return need
+}
+
+// paidFrom is what pays the request need is for (B57.11): what its caller named, else the marketplace bill for a
+// listing's use and the agent's LXC for anything else. An account named by its currency alone is the agent's open one.
+func (s *DualTokenStore) paidFrom(ctx context.Context, need *ApprovalNeededError) (PaidFrom, error) {
+	p := need.req.PaidFrom
+	switch {
+	case p.Kind == "account" && p.AccountID == "":
+		err := s.pool.QueryRow(ctx, `SELECT id FROM money_accounts WHERE workspace_id = $1 AND agent_id = $2 AND currency = $3
+			AND purpose = 'agent' AND status = 'open'`, need.workspaceID, need.agentID, p.Currency).Scan(&p.AccountID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return p, fmt.Errorf("economy: paying account: %w", err)
+		}
+	case p.Kind != "":
+	case need.req.Listing != "":
+		// The bill is kept in micro-dollars and collected in cents (B32): the cents the use adds to it.
+		p = PaidFrom{Kind: "marketplace_bill", AccountID: need.workspaceID, Currency: "USD", AmountMinor: need.AmountULXC / ULXCPerUSDMicro / 10_000}
+	default:
+		p = PaidFrom{Kind: "lxc", AccountID: need.agentID, Currency: "LXC", AmountMinor: need.AmountULXC}
+	}
+	return p, nil
 }
 
 // declined is approvalDeclined when the owner declined the agent's request of fingerprint within the approval life
@@ -1094,21 +1175,59 @@ type AgentApproval struct {
 	// ApprovedByAgentID is the approver agent that approved it within its own limits (B45.28); empty for the owner.
 	ApprovedByAgentID string `json:"approved_by_agent_id,omitempty"`
 	DenyReason        string `json:"deny_reason,omitempty"` // what the owner wrote when declining (B55.18)
+	// PaidFrom is what pays it, with its balance now (B57.11); null on one filed before it was kept.
+	PaidFrom *PaidFrom `json:"paid_from"`
+	// AsksAboveULXC is the approval amount it was above, and BudgetLeftAfterULXC the monthly limit less the month's
+	// spend and this amount, both when it was filed; null with no monthly limit, and both on one filed before they were kept.
+	AsksAboveULXC       *int64 `json:"asks_above_ulxc"`
+	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
+	// Kind is "" for a request of the agent's, and ApprovalCardChallenge for a 3-D Secure challenge on its card (B59.22).
+	Kind string `json:"kind,omitempty"`
 }
 
+// agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
 const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_kind, payee_id, payee_name, memo,
 	CASE WHEN status IN ('pending', 'approved') AND expires_at <= now() THEN 'expired' ELSE status END, created_at, decided_at,
-	approved_by_agent_id, expires_at, deny_reason`
+	approved_by_agent_id, expires_at, deny_reason, paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor,
+	COALESCE((SELECT name FROM agent_accounts WHERE id = agent_approvals.agent_id), ''),
+	CASE paid_from_kind
+		WHEN 'lxc' THEN (SELECT COALESCE(sum(balance_ulxc), 0) FROM agent_account_balances
+			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
+		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
+			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
 	var p Payee
+	var from PaidFrom
+	var kind *string
+	var amountMinor *int64
+	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
-		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason)
+		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
+	if kind != nil && amountMinor != nil {
+		from.Kind, from.AmountMinor, from.Name = *kind, *amountMinor, paidFromName(*kind, agent, from.Currency)
+		a.PaidFrom = &from
+	}
 	return a, err
+}
+
+// GetAgentApproval reads one of a workspace's approvals.
+func (s *DualTokenStore) GetAgentApproval(ctx context.Context, workspaceID, approvalID string) (AgentApproval, error) {
+	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `SELECT `+agentApprovalColumns+` FROM agent_approvals WHERE id = $1 AND workspace_id = $2`,
+		approvalID, workspaceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, ErrApprovalNotFound
+	}
+	if err != nil {
+		return a, fmt.Errorf("economy: approval: %w", err)
+	}
+	return a, nil
 }
 
 // ListAgentApprovals reads a workspace's approvals, newest first.
@@ -1138,7 +1257,7 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	}
 	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns,
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns,
 		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound

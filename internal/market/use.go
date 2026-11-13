@@ -263,8 +263,8 @@ func (s *Store) Use(ctx context.Context, deps UseDeps, buyerWorkspaceID, agentID
 			}
 		}
 		if most := req.MaxPriceUSDMicros; most != nil && total/ulxcPerUSDMicro > *most {
-			return Use{}, fmt.Errorf("%w: it costs %d µUSD now, above your %d — nothing ran and nothing was charged",
-				ErrOverMaxPrice, total/ulxcPerUSDMicro, *most)
+			return Use{}, fmt.Errorf("%w: it costs %s now, above your %s. Nothing ran and nothing was charged",
+				ErrOverMaxPrice, usdText(total/ulxcPerUSDMicro), usdText(*most))
 		}
 		if len(billed) > 0 && deps.Meter == nil {
 			return Use{}, ErrNoBill

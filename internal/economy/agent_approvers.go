@@ -30,7 +30,7 @@ var (
 	// ErrNotApprover: the agent is not the approver in force for that request's agent.
 	ErrNotApprover = errors.New("economy: this agent is not the approver of that agent's requests")
 	// ErrAboveApproverLimits: the request is above what the approver may approve, so it waits for the owner.
-	ErrAboveApproverLimits = errors.New("economy: above the approver's own limits — the request waits for the workspace's owner")
+	ErrAboveApproverLimits = errors.New("economy: this is above the approver's own limits, so the request waits for the workspace's owner")
 	// ErrMandatesNotConfigured: Lens has no mandate signer.
 	ErrMandatesNotConfigured = errors.New("economy: mandates are not configured on this server")
 )
@@ -126,7 +126,7 @@ func (s *DualTokenStore) approverTerms(ctx context.Context, workspaceID, agentID
 	}
 	limit := approverLimit(rules)
 	if limit == 0 {
-		return 0, fmt.Errorf("%w: the approver has no limit of its own (max_per_request_ulxc or approval_above_ulxc), so it may approve nothing", ErrApprover)
+		return 0, fmt.Errorf("%w: the approver has no limit of its own, so it may approve nothing", ErrApprover)
 	}
 	return limit, nil
 }
@@ -260,7 +260,7 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 		return AgentApproval{}, err
 	}
 	a, err := scanAgentApproval(tx.QueryRow(ctx, `SELECT `+agentApprovalColumns+` FROM agent_approvals
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() FOR UPDATE`, approvalID, workspaceID))
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' FOR UPDATE`, approvalID, workspaceID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrApprovalNotFound
 	}
@@ -357,7 +357,7 @@ func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID,
 	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
 		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 			deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
+			WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns, approvalID, workspaceID,
 			map[bool]string{true: "approved", false: "denied"}[approve], s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ap, ErrApprovalNotFound
@@ -368,7 +368,7 @@ func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID,
 		return ap, nil
 	}
 	ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = 'approved', decided_at = now(), expires_at = now() + $3 * interval '1 microsecond'
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() RETURNING `+agentApprovalColumns, approvalID, workspaceID,
+		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns, approvalID, workspaceID,
 		s.approvalLife().Microseconds()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ap, ErrApprovalNotFound

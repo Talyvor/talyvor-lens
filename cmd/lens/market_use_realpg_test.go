@@ -50,6 +50,7 @@ func (f *marketStripe) CreateCheckoutSession(context.Context, billing.CheckoutPa
 	return "", "", errors.New("not in this test")
 }
 func (f *marketStripe) CardFingerprint(context.Context, string) (string, error) { return "", nil }
+func (f *marketStripe) ProcessingFee(context.Context, string) (int64, error)    { return 0, nil }
 func (f *marketStripe) CreateMarketSubscription(_ context.Context, customer, price, ws string) (string, error) {
 	id := fmt.Sprintf("sub_market_%d", len(f.subs)+1)
 	f.subs = append(f.subs, id+" "+customer+" "+price)
@@ -295,8 +296,8 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 	var refused struct {
 		ApprovalID string `json:"approval_id"`
 	}
-	if _ = json.Unmarshal([]byte(body), &refused); code != http.StatusForbidden || refused.ApprovalID == "" {
-		t.Fatalf("an agent's use above its approval amount = %d %s, want 403 naming the approval", code, body)
+	if _ = json.Unmarshal([]byte(body), &refused); code != http.StatusAccepted || refused.ApprovalID == "" {
+		t.Fatalf("an agent's use above its approval amount = %d %s, want 202 naming the approval", code, body)
 	}
 	// B55.31: the approval reads as a sentence, and its fingerprint is the one an approval filed before it had.
 	var memo, fingerprint string

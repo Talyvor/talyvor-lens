@@ -67,7 +67,7 @@ func (s *Store) pipelineSteps(ctx context.Context, l Listing, artifact map[strin
 		sl, sa, sv, err := s.resolve(ctx, l.WorkspaceID, id, version)
 		switch {
 		case errors.Is(err, ErrNotFound), errors.Is(err, ErrTakenDown):
-			return nil, fmt.Errorf(`%w: step %d names no listing this pipeline can run (%q) — a step's "use" is "listing:<a listing's id>"`, ErrInvalid, n, use)
+			return nil, fmt.Errorf(`%w: step %d names no listing this pipeline can run (%q). A step's "use" is "listing:<a listing's id>"`, ErrInvalid, n, use)
 		case err != nil:
 			return nil, err
 		case sl.ReviewStatus != ReviewApproved:

@@ -43,7 +43,8 @@ type AgentWallet struct {
 	Receive      money.Details `json:"receive"` // empty while the sandbox serves the wallet: its address is on no chain
 	// PaymentReference is quoted with Receive when they are the owner's details, not the wallet's own (B48.1).
 	PaymentReference string `json:"payment_reference,omitempty"`
-	Mode             string `json:"mode"` // TEST or LIVE
+	Mode             string `json:"mode"`            // TEST or LIVE
+	Label            string `json:"label,omitempty"` // B56.7: live or sandbox
 }
 
 // SetMoneyLayer opens every new agent's wallet on r, and reads them through it (B46.4).
@@ -163,7 +164,15 @@ func (s *DualTokenStore) AgentWallet(ctx context.Context, workspaceID, agentID s
 		return AgentWallet{}, err
 	}
 	assets := walletKindAssets(kind, fiat)
-	return s.agentWalletIn(ctx, workspaceID, agentID, assets[len(assets)-1])
+	w, err := s.agentWalletIn(ctx, workspaceID, agentID, assets[len(assets)-1])
+	return s.withWalletLabel(ctx, workspaceID, w), err
+}
+
+// withWalletLabel is w with its label (B56.7): its capability's for the workspace, and Sandbox while the wallet is not
+// LIVE.
+func (s *DualTokenStore) withWalletLabel(ctx context.Context, workspaceID string, w AgentWallet) AgentWallet {
+	w.Label = s.objectLabel(ctx, workspaceID, agentWalletRoute(workspaceID, w.AgentID, w.Asset).Capability, w.Mode)
+	return w
 }
 
 // agentWalletIn is agentID's wallet in asset, opened now if it has none yet.
@@ -271,7 +280,8 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	fp := sha256.Sum256([]byte("money\x00" + op.Agent + "\x00" + string(op.Capability) + "\x00" + op.Method + "\x00" + op.Key + "\x00" +
 		op.Ref + "\x00" + op.Payee + "\x00" + strconv.FormatInt(op.Amount.Minor, 10) + "\x00" + op.Amount.Asset))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
-		Payee: Payee{Kind: "outside", ID: op.Payee, Name: op.Payee}, Memo: minorString(op.Amount.Minor, op.Amount.Asset) + " to " + op.Payee})
+		Payee: Payee{Kind: "outside", ID: op.Payee, Name: op.Payee}, Memo: minorString(op.Amount.Minor, op.Amount.Asset) + " to " + op.Payee,
+		PaidFrom: PaidFrom{Kind: "account", Currency: op.Amount.Asset, AmountMinor: op.Amount.Minor}})
 	tx, err := l.s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("economy: money limits: %w", err)

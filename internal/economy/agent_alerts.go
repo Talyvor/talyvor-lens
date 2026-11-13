@@ -182,15 +182,31 @@ func (s *DualTokenStore) PauseAllAgents(ctx context.Context, workspaceID, reason
 
 // ResumeAllAgents lifts PauseAllAgents. An agent paused on its own stays paused.
 func (s *DualTokenStore) ResumeAllAgents(ctx context.Context, workspaceID string) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM agent_workspace_pauses WHERE workspace_id = $1`, workspaceID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
 		return fmt.Errorf("economy: resume every agent: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockdownGate(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_workspace_pauses WHERE workspace_id = $1`, workspaceID); err != nil {
+		return fmt.Errorf("economy: resume every agent: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // ResumeAgent lets a paused agent move money again.
 func (s *DualTokenStore) ResumeAgent(ctx context.Context, workspaceID, agentID string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET paused_at = NULL, paused_reason = '' WHERE id = $1 AND workspace_id = $2`,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("economy: resume agent: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockdownGate(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agent_accounts SET paused_at = NULL, paused_reason = '' WHERE id = $1 AND workspace_id = $2`,
 		agentID, workspaceID)
 	if err != nil {
 		return fmt.Errorf("economy: resume agent: %w", err)
@@ -198,7 +214,7 @@ func (s *DualTokenStore) ResumeAgent(ctx context.Context, workspaceID, agentID s
 	if tag.RowsAffected() == 0 {
 		return ErrAgentNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // B41.108 — stopping is instant, restarting is signed. Pausing takes nothing but the owner's session; once the
@@ -241,6 +257,9 @@ func (s *DualTokenStore) ResumeChallenge(ctx context.Context, workspaceID, agent
 // AuthorizeResume lets resuming agentID ("" : every agent) through: at once for a workspace with no passkey or device
 // key, and otherwise only with a's assertion over ResumeChallenge's challenge, which it spends.
 func (s *DualTokenStore) AuthorizeResume(ctx context.Context, workspaceID, agentID string, a *passkey.Assertion) error {
+	if err := refuseIfLockedDown(ctx, s.pool, workspaceID); err != nil { // B41.116
+		return err
+	}
 	return s.authorizeSigned(ctx, workspaceID, resumePurpose(agentID), a)
 }
 
@@ -275,6 +294,10 @@ type AgentForecast struct {
 	// RunsOutAt (B28.94) is when BalanceULXC is gone at its pace so far this month, in the agent's own time zone so
 	// its date is the agent's date; nil when it spends nothing at that pace.
 	RunsOutAt *time.Time `json:"runs_out_at"`
+	// RunsOutOn (B28.330) is RunsOutAt's date in Timezone, as YYYY-MM-DD, so a screen shows the agent's date and never
+	// re-reads the instant in its viewer's zone; nil with RunsOutAt.
+	RunsOutOn *string `json:"runs_out_on"`
+	Timezone  string  `json:"timezone"` // the agent's IANA time zone, "UTC" when it has none set
 }
 
 // SpendForecast is a workspace's month-end forecast, as of At.
@@ -342,8 +365,10 @@ func (s *DualTokenStore) AgentSpendForecast(ctx context.Context, workspaceID str
 		a.ForecastULXC = runOn(a.SpentULXC, elapsed, length)
 		if t := runsOut(a.BalanceULXC, a.SpentULXC, at, elapsed); t != nil {
 			*t = t.In(loc)
-			a.RunsOutAt = t
+			on := t.Format(time.DateOnly)
+			a.RunsOutAt, a.RunsOutOn = t, &on
 		}
+		a.Timezone = loc.String()
 		f.SpentULXC += a.SpentULXC
 		f.Agents = append(f.Agents, a)
 	}

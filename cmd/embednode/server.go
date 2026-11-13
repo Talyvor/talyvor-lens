@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -49,6 +50,9 @@ func (s *EmbedServer) Handler() http.Handler {
 
 // ─── /embed ──────────────────────────────────────
 
+// maxEmbedBody bounds an /embed request; past it the node answers 413.
+const maxEmbedBody = 8 << 20
+
 func (s *EmbedServer) handleEmbed(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -62,7 +66,11 @@ func (s *EmbedServer) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		Texts []string `json:"texts"`
 		Model string   `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEmbedBody)).Decode(&in); err != nil {
+		if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body over %d bytes", maxEmbedBody), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}

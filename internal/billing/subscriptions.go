@@ -241,11 +241,11 @@ func (s *Service) statusOf(sub *stripe.Subscription) *SubscriptionStatus {
 var ErrSamePlan = errors.New("billing: the workspace is already on that plan")
 
 // ErrBYOKPlanChange is a plan change to or from BYOK (B27.26): cancel, then subscribe to the other plan.
-var ErrBYOKPlanChange = errors.New("billing: BYOK is not changed to or from another plan — cancel, then subscribe")
+var ErrBYOKPlanChange = errors.New("billing: BYOK is not changed to or from another plan. Cancel, then subscribe")
 
 // ErrPlanKindChange is a plan change between a company plan and a personal one (B32.10): a personal plan's fee
 // includes usage and a company plan's does not, so there is no allowance to prorate — cancel, then subscribe.
-var ErrPlanKindChange = errors.New("billing: a company plan (Team, Business) and a personal plan (Plus, Pro, Max) are not changed one into the other — cancel, then subscribe")
+var ErrPlanKindChange = errors.New("billing: a company plan (Team, Business) and a personal plan (Plus, Pro, Max) are not changed one into the other. Cancel, then subscribe")
 
 // companyPlans are the plans a company buys for its workspace (B32.10). Their fee buys no tokens, so a period
 // of one grants no allowance.
@@ -349,7 +349,7 @@ func (s *Service) SetBYOKAddon(ctx context.Context, workspaceID string, on bool)
 		if plan == "" {
 			plan = "an unnamed plan"
 		}
-		return nil, fmt.Errorf("%w — this workspace is on %s", ErrBYOKAddon, plan)
+		return nil, fmt.Errorf("%w: this workspace is on %s", ErrBYOKAddon, plan)
 	}
 	if byok == on {
 		return nil, ErrBYOKAddonUnchanged

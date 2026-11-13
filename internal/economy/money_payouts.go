@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/screening"
 )
 
@@ -234,15 +237,76 @@ func (s *DualTokenStore) validatePayoutRow(ctx context.Context, b PayoutBatch, r
 	return "", nil
 }
 
-// ApprovePayoutBatch is by's approval of workspaceID's batch id: every valid row is paid as a payment out, and the
-// batch records each one's result. A batch already sent is answered as it stands; one left sending is finished.
-func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id, by string) (PayoutBatch, error) {
-	b, err := s.payoutBatch(ctx, workspaceID, "", id, "", true)
-	if err != nil || b.Status == PayoutSent {
-		return b, err
+// ErrPayoutBatchDecided (B58.5): the batch is no longer awaiting approval, so there is nothing to sign.
+var ErrPayoutBatchDecided = errors.New("economy: this payout batch is no longer awaiting approval")
+
+// payoutBatchPurpose (B58.5) binds a challenge to batch b as it stands: its id, its row count, its totals by currency
+// and every row it pays, from which account, so a signature over it approves no other batch, nor this one once a row
+// changed.
+func payoutBatchPurpose(b PayoutBatch) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%d", b.ID, b.AgentID, b.Funding, b.RowsTotal, b.RowsValid)
+	for _, c := range slices.Sorted(maps.Keys(b.TotalsMinor)) {
+		fmt.Fprintf(h, "\x00%s=%d", c, b.TotalsMinor[c])
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE money_payout_batches SET status = $2, approved_by = $3, approved_at = now(), updated_at = now()
-		WHERE id = $1 AND status = $4`, b.ID, PayoutSending, by, PayoutAwaitingApproval); err != nil {
+	for _, r := range b.Rows {
+		fmt.Fprintf(h, "\x00%d\x00%s\x00%d\x00%s\x00%s\x00%s", r.Line, r.PayeeID, r.AmountMinor, r.Currency, r.Reference, r.Status)
+	}
+	return "payout_batch:" + b.ID + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// PayoutBatchChallenge (B58.5) issues the challenge approving workspaceID's batch id is signed over, the workspace's
+// passkeys that may sign it (its device keys sign it too), and the batch as signed.
+func (s *DualTokenStore) PayoutBatchChallenge(ctx context.Context, workspaceID, id string) (challenge string, credentialIDs []string, b PayoutBatch, err error) {
+	if b, err = s.payoutBatch(ctx, workspaceID, "", id, "", true); err != nil {
+		return "", nil, PayoutBatch{}, err
+	}
+	if b.Status != PayoutAwaitingApproval {
+		return "", nil, PayoutBatch{}, ErrPayoutBatchDecided
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, PayoutBatch{}, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	challenge, err = s.newChallenge(ctx, workspaceID, payoutBatchPurpose(b))
+	return challenge, credentialIDs, b, err
+}
+
+// ApprovePayoutBatch is by's approval of workspaceID's batch id: every valid row is paid as a payment out, and the
+// batch records each one's result. B58.5: once the workspace has a passkey or device key, a batch awaiting approval is
+// approved only with a's assertion over PayoutBatchChallenge's challenge for the batch as it stands, spent as the batch
+// leaves awaiting approval; without it ErrPasskeyRequired, and nothing moves. A batch already sent is answered as it
+// stands; one left sending, approved already, is finished.
+func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id, by string, a *passkey.Assertion) (PayoutBatch, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PayoutBatch{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	b, err := scanPayoutBatch(tx.QueryRow(ctx, `SELECT `+payoutBatchCols+`, rows FROM money_payout_batches WHERE workspace_id = $1 AND id = $2 FOR UPDATE`,
+		workspaceID, id), true)
+	switch {
+	case errors.Is(err, ErrPayoutBatchNotFound):
+		return PayoutBatch{}, err
+	case err != nil:
+		return PayoutBatch{}, fmt.Errorf("economy: payout batch: %w", err)
+	case b.Status == PayoutSent:
+		return b, nil
+	}
+	if b.Status == PayoutAwaitingApproval {
+		if err := s.authorizeSignedTx(ctx, tx, workspaceID, payoutBatchPurpose(b), a, ErrPasskeyRequired); err != nil {
+			return PayoutBatch{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE money_payout_batches SET status = $2, approved_by = $3, approved_at = now(), updated_at = now()
+			WHERE id = $1`, b.ID, PayoutSending, by); err != nil {
+			return b, fmt.Errorf("economy: payout batch: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return b, fmt.Errorf("economy: payout batch: %w", err)
 	}
 	ctx = context.WithoutCancel(ctx) // a caller that goes away mid-batch does not leave rows half sent

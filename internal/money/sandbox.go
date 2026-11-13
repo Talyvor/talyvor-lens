@@ -25,21 +25,26 @@ const SandboxNetwork = "base"
 // shortcut: balances live in memory and are gone when Lens restarts, as the Test partners' records are; the ledger
 // (economy) is what keeps money. Upgrade when a sandbox balance must outlive a restart.
 func NewSandbox(p *partners.Registry, webhookSecret string) *Adapter {
-	s := &sandbox{account: p.TestAccount(), usdc: p.TestStablecoin(), kyc: p.TestKYC(),
-		holdings: map[string]*holding{}, cards: map[string]*Card{}, done: map[string]done{}}
+	s := &sandbox{account: p.TestAccount(), usdc: p.TestStablecoin(), kyc: p.TestKYC(), fx: p.TestFX(),
+		holdings: map[string]*holding{}, cards: map[string]*Card{}, done: map[string]done{}, quotes: map[string]ConvertQuote{},
+		fail: map[Capability]error{}}
 	return &Adapter{Name: SandboxName, Accounts: sandboxAccounts{s}, Wallets: sandboxWallets{s}, Transfers: sandboxTransfers{s},
-		Cards: sandboxCards{s}, Payouts: sandboxPayouts{s}, KYC: sandboxKYC{s}, Webhooks: HMACWebhooks{Secret: webhookSecret}}
+		Cards: sandboxCards{s}, Payouts: sandboxPayouts{s}, KYC: sandboxKYC{s}, Webhooks: HMACWebhooks{Secret: webhookSecret},
+		Convert: sandboxConvert{s}, Onchain: sandboxOnchain{s}, BankPayouts: sandboxBankPayouts{s}}
 }
 
 type sandbox struct {
 	account partners.AccountPartner
 	usdc    partners.StablecoinPartner
 	kyc     partners.KYCProvider
+	fx      partners.FXPartner
 
 	mu       sync.Mutex
 	holdings map[string]*holding // accounts and wallets, by ref
 	cards    map[string]*Card
-	done     map[string]done // every write, by kind and key
+	done     map[string]done         // every write, by kind and key
+	quotes   map[string]ConvertQuote // the conversion quotes it gave, by ref
+	fail     map[Capability]error    // the Instant transfer legs a test asked to fail (FailAt)
 }
 
 // holding is an account or a wallet the sandbox opened.

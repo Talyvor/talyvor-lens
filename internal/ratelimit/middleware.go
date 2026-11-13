@@ -30,16 +30,7 @@ func RateLimitMiddleware(l *Limiter) func(http.Handler) http.Handler {
 			}
 			result := l.Check(r.Context(), wsID, keyID)
 			if !result.Allowed {
-				metrics.RateLimitRejected(wsID)
-				w.Header().Set("Retry-After", strconv.Itoa(result.RetryAfterSecs))
-				w.Header().Set("X-RateLimit-Remaining", "0")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error":               "rate limit exceeded",
-					"limit_type":          result.LimitType,
-					"retry_after_seconds": result.RetryAfterSecs,
-				})
+				WriteRejected(w, wsID, result)
 				return
 			}
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(result.Remaining))
@@ -47,6 +38,24 @@ func RateLimitMiddleware(l *Limiter) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// WriteRejected answers a request the limiter turned away, as the middleware does: 429 with Retry-After and the
+// window that ran out. A route that counts its own buckets (B54.41) answers with it too.
+func WriteRejected(w http.ResponseWriter, wsID string, result RateLimitResult) {
+	metrics.RateLimitRejected(wsID)
+	w.Header().Set("Retry-After", strconv.Itoa(result.RetryAfterSecs))
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":               "rate limit exceeded",
+		"limit_type":          result.LimitType,
+		"retry_after_seconds": result.RetryAfterSecs,
+	})
+}
+
+// ClientIP is the address a keyless caller is bucketed by (anonymousIP below).
+func ClientIP(r *http.Request) string { return anonymousIP(r) }
 
 // anonymousIP is the address a keyless caller is bucketed by. The forwarded client IP is believed only when
 // the TCP peer is our own proxy (a private or loopback address); a caller that reaches Lens directly is its
