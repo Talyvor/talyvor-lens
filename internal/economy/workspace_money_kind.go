@@ -168,6 +168,38 @@ func checkAgentWalletKind(ctx context.Context, q interface {
 	return nil
 }
 
+// moneyKindOf is the kind of money that holds currency: stablecoin for USDC, fiat for every other.
+func moneyKindOf(currency string) string {
+	if currency == CurrencyUSDC {
+		return MoneyKindStablecoin
+	}
+	return MoneyKindFiat
+}
+
+// payeeMoneyKind is the kind of money a payee is paid in: stablecoin for a USDC address, fiat for a bank account.
+func payeeMoneyKind(p OutsidePayee) string {
+	if p.Address != "" {
+		return MoneyKindStablecoin
+	}
+	return MoneyKindFiat
+}
+
+// checkMoneySide refuses money of kind, fiat or stablecoin, in workspaceID unless its kind of money holds it (B59.42):
+// field names what named the money, its currency or its payee. A route of either side (B59.7) is judged here, where
+// the account, payee, payment or conversion is made, so every caller of it is.
+func checkMoneySide(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, workspaceID, field, kind string) error {
+	held, err := workspaceMoneyKind(ctx, q, workspaceID)
+	if err != nil {
+		return err
+	}
+	if held != MoneyKindHybrid && held != kind {
+		return &MoneyKindRefusal{Field: field, MoneyKind: held}
+	}
+	return nil
+}
+
 // WorkspaceAccount is workspaceID's type and kind of money, and its sign-up country and registration number.
 func (s *DualTokenStore) WorkspaceAccount(ctx context.Context, workspaceID string) (WorkspaceAccount, error) {
 	out := WorkspaceAccount{WorkspaceID: workspaceID}

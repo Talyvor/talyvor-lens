@@ -188,6 +188,9 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	if err != nil {
 		return p, err
 	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "payee", payeeMoneyKind(p)); err != nil { // B59.42
+		return OutsidePayee{}, err
+	}
 	switch {
 	case s.accountPartners == nil:
 		return OutsidePayee{}, fmt.Errorf("%w: no account partner is set", ErrPayeeCheckUnavailable)

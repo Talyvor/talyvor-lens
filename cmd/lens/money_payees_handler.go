@@ -80,6 +80,7 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 		p, err := bank.CreateOutsidePayee(req.Context(), ws, economy.OutsidePayee{Name: in.Name, Country: in.Country, SortCode: in.SortCode,
 			AccountNumber: in.AccountNumber, IBAN: in.IBAN, BIC: in.BIC, RoutingNumber: in.RoutingNumber, Network: in.Network, Address: in.Address})
 		switch {
+		case writeMoneyKindRefusal(w, err): // B59.42
 		case errors.Is(err, economy.ErrPayee):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, screening.ErrBlocked):

@@ -764,7 +764,11 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 		return err
 	}
 	req := agentRequestFrom(ctx)
+	prepared := req.Payment && prepareOnly(ctx)           // B52.41: it waits for the owner's approval, whatever the rules allow
 	r, err := agentRulesInForce(ctx, tx, agentID, req.At) // with its boosts in force then (B28.308)
+	if errors.Is(err, pgx.ErrNoRows) && prepared {
+		r, err = AgentRules{}, nil // judged by no rules, as below, then held for the approval
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := (AgentRules{}).judgeCommitment(req.Commitment); err != nil {
 			return err
@@ -895,7 +899,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			}
 		}
 	}
-	if r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved {
+	if prepared || (r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
 			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft}
 		// An approved request goes through once: the approval is used up in this transaction, so a
@@ -911,10 +915,13 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			used = tag.RowsAffected()
 		}
 		if used == 0 {
-			allowed, err := r.withinPayeeAllowance(ctx, tx, agentID, ids, amount, day, month)
+			allowed := false // a prepared payment is never "always allowed"
+			if !prepared {
+				if allowed, err = r.withinPayeeAllowance(ctx, tx, agentID, ids, amount, day, month); err != nil {
+					return err
+				}
+			}
 			switch {
-			case err != nil:
-				return err
 			case allowed && req.Fingerprint != "":
 				// "Always allow" is for requests made after it (B50.18): one already waiting in the inbox waits for its own tap.
 				var waiting bool
@@ -1183,6 +1190,8 @@ type AgentApproval struct {
 	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
 	// Kind is "" for a request of the agent's, and ApprovalCardChallenge for a 3-D Secure challenge on its card (B59.22).
 	Kind string `json:"kind,omitempty"`
+	// ConnectClientID is the assistant whose payment filed it (B52.41), so an approval screen can name it; empty otherwise.
+	ConnectClientID string `json:"connect_client_id,omitempty"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1195,7 +1204,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
-	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind`
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1206,7 +1215,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
