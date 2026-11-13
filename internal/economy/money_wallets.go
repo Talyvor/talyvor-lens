@@ -170,11 +170,11 @@ func sideConversionKey(key string) (string, error) {
 	return key, nil
 }
 
-// companyQuote is workspaceID's quote quoteID between the company's two sides.
-func companyQuote(ctx context.Context, q pgxDB, workspaceID, quoteID, lock string) (Conversion, error) {
-	return scanConversion(q.QueryRow(ctx, `SELECT `+conversionCols+` FROM money_conversions WHERE id = $1 AND workspace_id = $2 AND agent_id = ''`+lock,
-		quoteID, workspaceID))
-}
+// companyQuoteSQL reads a workspace's quote between the company's two sides; companyQuoteForUpdateSQL locks it too.
+const (
+	companyQuoteSQL          = `SELECT ` + conversionCols + ` FROM money_conversions WHERE id = $1 AND workspace_id = $2 AND agent_id = ''`
+	companyQuoteForUpdateSQL = companyQuoteSQL + ` FOR UPDATE`
+)
 
 // SideConversionChallenge issues the challenge converting at quoteID under key is signed over, and the workspace's
 // passkeys that may sign it; its device keys sign it too.
@@ -183,7 +183,7 @@ func (s *DualTokenStore) SideConversionChallenge(ctx context.Context, workspaceI
 	if err != nil {
 		return "", nil, err
 	}
-	c, err := companyQuote(ctx, s.pool, workspaceID, quoteID, "")
+	c, err := scanConversion(s.pool.QueryRow(ctx, companyQuoteSQL, quoteID, workspaceID))
 	if err != nil {
 		return "", nil, err
 	}
@@ -220,7 +220,7 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 	case !errors.Is(err, ErrQuote):
 		return Conversion{}, fmt.Errorf("economy: conversion: %w", err)
 	}
-	c, err := companyQuote(ctx, s.pool, workspaceID, quoteID, "")
+	c, err := scanConversion(s.pool.QueryRow(ctx, companyQuoteSQL, quoteID, workspaceID))
 	if err != nil {
 		return Conversion{}, err
 	}
@@ -256,7 +256,7 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// Read again under its lock: the same key sent twice at once converts once, and the second answers the first.
-	if c, err = companyQuote(ctx, tx, workspaceID, quoteID, " FOR UPDATE"); err != nil {
+	if c, err = scanConversion(tx.QueryRow(ctx, companyQuoteForUpdateSQL, quoteID, workspaceID)); err != nil {
 		return Conversion{}, err
 	}
 	if c.Status == ConversionConverted && c.IdempotencyKey == key {
