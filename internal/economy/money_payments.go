@@ -91,9 +91,9 @@ type OutsidePayment struct {
 }
 
 // lensPaymentKeyPrefixes start the keys Lens pays its own payments under — a request's item, a standing order's tick, a
-// payout batch's row — and its other money's. A caller's key may not start with one (B50.48): a payment under a
-// request's key would leave the owner's approved payment refused as ErrIdempotencyKeyReused.
-var lensPaymentKeyPrefixes = []string{"preq:", "schedule:", "payout:", "payment_in:", "fx:", "card_", "money:"}
+// payout batch's row, a mandate's pull — and its other money's. A caller's key may not start with one (B50.48): a
+// payment under a request's key would leave the owner's approved payment refused as ErrIdempotencyKeyReused.
+var lensPaymentKeyPrefixes = []string{"preq:", "schedule:", "payout:", "mandate_pull:", "payment_in:", "fx:", "card_", "money:"}
 
 func lensPaymentKey(key string) bool {
 	for _, prefix := range lensPaymentKeyPrefixes {

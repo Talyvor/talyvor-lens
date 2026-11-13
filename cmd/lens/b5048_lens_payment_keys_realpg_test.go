@@ -63,14 +63,14 @@ func TestB5048_ACallerCannotTakeAnApprovedRequestsKey(t *testing.T) {
 	b501ZeroSum(t, pool)
 }
 
-// A caller's key that starts like one of Lens's own — a standing order's tick, a payout batch's row, a request's item
-// and the rest — is refused before anything is held, and no payment is made under it.
+// A caller's key that starts like one of Lens's own — a standing order's tick, a payout batch's row, a mandate's pull,
+// a request's item and the rest — is refused before anything is held, and no payment is made under it.
 func TestB5048_ACallerCannotTakeLensKeys(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	b := b501Payer(t, pool, "ws-b5048-keys")
 	ws := b.acct.WorkspaceID
-	for _, key := range []string{"schedule:sch_1:2026-11-13T09:00:00Z", "payout:pob_1:1", "preq:preq_1:1", "payment_in:x", "fx:x",
+	for _, key := range []string{"schedule:sch_1:2026-11-13T09:00:00Z", "payout:pob_1:1", "mandate_pull:mdt_1:k", "preq:preq_1:1", "payment_in:x", "fx:x",
 		"card_x", "money:x", "  schedule:sch_2:2026-11-13T09:00:00Z"} {
 		if _, err := b.store.PayOutside(ctx, ws, economy.OutsidePayment{AccountID: b.acct.ID, PayeeID: b.payee.ID, Currency: "GBP",
 			AmountMinor: 100, IdempotencyKey: key}); !errors.Is(err, economy.ErrOutsidePayment) {
