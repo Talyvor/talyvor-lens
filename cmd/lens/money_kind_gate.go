@@ -126,6 +126,13 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
 	"/v1/workspaces/{}/cash-outs":           moneySideFiat,
 
+	// agent_crypto_sends_handler.go
+	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/quote":      moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}":         moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/approve": moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/decline": moneySideOnChain,
+
 	// agent_escrows_handler.go
 	"/v1/workspaces/{}/agents/{}/escrows":  moneySideEither,
 	"/v1/workspaces/{}/escrows":            moneySideEither,

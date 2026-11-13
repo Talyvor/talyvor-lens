@@ -374,11 +374,12 @@ func (s *DualTokenStore) keepAgentCryptoOp(ctx context.Context, c smartaccount.C
 		return "", err
 	}
 	fee, paymaster := tokenFee(pay)
+	// op as text: under the simple protocol a []byte is sent as bytea, which is not JSON.
 	tag, err := s.pool.Exec(ctx, `UPDATE agent_spend_permission_uses SET op = $4, op_hash = $5, sent_block = COALESCE(sent_block, $6)
 		WHERE id = $1 AND agent_id = $2 AND workspace_id = $3 AND chain_id = $7 AND token = $8 AND counterparty = $9 AND amount = $10
 		AND fee IS NOT DISTINCT FROM $11 AND paymaster IS NOT DISTINCT FROM $12 AND outcome IS NULL AND (op_hash IS NULL OR op_hash = $5)
 		AND EXISTS (SELECT 1 FROM agent_smart_accounts a WHERE a.agent_id = $2 AND a.workspace_id = $3 AND lower(a.address) = lower($13))`,
-		use, agentID, workspaceID, raw, hash, head, c.ID, smartaccount.Checksum(pay.Token), smartaccount.Checksum(pay.To),
+		use, agentID, workspaceID, string(raw), hash, head, c.ID, smartaccount.Checksum(pay.Token), smartaccount.Checksum(pay.To),
 		pay.Total().Int64(), fee, paymaster, op.Sender)
 	if err != nil {
 		return "", fmt.Errorf("economy: spend permission: %w", err)
