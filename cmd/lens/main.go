@@ -5057,6 +5057,7 @@ func run() error {
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
+		mountMoneyWalletRoutes(authed, dualToken)                                       // B59.51
 		mountInstantTransferRoutes(authed, dualToken)                                   // B59.14
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
