@@ -197,6 +197,12 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if err != nil {
 		return OutsidePayment{}, err
 	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "payee", payeeMoneyKind(payee)); err != nil { // B59.42
+		return OutsidePayment{}, err
+	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "currency", moneyKindOf(in.Currency)); err != nil {
+		return OutsidePayment{}, err
+	}
 	if err := coolingOff(payee, in.Currency, in.AmountMinor); err != nil { // B41.111
 		return OutsidePayment{}, err
 	}
