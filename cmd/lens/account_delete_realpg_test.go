@@ -145,7 +145,7 @@ func TestB5237_PersonDeletesAccount_RealPG(t *testing.T) {
 			t.Fatalf("before deletion the %s is refused: %d", name, code)
 		}
 	}
-	connect, err := auth.GenerateConnectToken(ws, "u", "client-5237", "ag-pay", auth.ConnectScopes, jwtKey, time.Hour)
+	connect, err := auth.GenerateConnectToken(ws, "u", "client-5237", "ag-pay", auth.ConnectScopes, jwtKey, time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
