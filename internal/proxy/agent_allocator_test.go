@@ -59,6 +59,7 @@ func agentAllocHarness(t *testing.T) (*Proxy, *economy.DualTokenStore, *pgxpool.
 			status TEXT NOT NULL DEFAULT 'held' CHECK (status IN ('held','settled','released')),
 			requested_model TEXT, request_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), resolved_at TIMESTAMPTZ)`,
 		`ALTER TABLE lxc_reservations ADD COLUMN IF NOT EXISTS platform_fee_bps INTEGER NOT NULL DEFAULT 0`, // 0197 (B32.11)
+		`ALTER TABLE lxc_reservations ADD COLUMN IF NOT EXISTS replays INTEGER NOT NULL DEFAULT 0`,          // 0384 (B50.47)
 		`TRUNCATE lxc_balances, lxc_ledger, agent_lxc_subbudgets, lxc_spend_claims`,
 	} {
 		if _, err := pool.Exec(context.Background(), ddl); err != nil {

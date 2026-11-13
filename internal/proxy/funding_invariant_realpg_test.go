@@ -59,6 +59,7 @@ func fundingProxy(t *testing.T) (*Proxy, *economy.DualTokenStore, *pgxpool.Pool)
 			status TEXT NOT NULL DEFAULT 'held' CHECK (status IN ('held','settled','released')),
 			requested_model TEXT, request_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), resolved_at TIMESTAMPTZ)`,
 		`ALTER TABLE lxc_reservations ADD COLUMN IF NOT EXISTS platform_fee_bps INTEGER NOT NULL DEFAULT 0`, // 0197 (B32.11)
+		`ALTER TABLE lxc_reservations ADD COLUMN IF NOT EXISTS replays INTEGER NOT NULL DEFAULT 0`,          // 0384 (B50.47)
 		// contributor (LENS) side + earnverify substrate
 		`CREATE TABLE IF NOT EXISTS lens_token_balances (workspace_id TEXT PRIMARY KEY, balance BIGINT NOT NULL DEFAULT 0,
 			held_balance BIGINT NOT NULL DEFAULT 0, lifetime_earned BIGINT NOT NULL DEFAULT 0, lifetime_spent BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
