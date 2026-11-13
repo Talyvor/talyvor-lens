@@ -29,8 +29,9 @@ import (
 
 // chainIndexConfig is LENS_CHAIN_INDEX: the provider's webhook secret and each network the indexer reads.
 type chainIndexConfig struct {
-	WebhookSecret string `json:"webhook_secret"`
-	Networks      []struct {
+	WebhookSecret       string `json:"webhook_secret"`
+	PayerRequestsPerDay *int   `json:"payer_requests_per_day"` // B48.10; unset, economy.DefaultPayerRequestsPerDay
+	Networks            []struct {
 		economy.ChainNetwork
 		ChainID        int64  `json:"chain_id"`
 		RPCURL         string `json:"rpc_url"`
@@ -70,6 +71,12 @@ func newChainIndex(store *economy.DualTokenStore, raw string) (*chainIndex, erro
 	// B48.28: each movement valued as it confirms. shortcut: a live movement stays unpriced (the export lists it so)
 	// until a market price adapter is wired here.
 	x.SetPrices(holdings.TestPrices{}, nil)
+	if cfg.PayerRequestsPerDay != nil {
+		if *cfg.PayerRequestsPerDay < 0 {
+			return nil, fmt.Errorf("LENS_CHAIN_INDEX: payer_requests_per_day is 0 or more")
+		}
+		x.PayerRequestsPerDay = *cfg.PayerRequestsPerDay
+	}
 	return &chainIndex{x: x, webhookSecret: cfg.WebhookSecret, byWebhook: byWebhook}, nil
 }
 

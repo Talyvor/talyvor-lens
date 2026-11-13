@@ -183,6 +183,10 @@ var Manifest = map[string]Entry{
 	"workspace_business_details": {Delete, "B59.30: a Business workspace's company name and who last saved it; its number and country are on workspaces"},
 	"workspace_business_people":  {Delete, "B59.30: the company's people with control — each one's name, role and share; deleting the details row deletes these too (ON DELETE CASCADE)"},
 
+	// B48.10: their keys are longer than the rest, so they stand apart rather than realign them.
+	"crypto_payment_requests":         {Retain, "B48.10: each request to be paid into an agent's crypto wallet — amount, network, the wallet, memo, expiry, the payer's address when named and the owner's decision on an overpayment; it explains why money arrived; financial-record retention"},
+	"crypto_payment_request_payments": {Retain, "B48.10: which chain_movements deposit paid which request, how much and whether it came late; financial-record retention"},
+
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
 

@@ -168,6 +168,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/credit-score":        moneySideEither,
 	"/v1/money/credit-score/review": moneySideEither,
 
+	// B48.10: crypto_requests_handler.go, an agent asking to be paid USDC into its smart account
+	"/v1/workspaces/{}/agents/{}/crypto-requests":                moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}":             moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}/overpayment": moneySideOnChain,
+
 	// device_keys_handler.go
 	"/v1/money/devices":               moneySideEither,
 	"/v1/money/devices/challenge":     moneySideEither,

@@ -1183,6 +1183,12 @@ type AgentApproval struct {
 	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
 	// Kind is "" for a request of the agent's, and ApprovalCardChallenge for a 3-D Secure challenge on its card (B59.22).
 	Kind string `json:"kind,omitempty"`
+	// B48.10: another Talyvor agent's request to be paid by this one — the request, what it asks in its own currency,
+	// and the trust Talyvor has in the agent asking.
+	PaymentRequestID string `json:"payment_request_id,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	AmountMinor      int64  `json:"amount_minor,omitempty"`
+	Trust            string `json:"trust,omitempty"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1195,7 +1201,8 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
-	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind`
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind,
+	payment_request_id, currency, amount_minor, trust`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1206,7 +1213,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
