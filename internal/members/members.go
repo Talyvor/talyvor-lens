@@ -1,5 +1,5 @@
 // Package members is B52.35: a person joins another workspace through its owner's invite link, lists the workspaces
-// they are in, and is removed by the owner (migration 0344).
+// they are in, and is removed by the owner (migration 0383).
 //
 // A workspace's owner is the identity POST /v1/provision derives it from; a member is any other identity that accepted
 // one of the owner's invite links. An invite link is an unguessable token with an expiry and a use count, kept only as
