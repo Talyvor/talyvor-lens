@@ -196,11 +196,16 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/lxc/history":     moneySideEither,
 
 	// money_accounts_handler.go
-	"/v1/money/accounts":               moneySideEither,
-	"/v1/money/accounts/{}/details":    moneySideEither,
-	"/v1/money/accounts/{}/statement":  moneySideEither,
-	"/v1/money/accounts/{}/test-money": moneySideEither,
-	"/v1/money/overview":               moneySideEither,
+	"/v1/money/accounts":                       moneySideEither,
+	"/v1/money/accounts/{}/close":              moneySideEither,
+	"/v1/money/accounts/{}/close/challenge":    moneySideEither,
+	"/v1/money/accounts/{}/details":            moneySideEither,
+	"/v1/money/accounts/{}/freeze":             moneySideEither,
+	"/v1/money/accounts/{}/statement":          moneySideEither,
+	"/v1/money/accounts/{}/test-money":         moneySideEither,
+	"/v1/money/accounts/{}/unfreeze":           moneySideEither,
+	"/v1/money/accounts/{}/unfreeze/challenge": moneySideEither,
+	"/v1/money/overview":                       moneySideEither,
 
 	// money_allowances_handler.go
 	"/v1/money/allowances":         moneySideEither,
