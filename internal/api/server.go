@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -276,7 +277,7 @@ func (s *Server) handleBudgets(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.budgetStore.List(r.Context(), wsID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if list == nil {
@@ -305,7 +306,7 @@ func (s *Server) handleForecastSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.forecaster.SummarizeWorkspace(r.Context(), wsID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if list == nil {
@@ -334,7 +335,7 @@ func (s *Server) handleEvalRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.evalPipeline.ListRuns(r.Context(), wsID, 15)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if list == nil {
@@ -366,7 +367,7 @@ func (s *Server) handlePOVIChallenges(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.poviChallenges.List(r.Context(), r.URL.Query().Get("node"), ws)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if list == nil {
@@ -389,7 +390,7 @@ func (s *Server) handlePOVIStakes(w http.ResponseWriter, r *http.Request) {
 	}
 	all, err := s.poviStakes.List(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	list := []povi.Stake{}
@@ -426,7 +427,7 @@ func (s *Server) handleCostAnomalies(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.costAnomaly.ScanScope(r.Context(), wsID, scope)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -451,7 +452,7 @@ func (s *Server) handleROISummary(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := s.roiReporter.GenerateSummary(r.Context(), wsID, r.URL.Query().Get("period"))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -490,7 +491,7 @@ func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	}
 	anoms, err := s.anomalyDetector.Detect(r.Context(), wsID, q.Get("team"), q.Get("feature"), q.Get("provider"))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if anoms == nil {
@@ -513,7 +514,7 @@ func (s *Server) handleAnomaliesScan(w http.ResponseWriter, r *http.Request) {
 	}
 	anoms, err := s.anomalyDetector.ScanWorkspace(r.Context(), ws)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if anoms == nil {
@@ -1219,7 +1220,15 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// writeError answers {"error": msg}. A 5xx never carries msg: it is the
+// server's own error (a database or driver message, a host, a path), so it is
+// logged here and the caller reads a generic line — as cmd/lens's writeJSONErr
+// does. 4xx messages are meant for the caller and pass through.
 func writeError(w http.ResponseWriter, status int, msg string) {
+	if status >= http.StatusInternalServerError {
+		slog.Error("request failed", slog.Int("status", status), slog.String("detail", msg))
+		msg = "internal server error"
+	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 

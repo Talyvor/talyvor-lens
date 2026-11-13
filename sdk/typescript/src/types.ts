@@ -64,6 +64,8 @@ export interface AgentRules {
   max_commitment_ulxc: number;
   allowed_licences: string[];
   may_subscribe: boolean;
+  allowed_currencies: string[];
+  fx_daily_limit_ulxc: number;
   active_from: string;
   active_until: string;
   timezone: string;

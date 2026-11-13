@@ -191,7 +191,7 @@ func (s *Store) sellable(ctx context.Context, buyer string) error {
 		return fmt.Errorf("market: where the buyer is: %w", err)
 	}
 	if !r.Known {
-		return fmt.Errorf("%w: nothing says where you are — declare your country in your tax profile", ErrNotSoldHere)
+		return fmt.Errorf("%w: nothing says where you are. Declare your country in your tax profile", ErrNotSoldHere)
 	}
 	if r.Business {
 		return nil

@@ -34,6 +34,7 @@ func (f *taxStripe) CreateCheckoutSession(context.Context, billing.CheckoutParam
 	return "", "", errors.New("not in this test")
 }
 func (f *taxStripe) CardFingerprint(context.Context, string) (string, error) { return "", nil }
+func (f *taxStripe) ProcessingFee(context.Context, string) (int64, error)    { return 0, nil }
 func (f *taxStripe) CreateMarketSubscription(_ context.Context, _, _, ws string) (string, error) {
 	return "sub_market_" + ws, nil
 }

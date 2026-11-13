@@ -139,6 +139,7 @@ func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 type invoicePayPages interface {
 	InvoiceByToken(ctx context.Context, token string) (economy.Invoice, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
+	WorkspaceLabels(ctx context.Context, workspaceID string) (map[string]string, error)
 }
 
 // invoiceCardCheckout opens a Stripe test-mode Checkout Session for an invoice: *billing.LiveStripe on a test-mode key.
@@ -167,6 +168,13 @@ func mountInvoicePayRoutes(r chi.Router, pages invoicePayPages, cards invoiceCar
 				page["transfer"] = map[string]any{"details": d.AccountDetails, "mode": d.Mode, "reference": d.PaymentReference + " " + inv.Reference}
 			} else {
 				slog.Info("invoice pay page: no account details to pay by transfer", "invoice", inv.ID, "err", err)
+			}
+		}
+		// B56.7: Live only for a live transfer while payments in are Live for the issuer; the card is always Stripe test mode.
+		page["label"] = economy.LabelSandbox
+		if _, transfer := page["transfer"]; transfer {
+			if labels, err := pages.WorkspaceLabels(req.Context(), inv.WorkspaceID); err == nil && labels[economy.CapabilityPaymentsIn] == economy.LabelLive {
+				page["label"] = economy.LabelLive
 			}
 		}
 		// The payer sees the invoice, not the issuer's ids or its ledger.

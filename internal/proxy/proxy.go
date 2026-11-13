@@ -70,6 +70,7 @@ import (
 
 const (
 	maxBodyBytes                = 4 << 20 // 4 MiB
+	maxNodeResponseBytes        = 8 << 20 // a node's /inference answer; past it the request falls through
 	openAIChatURL               = "https://api.openai.com/v1/chat/completions"
 	anthropicMessageURL         = "https://api.anthropic.com/v1/messages"
 	googleGenerativeLanguageURL = "https://generativelanguage.googleapis.com"
@@ -709,6 +710,30 @@ func cutOff(body []byte) bool {
 		r.Status == "incomplete" || r.Response.Status == "incomplete"
 }
 
+// unfinished reports an answer the stream path kept before B17.384, as its text alone (B17.384): nothing in it
+// shows the provider finished, so it may be one cut off at the length limit before B17.184 refused those.
+func unfinished(body []byte) bool {
+	var r map[string]json.RawMessage
+	if json.Unmarshal(body, &r) != nil || len(r) != 1 {
+		return false
+	}
+	if r["content"] != nil {
+		return true
+	}
+	var choices []struct {
+		FinishReason *string `json:"finish_reason"`
+	}
+	if json.Unmarshal(r["choices"], &choices) != nil || len(choices) == 0 {
+		return false
+	}
+	for _, c := range choices {
+		if c.FinishReason != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // replaceResponseContent rewrites the first choice's message content (used to
 // re-inject redacted output). Returns the body unchanged when the shape
 // doesn't match, so a redaction can never corrupt the response envelope.
@@ -1047,7 +1072,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	if p.budgetService != nil {
 		estCost := budgetEstimateUSD(model, prompt)
 		if p.budgetService.CheckBudget(ctx, wsID, team, sprint, estCost) == budgets.DecisionBlock {
-			writeError(w, http.StatusPaymentRequired, "budget exceeded for workspace/team/sprint")
+			writeRefusal(w, http.StatusPaymentRequired, refusalBudgetExceeded, "budget exceeded for workspace/team/sprint")
 			metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "budget_blocked").Inc()
 			return
 		}
@@ -1057,7 +1082,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// before the provider is called on both seams (the streaming split is below).
 	if status, msg := p.limits.admit(ctx, wsID, budgetEstimateUSD(model, prompt),
 		len(prompt)/4+boundedMaxOut(extractMaxTokens(body), p.reservationMaxOut)); status != 0 {
-		writeError(w, status, msg)
+		writeRefusal(w, status, limitRefusalCode(status), msg)
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "workspace_limit_blocked").Inc()
 		return
 	}
@@ -1082,14 +1107,14 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// B1.6 — a subscriber whose plan allowance is used up continues on prepaid credit, and
 	// is refused when there is none. Inert for non-subscribers and agent keys (allowance.go).
 	if !byok && p.allowanceGateBlocks(ctx, wsID, model, prompt) {
-		writeError(w, http.StatusPaymentRequired, "this period's plan allowance is used up and prepaid credit does not cover the request — top up to continue")
+		writeRefusal(w, http.StatusPaymentRequired, refusalAllowanceExhausted, "this period's plan allowance is used up and prepaid credit does not cover the request — top up to continue")
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "allowance_blocked").Inc()
 		return
 	}
 	// B9.8 — a browser-chat request is charged, so it is admitted only when allowance + prepaid covers
 	// its conservative cost and its session is under its bound. Inert for every other credential.
-	if msg, blocked := p.chatAdmission(ctx, wsID, model, prompt, boundedMaxOut(extractMaxTokens(body), p.reservationMaxOut)); blocked && !byok {
-		writeError(w, http.StatusPaymentRequired, msg)
+	if msg, code, blocked := p.chatAdmission(ctx, wsID, model, prompt, boundedMaxOut(extractMaxTokens(body), p.reservationMaxOut)); blocked && !byok {
+		writeRefusal(w, http.StatusPaymentRequired, code, msg)
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "chat_blocked").Inc()
 		return
 	}
@@ -1229,9 +1254,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error":      "guardrail violation",
+				"code":       refusalGuardrailBlocked,
 				"violations": gr.Violations,
 				"risk_score": gr.RiskScore,
 			})
+			p.releaseReservation(ctx, "input guardrail block") // B58.3: nothing was served
 			return
 		}
 		for _, v := range gr.Violations {
@@ -1384,8 +1411,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// B17.178: an answer stored before empty ones were refused at the write is not served either; the
 		// request goes upstream and its fresh answer replaces the stored one.
 		// B17.246: with Run code on, nor is one stored without the runs that worked it out — it would show no code.
-		// B17.184: nor is a buffered answer kept before cut-off ones were refused.
-		if cached != nil && (emptyAnswer(cached) || cutOff(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
+		// B17.184: nor is a buffered answer kept before cut-off ones were refused. B17.384: nor a streamed one kept
+		// before then, which cannot show it finished.
+		if cached != nil && (emptyAnswer(cached) || cutOff(cached) || unfinished(cached) || wrongSum(cmp.Or(turn.Latest, prompt), cached) ||
 			runCodeAnswerOf(ctx) != nil && len(codeRunsIn(cached)) == 0) {
 			cached, pooledHit, hitIDs, hitHashes = nil, nil, nil, nil
 			metrics.RecordCacheMiss("cache_miss")
@@ -1520,6 +1548,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		metrics.ModalityUnsupported()
 		writeError(w, http.StatusUnprocessableEntity,
 			"streaming request contains "+modSet.Label()+" content but model "+model+" does not support it")
+		p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 		return
 	}
 	// Output guardrails (Upgrade 13) can't inspect an in-flight stream. By
@@ -1742,6 +1771,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				metrics.ModalityUnsupported()
 				writeError(w, http.StatusUnprocessableEntity,
 					"request contains "+modSet.Label()+" content but no configured "+cfg.ProviderName()+" model supports it")
+				p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 				return
 			}
 			w.Header().Set("X-Talyvor-Vision-Redirect", upstreamModel+"→"+capable)
@@ -1753,6 +1783,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			metrics.ModalityUnsupported()
 			writeError(w, http.StatusUnprocessableEntity,
 				"request contains "+modSet.Label()+" content but the requested model "+model+" does not support it")
+			p.releaseReservation(ctx, "modality unsupported") // B58.3: nothing was served
 			return
 		}
 	}
@@ -1791,6 +1822,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			if rerr != nil {
 				metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "error").Inc()
 				writeError(w, http.StatusBadGateway, "rebuild request body: "+rerr.Error())
+				p.releaseReservation(ctx, "request body not rebuilt") // B58.3: nothing was served
 				return
 			}
 			streamBody = rb
@@ -1829,6 +1861,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		if oerr != nil {
 			writeError(w, http.StatusBadRequest, oerr.Error())
 			metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "stream_unsupported").Inc()
+			p.releaseReservation(ctx, "stream unsupported") // B58.3: nothing was served
 			return
 		}
 		serr := sh.serve(w, r, cfg.ProviderName(), model, prompt, cachePrompt, streamBody, piiDetected, sc, ops)
@@ -1865,6 +1898,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	if err != nil {
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "error").Inc()
 		writeError(w, http.StatusBadGateway, "rebuild request body: "+err.Error())
+		p.releaseReservation(ctx, "request body not rebuilt") // B58.3: nothing was served
 		return
 	}
 
@@ -2437,7 +2471,7 @@ func (p *Proxy) tryNodeRouting(
 		return false
 	}
 	var nr nodeInferResp
-	if err := json.NewDecoder(resp.Body).Decode(&nr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxNodeResponseBytes)).Decode(&nr); err != nil { // an answer past the cap fails to decode and falls through
 		slog.Warn("node-autoroute: decode failed, falling through", slog.String("err", err.Error()))
 		return false
 	}
@@ -3358,6 +3392,29 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// B28.82 — the codes Chat reads beside "error" to tell Lens's refusals apart (REFUSAL_CODES in
+// talyvor-suite apps/web/src/areas/chat/chatApi.ts). A 402 is not one thing: only an empty balance
+// is fixed by topping up, so every other refusal names itself.
+const (
+	refusalSpendingCap        = "spending_cap"
+	refusalBudgetExceeded     = "budget_exceeded"
+	refusalAllowanceExhausted = "allowance_exhausted"
+	refusalSessionLimit       = "session_limit"
+	refusalGuardrailBlocked   = "guardrail_blocked"
+	refusalWorkspaceRateLimit = "workspace_rate_limited"
+)
+
+// writeRefusal is writeError with the refusal's code; an empty code writes the plain error.
+func writeRefusal(w http.ResponseWriter, status int, code, msg string) {
+	if code == "" {
+		writeError(w, status, msg)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
 }
 
 // recordSessionTurn is the per-request hook into SessionTracker. It

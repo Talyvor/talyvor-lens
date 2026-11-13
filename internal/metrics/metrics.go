@@ -81,6 +81,9 @@ var (
 		prometheus.CounterOpts{Name: "lens_rate_limit_rejections_total", Help: "Rate-limit rejections (HTTP 429), by workspace."},
 		[]string{"workspace"},
 	)
+	RateLimitRedisErrorsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "lens_rate_limit_redis_errors_total", Help: "Rate-limiter Redis calls that failed; that request was counted in this instance's memory instead."},
+	)
 
 	// ─── token ledger hot path ───
 	TokenLedgerWriteDuration = prometheus.NewHistogram(
@@ -395,7 +398,7 @@ func init() {
 		UpstreamRequestsTotal, UpstreamDuration,
 		CacheMissesTotal,
 		CircuitBreakerState,
-		RateLimitRejectionsTotal,
+		RateLimitRejectionsTotal, RateLimitRedisErrorsTotal,
 		TokenLedgerWriteDuration,
 		TokensMintedTotal, LXCConvertedTotal,
 		HAInstanceCount,
@@ -446,6 +449,9 @@ func RateLimitRejected(workspace string) {
 	}
 	RateLimitRejectionsTotal.WithLabelValues(workspace).Inc()
 }
+
+// RateLimitRedisError counts one rate-limiter Redis call that failed.
+func RateLimitRedisError() { RateLimitRedisErrorsTotal.Inc() }
 
 // ObserveLedgerWrite records a token-ledger write duration.
 func ObserveLedgerWrite(dur time.Duration) { TokenLedgerWriteDuration.Observe(dur.Seconds()) }

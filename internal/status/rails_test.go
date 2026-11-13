@@ -31,6 +31,16 @@ func (fxCleared) WalletCapabilities(context.Context) ([]economy.CapabilityStatus
 	return out, nil
 }
 
+// Labels is fx Live and every other money capability Sandbox.
+func (fxCleared) Labels(context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, c := range economy.Capabilities {
+		out[c.Key] = economy.LabelSandbox
+	}
+	out[economy.CapabilityFX] = economy.LabelLive
+	return out, nil
+}
+
 // B30.12: the page lists every partner in its mode with its clearances, a Test partner whose last call failed shows
 // as down, one whose last call succeeded as up, and one never called as neither.
 func TestStatus_MoneyRails(t *testing.T) {
@@ -78,15 +88,16 @@ func TestStatus_MoneyRails(t *testing.T) {
 	if a := rails[partners.ServiceAccount]; a.Status != StatusOperational || a.LastSuccess == nil {
 		t.Fatalf("the account partner reads %s after a good call, want operational", a.Status)
 	}
-	if f := rails[partners.ServiceFX]; f.Status != StatusUnknown || len(f.Capabilities) != 1 || f.Capabilities[0].Cleared == nil || !*f.Capabilities[0].Cleared {
+	if f := rails[partners.ServiceFX]; f.Status != StatusUnknown || len(f.Capabilities) != 1 || f.Capabilities[0].Cleared == nil || !*f.Capabilities[0].Cleared ||
+		f.Capabilities[0].Label != economy.LabelLive {
 		t.Fatalf("fx reads %s with %+v, want never called and its capability cleared", f.Status, f.Capabilities)
 	}
 
 	html := renderHTML(&got)
 	for _, want := range []string{"Money rails",
 		`Sanctions screening<div class="msg">Test partner · no clearance needed</div></td><td><span class="pill bad">outage</span>`,
-		`Currency conversion<div class="msg">Test partner · cleared</div></td><td><span class="pill">no calls yet</span>`,
-		`Accounts and payments<div class="msg">Test partner · not cleared</div></td><td><span class="pill good">operational</span>`} {
+		`Currency conversion<div class="msg">Test partner · cleared · Live</div></td><td><span class="pill">no calls yet</span>`,
+		`Accounts and payments<div class="msg">Test partner · not cleared · Sandbox</div></td><td><span class="pill good">operational</span>`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("the status page lacks %q", want)
 		}
@@ -241,6 +252,9 @@ func (brokerCleared) WalletCapabilities(context.Context) ([]economy.CapabilitySt
 	}
 	return out, nil
 }
+
+// Labels names no capability, so every rail reads Sandbox.
+func (brokerCleared) Labels(context.Context) (map[string]string, error) { return nil, nil }
 
 // B56.6: the public page names no trading while no trade_ capability has a clearance in force, and the Trading rail
 // comes back once one has.

@@ -72,7 +72,7 @@ func TestB549_AFreezeSticksEvenWhenItsRevokeCallsCannotBeBuilt(t *testing.T) {
 	slices.Sort(ids)
 	broken, audited, hungUp := ids[0], ids[1], ids[2]
 	gate := func(agent string) error {
-		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent, smartaccount.Payment{Token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent, 84532, smartaccount.Payment{Token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 			To: "0x000000000000000000000000000000000000b0b0", Amount: big.NewInt(1)})
 		return err
 	}

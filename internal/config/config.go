@@ -220,6 +220,10 @@ type Config struct {
 	// ApprovalTTL (LENS_APPROVAL_TTL, Go duration, default 24h) is how long an approval lasts (B50.18): an agent's
 	// request or a payment request waits that long for its tap, and once approved may be used that long.
 	ApprovalTTL time.Duration
+	// CardProgrammes (LENS_CARD_PROGRAMMES, "issuer=mode,…", default unset) is each card programme's mode by its
+	// issuer's adapter name (B59.21): realtime, where the issuer asks Lens at each payment, or preapproved, where the
+	// agent asks first and the issuer is given a card or a limit for what was approved. A programme not named is preapproved.
+	CardProgrammes map[string]string
 	// BriefingPushHour (LENS_BRIEFING_PUSH_HOUR, a UTC hour 0-23, default unset = -1) is when each morning the daily
 	// briefing's line is pushed to the owner's web push subscriptions (B41.205); unset, none is sent.
 	BriefingPushHour int
@@ -650,6 +654,10 @@ type Config struct {
 	// ScreeningMaxAge is how long ago a sanctions list may have last downloaded before every payment in or out is held
 	// for an operator (B37.4). Env: LENS_SCREENING_MAX_AGE_HOURS, whole hours, which Nicolai sets; until he does, 48.
 	ScreeningMaxAge time.Duration
+	// SuspenseReturnDays is how many business days money in that matched no account sits in suspense before it goes
+	// back to its payer, unless the operator assigns it (B30.15). Env: LENS_SUSPENSE_RETURN_DAYS, which Nicolai sets;
+	// until he does, 5.
+	SuspenseReturnDays int
 
 	// TrustfulComputeMintEnabled gates the LEGACY trust-based compute mint
 	// (ComputeMiner.RecordServedRequest mints LENS per served request with no
@@ -990,10 +998,16 @@ type Config struct {
 	MoneySandboxWebhookSecret string
 	// ChainIndex switches on the chain indexer (B48.6), network by network: LENS_CHAIN_INDEX, JSON. Unset, it is off.
 	ChainIndex string
+	// AgentChains is each chain agents' smart accounts pay on (B54.26): LENS_AGENT_CHAINS, JSON. Its payments are settled
+	// from their receipts each minute. Unset, none is.
+	AgentChains string
 	// TravelRule switches on the Travel Rule step of USDC sends and payouts (B48.7): LENS_TRAVEL_RULE. "test" is the
 	// Test adapter, "test:<address>=<provider>,…" with the addresses it names as a regulated provider's. Unset, it is
 	// off until a live adapter is chosen.
 	TravelRule string
+	// TravelRuleMinor is the Travel Rule threshold for a company's USDC transfers (B30.33): one of more micro-USDC
+	// carries the payer's and the payee's names. Env: LENS_TRAVEL_RULE_MINOR, which Nicolai sets; until he does, 0.
+	TravelRuleMinor int64
 
 	// TrackWebhookURL / TrackWebhookSecret (SEC-7) configure the outbound Lens→Track
 	// spend-alert emitter. TrackWebhookURL is Track's POST /v1/lens/webhook;
@@ -1093,6 +1107,9 @@ type Config struct {
 	// SpendDuplicateMinutes is how close two payments to one merchant for one amount must be to read as a likely
 	// duplicate (B53.5). Env: LENS_SPEND_DUPLICATE_MINUTES, default 10 — a setting for Nicolai.
 	SpendDuplicateMinutes int
+	// PhysicalCards serves the owner's physical card on the fake card issuer (B53.19). Env: LENS_PHYSICAL_CARDS,
+	// default false: it stays off until a live card partner serves cards, and off every physical-card route is 404.
+	PhysicalCards bool
 	// CoachModel is the model that words the Coach's sentences (B53.6). Env: LENS_COACH_MODEL, default empty: every
 	// sentence is its fixed template.
 	CoachModel string
@@ -1460,6 +1477,7 @@ func Load() (*Config, error) {
 		StripeIssuingWebhookSecret:  os.Getenv("LENS_STRIPE_ISSUING_WEBHOOK_SECRET"),
 		MoneySandboxWebhookSecret:   os.Getenv("LENS_MONEY_SANDBOX_WEBHOOK_SECRET"),
 		ChainIndex:                  os.Getenv("LENS_CHAIN_INDEX"),
+		AgentChains:                 os.Getenv("LENS_AGENT_CHAINS"),
 		TravelRule:                  os.Getenv("LENS_TRAVEL_RULE"),
 		StripeIssuingCurrency:       getEnv("LENS_STRIPE_ISSUING_CURRENCY", "gbp"),
 		// Catalog-drift detection (internal/modelwatch). Poller default-ON: it is read-only, costs one
@@ -1482,6 +1500,7 @@ func Load() (*Config, error) {
 		SupplierAddress:            getEnv("LENS_SUPPLIER_ADDRESS", "71-75 Shelton Street, Covent Garden, London, United Kingdom, WC2H 9JQ"),
 		SupplierVATNumber:          getEnv("LENS_SUPPLIER_VAT_NUMBER", ""),
 		SelfBillingVAT:             parseBoolEnv("LENS_SELF_BILLING_VAT"),
+		PhysicalCards:              parseBoolEnv("LENS_PHYSICAL_CARDS"), // B53.19
 		MarketPayoutReturnURL:      getEnv("LENS_MARKET_PAYOUT_RETURN_URL", "https://app.talyvor.com/marketplace/selling?payouts=connected"),
 		MarketPayoutRefreshURL:     getEnv("LENS_MARKET_PAYOUT_REFRESH_URL", "https://app.talyvor.com/marketplace/selling?payouts=expired"),
 		BillingSuccessURL:          getEnv("LENS_BILLING_SUCCESS_URL", "https://app.talyvor.com/billing/success?session_id={CHECKOUT_SESSION_ID}"),
@@ -1621,7 +1640,7 @@ func Load() (*Config, error) {
 	// Operators must switch to an EC P-256 private key.
 	if os.Getenv("LENS_JWT_SECRET") != "" {
 		return nil, errors.New(
-			"LENS_JWT_SECRET is no longer supported — Lens now uses ES256 (EC P-256). " +
+			"LENS_JWT_SECRET is no longer supported. Lens now uses ES256 (EC P-256). " +
 				"Generate a key with:\n" +
 				"  openssl ecparam -name prime256v1 -genkey -noout | \\\n" +
 				"    openssl pkcs8 -topk8 -nocrypt -out ec-private.pem\n" +
@@ -1773,6 +1792,17 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid LENS_APPROVAL_TTL (Go duration > 0, e.g. 24h): %s", v)
 		}
 		c.ApprovalTTL = d
+	}
+	if v := os.Getenv("LENS_CARD_PROGRAMMES"); v != "" {
+		c.CardProgrammes = map[string]string{}
+		for _, part := range strings.Split(v, ",") {
+			issuer, mode, ok := strings.Cut(strings.TrimSpace(part), "=")
+			issuer, mode = strings.TrimSpace(issuer), strings.TrimSpace(mode)
+			if !ok || issuer == "" || (mode != "realtime" && mode != "preapproved") {
+				return nil, fmt.Errorf("invalid LENS_CARD_PROGRAMMES (issuer=realtime or issuer=preapproved, comma-separated): %s", v)
+			}
+			c.CardProgrammes[issuer] = mode
+		}
 	}
 	c.PoolMintCapWindow = 24 * time.Hour
 	if v := os.Getenv("LENS_POOL_MINT_CAP_WINDOW"); v != "" {
@@ -2063,7 +2093,7 @@ func Load() (*Config, error) {
 		// economic control is gone. Refuse at boot rather than rely on a convention.
 		if f >= 1 {
 			return nil, fmt.Errorf(
-				"invalid LENS_POOL_ROYALTY_SHARE (must be < 1): %s — the share is a self-deal control, "+
+				"invalid LENS_POOL_ROYALTY_SHARE (must be < 1): %s. The share is a self-deal control, "+
 					"not a tuning knob: a Sybil pair spends C to earn s*C, so it loses (1-s)*C per cycle only "+
 					"while s < 1; at s >= 1 that becomes break-even or better and per-identity workspaces lose "+
 					"their only economic protection (workspace_owner_links has no writer, and card fingerprints "+
@@ -2089,7 +2119,7 @@ func Load() (*Config, error) {
 		// it is lucky. Refuse at boot.
 		if f >= 1 {
 			return nil, fmt.Errorf(
-				"invalid LENS_POOL_CONSUMER_DISCOUNT (must be < 1): %s — at r = 1 the consumer is charged "+
+				"invalid LENS_POOL_CONSUMER_DISCOUNT (must be < 1): %s. At r = 1 the consumer is charged "+
 					"nothing for a pooled hit, and because the contributor's royalty is funded by the "+
 					"consumer's settled charge (the funding invariant), the contributor then earns NOTHING "+
 					"too. That is not a generous discount, it is the pool silently ceasing to pay", v)
@@ -2148,6 +2178,14 @@ func Load() (*Config, error) {
 		}
 		c.ScreeningFuzzyThreshold = f
 	}
+	// B30.33 — the Travel Rule threshold for a company's USDC transfers. A malformed value is refused.
+	if v := os.Getenv("LENS_TRAVEL_RULE_MINOR"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: LENS_TRAVEL_RULE_MINOR must be a whole number of micro-USDC, 0 or more, got %q", v)
+		}
+		c.TravelRuleMinor = n
+	}
 	// B37.4 — how old the sanctions lists may get before payments hold. A malformed value is refused.
 	c.ScreeningMaxAge = 48 * time.Hour
 	if v := os.Getenv("LENS_SCREENING_MAX_AGE_HOURS"); v != "" {
@@ -2156,6 +2194,15 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_SCREENING_MAX_AGE_HOURS must be a whole number of hours above 0, got %q", v)
 		}
 		c.ScreeningMaxAge = time.Duration(h) * time.Hour
+	}
+	// B30.15 — how long money in that matched no account waits in suspense. A malformed value is refused.
+	c.SuspenseReturnDays = 5
+	if v := os.Getenv("LENS_SUSPENSE_RETURN_DAYS"); v != "" {
+		d, err := strconv.Atoi(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("config: LENS_SUSPENSE_RETURN_DAYS must be a whole number of business days above 0, got %q", v)
+		}
+		c.SuspenseReturnDays = d
 	}
 	// HA fail-closed: with LENS_HA_ENABLED every replica must share STABLE
 	// signing keys. Ephemeral per-replica keys "work" at startup and break
@@ -2655,7 +2702,7 @@ func Load() (*Config, error) {
 	if v := os.Getenv("LENS_PROVIDER_SECRET_KEK"); v != "" {
 		ring, err := envelope.ParseKeyring(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid LENS_PROVIDER_SECRET_KEK (comma-separated base64 keys, primary first, each exactly %d bytes — `openssl rand -base64 %d`): %w", envelope.KEKLen, envelope.KEKLen, err)
+			return nil, fmt.Errorf("invalid LENS_PROVIDER_SECRET_KEK (comma-separated base64 keys, primary first, each exactly %d bytes, made with `openssl rand -base64 %d`): %w", envelope.KEKLen, envelope.KEKLen, err)
 		}
 		c.ProviderSecretKeyring = ring
 	}

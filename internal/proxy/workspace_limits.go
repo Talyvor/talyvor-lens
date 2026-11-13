@@ -143,6 +143,18 @@ func (l *workspaceLimits) admit(ctx context.Context, wsID string, estCostUSD flo
 	return 0, ""
 }
 
+// limitRefusalCode names admit's refusal for Chat (B28.82): its 402 is the spending cap, its 429 the
+// workspace's own rate limit.
+func limitRefusalCode(status int) string {
+	switch status {
+	case http.StatusPaymentRequired:
+		return refusalSpendingCap
+	case http.StatusTooManyRequests:
+		return refusalWorkspaceRateLimit
+	}
+	return ""
+}
+
 // recordSpend adds a served request's cost to the month the spending cap is checked against.
 func (l *workspaceLimits) recordSpend(ctx context.Context, wsID string, costUSD float64) {
 	if l == nil || l.spend == nil || costUSD <= 0 {

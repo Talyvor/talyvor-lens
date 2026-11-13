@@ -59,6 +59,7 @@ var ruleLabels = map[string]string{
 	"approval_above_ulxc":  "Ask a person above",
 	"requests_per_minute":  "Requests a minute",
 	"max_commitment_ulxc":  "Most it may commit",
+	"fx_daily_limit_ulxc":  "Daily conversion maximum",
 }
 
 type ruleChange struct {
@@ -137,6 +138,7 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		{"approval_above_ulxc", was.ApprovalAboveULXC, now.ApprovalAboveULXC},
 		{"requests_per_minute", limitOf(was.RequestsPerMinute), limitOf(now.RequestsPerMinute)},
 		{"max_commitment_ulxc", limitOf(was.MaxCommitmentULXC), limitOf(now.MaxCommitmentULXC)},
+		{"fx_daily_limit_ulxc", limitOf(was.FXDailyLimitULXC), limitOf(now.FXDailyLimitULXC)},
 	} {
 		text := amount
 		if l.rule == "requests_per_minute" {
@@ -171,6 +173,7 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		{"Allowed listings", "any", was.AllowedListings, now.AllowedListings, false},
 		{"May pay only", "anyone", was.AllowedPayees, now.AllowedPayees, false},
 		{"Licences it may hold", "any", was.AllowedLicences, now.AllowedLicences, false},
+		{"May convert between", "any", was.AllowedCurrencies, now.AllowedCurrencies, false},
 		{"May never pay", "nobody", was.BlockedPayees, now.BlockedPayees, true},
 	} {
 		text := func(ids []string) string {

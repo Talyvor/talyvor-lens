@@ -117,7 +117,7 @@ func TestB4815_RecoveryRotationAndLockdown(t *testing.T) {
 		return call(http.MethodPut, base+"/spend-permission", map[string]any{"canonical": p.Canonical, "assertion": sign(p.Challenge)}, nil)
 	}
 	gate := func(agent string) error {
-		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(1)})
+		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent, 84532, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(1)})
 		return err
 	}
 	if code := permit(lostPhone); code != http.StatusOK {

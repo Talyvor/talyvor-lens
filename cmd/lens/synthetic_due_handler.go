@@ -50,6 +50,11 @@ import (
 //	POST /v1/synthetic/workspaces/{wsID}/money/schedules/{scheduleID}/due
 //	                                                                   B45.42: a test plan's signed standing order's
 //	                                                                   next tick due now: the minute tick runs it once
+//	POST /v1/synthetic/workspaces/{wsID}/money/physical-cards/{cardID}/delivery
+//	                                                                   B53.19: {"status":"shipped"|"delivered"} the
+//	                                                                   issuer's delivery event for the test workspace's
+//	                                                                   physical card; mounted only while
+//	                                                                   LENS_PHYSICAL_CARDS is on
 //	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
 //	                                                                   the two linked as though both paid with one
 //	                                                                   card, so a trust panel's linked buyer is testable
@@ -103,6 +108,11 @@ type syntheticSchedules interface {
 	BringTestScheduleDue(ctx context.Context, workspaceID, scheduleID string, now time.Time) (economy.AgentSchedule, error)
 }
 
+// syntheticPhysicalCards is *economy.DualTokenStore: B53.19's delivery event moves a physical card through the post.
+type syntheticPhysicalCards interface {
+	DeliverPhysicalCard(ctx context.Context, workspaceID, id, status string) (economy.PhysicalCard, error)
+}
+
 type syntheticDueDeps struct {
 	db         syntheticQuerier
 	loans      syntheticLoans
@@ -114,6 +124,8 @@ type syntheticDueDeps struct {
 	moneyCards syntheticMoneyCards
 	schedules  syntheticSchedules
 	scan       syntheticScan // B52.40
+	// physicalCards is set only while LENS_PHYSICAL_CARDS is on.
+	physicalCards syntheticPhysicalCards
 }
 
 func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
@@ -138,6 +150,10 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 	if due.schedules != nil {
 		r.Post("/v1/synthetic/workspaces/{wsID}/money/schedules/{scheduleID}/due",
 			syntheticGuard(key, "schedule-due", limit, d, due.testOnly(due.scheduleDue)))
+	}
+	if due.physicalCards != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/money/physical-cards/{cardID}/delivery",
+			syntheticGuard(key, "physical-card-delivery", limit, d, due.testOnly(due.physicalCardDelivery)))
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
 	if due.scan != nil {
@@ -358,5 +374,23 @@ func (d syntheticDueDeps) moneyCardCharge(w http.ResponseWriter, r *http.Request
 	}
 	writeJSONOK(w, http.StatusOK, map[string]any{"authorization_id": a.ID, "approved": approved, "reason": reason, "mcc": details.MCC,
 		"country": details.Country, "channel": details.Channel, "wallet": details.Wallet})
+	return 1, "ok"
+}
+
+// physicalCardDelivery is B53.19: the issuer's delivery event for one of the test workspace's physical cards.
+func (d syntheticDueDeps) physicalCardDelivery(w http.ResponseWriter, r *http.Request, ws string) (int, string) {
+	var in struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return 0, "error: bad request"
+	}
+	card, err := d.physicalCards.DeliverPhysicalCard(r.Context(), ws, chi.URLParam(r, "cardID"), in.Status)
+	if err != nil {
+		writePhysicalCardErr(w, err)
+		return 0, "refused: " + err.Error()
+	}
+	writeJSONOK(w, http.StatusOK, card)
 	return 1, "ok"
 }

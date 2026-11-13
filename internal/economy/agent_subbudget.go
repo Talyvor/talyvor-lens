@@ -170,6 +170,10 @@ type AgentDebitMeta struct {
 	// WrittenOffULXC is the part of the delivered cost a settle did not charge because it was above the hold
 	// (B35.3). Set only by that settle, on its spend row; zero leaves every other row untouched.
 	WrittenOffULXC int64
+
+	// Question marks SpendLXCForAgent's debit as a question's pre-serve estimate (B58.3): its claim keeps
+	// RequestID as its question, so a debit nothing was served for is given back (ReleaseStrandedAgentDebits).
+	Question bool
 }
 
 // toMap renders the scalars as the lxc_ledger metadata document, OMITTING an empty scalar so a row carries
@@ -282,14 +286,24 @@ func (s *DualTokenStore) spendLXCForAgent(ctx context.Context, scopedKeyID, work
 
 	// (1) EXACTLY-ONCE claim. ON CONFLICT DO NOTHING ⇒ 0 rows means this requestID already succeeded — an
 	// idempotent replay: debit NOTHING, return nil. The claim is committed in THIS tx (below) only on success.
+	// B58.3: a question's debit names its question, so the sweeper can tell a debit nothing was served for.
+	var question interface{}
+	if meta.Question {
+		question = nullIfEmpty(meta.RequestID)
+	}
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO lxc_spend_claims (request_id, scoped_key_id, lxc_amount, platform_fee_bps) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (request_id) DO NOTHING`, requestID, scopedKeyID, lxcAmount, bps)
+		`INSERT INTO lxc_spend_claims (request_id, scoped_key_id, lxc_amount, platform_fee_bps, question_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (request_id) DO NOTHING`, requestID, scopedKeyID, lxcAmount, bps, question)
 	if err != nil {
 		return fmt.Errorf("economy: spend claim: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // idempotent replay — already debited under this request_id
+		// Idempotent replay — already debited under this request_id. Counted (B58.3): the debit may now pay for
+		// this request's answer, so another request's release must not give it back.
+		if _, err := tx.Exec(ctx, `UPDATE lxc_spend_claims SET replays = replays + 1 WHERE request_id = $1`, requestID); err != nil {
+			return fmt.Errorf("economy: count spend replay: %w", err)
+		}
+		return tx.Commit(ctx)
 	}
 
 	// (2) Ensure + LOCK the sub-budget row (FOR UPDATE serializes concurrent debits for this agent).

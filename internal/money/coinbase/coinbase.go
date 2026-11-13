@@ -140,7 +140,7 @@ func New(cfg Config) (*money.Adapter, error) {
 	if cfg.PaymasterURL != "" { // CDP's paymaster URL is also its bundler's: it answers each operation's receipt
 		cfg.Gas.ServeGas(chainIDs[cfg.Network], cfg.RPCURL, cfg.PaymasterURL)
 	}
-	return &money.Adapter{Name: Name, Wallets: wallets{c}, Transfers: transfers{c}, Webhooks: webhooks{c}, Signers: signers{c}}, nil
+	return &money.Adapter{Name: Name, Wallets: wallets{c}, Transfers: transfers{c}, Webhooks: webhooks{c}, Signers: signers{c}, Spenders: spenders{c}}, nil
 }
 
 type client struct {
@@ -193,7 +193,7 @@ func (c *client) do(ctx context.Context, method, path, idem string, body map[str
 	}
 	var rd io.Reader
 	var walletAuth string
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		raw, err := encode(body)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %v", money.ErrInvalid, err)
@@ -212,7 +212,7 @@ func (c *client) do(ctx context.Context, method, path, idem string, body map[str
 	}
 	req.Header.Set("Authorization", "Bearer "+bt)
 	req.Header.Set("Accept", "application/json")
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Wallet-Auth", walletAuth)
 		req.Header.Set("X-Idempotency-Key", idem)
@@ -368,8 +368,23 @@ func (c *client) send(ctx context.Context, kind, key, from, to string, amount mo
 	if err != nil {
 		return money.Result{}, err
 	}
-	body := map[string]any{"network": c.cfg.Network, "calls": []map[string]string{{"to": c.usdc, "value": "0",
-		"data": "0xa9059cbb" + word(strings.TrimPrefix(to, "0x"))[2:] + word(strconv.FormatInt(amount.Minor, 16))[2:]}}}
+	calls := []money.Call{{To: c.usdc, Value: "0", Data: "0xa9059cbb" + word(strings.TrimPrefix(to, "0x"))[2:] + word(strconv.FormatInt(amount.Minor, 16))[2:]}}
+	return c.sendCalls(ctx, kind, key, from, calls, func(err error) error {
+		if held < amount.Minor && errors.Is(err, money.ErrRefused) {
+			return fmt.Errorf("%w: wallet %s holds %d, not %d", money.ErrInsufficientFunds, from, held, amount.Minor)
+		}
+		return err
+	})
+}
+
+// sendCalls is one user operation of smart account from's, calls, under the request's idempotency key, its network fee
+// held from the workspace's gas budget when CDP's paymaster pays it (send); refused names what CDP's refusal means.
+func (c *client) sendCalls(ctx context.Context, kind, key, from string, calls []money.Call, refused func(error) error) (money.Result, error) {
+	wire := make([]map[string]string, len(calls)) // maps, so the body's keys are hashed in order (encode)
+	for i, cl := range calls {
+		wire[i] = map[string]string{"to": cl.To, "value": cl.Value, "data": cl.Data}
+	}
+	body := map[string]any{"network": c.cfg.Network, "calls": wire}
 	ws, chainID, gasRef := partners.WorkspaceOf(ctx), chainIDs[c.cfg.Network], idempotencyKey(kind, key)
 	sponsored := c.cfg.PaymasterURL != ""
 	if sponsored {
@@ -396,11 +411,8 @@ func (c *client) send(ctx context.Context, kind, key, from, to string, amount mo
 	// Asked even when the wallet holds too little: only CDP knows whether this key already sent, and it refuses a
 	// transfer the account cannot make when it simulates it.
 	if _, err := c.do(ctx, http.MethodPost, "/v2/evm/smart-accounts/"+from+"/user-operations/prepare-and-send", idempotencyKey(kind, key), body, &op); err != nil {
-		if held < amount.Minor && errors.Is(err, money.ErrRefused) {
-			return money.Result{}, release(fmt.Errorf("%w: wallet %s holds %d, not %d", money.ErrInsufficientFunds, from, held, amount.Minor))
-		}
 		if errors.Is(err, money.ErrRefused) || errors.Is(err, money.ErrInvalid) || errors.Is(err, money.ErrKeyReused) || errors.Is(err, money.ErrNotFound) {
-			return money.Result{}, release(err)
+			return money.Result{}, release(refused(err))
 		}
 		return money.Result{}, err // it may have been sent: the hold stands until the retry, under the same key, says
 	}
@@ -562,6 +574,61 @@ func (s signers) SignHash(ctx context.Context, signer string, hash [32]byte) ([]
 		return nil, fmt.Errorf("%w: CDP's signature is not 65 bytes", money.ErrPartnerDown)
 	}
 	return sig, nil
+}
+
+type spenders struct{ c *client }
+
+// NewSpender makes the agent's own smart account (B48.24): CDP's smart account whose one owner is the agent's key
+// signer, the spender of the owner's spend permissions. A retry under key is the same account.
+func (s spenders) NewSpender(ctx context.Context, key, signer string) (string, error) {
+	if strings.TrimSpace(key) == "" || !addressRE.MatchString(signer) {
+		return "", fmt.Errorf("%w: an agent's own account is made for its key, under the caller's idempotency key", money.ErrInvalid)
+	}
+	var a account
+	if _, err := s.c.do(ctx, http.MethodPost, "/v2/evm/smart-accounts", idempotencyKey("spender", key),
+		map[string]any{"owners": []string{signer}, "name": "tlp-" + digest("spender", key+"\x00"+signer)[:32]}, &a); err != nil {
+		return "", err
+	}
+	if !addressRE.MatchString(a.Address) || len(a.Owners) != 1 || !strings.EqualFold(a.Owners[0], signer) {
+		return "", fmt.Errorf("%w: CDP made no smart account owned by the agent's key", money.ErrPartnerDown)
+	}
+	return a.Address, nil
+}
+
+// SetSpendPolicy has CDP's policy engine hold p for the agent's key signer: the policy is made under key, then set as
+// the key's account policy, which judges every user operation the key signs.
+func (s spenders) SetSpendPolicy(ctx context.Context, key, signer string, p money.Policy) error {
+	if strings.TrimSpace(key) == "" || !addressRE.MatchString(signer) || len(p.Rules) == 0 {
+		return fmt.Errorf("%w: a policy has rules, for an agent's key, under the caller's idempotency key", money.ErrInvalid)
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("%w: %v", money.ErrInvalid, err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return fmt.Errorf("%w: %v", money.ErrInvalid, err)
+	}
+	var made struct {
+		ID string `json:"id"`
+	}
+	if _, err := s.c.do(ctx, http.MethodPost, "/v2/policy-engine/policies", idempotencyKey("policy", key), body, &made); err != nil {
+		return err
+	}
+	if made.ID == "" {
+		return fmt.Errorf("%w: CDP made no policy", money.ErrPartnerDown)
+	}
+	_, err = s.c.do(ctx, http.MethodPut, "/v2/evm/accounts/"+signer, idempotencyKey("policy-set", key), map[string]any{"accountPolicy": made.ID}, nil)
+	return err
+}
+
+// SendCalls has CDP send calls as one user operation of account, the agent's own smart account, signed inside its
+// enclave by the account's owner once its policy engine accepts every call.
+func (s spenders) SendCalls(ctx context.Context, key, account string, calls []money.Call) (money.Result, error) {
+	if strings.TrimSpace(key) == "" || !addressRE.MatchString(account) || len(calls) == 0 {
+		return money.Result{}, fmt.Errorf("%w: calls from an agent's own account, under the caller's idempotency key", money.ErrInvalid)
+	}
+	return s.c.sendCalls(ctx, "spend", key, account, calls, func(err error) error { return err })
 }
 
 type transfers struct{ c *client }

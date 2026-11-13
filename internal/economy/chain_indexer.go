@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/money"
+	tokens "github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/partners"
@@ -32,6 +34,11 @@ import (
 // through. Until it is deep enough not to move it is watched: a reorg that takes it off the chain posts the reversal,
 // and it posts again if it comes back.
 //
+// B48.28: it sees every verified token (holdings.Verified) on the network, not only USDC, and values each movement in
+// its owner's currency when it confirms, so the accountant's export (WalletTaxExport) can cost each disposal. Only
+// USDC's movements post to the ledger, whose chain accounts are in USDC; every other token's is kept, confirmed and
+// reversed on its chain_movements row alone.
+//
 // Each night every wallet's balance on the chain is compared with its account and the movements seen but not yet
 // confirmed (Reconcile); any difference — money that moved behind Talyvor's back — is kept and raised to the operator.
 
@@ -44,20 +51,80 @@ type ChainNetwork struct {
 	LargeConfirmations int64              `json:"large_confirmations"` // before a large one posts; 0 = Confirmations
 	LargeFromMinor     int64              `json:"large_from_minor"`    // a movement of this many micro-USDC or more is large; 0 = none is
 	Funding            string             `json:"funding"`             // test on a devnet or testnet, live on a real network
+	// Tokens names, by symbol, a verified token's contract where it is not the verified one — a devnet's mock token.
+	Tokens map[string]string `json:"tokens,omitempty"`
+
+	contracts map[string]tokens.Token // every token the indexer reads on the network, by EIP-55 contract
 }
 
-// threshold is how many confirmations a movement of amount needs on n.
-func (n ChainNetwork) threshold(amount int64) int64 {
-	if n.LargeFromMinor > 0 && amount >= n.LargeFromMinor && n.LargeConfirmations > n.Confirmations {
+// threshold is how many confirmations a movement of amount of asset needs on n.
+func (n ChainNetwork) threshold(asset string, amount *big.Int) int64 {
+	// shortcut: a token other than USDC always counts as large, as its size in dollars is not known before it is
+	// valued; size it by its value once a live price adapter is wired.
+	if n.LargeConfirmations > n.Confirmations &&
+		(asset != money.USDC || n.LargeFromMinor > 0 && amount.Cmp(big.NewInt(n.LargeFromMinor)) >= 0) {
 		return n.LargeConfirmations
 	}
 	return n.Confirmations
 }
 
+// readTokens fills n.contracts from the verified list and n's own contracts: USDC, and any in Tokens.
+func (n *ChainNetwork) readTokens() error {
+	n.contracts = map[string]tokens.Token{}
+	verified := map[string]tokens.Token{"USDC": {Network: n.Name, Symbol: money.USDC, Name: "USD Coin", Decimals: 6}}
+	for _, t := range tokens.Verified().Tokens {
+		if t.Network != n.Name {
+			continue
+		}
+		verified[t.Symbol] = t
+		if t.Address != "" {
+			n.contracts[smartaccount.Checksum(t.Address)] = t
+		}
+	}
+	own := map[string]string{money.USDC: n.USDC}
+	for symbol, addr := range n.Tokens {
+		if symbol != money.USDC {
+			own[symbol] = addr
+		}
+	}
+	for symbol, addr := range own {
+		t, ok := verified[symbol]
+		if addr = smartaccount.Checksum(addr); !ok || addr == "" {
+			return fmt.Errorf("economy: chain indexer: %s: %s is not a verified token there with a contract", n.Name, symbol)
+		}
+		for k, v := range n.contracts {
+			if v.Symbol == symbol { // its own contract stands in for the verified one
+				delete(n.contracts, k)
+			}
+		}
+		t.Address = addr
+		n.contracts[addr] = t
+	}
+	return nil
+}
+
+// token is the token n reads with symbol.
+func (n ChainNetwork) token(symbol string) (tokens.Token, bool) {
+	for _, t := range n.contracts {
+		if t.Symbol == symbol {
+			return t, true
+		}
+	}
+	return tokens.Token{}, false
+}
+
 // ChainIndexer mirrors agents' crypto wallets in the ledger.
 type ChainIndexer struct {
-	s    *DualTokenStore
-	nets map[string]ChainNetwork
+	s          *DualTokenStore
+	nets       map[string]ChainNetwork
+	testPrices tokens.Prices // values a movement of test funding; nil leaves it unpriced
+	livePrices tokens.Prices // values a movement of live funding; nil leaves it unpriced
+}
+
+// SetPrices values each movement as it confirms: test's figures for a movement on a devnet or testnet, live's for one
+// on a real network. A movement either leaves nil is unpriced, and the accountant's export lists it so.
+func (x *ChainIndexer) SetPrices(test, live tokens.Prices) {
+	x.testPrices, x.livePrices = test, live
 }
 
 // ErrChainNetwork: a network the indexer does not read.
@@ -79,6 +146,9 @@ func (s *DualTokenStore) NewChainIndexer(nets []ChainNetwork) (*ChainIndexer, er
 			return nil, fmt.Errorf("economy: chain indexer: %s: funding is test or live, not %q", n.Name, n.Funding)
 		case n.Chain.RPCURL == "":
 			return nil, fmt.Errorf("economy: chain indexer: %s: a node", n.Name)
+		}
+		if err := n.readTokens(); err != nil {
+			return nil, err
 		}
 		x.nets[n.Name] = n
 	}
@@ -124,7 +194,7 @@ func (x *ChainIndexer) wallets(ctx context.Context, addresses []string) (map[str
 	return out, rows.Err()
 }
 
-// Observe reads transaction txHash on network from the node and keeps every USDC transfer in it into or out of an
+// Observe reads transaction txHash on network from the node and keeps every transfer of a token it reads in it into or out of an
 // agent's wallet, once however often it is told: source says who told (webhook or poll). It answers how many it had
 // not seen. A transaction the node does not have yet is money.ErrNotFound, so the provider sends its webhook again.
 func (x *ChainIndexer) Observe(ctx context.Context, network, txHash, source string) (int, error) {
@@ -149,7 +219,8 @@ func (x *ChainIndexer) Observe(ctx context.Context, network, txHash, source stri
 	}
 	added := 0
 	for _, t := range ts {
-		if t.Token != n.USDC {
+		token, ok := n.contracts[t.Token]
+		if !ok {
 			continue
 		}
 		for _, side := range []struct {
@@ -159,17 +230,17 @@ func (x *ChainIndexer) Observe(ctx context.Context, network, txHash, source stri
 			if !ok {
 				continue
 			}
-			if !t.Value.IsInt64() || t.Value.Sign() <= 0 {
+			if t.Value.Sign() <= 0 {
 				slog.Warn("economy: a chain transfer's amount is out of range; it is not mirrored", "network", network,
 					"tx", t.TxHash, "position", t.Position)
 				continue
 			}
 			tag, err := x.s.pool.Exec(ctx, `INSERT INTO chain_movements (id, workspace_id, agent_id, network, tx_hash, log_position,
 				direction, wallet, counterparty, token, asset, amount_minor, funding, source, block_number, block_hash)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::numeric, $13, $14, $15, $16)
 				ON CONFLICT (network, tx_hash, log_position, direction) DO NOTHING`,
 				"cmv_"+uuid.NewString(), w.workspaceID, w.agentID, network, t.TxHash, t.Position, side.direction, w.address,
-				side.counterparty, t.Token, money.USDC, t.Value.Int64(), n.Funding, source, t.BlockNumber, t.BlockHash)
+				side.counterparty, t.Token, token.Symbol, t.Value.String(), n.Funding, source, t.BlockNumber, t.BlockHash)
 			if err != nil {
 				return added, fmt.Errorf("economy: observe chain movement: %w", err)
 			}
@@ -182,8 +253,8 @@ func (x *ChainIndexer) Observe(ctx context.Context, network, txHash, source stri
 // pollChunk is how many blocks one eth_getLogs asks for.
 const pollChunk = 2000
 
-// Poll reads network's logs since it last did, and Observes every transaction with a USDC transfer into or out of an
-// agent's wallet. It reads again the blocks a reorg could still change, so a transaction a reorg brought in is seen.
+// Poll reads network's logs since it last did, and Observes every transaction with a transfer of a token it reads into
+// or out of an agent's wallet. It reads again the blocks a reorg could still change, so a transaction a reorg brought in is seen.
 func (x *ChainIndexer) Poll(ctx context.Context, network string) (int, error) {
 	n, err := x.network(network)
 	if err != nil {
@@ -211,9 +282,13 @@ func (x *ChainIndexer) Poll(ctx context.Context, network string) (int, error) {
 	for _, w := range ws {
 		addrs = append(addrs, w.address)
 	}
+	contracts := make([]string, 0, len(n.contracts))
+	for c := range n.contracts {
+		contracts = append(contracts, c)
+	}
 	added := 0
 	for lo := from; lo <= head; lo += pollChunk {
-		txs, err := n.Chain.TransferTxs(ctx, n.USDC, addrs, lo, min(lo+pollChunk-1, head))
+		txs, err := n.Chain.TransferTxs(ctx, contracts, addrs, lo, min(lo+pollChunk-1, head))
 		if err != nil {
 			return added, err
 		}
@@ -240,10 +315,13 @@ type ChainConfirmed struct {
 }
 
 type chainMovement struct {
-	id, network, workspaceID, agentID, txHash, direction, wallet, counterparty, token, funding, status string
-	position                                                                                           int
-	amount                                                                                             int64
-	posted                                                                                             int
+	id, network, workspaceID, agentID, txHash, direction, wallet, counterparty, token, asset, funding, status string
+	position                                                                                                  int
+	amount                                                                                                    *big.Int
+	posted                                                                                                    int
+	valued                                                                                                    bool
+	value                                                                                                     int64 // in valueCurrency, once valued
+	valueCurrency                                                                                             string
 }
 
 // Confirm looks again at every movement on network not yet final: one with its confirmations posts; one a reorg took
@@ -259,18 +337,21 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 		return res, err
 	}
 	rows, err := x.s.pool.Query(ctx, `SELECT id, workspace_id, agent_id, tx_hash, log_position, direction, wallet, counterparty, token,
-		amount_minor, funding, status, posted FROM chain_movements WHERE network = $1 AND status <> 'final' ORDER BY seen_at, id`, network)
+		asset, amount_minor::text, funding, status, posted, value_minor IS NOT NULL, COALESCE(value_minor, 0), COALESCE(value_currency, '')
+		FROM chain_movements WHERE network = $1 AND status <> 'final' ORDER BY seen_at, id`, network)
 	if err != nil {
 		return res, fmt.Errorf("economy: chain confirm: %w", err)
 	}
 	var ms []chainMovement
 	for rows.Next() {
 		m := chainMovement{network: network}
+		var amount string
 		if err := rows.Scan(&m.id, &m.workspaceID, &m.agentID, &m.txHash, &m.position, &m.direction, &m.wallet, &m.counterparty,
-			&m.token, &m.amount, &m.funding, &m.status, &m.posted); err != nil {
+			&m.token, &m.asset, &amount, &m.funding, &m.status, &m.posted, &m.valued, &m.value, &m.valueCurrency); err != nil {
 			rows.Close()
 			return res, fmt.Errorf("economy: chain confirm: %w", err)
 		}
+		m.amount, _ = new(big.Int).SetString(amount, 10)
 		ms = append(ms, m)
 	}
 	rows.Close()
@@ -293,7 +374,7 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 			if m.direction == "out" {
 				from, to = to, from
 			}
-			if t.Position == m.position && t.Token == m.token && t.From == from && t.To == to && t.Value.IsInt64() && t.Value.Int64() == m.amount {
+			if t.Position == m.position && t.Token == m.token && t.From == from && t.To == to && t.Value.Cmp(m.amount) == 0 {
 				on = &ts[i]
 			}
 		}
@@ -308,12 +389,25 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 			_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET block_number = NULL, block_hash = '', confirmations = 0, updated_at = now()
 				WHERE id = $1`, m.id)
 		default:
-			conf, need := head-on.BlockNumber+1, n.threshold(m.amount)
+			conf, need := head-on.BlockNumber+1, n.threshold(m.asset, m.amount)
 			status := m.status
+			// B54.20: one that posted unvalued, its price not read as it confirmed, is valued on each look until it is
+			// final; valuing never posts it again.
+			if posted && !m.valued {
+				if verr := x.value(ctx, n, &m); verr != nil {
+					errs = append(errs, fmt.Errorf("economy: chain movement %s: %w", m.id, verr))
+				}
+			}
 			switch {
 			case !posted && conf >= need:
+				// valued first: a deposit of a token other than USDC is screened at its value
+				if !m.valued {
+					if err = x.value(ctx, n, &m); err != nil {
+						break
+					}
+				}
 				var held bool
-				if held, err = x.quarantined(ctx, m); held {
+				if held, err = x.quarantined(ctx, n, m); held {
 					status = "quarantined"
 				}
 				if err != nil || held {
@@ -348,15 +442,28 @@ func (x *ChainIndexer) Confirm(ctx context.Context, network string) (ChainConfir
 // quarantined screens the sender of deposit m before it posts (B48.7). A flagged one is quarantined: the money is in
 // the agent's wallet on the chain, but nothing is posted until an operator releases its case, and the owner is told
 // once. A released one posts — and screens again as it does, under the same key, so the release is what lets it.
-func (x *ChainIndexer) quarantined(ctx context.Context, m chainMovement) (bool, error) {
+func (x *ChainIndexer) quarantined(ctx context.Context, n ChainNetwork, m chainMovement) (bool, error) {
 	if m.direction != "in" {
 		return false, nil
 	}
 	if x.s.screener == nil {
 		return false, fmt.Errorf("%w: no screener is set, so no deposit posts", partners.ErrScreeningUnavailable)
 	}
+	// A deposit of another token is screened at its value in its owner's currency (B48.28), which screening counts in,
+	// and at least one minor unit of it; one with no price waits for one, as a deposit with no screener does.
+	amount, currency := max(m.value, 1), m.valueCurrency
+	switch {
+	case m.asset == money.USDC:
+		amount, currency = m.amount.Int64(), money.USDC
+	case !m.valued:
+		return false, fmt.Errorf("%w: a deposit of %s with no price is not screened yet", partners.ErrScreeningUnavailable, m.asset)
+	}
+	text := m.amount.String() + " " + m.asset
+	if t, ok := n.token(m.asset); ok {
+		text = new(big.Rat).SetFrac(m.amount, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(t.Decimals)), nil)).FloatString(t.Decimals) + " " + m.asset
+	}
 	err := x.s.screener.ScreenPayment(ctx, screening.Payment{WorkspaceID: m.workspaceID, ID: fmt.Sprintf("chain:%s:%d", m.id, m.posted+1),
-		Capability: CapabilityStablecoins, Direction: "in", Counterparty: m.counterparty, AmountMinor: m.amount, Currency: money.USDC,
+		Capability: CapabilityStablecoins, Direction: "in", Counterparty: m.counterparty, AmountMinor: amount, Currency: currency,
 		Funding: m.funding, Quarantine: true})
 	var r *screening.Refusal
 	if !errors.As(err, &r) {
@@ -364,7 +471,7 @@ func (x *ChainIndexer) quarantined(ctx context.Context, m chainMovement) (bool, 
 	}
 	if m.status != "quarantined" && x.s.nativePusher != nil {
 		msg := nativepush.Message{Title: "Deposit held for review",
-			Body: formatMinor(money.USDC, m.amount) + " came into an agent's wallet from " + m.counterparty +
+			Body: text + " came into an agent's wallet from " + m.counterparty +
 				", an address on a screening list. It isn't in the agent's balance until it is reviewed.",
 			Data: map[string]string{"type": "deposit_quarantined", "agent_id": m.agentID, "case_id": r.Case.ID, "workspace_id": m.workspaceID}}
 		go func() {
@@ -402,34 +509,79 @@ func (x *ChainIndexer) chainAccount(ctx context.Context, workspaceID, agentID, p
 	return id, nil
 }
 
-// move posts m to the ledger — or, reverse, takes back its last posting — and records it on m's row.
+// move posts m to the ledger — or, reverse, takes back its last posting — and records it on m's row. A movement of
+// a token other than USDC is recorded on its row alone: the ledger's chain accounts are in USDC.
 func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) error {
-	wallet, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyChain, m.network, m.wallet)
-	if err != nil {
-		return err
-	}
-	mirror, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyPartner, m.network, m.wallet)
-	if err != nil {
-		return err
-	}
-	amount, kind, key, status, posted := m.amount, "chain_deposit", fmt.Sprintf("chain:%s:%d", m.id, m.posted+1), "confirmed", m.posted+1
-	if m.direction == "out" {
-		amount, kind = -amount, "chain_withdrawal"
-	}
+	status, posted, entryID := "confirmed", m.posted+1, ""
 	if reverse {
-		amount, kind, key, status, posted = -amount, "chain_reversal", fmt.Sprintf("chain_reversal:%s:%d", m.id, m.posted), "reversed", m.posted
+		status, posted = "reversed", m.posted
 	}
-	e, err := x.s.PostMoney(ctx, MoneyEntry{WorkspaceID: m.workspaceID, Capability: CapabilityStablecoins, Kind: kind, IdempotencyKey: key,
-		Funding: m.funding, Counterparty: m.counterparty, PartnerRef: m.txHash + ":" + strconv.Itoa(m.position),
-		Postings: []MoneyPosting{{AccountID: wallet, AmountMinor: amount, Currency: money.USDC},
-			{AccountID: mirror, AmountMinor: -amount, Currency: money.USDC}}})
+	if m.asset == money.USDC {
+		wallet, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyChain, m.network, m.wallet)
+		if err != nil {
+			return err
+		}
+		mirror, err := x.chainAccount(ctx, m.workspaceID, m.agentID, MoneyPartner, m.network, m.wallet)
+		if err != nil {
+			return err
+		}
+		if !m.amount.IsInt64() {
+			return fmt.Errorf("economy: chain movement of %s USDC is more than the ledger counts", m.amount)
+		}
+		amount, kind, key := m.amount.Int64(), "chain_deposit", fmt.Sprintf("chain:%s:%d", m.id, m.posted+1)
+		if m.direction == "out" {
+			amount, kind = -amount, "chain_withdrawal"
+		}
+		if reverse {
+			amount, kind, key = -amount, "chain_reversal", fmt.Sprintf("chain_reversal:%s:%d", m.id, m.posted)
+		}
+		e, err := x.s.PostMoney(ctx, MoneyEntry{WorkspaceID: m.workspaceID, Capability: CapabilityStablecoins, Kind: kind, IdempotencyKey: key,
+			Funding: m.funding, Counterparty: m.counterparty, PartnerRef: m.txHash + ":" + strconv.Itoa(m.position),
+			Postings: []MoneyPosting{{AccountID: wallet, AmountMinor: amount, Currency: money.USDC},
+				{AccountID: mirror, AmountMinor: -amount, Currency: money.USDC}}})
+		if err != nil {
+			return err
+		}
+		entryID = e.ID
+	}
+	_, err := x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4,
+		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
+		m.id, status, posted, entryID, reverse)
+	return err
+}
+
+// value keeps what m was worth in its owner's currency as it confirms, which a price read later cannot give. A token
+// with no price is left unpriced, never valued at zero.
+func (x *ChainIndexer) value(ctx context.Context, n ChainNetwork, m *chainMovement) error {
+	prices := x.testPrices
+	if m.funding == FundingLive {
+		prices = x.livePrices
+	}
+	t, ok := n.token(m.asset)
+	if prices == nil || !ok {
+		return nil
+	}
+	country, err := ownerCountry(ctx, x.s.pool, m.workspaceID)
 	if err != nil {
 		return err
 	}
-	_, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET status = $2, posted = $3, entry_id = $4,
-		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
-		m.id, status, posted, e.ID, reverse)
-	return err
+	currency := tokens.CurrencyFor(country)
+	v, err := tokens.Value(ctx, prices, t, m.amount, currency)
+	if err != nil {
+		slog.Warn("economy: a chain movement was not valued; it is listed unpriced", "movement", m.id, "asset", m.asset, "err", err)
+		return nil
+	}
+	if _, err = x.s.pool.Exec(ctx, `UPDATE chain_movements SET value_minor = $2, value_currency = $3 WHERE id = $1 AND value_minor IS NULL`,
+		m.id, v, currency); err != nil {
+		return err
+	}
+	// read back: a value another poll kept first is the one this movement is screened at
+	if err = x.s.pool.QueryRow(ctx, `SELECT value_minor, value_currency FROM chain_movements WHERE id = $1`, m.id).Scan(&m.value,
+		&m.valueCurrency); err != nil {
+		return err
+	}
+	m.valued = true
+	return nil
 }
 
 // ChainReconciliation is one wallet's reconciliation on one network.
@@ -479,7 +631,7 @@ func (x *ChainIndexer) Reconcile(ctx context.Context, network string) ([]ChainRe
 			COALESCE((SELECT sum(b.balance_minor) FROM money_accounts a JOIN money_account_balances b ON b.account_id = a.id
 				WHERE a.workspace_id = $1 AND a.purpose = 'chain' AND a.partner_account_ref = $2), 0)::bigint,
 			COALESCE((SELECT sum(CASE direction WHEN 'in' THEN amount_minor ELSE -amount_minor END) FROM chain_movements
-				WHERE workspace_id = $1 AND agent_id = $3 AND network = $4 AND status IN ('seen', 'reversed')
+				WHERE workspace_id = $1 AND agent_id = $3 AND network = $4 AND asset = 'USDC' AND status IN ('seen', 'reversed')
 				AND block_number IS NOT NULL AND block_number <= $5), 0)::bigint`,
 			w.workspaceID, chainRef(network, w.address), w.agentID, network, block).Scan(&r.LedgerMinor, &r.PendingMinor); err != nil {
 			return out, fmt.Errorf("economy: reconcile: %w", err)

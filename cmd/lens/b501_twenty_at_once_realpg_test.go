@@ -2,6 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"strings"
 	"sync"
 	"testing"
@@ -9,10 +15,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/issuerfake"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // b501AtOnce runs fn 20 times at once and waits for all of them.
@@ -87,7 +95,7 @@ func TestB501_TwentyIdenticalRequestsAtOnceMoveMoneyOnce(t *testing.T) {
 		if got != want {
 			t.Fatalf("20 approvals at once posted %q, want %q: a second approval released the cards the first issued", got, want)
 		}
-		if _, ok := issuer.Card("ic_0003"); ok {
+		if issuer.Issued() > 2 {
 			t.Fatal("20 approvals at once issued a third card")
 		}
 		b.balance(t, 50000-25000)
@@ -107,7 +115,23 @@ func TestB501_TwentyIdenticalRequestsAtOnceMoveMoneyOnce(t *testing.T) {
 		if err != nil || batch.RowsValid != 3 {
 			t.Fatalf("upload three payouts = %+v, %v", batch, err)
 		}
-		b501AtOnce(func() { _, _ = b.store.ApprovePayoutBatch(ctx, ws, batch.ID, "owner") })
+		// B58.5: the workspace has the phone's key, so each of the 20 carries its own signature over the batch.
+		phone, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		spki, _ := x509.MarshalPKIXPublicKey(&phone.PublicKey)
+		if _, err := pool.Exec(ctx, `UPDATE workspace_device_keys SET public_key = $2 WHERE id = $1`, "dev_"+ws, spki); err != nil {
+			t.Fatal(err)
+		}
+		signed := make(chan *passkey.Assertion, 20)
+		for range 20 {
+			c, _, _, err := b.store.PayoutBatchChallenge(ctx, ws, batch.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := sha256.Sum256(devicekey.Message(c))
+			sig, _ := ecdsa.SignASN1(rand.Reader, phone, h[:])
+			signed <- &passkey.Assertion{DeviceID: "dev_" + ws, Challenge: c, Signature: base64.RawURLEncoding.EncodeToString(sig)}
+		}
+		b501AtOnce(func() { _, _ = b.store.ApprovePayoutBatch(ctx, ws, batch.ID, "owner", <-signed) })
 		if n, sum := count(t, `SELECT count(*), COALESCE(sum(amount_minor), 0)::bigint FROM money_payments WHERE workspace_id = $1`, ws); n != 3 || sum != 6000 {
 			t.Fatalf("20 approvals at once made %d payments out of %d pence, want 3 of 6000", n, sum)
 		}

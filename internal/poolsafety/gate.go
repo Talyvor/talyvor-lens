@@ -45,6 +45,10 @@ type Gate struct {
 	decided bool
 }
 
+// ReasonUnreadable opens the reason when the attestation could not be read. The driver's error
+// follows it in Reason(), which can name a host, so a reader outside the operator's sees this alone.
+const ReasonUnreadable = "the pool-safety attestation could not be read"
+
 // NewGate returns a gate that is closed and has never been evaluated. The zero value is
 // deliberately the safe one: a Gate nobody refreshed reports not-attested.
 func NewGate() *Gate {
@@ -102,7 +106,7 @@ func (g *Gate) evaluate(ctx context.Context, db Reader, model string, threshold 
 			"Run `lens poolcheck` with this deployment's env; it records the attestation on success, " +
 			"and pooling turns on within one refresh interval without a restart.", true
 	case err != nil:
-		return false, fmt.Sprintf("the pool-safety attestation could not be read: %v", err), false
+		return false, fmt.Sprintf("%s: %v", ReasonUnreadable, err), false
 	}
 	if ok, why := att.MatchesLive(model, threshold); !ok {
 		return false, "the live embedding configuration is NOT the one that passed poolcheck, so " +
