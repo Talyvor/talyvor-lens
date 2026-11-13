@@ -96,3 +96,46 @@ func TestB5047_AHoldARetryIsServedOnIsNotGivenBackUnderIt(t *testing.T) {
 		}
 	})
 }
+
+// A retry that found the hold just before a release took it is never served on nothing: the release frees the id
+// under it, and the retry takes a new hold.
+func TestB5047_ARetryThatLosesItsHoldToAReleaseTakesANewOne(t *testing.T) {
+	ctx := context.Background()
+	const id, held = "b5047-raced", int64(5_000_000)
+	_, store, pool, _ := b5047Setup(t)
+	meta := economy.AgentDebitMeta{RequestedModel: "gpt-4o"}
+	if err := store.ReserveLXCForAgent(ctx, b2313Key, b2313WS, id, held, meta); err != nil {
+		t.Fatal(err)
+	}
+	// The release holds the row; the retry finds it held and waits to count itself in.
+	release, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = release.Rollback(ctx) }()
+	if _, err := release.Exec(ctx, `SELECT 1 FROM lxc_reservations WHERE reservation_id = $1 FOR UPDATE`, id); err != nil {
+		t.Fatal(err)
+	}
+	retried := make(chan error, 1)
+	go func() { retried <- store.ReserveLXCForAgent(ctx, b2313Key, b2313WS, id, held, meta) }()
+	for waiting := 0; waiting == 0; {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := release.Exec(ctx, `UPDATE lxc_reservations SET status = 'released', resolved_at = now(),
+		reservation_id = reservation_id || ':released:test' WHERE reservation_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retried; err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM lxc_reservations WHERE reservation_id = $1`, id).Scan(&status); err != nil || status != "held" {
+		t.Errorf("the retry's hold: status %q (%v), want a new hold — it was served on none", status, err)
+	}
+}

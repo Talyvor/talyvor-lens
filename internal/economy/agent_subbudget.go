@@ -395,10 +395,19 @@ const (
 // tx rolls back — no orphan reservation, retriable); nil on a fresh hold AND on an idempotent replay, which is
 // counted (B50.47): the replay may be answering on this hold, so a single request's release no longer gives it back.
 func (s *DualTokenStore) ReserveLXCForAgent(ctx context.Context, scopedKeyID, workspaceID, reservationID string, heldLXC int64, meta AgentDebitMeta) error {
-	return retryLocks(ctx, func() error {
-		return s.reserveLXCForAgent(ctx, scopedKeyID, workspaceID, reservationID, heldLXC, meta)
-	})
+	for range 3 { // a release that frees the id between the claim and the count is rare: take the new hold
+		err := retryLocks(ctx, func() error {
+			return s.reserveLXCForAgent(ctx, scopedKeyID, workspaceID, reservationID, heldLXC, meta)
+		})
+		if !errors.Is(err, errHoldFreed) {
+			return err
+		}
+	}
+	return errHoldFreed
 }
+
+// errHoldFreed is a replay whose hold a release gave back, and moved off its id, before the replay was counted.
+var errHoldFreed = errors.New("economy: the hold this request replays was given back; take a new one")
 
 // reserveLXCForAgent is one attempt of ReserveLXCForAgent, in one transaction.
 func (s *DualTokenStore) reserveLXCForAgent(ctx context.Context, scopedKeyID, workspaceID, reservationID string, heldLXC int64, meta AgentDebitMeta) error {
@@ -437,8 +446,12 @@ func (s *DualTokenStore) reserveLXCForAgent(ctx context.Context, scopedKeyID, wo
 	if tag.RowsAffected() == 0 {
 		// Idempotent replay — already held under this reservation_id. Counted (B50.47): the hold may now pay for
 		// this request's answer, so another request's release must not give it back.
-		if _, err := tx.Exec(ctx, `UPDATE lxc_reservations SET replays = replays + 1 WHERE reservation_id = $1`, reservationID); err != nil {
+		tag, err := tx.Exec(ctx, `UPDATE lxc_reservations SET replays = replays + 1 WHERE reservation_id = $1`, reservationID)
+		if err != nil {
 			return fmt.Errorf("economy: count reservation replay: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return errHoldFreed // released and freed under this replay: never serve on no hold
 		}
 		return tx.Commit(ctx)
 	}
