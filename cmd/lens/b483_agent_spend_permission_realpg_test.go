@@ -140,7 +140,7 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 
 	gate := func(token, to string, amount int64) error {
-		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: token, To: to, Amount: big.NewInt(amount)})
+		_, err := store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, 84532, smartaccount.Payment{Token: token, To: to, Amount: big.NewInt(amount)})
 		return err
 	}
 	uses := func() (n, sum int64) {
@@ -172,7 +172,7 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	// B48.25: the most an ERC-20 paymaster may take for the network fee counts with the payment, in the check and in
 	// the use kept.
 	feeGate := func(amount, fee int64) (int64, error) {
-		return store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(amount),
+		return store.AuthoriseAgentCryptoPayment(ctx, ws, agent.ID, 84532, smartaccount.Payment{Token: usdc, To: payee, Amount: big.NewInt(amount),
 			Fee: big.NewInt(fee), Paymaster: "0x000000000000000000000000000000000000FEE0"})
 	}
 	if _, err := feeGate(24_000_000, 1_000_001); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "cap") {
@@ -184,6 +184,13 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 	if n, sum := uses(); n != 5 || sum != 90_000_000 {
 		t.Fatalf("the gate kept %d payments of %d in all, want 5 of 90000000, the fee counted", n, sum)
+	}
+	// B54.26: the use keeps its chain and its paymaster, which what is left approved is counted by.
+	var chainID int64
+	var paymaster string
+	if err := pool.QueryRow(ctx, `SELECT chain_id, paymaster FROM agent_spend_permission_uses WHERE id = $1`, use).Scan(&chainID, &paymaster); err != nil ||
+		chainID != 84532 || paymaster != smartaccount.Checksum("0x000000000000000000000000000000000000FEE0") {
+		t.Fatalf("the use keeps chain %d and paymaster %q (%v), want 84532 and the fee's paymaster", chainID, paymaster, err)
 	}
 	// B54.12: once the operation is on the chain, the allowance counts the fee the paymaster took, 300,000 of the
 	// 1,000,000 counted, and what is still approved to it, until the next such payment's approval replaces that.
@@ -298,6 +305,27 @@ func TestB483_TheOwnersSpendPermissionAndAnInstantFreeze(t *testing.T) {
 	}
 	if n, _ := uses(); n != 9 {
 		t.Fatalf("the gate kept %d payments while paused, want still 9", n)
+	}
+
+	// B54.5 — the passkey revoked, as a lockdown revokes a lost phone's, the permission it signed allows nothing and it
+	// signs no new one.
+	canonical, challenge = prepare(time.Now().Add(time.Hour))
+	if code := put(canonical, sign(challenge)); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workspace_passkeys SET revoked_at = now(), revoked_by = 'owner' WHERE credential_id = $1`,
+		keys[0].CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(usdc, payee, 1); !errors.Is(err, smartaccount.ErrPermission) || !strings.Contains(err.Error(), "owner signed") {
+		t.Fatalf("a payment under a permission signed by a revoked passkey: %v, want refused", err)
+	}
+	canonical, challenge = prepare(time.Now().Add(time.Hour))
+	if code := put(canonical, sign(challenge)); code == http.StatusOK {
+		t.Fatalf("a permission signed by a revoked passkey = %d, want refused", code)
+	}
+	if code := call(http.MethodGet, base+"/spend-permission", "", &got); code != http.StatusOK || got.Number != 4 {
+		t.Fatalf("GET = %d number %d, want 4: the revoked passkey's permission is not kept", code, got.Number)
 	}
 
 	// Freeze: everything refused at once, and the call that takes the agent's key out of the account on chain.

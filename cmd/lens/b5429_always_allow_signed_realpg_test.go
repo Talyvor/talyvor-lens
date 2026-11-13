@@ -92,8 +92,8 @@ func TestB5429_AlwaysAllowIsSignedAndAFailedBoostKeepsItsSignature(t *testing.T)
 	}
 
 	// A payment above the approval amount waits for approval.
-	if code, out := call(http.MethodPost, base+payer.ID+"/pay", `{"to_agent_id":"`+supplier.ID+`","amount_ulxc":3000000}`); code != http.StatusForbidden {
-		t.Fatalf("pay = %d %v, want 403 for approval", code, out)
+	if code, out := call(http.MethodPost, base+payer.ID+"/pay", `{"to_agent_id":"`+supplier.ID+`","amount_ulxc":3000000}`); code != http.StatusAccepted {
+		t.Fatalf("pay = %d %v, want 202 for approval", code, out)
 	}
 	var approvalID string
 	if err := pool.QueryRow(ctx, `SELECT id FROM agent_approvals WHERE workspace_id = $1 AND status = 'pending'`, ws).Scan(&approvalID); err != nil {

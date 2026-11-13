@@ -4,7 +4,9 @@
 # EntryPoint v0.6.0 (the copy smart-wallet pins, with OpenZeppelin 4.9.6, which it was written for); for B48.4's
 # balances, a mock token on OpenZeppelin's ERC20 that the test mints (a test fixture, never deployed anywhere else); and
 # for B48.5 the same copy's VerifyingPaymaster (a local paymaster) and OpenZeppelin's ERC20PresetMinterPauser (a local
-# USDC); for B48.25 a local ERC-20 paymaster on that copy's BasePaymaster. Writes each contract's creation bytecode as
+# USDC); for B48.25 a local ERC-20 paymaster on that copy's BasePaymaster; for B48.24 Coinbase's SpendPermissionManager
+# and the PublicERC6492Validator it is deployed with (spend-permissions v1.0.0, audited by Cantina, at the tag that
+# changes only its MagicSpend dependency's path). Writes each contract's creation bytecode as
 # hex into OUTDIR. Needs git and forge (Foundry).
 #
 #   scripts/devnet-contracts.sh OUTDIR
@@ -19,6 +21,7 @@ trap 'rm -rf "$work"' EXIT
 
 SMART_WALLET=a8c6456f3a6d5d2dea08d6336b3be13395cacd42 # coinbase/smart-wallet v1.1.0
 OPENZEPPELIN=dc44c9f1a4c3b10af99492eed84f83ed244203f6 # OpenZeppelin/openzeppelin-contracts v4.9.6
+SPEND_PERMISSIONS=8aae4dab686de6e7c5f42db59ef4ba0fcd84c721 # coinbase/spend-permissions 1.0.1
 
 git -c advice.detachedHead=false clone -q https://github.com/coinbase/smart-wallet.git "$work/sw"
 git -C "$work/sw" checkout -q "$SMART_WALLET"
@@ -27,6 +30,11 @@ git -c advice.detachedHead=false clone -q https://github.com/OpenZeppelin/openze
 git -C "$work/oz" checkout -q "$OPENZEPPELIN"
 
 (cd "$work/sw" && FOUNDRY_PROFILE=deploy forge build -q src)
+
+git -c advice.detachedHead=false clone -q https://github.com/coinbase/spend-permissions.git "$work/sp"
+git -C "$work/sp" checkout -q "$SPEND_PERMISSIONS"
+git -C "$work/sp" submodule update -q --init --recursive
+(cd "$work/sp" && FOUNDRY_PROFILE=deploy forge build -q src)
 
 mkdir -p "$work/ep"
 cat >"$work/ep/foundry.toml" <<EOF
@@ -106,4 +114,6 @@ bytecode "$work/tok/out/MockToken.sol/MockToken.json" >"$out/MockToken.hex"
 bytecode "$work/ep/out/VerifyingPaymaster.sol/VerifyingPaymaster.json" >"$out/VerifyingPaymaster.hex"
 bytecode "$work/ep/out/TokenPaymaster.sol/TokenPaymaster.json" >"$out/TokenPaymaster.hex"
 bytecode "$work/ep/out/ERC20PresetMinterPauser.sol/ERC20PresetMinterPauser.json" >"$out/ERC20.hex"
+bytecode "$work/sp/out/SpendPermissionManager.sol/SpendPermissionManager.json" >"$out/SpendPermissionManager.hex"
+bytecode "$work/sp/out/PublicERC6492Validator.sol/PublicERC6492Validator.json" >"$out/PublicERC6492Validator.hex"
 ls -l "$out"

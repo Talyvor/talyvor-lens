@@ -95,6 +95,8 @@ class AgentRules(TypedDict, total=False):
     max_commitment_ulxc: int
     allowed_licences: list[str]
     may_subscribe: bool
+    allowed_currencies: list[str]
+    fx_daily_limit_ulxc: int
     active_from: str
     active_until: str
     timezone: str

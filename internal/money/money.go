@@ -10,7 +10,7 @@
 // Amounts are int64 minor units of an explicit asset — pence, cents, or millionths of a USDC — never a float. Every
 // call that changes anything carries the caller's idempotency key: asked again, it does nothing new and answers as it
 // did the first time. Errors are typed: ErrInsufficientFunds, ErrLimit, ErrApprovalNeeded, ErrPartnerDown, ErrRefused,
-// ErrInvalid, ErrNotFound and ErrKeyReused, tested with errors.Is.
+// ErrHeld, ErrInvalid, ErrNotFound and ErrKeyReused, tested with errors.Is.
 package money
 
 import (
@@ -67,6 +67,7 @@ var (
 	ErrApprovalNeeded    = errors.New("money: the owner must approve this first")
 	ErrPartnerDown       = errors.New("money: the partner did not answer")
 	ErrRefused           = errors.New("money: the partner refused")
+	ErrHeld              = errors.New("money: held for a compliance review") // B59.13: a screening's close match
 )
 
 // Capability is one thing money does; a switch is per capability.
@@ -80,10 +81,14 @@ const (
 	CapCards     Capability = "cards"
 	CapPayouts   Capability = "payouts"
 	CapKYC       Capability = "kyc"
+
+	CapConvert    Capability = "convert"     // B59.13: between a currency and the stablecoin
+	CapOnchain    Capability = "onchain"     // B59.13: the stablecoin to an account or an address
+	CapBankPayout Capability = "bank_payout" // B59.13: a currency into an outside bank account
 )
 
 // Capabilities is every capability, in order.
-var Capabilities = []Capability{CapAccounts, CapWallets, CapTransfers, CapCards, CapPayouts, CapKYC}
+var Capabilities = []Capability{CapAccounts, CapWallets, CapTransfers, CapCards, CapPayouts, CapKYC, CapConvert, CapOnchain, CapBankPayout}
 
 // Status is where an operation with a partner stands.
 type Status string
@@ -176,6 +181,64 @@ type Signers interface {
 	NewSigner(ctx context.Context, key, agentID string) (string, error)         // the new key's address
 	SignHash(ctx context.Context, signer string, hash [32]byte) ([]byte, error) // r‖s‖v, 65 bytes
 	NewSolanaWallet(ctx context.Context, key, agentID string) (string, error)   // the agent's Solana wallet's address
+}
+
+// Spenders is how an agent's key spends under the owner's on-chain spend permission (B48.24): from the agent's own smart
+// account, which only its key owns, through the partner's user-operation API, whose policy engine judges each call
+// against the policy Lens sets for the key — never a bare hash it cannot read.
+type Spenders interface {
+	NewSpender(ctx context.Context, key, signer string) (string, error)               // the smart account signer alone owns
+	SetSpendPolicy(ctx context.Context, key, signer string, p Policy) error           // the partner's policy for signer
+	SendCalls(ctx context.Context, key, account string, calls []Call) (Result, error) // one user operation of account's
+}
+
+// Call is one call a smart account makes: To, the wei it sends ("" or decimal) and its data (0x hex).
+type Call struct {
+	To    string `json:"to"`
+	Value string `json:"value"`
+	Data  string `json:"data"`
+}
+
+// Policy is a partner's policy for a key, as CDP's policy engine takes it: its rules in order. In a user operation every
+// call must be accepted: the first rule whose every criterion the call meets decides it, and a call no rule accepts is
+// refused.
+type Policy struct {
+	Scope       string       `json:"scope"`
+	Description string       `json:"description"`
+	Rules       []PolicyRule `json:"rules"`
+}
+
+// PolicyRule accepts or rejects an operation's call that meets all its criteria.
+type PolicyRule struct {
+	Action    string            `json:"action"`    // accept or reject
+	Operation string            `json:"operation"` // sendUserOperation
+	Criteria  []PolicyCriterion `json:"criteria"`
+}
+
+// PolicyCriterion is one test of a call: its target (evmAddress, "in" or "not in" Addresses), the wei it sends
+// (ethValue, Operator EthValue) or its data (evmData: a call of one of Conditions' functions of ABI, whose parameters
+// meet theirs).
+type PolicyCriterion struct {
+	Type       string            `json:"type"`
+	Operator   string            `json:"operator,omitempty"`
+	Addresses  []string          `json:"addresses,omitempty"`
+	EthValue   string            `json:"ethValue,omitempty"`
+	ABI        string            `json:"abi,omitempty"`
+	Conditions []PolicyCondition `json:"conditions,omitempty"`
+}
+
+// PolicyCondition is a function an evmData criterion matches, and a test of each named parameter.
+type PolicyCondition struct {
+	Function string        `json:"function"`
+	Params   []PolicyParam `json:"params,omitempty"`
+}
+
+// PolicyParam compares parameter Name: with Value by <=, <, >=, > or ==, or with Values by "in" or "not in".
+type PolicyParam struct {
+	Name     string   `json:"name"`
+	Operator string   `json:"operator"`
+	Value    string   `json:"value,omitempty"`
+	Values   []string `json:"values,omitempty"`
 }
 
 // Transfers moves money between wallets, out to a payee, and credits money that came in.

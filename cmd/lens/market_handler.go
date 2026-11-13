@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/talyvor/lens/internal/api"
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -116,7 +117,7 @@ func mountMarketRoutes(r chi.Router, store *market.Store) {
 		var refused *market.RefusedError
 		switch {
 		case errors.As(err, &refused):
-			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "scan": refused.Scan})
+			writeJSONOK(w, http.StatusUnprocessableEntity, map[string]any{"error": api.Refusal(err.Error()), "scan": refused.Scan})
 		case errors.Is(err, market.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, market.ErrNotFound):

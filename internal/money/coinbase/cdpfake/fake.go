@@ -71,15 +71,24 @@ type Fake struct {
 	receipts map[string]receipt // by transaction hash, and by user operation hash
 	ops      map[string]bool    // the user operations sent, by hash
 	idem     map[string]reply
+	policies map[string]money.Policy // B48.24: CDP's policy engine, by policy id
 	sent     int
 	signed   int
+	refused  int
 	n        int
+
+	// B48.24, for a devnet test: SmartAddress, when set, is the address of the smart account owner alone owns (a Coinbase
+	// Smart Wallet, as CDP's are); Land, when set, sends a smart account's calls that the policy engine accepted as one user
+	// operation on the devnet, signed by its owner's key through sign, and answers its hash or the chain's refusal.
+	SmartAddress func(owner string) string
+	Land         func(account, owner string, calls []money.Call, sign func([32]byte) []byte) (string, error)
 }
 
 type account struct {
 	Address string   `json:"address"`
 	Name    string   `json:"name"`
 	Owners  []string `json:"owners,omitempty"`
+	Policy  string   `json:"accountPolicy,omitempty"`
 	smart   bool
 	key     *secp256k1.PrivateKey // an EVM account's, which CDP keeps inside its enclave
 	solana  ed25519.PrivateKey    // a Solana account's
@@ -122,7 +131,8 @@ func New(t *testing.T) *Fake {
 	f := &Fake{APIKeyID: "organizations/fake/apiKeys/" + hex.EncodeToString(pub[:4]), APIKeySecret: base64.StdEncoding.EncodeToString(priv),
 		WalletSecret: base64.StdEncoding.EncodeToString(der), WebhookSecret: "whsec_" + hex.EncodeToString(pub[4:12]),
 		apiKey: pub, walletKey: &wk.PublicKey, accounts: map[string]*account{}, names: map[string]string{},
-		usdc: map[string]int64{}, spoof: map[string]int64{}, receipts: map[string]receipt{}, ops: map[string]bool{}, idem: map[string]reply{}}
+		usdc: map[string]int64{}, spoof: map[string]int64{}, receipts: map[string]receipt{}, ops: map[string]bool{}, idem: map[string]reply{},
+		policies: map[string]money.Policy{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.URL, f.RPCURL = srv.URL, srv.URL+"/rpc/fake-client-key"
@@ -174,7 +184,7 @@ func (f *Fake) authorised(r *http.Request, body []byte) error {
 	if c.URI != uri {
 		return fmt.Errorf("bearer token is for %q, not %q", c.URI, uri)
 	}
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
 		return nil
 	}
 	var wc struct {
@@ -265,6 +275,31 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request, body []byte) {
 			return
 		}
 		f.createSolana(w, req.Name)
+	case r.Method == http.MethodPost && r.URL.Path == "/v2/policy-engine/policies":
+		var p money.Policy
+		if json.Unmarshal(body, &p) != nil || p.Scope != "account" || len(p.Rules) == 0 {
+			cdpError(w, http.StatusBadRequest, "invalid_request", "invalid policy")
+			return
+		}
+		f.n++
+		id := fmt.Sprintf("policy-%d", f.n)
+		f.policies[id] = p
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "scope": p.Scope, "rules": p.Rules})
+	case r.Method == http.MethodPut && len(parts) == 2 && parts[0] == "accounts":
+		var req struct {
+			AccountPolicy string `json:"accountPolicy"`
+		}
+		a := f.accounts[strings.ToLower(parts[1])]
+		if a == nil || a.key == nil {
+			cdpError(w, http.StatusNotFound, "not_found", "EVM account not found.")
+			return
+		}
+		if json.Unmarshal(body, &req) != nil || f.policies[req.AccountPolicy].Rules == nil && req.AccountPolicy != "" {
+			cdpError(w, http.StatusBadRequest, "invalid_request", "no such policy")
+			return
+		}
+		a.Policy = req.AccountPolicy
+		writeJSON(w, http.StatusOK, a)
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "accounts" && parts[2] == "sign":
 		f.sign(w, strings.ToLower(parts[1]), body)
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "smart-accounts":
@@ -290,6 +325,9 @@ func (f *Fake) create(w http.ResponseWriter, name string, owners []string) {
 	}
 	f.n++
 	a := &account{Address: fmt.Sprintf("0x5A%038x", f.n), Name: name, Owners: owners, smart: owners != nil}
+	if a.smart && f.SmartAddress != nil {
+		a.Address = f.SmartAddress(owners[0])
+	}
 	if !a.smart { // an EVM account is a real key, so what it signs a chain accepts
 		k, err := secp256k1.GeneratePrivateKey()
 		if err != nil {
@@ -363,6 +401,110 @@ func (f *Fake) sign(w http.ResponseWriter, addr string, body []byte) {
 	writeJSON(w, http.StatusOK, map[string]string{"signature": "0x" + hex.EncodeToString(append(c[1:], c[0]))})
 }
 
+// accepts is whether policy p's rules accept call c of a user operation: the first rule whose every criterion c meets
+// decides it, and no rule refuses it.
+func accepts(p money.Policy, c money.Call) bool {
+	for _, r := range p.Rules {
+		if r.Operation != "sendUserOperation" {
+			continue
+		}
+		met := true
+		for _, cr := range r.Criteria {
+			met = met && meets(cr, c)
+		}
+		if met {
+			return r.Action == "accept"
+		}
+	}
+	return false
+}
+
+func among(addr string, set []string) bool {
+	return slices.ContainsFunc(set, func(a string) bool { return strings.EqualFold(a, addr) })
+}
+
+func compare(n *big.Int, op, to string) bool {
+	m, ok := new(big.Int).SetString(to, 10)
+	if !ok || n == nil {
+		return false
+	}
+	switch c := n.Cmp(m); op {
+	case "<=":
+		return c <= 0
+	case "<":
+		return c < 0
+	case ">=":
+		return c >= 0
+	case ">":
+		return c > 0
+	case "==":
+		return c == 0
+	}
+	return false
+}
+
+// meets is whether call c meets criterion cr.
+func meets(cr money.PolicyCriterion, c money.Call) bool {
+	value := big.NewInt(0)
+	if c.Value != "" {
+		v, ok := new(big.Int).SetString(c.Value, 10)
+		if !ok {
+			return false
+		}
+		value = v
+	}
+	switch cr.Type {
+	case "evmAddress":
+		return (cr.Operator == "in") == among(c.To, cr.Addresses) && (cr.Operator == "in" || cr.Operator == "not in")
+	case "ethValue":
+		return compare(value, cr.Operator, cr.EthValue)
+	case "evmData": // erc20's transfer(to, value), the one function the fake reads
+		data, err := hex.DecodeString(strings.TrimPrefix(c.Data, "0x"))
+		if cr.ABI != "erc20" || err != nil || len(data) != 4+64 || hex.EncodeToString(data[:4]) != "a9059cbb" {
+			return false
+		}
+		to, amount := "0x"+hex.EncodeToString(data[16:36]), new(big.Int).SetBytes(data[36:68])
+		for _, cond := range cr.Conditions {
+			if cond.Function != "transfer" {
+				continue
+			}
+			ok := true
+			for _, prm := range cond.Params {
+				switch {
+				case prm.Name == "to" && (prm.Operator == "in" || prm.Operator == "not in"):
+					ok = ok && (prm.Operator == "in") == among(to, prm.Values)
+				case prm.Name == "value":
+					ok = ok && compare(amount, prm.Operator, prm.Value)
+				default:
+					ok = false
+				}
+			}
+			if ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Refused is how many user operations the fake's policy engine refused.
+func (f *Fake) Refused() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refused
+}
+
+// Spenders is Coinbase's adapter's agents' own accounts and their policies (B48.24), against f.
+func (f *Fake) Spenders(t *testing.T) money.Spenders {
+	t.Helper()
+	a, err := coinbase.New(coinbase.Config{BaseURL: f.URL, APIKeyID: f.APIKeyID, APIKeySecret: f.APIKeySecret, WalletSecret: f.WalletSecret,
+		Network: Network, RPCURL: f.RPCURL, WebhookSecret: f.WebhookSecret, Allowlist: refuseAll{}, Screener: refuseAll{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.Spenders
+}
+
 // Signed is how many hashes the fake signed.
 func (f *Fake) Signed() int {
 	f.mu.Lock()
@@ -428,8 +570,40 @@ func (f *Fake) send(w http.ResponseWriter, from string, body []byte) {
 			Data  string `json:"data"`
 		} `json:"calls"`
 	}
-	if json.Unmarshal(body, &req) != nil || req.Network != Network || len(req.Calls) != 1 {
+	if json.Unmarshal(body, &req) != nil || req.Network != Network || len(req.Calls) == 0 {
 		cdpError(w, http.StatusBadRequest, "invalid_request", "invalid user operation")
+		return
+	}
+	calls := make([]money.Call, len(req.Calls))
+	for i, c := range req.Calls {
+		calls[i] = money.Call{To: c.To, Value: c.Value, Data: c.Data}
+	}
+	owner := f.accounts[strings.ToLower(a.Owners[0])]
+	if p, ok := f.policies[owner.Policy]; ok {
+		for _, c := range calls {
+			if !accepts(p, c) {
+				f.refused++
+				cdpError(w, http.StatusForbidden, "policy_violation", "the account's policy refuses a call to "+c.To)
+				return
+			}
+		}
+	}
+	if f.Land != nil {
+		hash, err := f.Land(a.Address, owner.Address, calls, func(h [32]byte) []byte {
+			c := secpecdsa.SignCompact(owner.key, h[:], false)
+			f.signed++
+			return append(c[1:], c[0])
+		})
+		if err != nil {
+			cdpError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		f.sent++
+		writeJSON(w, http.StatusOK, map[string]any{"network": Network, "userOpHash": hash, "calls": req.Calls, "status": "complete"})
+		return
+	}
+	if len(req.Calls) != 1 {
+		cdpError(w, http.StatusBadRequest, "invalid_request", "the fake sends one USDC transfer")
 		return
 	}
 	c := req.Calls[0]

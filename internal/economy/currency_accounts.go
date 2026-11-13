@@ -25,12 +25,17 @@ import (
 // Opening is the first use of currency_accounts, class RED: a frozen workspace, or one that has not accepted the
 // capability's terms, opens nothing, and an account opened for live money is refused, naming the class, until the
 // capability is cleared.
+//
+// B30.33: a company's USDC account is opened at the stablecoin partner instead, under the receiving address it gives,
+// as a use of stablecoins (RED). The address is shown only once a real partner gives it: the Test partner's is made
+// up. An agent's USDC account is its wallet (B46.4), so none is opened here.
 
 // AccountPartners hands out the account partner for a capability, and the conversion partner that values a payment
 // out for an agent's rules (B30.17): *partners.Registry.
 type AccountPartners interface {
 	Account(ctx context.Context, capability string) (partners.AccountPartner, error)
 	FX(ctx context.Context, capability string) (partners.FXPartner, error)
+	Stablecoin(ctx context.Context, capability string) (partners.StablecoinPartner, error)
 }
 
 // SetAccountPartners is where a company's currency accounts are opened (B30.13). Until it is set, none opens.
@@ -54,6 +59,7 @@ type CurrencyAccount struct {
 	BalanceMinor    int64  `json:"balance_minor"`
 	TestMinor       int64  `json:"test_minor"`
 	LiveMinor       int64  `json:"live_minor"`
+	Address         string `json:"address,omitempty"` // a company's USDC account's receiving address, once a real partner gives it
 }
 
 // OpenCurrencyAccount opens workspaceID's account in currency — the company's, or with agentID that agent's
@@ -64,12 +70,17 @@ func (s *DualTokenStore) OpenCurrencyAccount(ctx context.Context, workspaceID, a
 		funding = FundingTest
 	}
 	switch {
-	case currency != CurrencyGBP && currency != CurrencyEUR && currency != CurrencyUSD:
-		return CurrencyAccount{}, fmt.Errorf("%w: an account is in GBP, EUR or USD, not %q", ErrCurrencyAccount, currency)
+	case currency != CurrencyGBP && currency != CurrencyEUR && currency != CurrencyUSD && currency != CurrencyUSDC:
+		return CurrencyAccount{}, fmt.Errorf("%w: an account is in GBP, EUR, USD or USDC, not %q", ErrCurrencyAccount, currency)
 	case funding != FundingTest && funding != FundingLive:
 		return CurrencyAccount{}, fmt.Errorf("%w: funding is test or live, not %q", ErrCurrencyAccount, funding)
+	case currency == CurrencyUSDC && agentID != "":
+		return CurrencyAccount{}, fmt.Errorf("%w: an agent's USDC account is its wallet, opened with the agent", ErrCurrencyAccount)
 	}
 	c, _ := CapabilityByKey(CapabilityCurrencyAccounts)
+	if currency == CurrencyUSDC {
+		c, _ = CapabilityByKey(CapabilityStablecoins)
+	}
 	if err := refuseFrozen(ctx, s.pool, workspaceID, c); err != nil {
 		return CurrencyAccount{}, err
 	}
@@ -108,21 +119,13 @@ func (s *DualTokenStore) openCompanyCurrencyAccount(ctx context.Context, workspa
 	if holder == "" {
 		holder = workspaceID
 	}
-	p, err := s.accountPartners.Account(ctx, CapabilityCurrencyAccounts)
-	if err != nil {
-		return CurrencyAccount{}, fmt.Errorf("economy: open currency account: %w", err)
-	}
 	a := CurrencyAccount{MoneyAccount: MoneyAccount{ID: "macc_" + uuid.NewString(), WorkspaceID: workspaceID, Currency: currency,
 		Purpose: MoneyCompany, Status: MoneyOpen, Name: holder}}
-	// shortcut: an account the partner leaves pending is refused, not kept; upgrade when a real partner opens accounts later.
-	opened, err := p.OpenAccount(ctx, partners.AccountRequest{ID: a.ID, Holder: holder, Currency: currency})
+	partner, ref, err := s.openAtPartner(ctx, a.ID, holder, currency)
 	if err != nil {
-		return CurrencyAccount{}, fmt.Errorf("%w: %v", ErrAccountNotOpened, err)
+		return CurrencyAccount{}, err
 	}
-	if opened.Status != partners.StatusCompleted {
-		return CurrencyAccount{}, fmt.Errorf("%w: it answered %s: %s", ErrAccountNotOpened, opened.Status, opened.Detail)
-	}
-	a.PartnerAccountRef = opened.Ref
+	a.PartnerAccountRef, a.Address = shownRef(currency, partner, ref)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -130,17 +133,62 @@ func (s *DualTokenStore) openCompanyCurrencyAccount(ctx context.Context, workspa
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	insert := `INSERT INTO money_accounts (id, workspace_id, currency, purpose, name, partner_account_ref) VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at`
-	if err := tx.QueryRow(ctx, insert, a.ID, workspaceID, currency, MoneyCompany, holder, opened.Ref).Scan(&a.CreatedAt); err != nil {
+	if err := tx.QueryRow(ctx, insert, a.ID, workspaceID, currency, MoneyCompany, holder, ref).Scan(&a.CreatedAt); err != nil {
 		return CurrencyAccount{}, currencyAccountErr(err, "the company's "+currency+" account")
 	}
 	var at time.Time
-	if err := tx.QueryRow(ctx, insert, "macc_"+uuid.NewString(), workspaceID, currency, MoneyPartner, p.Name(), opened.Ref).Scan(&at); err != nil {
+	if err := tx.QueryRow(ctx, insert, "macc_"+uuid.NewString(), workspaceID, currency, MoneyPartner, partner, ref).Scan(&at); err != nil {
 		return CurrencyAccount{}, fmt.Errorf("economy: open currency account: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return CurrencyAccount{}, fmt.Errorf("economy: open currency account: %w", err)
 	}
 	return a, nil
+}
+
+// openAtPartner opens account id for holder in currency at its partner: the account partner, or for USDC the
+// stablecoin partner, whose receiving address is the account's reference there. It answers the partner's name and
+// that reference.
+func (s *DualTokenStore) openAtPartner(ctx context.Context, id, holder, currency string) (string, string, error) {
+	if currency == CurrencyUSDC {
+		p, err := s.accountPartners.Stablecoin(ctx, CapabilityStablecoins)
+		if err != nil {
+			return "", "", fmt.Errorf("economy: open currency account: %w", err)
+		}
+		addr, err := p.Address(ctx, partners.AddressRequest{ID: id, Network: usdcNetwork})
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %v", ErrAccountNotOpened, err)
+		}
+		return p.Name(), addr.Address, nil
+	}
+	p, err := s.accountPartners.Account(ctx, CapabilityCurrencyAccounts)
+	if err != nil {
+		return "", "", fmt.Errorf("economy: open currency account: %w", err)
+	}
+	// shortcut: an account the partner leaves pending is refused, not kept; upgrade when a real partner opens accounts later.
+	opened, err := p.OpenAccount(ctx, partners.AccountRequest{ID: id, Holder: holder, Currency: currency})
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %v", ErrAccountNotOpened, err)
+	}
+	if opened.Status != partners.StatusCompleted {
+		return "", "", fmt.Errorf("%w: it answered %s: %s", ErrAccountNotOpened, opened.Status, opened.Detail)
+	}
+	return p.Name(), opened.Ref, nil
+}
+
+// usdcNetwork is the network a company's USDC account is on: Base, as agents' wallets are (B46.4).
+const usdcNetwork = "base"
+
+// shownRef is what an account in currency at partner under ref shows: a USDC account's reference is its receiving
+// address, shown as its address only when a real partner gave it — the Test partner's is on no chain.
+func shownRef(currency, partner, ref string) (partnerRef, address string) {
+	if currency != CurrencyUSDC {
+		return ref, ""
+	}
+	if partner == (&partners.TestStablecoinPartner{}).Name() {
+		return "", ""
+	}
+	return "", ref
 }
 
 func (s *DualTokenStore) openAgentCurrencyAccount(ctx context.Context, workspaceID, agentID, currency string) (CurrencyAccount, error) {
@@ -176,15 +224,17 @@ func currencyAccountErr(err error, which string) error {
 	return fmt.Errorf("economy: open currency account: %w", err)
 }
 
-// CurrencyAccounts is workspaceID's company and agent accounts, or with agentID that agent's only, and what each
-// holds: the company's first, then by currency.
+// CurrencyAccounts is workspaceID's company and agent accounts, and its suspense accounts for money in that matched
+// none (B30.15), or with agentID that agent's only, and what each holds: the company's first, then by currency.
 func (s *DualTokenStore) CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]CurrencyAccount, error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.id, a.workspace_id, COALESCE(a.agent_id, ''), a.currency, a.purpose, a.status, a.name,
 		a.partner_account_ref, COALESCE(a.parent_account_id, ''), a.created_at,
+		COALESCE((SELECT p.name FROM money_accounts p WHERE p.workspace_id = a.workspace_id AND p.purpose = 'partner'
+			AND p.partner_account_ref = a.partner_account_ref AND a.partner_account_ref <> '' LIMIT 1), ''),
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'test'), 0)::bigint,
 		COALESCE(sum(b.balance_minor) FILTER (WHERE b.funding = 'live'), 0)::bigint
 		FROM money_accounts a LEFT JOIN money_account_balances b ON b.account_id = a.id
-		WHERE a.workspace_id = $1 AND a.purpose IN ('company', 'agent') AND ($2 = '' OR a.agent_id = $2)
+		WHERE a.workspace_id = $1 AND (a.purpose IN ('company', 'agent') OR ($2 = '' AND a.purpose = 'suspense')) AND ($2 = '' OR a.agent_id = $2)
 		GROUP BY a.id ORDER BY a.agent_id NULLS FIRST, a.currency, a.created_at`, workspaceID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: currency accounts: %w", err)
@@ -193,9 +243,13 @@ func (s *DualTokenStore) CurrencyAccounts(ctx context.Context, workspaceID, agen
 	out := []CurrencyAccount{}
 	for rows.Next() {
 		var a CurrencyAccount
+		var partner string
 		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.AgentID, &a.Currency, &a.Purpose, &a.Status, &a.Name, &a.PartnerAccountRef,
-			&a.ParentAccountID, &a.CreatedAt, &a.TestMinor, &a.LiveMinor); err != nil {
+			&a.ParentAccountID, &a.CreatedAt, &partner, &a.TestMinor, &a.LiveMinor); err != nil {
 			return nil, fmt.Errorf("economy: currency accounts: %w", err)
+		}
+		if a.Purpose == MoneyCompany {
+			a.PartnerAccountRef, a.Address = shownRef(a.Currency, partner, a.PartnerAccountRef)
 		}
 		a.BalanceMinor = a.TestMinor + a.LiveMinor
 		out = append(out, a)

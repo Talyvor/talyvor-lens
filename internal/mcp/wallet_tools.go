@@ -51,6 +51,8 @@ type WalletBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
+	QuoteConversion(ctx context.Context, workspaceID, agentID string, in economy.Conversion) (economy.Conversion, error)
+	Convert(ctx context.Context, workspaceID, agentID, quoteID, key string) (economy.Conversion, error)
 	CreateInvoice(ctx context.Context, workspaceID, agentID string, r economy.InvoiceRequest) (economy.Invoice, error)
 	Invoices(ctx context.Context, workspaceID, agentID string) ([]economy.Invoice, error)
 	PayInvoiceByAgent(ctx context.Context, token, workspaceID, agentID, funding string) (economy.PaidInvoice, error)
@@ -80,6 +82,7 @@ var walletRefusals = []error{
 	economy.ErrMoneyAccountNotFound, economy.ErrMoneyAccountNotOpen, economy.ErrNoAccountDetails,
 	economy.ErrOutsidePayment, economy.ErrPayeeNotFound, economy.ErrPayeeUnconfirmed, economy.ErrIdempotencyKeyReused,
 	screening.ErrBlocked, screening.ErrHeld, screening.ErrListsStale, screening.ErrRefused, screening.ErrNotWhatWasReleased,
+	economy.ErrConversion, economy.ErrQuote,
 	economy.ErrInvoice, economy.ErrInvoiceNotFound, economy.ErrInvoiceState, economy.ErrInvoiceShort, economy.ErrInvoicePayerPaused,
 	workspace.ErrMoneyWall,
 }
@@ -157,6 +160,16 @@ func walletToolDefinitions() []map[string]any {
 				"currency": str("GBP, EUR or USD"), "reference": str("what the payee sees, up to 140 characters"),
 				"idempotency_key": str("your own unique id for this payment: the same id again never pays twice"),
 				"funding":         str("test (the default) or live")}, "payee_id", "amount_minor", "currency", "idempotency_key"),
+		tool("wallet_fx_quote", "Price converting money from your account in one currency to your account in another: the reference "+
+			"rate, Talyvor's margin, what it buys and the rate after the margin. The quote is good for 30 seconds; convert it with wallet_convert.",
+			map[string]any{"sell_minor": num("what you sell, in pence or cents, the margin included"),
+				"sell_currency": str("GBP, EUR or USD"), "buy_currency": str("another of GBP, EUR or USD"),
+				"funding": str("test (the default) or live")}, "sell_minor", "sell_currency", "buy_currency"),
+		tool("wallet_convert", "Convert at a quote from wallet_fx_quote, within your rules' currencies and daily conversion maximum. "+
+			"A quote converts once: the same idempotency_key again answers the same conversion.",
+			map[string]any{"quote_id": str("the quote (mfx_…)"),
+				"idempotency_key": str("your own unique id for this conversion: the same id again never converts twice")},
+			"quote_id", "idempotency_key"),
 		tool("wallet_invoice_create", "Issue an invoice, paid into your account in its currency: lines, a due date and optional VAT. "+
 			"It answers a pay_url the customer pays by card, by transfer or from their own agent; send true sends it at once, "+
 			"otherwise it waits as a draft.",
@@ -218,6 +231,10 @@ type walletArgs struct {
 	Reference      string `json:"reference"`
 	IdempotencyKey string `json:"idempotency_key"`
 	PayToken       string `json:"pay_token"`
+	SellMinor      int64  `json:"sell_minor"`
+	SellCurrency   string `json:"sell_currency"`
+	BuyCurrency    string `json:"buy_currency"`
+	QuoteID        string `json:"quote_id"`
 
 	raw json.RawMessage // the arguments as sent, for a tool that reads its own
 }
@@ -410,6 +427,11 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 	case "wallet_pay_external": // B30.17
 		return bank.PayOutside(ctx, ws, economy.OutsidePayment{AgentID: agent, PayeeID: a.PayeeID, AmountMinor: a.AmountMinor,
 			Currency: a.Currency, Funding: a.Funding, Reference: a.Reference, IdempotencyKey: a.IdempotencyKey})
+	case "wallet_fx_quote": // B30.29
+		return bank.QuoteConversion(ctx, ws, agent, economy.Conversion{SellMinor: a.SellMinor, SellCurrency: a.SellCurrency,
+			BuyCurrency: a.BuyCurrency, Funding: a.Funding})
+	case "wallet_convert":
+		return bank.Convert(ctx, ws, agent, a.QuoteID, a.IdempotencyKey)
 	case "wallet_invoice_create": // B30.20
 		var r economy.InvoiceRequest
 		if err := json.Unmarshal(a.raw, &r); err != nil {

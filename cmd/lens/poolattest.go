@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -114,4 +116,36 @@ func (r noRowsAsMissing) Scan(dest ...any) error {
 func (d pgxAttestationDB) Exec(ctx context.Context, sql string, args ...any) error {
 	_, err := d.pool.Exec(ctx, sql, args...)
 	return err
+}
+
+// poolStateHandler serves GET /v1/pooling (B58.14): whether cross-workspace pooling is on for
+// this deployment and, when it is off, why. Any authenticated workspace may read it; it says
+// nothing of any workspace — not the caller's opt-in, not anyone's — only the deployment's
+// switch and the gate's decision, read per request like poolFlagOverride.
+//
+// cause is "economy_off" (the switch is forced off with the economy), "flag" (the switch is
+// off), or "attestation" (the switch is on and the gate holds pooling off). A transient read
+// failure keeps only ReasonUnreadable: the driver's text can name a host and is for operators,
+// who read it at /v1/admin/economy/flags.
+func poolStateHandler(cfg *config.Config, gate *poolsafety.Gate) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		off := func(cause, reason string) {
+			writeJSONOK(w, http.StatusOK, map[string]string{"pooling": "off", "cause": cause, "reason": reason})
+		}
+		switch {
+		case !cfg.CachePoolableEnabled && !cfg.EconomyEnabled:
+			off("economy_off", "LENS_CACHE_POOLABLE_ENABLED is forced off because LENS_ECONOMY_ENABLED is off on this deployment")
+		case !cfg.CachePoolableEnabled:
+			off("flag", "LENS_CACHE_POOLABLE_ENABLED is off on this deployment")
+		case !gate.Attested():
+			reason := gate.Reason()
+			if strings.HasPrefix(reason, poolsafety.ReasonUnreadable) {
+				reason = poolsafety.ReasonUnreadable
+			}
+			off("attestation", reason)
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]string{"pooling": "on"})
+		}
+	}
 }

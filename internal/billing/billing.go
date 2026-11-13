@@ -88,6 +88,8 @@ type stripeAPI interface {
 	// intent (Stripe's card.fingerprint), "" when none is available. U6 PR2
 	// owner-linkage; called best-effort AFTER the credit commits.
 	CardFingerprint(ctx context.Context, paymentIntentID string) (fingerprint string, err error)
+	// ProcessingFee is what Stripe kept for processing the payment intent's charge, in the charge's currency (B56.21).
+	ProcessingFee(ctx context.Context, paymentIntentID string) (minor int64, err error)
 }
 
 // CheckoutParams is the price-true input to a Checkout Session: cents is
@@ -328,7 +330,8 @@ func (s *Service) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	case "checkout.session.completed", "checkout.session.async_payment_succeeded":
 		s.handleSessionCredit(w, r.Context(), &event)
 	case "charge.refunded":
-		if s.reverseMarketCharge(w, r.Context(), &event) { // B20.5 — a refunded marketplace bill reverses its sellers' earnings
+		// B56.21 — a refunded invoice card payment is returned; B20.5 — a refunded marketplace bill reverses its sellers' earnings
+		if s.returnInvoiceCard(w, r.Context(), &event) && s.reverseMarketCharge(w, r.Context(), &event) {
 			s.handleRefund(w, r.Context(), &event)
 		}
 	case "charge.dispute.created": // B20.5 — a charged-back marketplace bill reverses its sellers' earnings

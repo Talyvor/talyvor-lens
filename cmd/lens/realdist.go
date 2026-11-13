@@ -26,7 +26,7 @@ func runRealDist() error {
 		return fmt.Errorf("realdist: config: %w", err)
 	}
 	if cfg.DatabaseURL == "" {
-		return errors.New("realdist: LENS_DATABASE_URL is required — this reads the live prompt_embeddings table")
+		return errors.New("realdist: LENS_DATABASE_URL is required, because this reads the live prompt_embeddings table")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()

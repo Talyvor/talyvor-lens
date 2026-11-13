@@ -91,6 +91,8 @@ func openAPIWalletSchemas() map[string]any {
 				"allowed_models":         strs,
 				"allowed_providers":      strs,
 				"allowed_listings":       map[string]any{"type": "array", "items": str, "description": "marketplace listings it may use; empty allows any"},
+				"allowed_currencies":     map[string]any{"type": "array", "items": str, "description": "the currencies it may convert between, the one sold and the one bought, of GBP, EUR, USD and USDC; empty allows any. Absent keeps the stored list"},
+				"fx_daily_limit_ulxc":    map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, valued as its payments are; 0 is no limit. Absent keeps the stored maximum"},
 				"allowed_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the agents, listings, companies (a company names its agents and listings) and card merchants it may pay; once it names any, a payment to another is refused. Absent keeps the stored list"},
 				"blocked_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the payees it may not pay; a payment to one is refused and posts nothing. Absent keeps the stored list"},
 				"active_from":            map[string]any{"type": "string", "example": "09:00", "description": "HH:MM in timezone; with active_until, the hours it may spend"},
@@ -149,6 +151,59 @@ func openAPIWalletSchemas() map[string]any {
 				"created_at": at,
 				"decided_at": map[string]any{"type": "string", "format": "date-time", "nullable": true},
 				"expires_at": map[string]any{"type": "string", "format": "date-time", "description": "When it stops being usable: 24 hours after it was filed while pending, 24 hours after the tap once approved."},
+				"paid_from": map[string]any{
+					"type":        "object",
+					"nullable":    true,
+					"description": "What pays it (B57.11); null on an approval filed before this was kept.",
+					"properties": map[string]any{
+						"kind":         map[string]any{"type": "string", "enum": []string{"lxc", "account", "marketplace_bill", "card"}},
+						"account_id":   map[string]any{"type": "string", "description": "the agent (lxc), the money account, the workspace (marketplace_bill) or the card"},
+						"name":         map[string]any{"type": "string", "description": "in words, e.g. Research’s US dollar account"},
+						"currency":     map[string]any{"type": "string", "description": "LXC, USD, EUR, GBP or USDC"},
+						"amount_minor": map[string]any{"type": "integer", "format": "int64", "description": "the amount in that currency's minor units (µLXC for LXC)"},
+						"balance_minor": map[string]any{"type": "integer", "format": "int64", "nullable": true,
+							"description": "its balance now, in the same units; null for a bill or a card"},
+					},
+				},
+				"asks_above_ulxc":        map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the approval amount it was above, when it was filed"},
+				"budget_left_after_ulxc": map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the monthly limit less the month's spend and this amount, when it was filed; null with no monthly limit"},
+			},
+		},
+		"AgentSummary": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"as_of":         map[string]any{"type": "string", "format": "date-time", "description": "the one moment every figure is read at"},
+				"agent":         map[string]any{"$ref": "#/components/schemas/Agent"},
+				"made_at":       at,
+				"owner_user_id": map[string]any{"type": "string", "description": "who made it, which the apps name from the session"},
+				"all_paused_at": map[string]any{"type": "string", "format": "date-time", "description": "set while every agent of the workspace is paused"},
+				"safe_to_spend": map[string]any{"type": "array", "description": "LXC (µLXC) first, then GBP, EUR, USD (minor units)", "items": map[string]any{"type": "object", "properties": map[string]any{
+					"currency": str, "balance": map[string]any{"type": "integer", "format": "int64"}, "scheduled": map[string]any{"type": "integer", "format": "int64"},
+					"bills_due": map[string]any{"type": "integer", "format": "int64"}, "pending_approvals": map[string]any{"type": "integer", "format": "int64"},
+					"safe_to_spend": map[string]any{"type": "integer", "format": "int64"},
+				}}},
+				"month": map[string]any{"type": "object", "properties": map[string]any{
+					"start": at, "end": at, "spent_ulxc": ulxc, "forecast_ulxc": ulxc,
+					"runs_out_at":        map[string]any{"type": "string", "format": "date-time", "nullable": true},
+					"runs_out_on":        map[string]any{"type": "string", "format": "date", "nullable": true},
+					"monthly_limit_ulxc": map[string]any{"type": "integer", "format": "int64", "description": "µLXC; 0 is no limit"},
+				}},
+				"approvals":           map[string]any{"type": "array", "description": "its requests waiting for approval, newest first", "items": map[string]any{"$ref": "#/components/schemas/AgentApproval"}},
+				"statement":           map[string]any{"type": "array", "description": "its statement's three newest lines this month, by model and day", "items": map[string]any{"$ref": "#/components/schemas/AgentStatementLine"}},
+				"statement_time_zone": map[string]any{"type": "string", "description": "the zone its days are counted in: its rules', else UTC"},
+				"rules":               map[string]any{"type": "object", "nullable": true, "description": "the version in force; null when its rules were never set", "properties": map[string]any{"version": map[string]any{"type": "integer", "minimum": 1}, "saved_at": at}},
+				"card": map[string]any{"type": "object", "properties": map[string]any{
+					"status":   map[string]any{"type": "string", "enum": []string{"none", "active", "frozen"}},
+					"currency": str,
+					"last4":    str,
+					"last_declined": map[string]any{"type": "object", "nullable": true, "properties": map[string]any{
+						"merchant_name": str, "amount_minor": map[string]any{"type": "integer", "format": "int64"}, "currency": str,
+						"words":  map[string]any{"type": "string", "description": "why, in words: \"Declined: not one of its payees\""},
+						"reason": map[string]any{"type": "string", "description": "the reason as it was recorded"},
+						"at":     at,
+					}},
+				}},
+				"currency_accounts": map[string]any{"type": "array", "description": "its currency accounts, each with balance_minor", "items": map[string]any{"type": "object"}},
 			},
 		},
 		"AgentRulesVersion": map[string]any{
@@ -183,6 +238,33 @@ func openAPIWalletSchemas() map[string]any {
 				"balance_after_ulxc": ulxc,
 				"at":                 at,
 				"label":              map[string]any{"type": "string", "description": "on a platform_fee line, the fee and its rate: \"Platform fee 3%\""},
+				"model":              map[string]any{"type": "string", "description": "on a call's lines (spend, hold, settle, release, platform_fee): the model it asked"},
+				"source":             map[string]any{"type": "string", "enum": []string{"Model provider", "Cache", "Shared pool", "Node"}, "description": "on a call's lines: where its answer came from; absent until Lens has recorded it"},
+			},
+		},
+		"AgentPayment": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"entry_id":          str,
+				"from_agent_id":     str,
+				"to_agent_id":       str,
+				"amount_ulxc":       ulxc,
+				"from_balance_ulxc": ulxc,
+				"to_balance_ulxc":   ulxc,
+				"memo":              str,
+				"to_workspace_id":   str,
+				"via":               map[string]any{"type": "string", "description": "marketplace: on the company's monthly marketplace bill"},
+			},
+		},
+		"PendingApproval": map[string]any{
+			"type":        "object",
+			"description": "A request above the agent's approval amount, held for the workspace's owner (B58.2): nothing was paid. Retry it once the owner approves approval_id.",
+			"required":    []string{"status", "approval_id", "amount_ulxc", "message"},
+			"properties": map[string]any{
+				"status":      map[string]any{"type": "string", "enum": []string{"pending_approval"}},
+				"approval_id": str,
+				"amount_ulxc": ulxc,
+				"message":     str,
 			},
 		},
 		"AgentTransfer": map[string]any{
@@ -243,6 +325,7 @@ func openAPIWalletPaths() map[string]any {
 	ws, agent, approval := param("wsID", "path"), param("agentID", "path"), param("approvalID", "path")
 	str := map[string]any{"type": "string"}
 	ulxc := map[string]any{"type": "integer", "format": "int64", "minimum": 1}
+	integer := map[string]any{"type": "integer", "format": "int64"}
 	balance := ok("the agent's balance after the move", obj(nil, map[string]any{"agent_id": str, "balance_ulxc": ulxc}))
 	idempotency := map[string]any{"name": "Idempotency-Key", "in": "header", "required": false,
 		"description": "sent again with the same key, the move lands once (at most 128 characters)",
@@ -263,9 +346,11 @@ func openAPIWalletPaths() map[string]any {
 		ws,
 		{"name": "from", "in": "query", "required": false, "description": "RFC 3339 time or YYYY-MM-DD (midnight UTC); defaults to the start of this month", "schema": str},
 		{"name": "to", "in": "query", "required": false, "description": "exclusive; RFC 3339 time or YYYY-MM-DD; defaults to now", "schema": str},
-		{"name": "format", "in": "query", "required": false, "schema": map[string]any{"type": "string", "enum": []string{"json", "csv"}}},
+		{"name": "format", "in": "query", "required": false, "description": "json (the default), csv, pdf: the statement as a document to download, its opening and closing balances the JSON's, or journal: a CSV of double-entry journal lines (journal_no, date, account, description, debit_lxc, credit_lxc, cost_centre, ref) for Xero or QuickBooks, one journal per entry, each balanced, its cost centre the entry's agent, the statement's accounts' debits their in_ulxc and credits their out_ulxc. The CSV, the PDF and the journal are one row per posting, never grouped, filtered or paged", "schema": map[string]any{"type": "string", "enum": []string{"json", "csv", "pdf", "journal"}}},
 		{"name": "group", "in": "query", "required": false, "description": "day: each model's questions on a day one line (model, requests, total), its platform fee the line under it; days in the agent's rules' time_zone, else UTC (the workspace's: UTC). The CSV is never grouped", "schema": map[string]any{"type": "string", "enum": []string{"day"}}},
-		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to; pages are newest first", "schema": str},
+		{"name": "cursor", "in": "query", "required": false, "description": "the next_cursor of the page before, with that page's to and the same kind and q; pages are newest first", "schema": str},
+		{"name": "kind", "in": "query", "required": false, "description": "only lines of these kinds, comma-separated (fund, withdraw, spend, hold, settle, release, pay, card, platform_fee, ...); the totals stay the whole period's. The CSV is never filtered", "schema": str},
+		{"name": "q", "in": "query", "required": false, "description": "only lines whose kind, account, counterparty, ref, memo, label, model or entry holds this text, in any case; at most 200 characters", "schema": map[string]any{"type": "string", "maxLength": 200}},
 	}
 
 	return map[string]any{
@@ -366,6 +451,13 @@ func openAPIWalletPaths() map[string]any {
 				map[string]any{"200": ok("the rules as stored", ref("AgentRules")), "400": map[string]any{"description": "an unknown field or an invalid rule"}, "404": map[string]any{"description": "no such agent"}}),
 				body(ref("AgentRules"))),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/summary": map[string]any{
+			"get": op("Read one agent's page in one read",
+				"Owner or admin. Every figure is read in one transaction at one moment, as_of: the agent's balance less what waits for approval is its safe-to-spend figure. Another workspace's agent is 404.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": ok("the agent's page", ref("AgentSummary")), "403": map[string]any{"description": "not the workspace's owner or an admin"},
+					"404": map[string]any{"description": "no such agent"}}),
+		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/rules/history": map[string]any{
 			"get": op("List the versions of the agent's rules",
 				"Newest first: the first is the rules in force. Every change that alters the rules — a save, a template, a rollback — is a version, with who made it.",
@@ -463,16 +555,30 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/statement": map[string]any{
 			"get": op("Read the agent's statement",
-				"With none of from, to, format, group or cursor: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON or CSV; then limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				"With none of from, to, format, group, cursor, kind or q: the agent's account, newest first (limit, default and at most 1000). With any of them: the statement for the period [from, to), as JSON, CSV, PDF or a journal for an accounting package; kind and q keep only the lines that match, then limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{agent, {"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{
 					"200": ok("the agent's lines", obj(nil, map[string]any{"agent_id": str, "lines": map[string]any{"type": "array", "items": ref("AgentStatementLine")}})),
 					"404": map[string]any{"description": "no such agent"},
 				}),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/analytics": map[string]any{
+			"get": op("Read the agent's spend by day, model and destination",
+				"For the period [from, to) of its statement: every posting that took money out of the agent's account is in one bucket, so the buckets' out_ulxc sum to the statement's. returned_ulxc is a hold's unused part coming back, on the day it came back; spent_ulxc is out less returned. Days are in the agent's rules' time_zone, else UTC. destination is the account the money went to, as the statement's counterparty names it.",
+				[]map[string]any{ws, agent, periodParams[1], periodParams[2]},
+				map[string]any{
+					"200": ok("the agent's spend in buckets", obj(nil, map[string]any{
+						"agent_id": str, "time_zone": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer,
+						"buckets": map[string]any{"type": "array", "items": obj(nil, map[string]any{
+							"day": str, "model": str, "destination": str, "out_ulxc": integer, "returned_ulxc": integer, "spent_ulxc": integer, "postings": integer})},
+					})),
+					"400": map[string]any{"description": "from or to is not a time, or from is not before to"},
+					"404": map[string]any{"description": "no such agent"},
+				}),
+		},
 		"/v1/workspaces/{wsID}/agents/statement": map[string]any{
 			"get": op("Read the statement of every agent wallet in the workspace",
-				"For the period [from, to), as JSON or CSV — the statement an auditor can open. limit pages its lines newest first, each page with the whole period's totals and a next_cursor.",
+				"For the period [from, to), as JSON, CSV, PDF or a journal for an accounting package — the statement an auditor can open. kind and q keep only the lines that match, and limit pages them newest first, each page with the whole period's totals and a next_cursor.",
 				append([]map[string]any{{"name": "limit", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}, periodParams...),
 				map[string]any{"200": map[string]any{"description": "the period statement"}}),
 		},
@@ -522,6 +628,15 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent},
 				map[string]any{"200": ok("the transfer", ref("AgentTransfer")), "403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "409": map[string]any{"description": "the agent's balance cannot cover it"}}),
 				body(obj([]string{"to", "amount_ulxc"}, map[string]any{"to": map[string]any{"type": "string", "description": "a wallet id or @handle"}, "amount_ulxc": ulxc, "memo": str}))),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/pay": map[string]any{
+			"post": withBody(op("Pay another agent",
+				"By the agent's own key, a connected assistant, the workspace's owner or an admin. The agent's rules judge it like any other spend. Above the agent's approval amount it is held for the owner: 202, nothing is paid, and the same request goes through once the owner approves.",
+				[]map[string]any{ws, agent, idempotency},
+				map[string]any{"200": ok("the payment", ref("AgentPayment")), "202": ok("held for the owner's approval", ref("PendingApproval")),
+					"403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "404": map[string]any{"description": "no such agent"},
+					"409": map[string]any{"description": "the agent's balance cannot cover it, or the Idempotency-Key was used for another payment"}}),
+				body(obj([]string{"to_agent_id", "amount_ulxc"}, map[string]any{"to_agent_id": str, "amount_ulxc": ulxc, "memo": str}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/transfers": map[string]any{
 			"get": op("List what the agent sent and received", "",

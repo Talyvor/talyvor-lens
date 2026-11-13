@@ -34,7 +34,7 @@ const LXCTypeCreditLineDraw = "credit_line_draw"
 const FundingCreditLine = "credit_line"
 
 // ErrCreditLineCompaniesOnly: a private user's workspace cannot have a credit line.
-var ErrCreditLineCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED — a credit line is for company workspaces only")
+var ErrCreditLineCompaniesOnly = errors.New("economy: Any loan or credit involving a private user is class RED. A credit line is for company workspaces only")
 
 // ErrNoCreditLine: the workspace has no credit line.
 var ErrNoCreditLine = errors.New("economy: the workspace has no credit line")

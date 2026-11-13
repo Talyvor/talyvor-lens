@@ -19,7 +19,8 @@ import (
 // details of its own where the partner gives the agent an account (the sandbox does), and otherwise at its owner's
 // details with the agent's payment reference (a B30.13 sub-account). The owner chooses the kind at creation and changes
 // it later: a kind added opens its wallet; a kind removed closes it, and is refused while the wallet holds money — the
-// owner sweeps it out first. Every change is in the audit trail.
+// owner sweeps it out first. Every change is in the audit trail. The workspace's kind of money is the limit for the
+// kinds its agents may be (B59.6, workspace_money_kind.go).
 //
 // The owner has a wallet of each asset their agents use — the workspace's account in it, where Lens knows a person only
 // as their workspace — opened through the same gate when first read; it is what they fund their agents from.
@@ -99,7 +100,7 @@ func (s *DualTokenStore) AgentWallets(ctx context.Context, workspaceID, agentID 
 		if err != nil {
 			return AgentWallets{}, err
 		}
-		out.Wallets = append(out.Wallets, w)
+		out.Wallets = append(out.Wallets, s.withWalletLabel(ctx, workspaceID, w))
 	}
 	return out, nil
 }
@@ -118,6 +119,9 @@ func (s *DualTokenStore) SetAgentWalletKind(ctx context.Context, workspaceID, ag
 		fiat = wasFiat
 	}
 	if fiat, err = checkWalletKind(kind, fiat); err != nil {
+		return AgentWallets{}, err
+	}
+	if err := checkAgentWalletKind(ctx, s.pool, workspaceID, kind); err != nil { // B59.6
 		return AgentWallets{}, err
 	}
 	var archived bool
@@ -157,8 +161,23 @@ func (s *DualTokenStore) SetAgentWalletKind(ctx context.Context, workspaceID, ag
 			return AgentWallets{}, err
 		}
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET wallet_kind = $3, wallet_fiat_currency = $4 WHERE id = $1 AND workspace_id = $2`,
+	// B59.6: under the agents lock a change of the workspace's kind takes, the kind is checked again as it is kept.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockWorkspaceAgents(ctx, tx, workspaceID); err != nil {
+		return AgentWallets{}, err
+	}
+	if err := checkAgentWalletKind(ctx, tx, workspaceID, kind); err != nil {
+		return AgentWallets{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_accounts SET wallet_kind = $3, wallet_fiat_currency = $4 WHERE id = $1 AND workspace_id = $2`,
 		agentID, workspaceID, kind, fiat); err != nil {
+		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return AgentWallets{}, fmt.Errorf("economy: agent wallet kind: %w", err)
 	}
 	closed := []string{}
@@ -247,7 +266,7 @@ func (s *DualTokenStore) OwnerWallets(ctx context.Context, workspaceID string) (
 		if err != nil {
 			return AgentWallets{}, err
 		}
-		out.Wallets = append(out.Wallets, w)
+		out.Wallets = append(out.Wallets, s.withWalletLabel(ctx, workspaceID, w))
 	}
 	return out, nil
 }

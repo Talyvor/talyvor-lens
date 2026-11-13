@@ -54,7 +54,9 @@ func runNATS(t *testing.T) *nats.Conn {
 
 func newTestServer(t *testing.T, pool pgxmock.PgxPoolIface) *Server {
 	t.Helper()
-	return newServer(pool, nil, nil, nil, nil, "test-version")
+	s := newServer(pool, nil, nil, nil, nil, "test-version")
+	s.SetAreas(everyArea{})
+	return s
 }
 
 // rpcCall fires a JSON-RPC request through HandleRPC and returns the
@@ -251,6 +253,7 @@ func TestMCP_ToolsCall_CheckCircuitBreakers(t *testing.T) {
 	am.OpenCircuit("ws-other", "team-a", "search") // B42.10: another workspace's circuit is not the caller's to see
 
 	s := newServer(nil, nil, am, nil, nil, "test-version")
+	s.SetAreas(everyArea{})
 	resp := rpcCall(t, s, "tools/call", map[string]any{
 		"name":      "check_circuit_breakers",
 		"arguments": map[string]any{},

@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -95,6 +96,23 @@ const (
 	reactiveRefetchMinInterval = 5 * time.Second
 	reactiveRefetchTimeout     = 5 * time.Second
 )
+
+// maxInferenceBody bounds an /inference request (Lens sends at most 4 MiB of prompt); maxControlBody bounds
+// the small signed /attest and /challenge messages. Past either the node answers 413.
+const (
+	maxInferenceBody = 8 << 20
+	maxControlBody   = 1 << 20
+)
+
+// tooLarge answers 413 when err is a body that went past its http.MaxBytesReader cap.
+func tooLarge(w http.ResponseWriter, err error) bool {
+	var mbe *http.MaxBytesError
+	if !errors.As(err, &mbe) {
+		return false
+	}
+	http.Error(w, fmt.Sprintf("request body over %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+	return true
+}
 
 func (s *InferenceServer) clock() time.Time {
 	if s.now != nil {
@@ -179,7 +197,10 @@ func (s *InferenceServer) handleAttestation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req povi.AttestationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody)).Decode(&req); err != nil {
+		if tooLarge(w, err) {
+			return
+		}
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -221,7 +242,10 @@ func (s *InferenceServer) handleChallenge(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req povi.ChallengeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody)).Decode(&req); err != nil {
+		if tooLarge(w, err) {
+			return
+		}
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -287,8 +311,11 @@ func (s *InferenceServer) handleInference(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Read the body once — needed for BOTH the node-auth token's body-hash binding and the decode.
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInferenceBody))
 	if err != nil {
+		if tooLarge(w, err) {
+			return
+		}
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

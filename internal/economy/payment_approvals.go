@@ -112,10 +112,10 @@ func (s *DualTokenStore) approvable(ctx context.Context, workspaceID, id string)
 		return r, err
 	case r.Status == "approved":
 		return r, ErrPaymentRequestApproved
+	case r.Status == "expired":
+		return r, fmt.Errorf("%w: this request waited 24 hours without an answer and expired: ask for it again", ErrPaymentRequest)
 	case r.Status != "pending_approval":
 		return r, fmt.Errorf("%w: the request is %s: there is nothing to approve", ErrPaymentRequest, r.Status)
-	case time.Since(r.CreatedAt) >= s.approvalLife():
-		return r, fmt.Errorf("%w: the request waited %s unanswered and expired: ask again", ErrPaymentRequest, s.approvalLife())
 	case !frozenIntact(workspaceID, r):
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: it cannot be approved", ErrPaymentRequest)
 	}
@@ -164,10 +164,10 @@ func (s *DualTokenStore) signOver(ctx context.Context, tx pgx.Tx, workspaceID, c
 	}
 	var spki []byte
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 FOR UPDATE`,
+	err := tx.QueryRow(ctx, `SELECT public_key, sign_count FROM workspace_passkeys WHERE credential_id = $1 AND workspace_id = $2 AND removed_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
 		a.CredentialID, workspaceID).Scan(&spki, &count)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: not a passkey of this workspace", passkey.ErrInvalid)
+		return fmt.Errorf("%w: not a passkey of this workspace, or it was removed", passkey.ErrInvalid)
 	}
 	if err != nil {
 		return fmt.Errorf("economy: passkey: %w", err)
@@ -295,6 +295,9 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 	}
 	if status == "cancelled" {
 		return r, fmt.Errorf("%w: the request was cancelled: nothing is paid", ErrPaymentRequest)
+	}
+	if r.Status == "expired" {
+		return r, fmt.Errorf("%w: the request waited 24 hours without an answer and expired: nothing is paid", ErrPaymentRequest)
 	}
 	if !frozenIntact(workspaceID, r) {
 		return r, fmt.Errorf("%w: the request was changed after it was frozen: nothing is paid", ErrPaymentRequest)
