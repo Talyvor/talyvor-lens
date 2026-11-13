@@ -15,7 +15,8 @@ import (
 //
 // Every money route is fiat, on-chain or either, named in moneyRoutes. A fiat workspace calling an on-chain route, and
 // a stablecoin workspace calling a fiat one, is refused 409 with code wrong_money_kind, field money_route and the
-// workspace's money_kind (B59.6). A hybrid workspace reaches every money route. A route of either side serves both
+// workspace's money_kind (B59.6). A route that moves money across both sides at once (B59.14: Instant transfer) is
+// refused to every workspace that is not hybrid, the same way. A hybrid workspace reaches every money route. A route of either side serves both
 // kinds; which side its money is on is the currency or the payee it names, not the route.
 //
 // The gate runs in the authed group after auth and the tenant check, where the route is matched and {wsID} is the
@@ -29,6 +30,7 @@ const (
 	moneySideFiat    moneySide = "fiat"     // other banks, cash-outs to a bank: refused to a stablecoin workspace
 	moneySideOnChain moneySide = "on_chain" // smart accounts, keys and sweeps on chain, gas: refused to a fiat workspace
 	moneySideEither  moneySide = "either"   // serves both kinds: every kind gets cards (launch pack 3.3)
+	moneySideBoth    moneySide = "both"     // moves money across the two sides at once: hybrid only (B59.14)
 )
 
 // moneyRoutes is every money route's side, by its chi pattern with every parameter written {}, grouped by the file
@@ -245,6 +247,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/coach":     moneySideEither,
 	"/v1/money/coach/ask": moneySideEither,
 
+	// instant_transfer_handler.go
+	"/v1/workspaces/{}/money/instant-transfers/quote": moneySideBoth,
+
 	// money_convert_handler.go
 	"/v1/workspaces/{}/agents/{}/money/convert":       moneySideEither,
 	"/v1/workspaces/{}/agents/{}/money/convert/quote": moneySideEither,
@@ -371,7 +376,7 @@ func moneyKindGate(kinds moneyKindReader) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			side := moneyRoutes[blankRouteParams(chi.RouteContext(req.Context()).RoutePattern())]
-			if side != moneySideFiat && side != moneySideOnChain {
+			if side != moneySideFiat && side != moneySideOnChain && side != moneySideBoth {
 				next.ServeHTTP(w, req)
 				return
 			}
@@ -388,7 +393,8 @@ func moneyKindGate(kinds moneyKindReader) func(http.Handler) http.Handler {
 				writeJSONErr(w, http.StatusInternalServerError, "could not read the workspace's kind of money")
 				return
 			}
-			if (side == moneySideFiat && kind == economy.MoneyKindStablecoin) || (side == moneySideOnChain && kind == economy.MoneyKindFiat) {
+			if (side == moneySideFiat && kind == economy.MoneyKindStablecoin) || (side == moneySideOnChain && kind == economy.MoneyKindFiat) ||
+				(side == moneySideBoth && kind != economy.MoneyKindHybrid) {
 				writeMoneyKindRefusal(w, &economy.MoneyKindRefusal{Field: "money_route", MoneyKind: kind})
 				return
 			}
