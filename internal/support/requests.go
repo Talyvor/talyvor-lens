@@ -427,11 +427,16 @@ func exportQuery(table string, owners []string, workspaceID string, hidden []str
 	return `SELECT ` + row + `::text FROM ` + pgx.Identifier{table}.Sanitize() + ` t WHERE ` + strings.Join(where, ` OR `), args
 }
 
+// twoParty names the tables of payments between two workspaces whose rows each party already sees in full in its own
+// statement, so each party's export carries them (B59.47). Any other table with two workspace columns and no
+// workspace_id is left out: what one party may see of it is not the other's.
+var twoParty = map[string]bool{"agent_transfers": true, "agent_money_requests": true, "agent_escrows": true, "agent_loans": true}
+
 // exportColumns is the columns naming the workspace that owns each of table's rows, and the columns its export leaves
 // out. The owner is workspace_id; id for a table keyed by the workspace; otherwise the table's one column whose name
-// holds "workspace". A table with two or more such columns and no workspace_id — a payment and its two parties — is
-// owned by each of them (B59.47), and exportQuery names the other party only by its display name. A table this schema
-// does not have, or one reached only through a parent's cascade, has no owner. Every other workspace column is left
+// holds "workspace". A twoParty table is owned by each of its workspace columns, and exportQuery names the other party
+// only by its display name. Any other table with two such columns and no workspace_id, a table this schema does not
+// have, or one reached only through a parent's cascade, has no owner. Every other workspace column is left
 // out of the rows, so an export never names another workspace by its id.
 func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool) (owners []string, hidden []string, err error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.attname FROM pg_attribute a WHERE a.attrelid = to_regclass($1)
@@ -458,7 +463,9 @@ func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool)
 		owners = []string{"id"}
 	case slices.Contains(tenant, "workspace_id"):
 		owners = []string{"workspace_id"}
-	case len(tenant) > 0:
+	case len(tenant) == 1:
+		owners = tenant
+	case twoParty[table]:
 		return tenant, hidden, nil
 	default:
 		return nil, nil, nil

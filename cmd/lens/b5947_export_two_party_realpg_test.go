@@ -13,7 +13,7 @@ import (
 
 // B59.47 — a payment between two workspaces is in both parties' exports, and neither export names the other's
 // workspace id: the other party is its display name, as its own statement names it. A third workspace's export holds
-// none of it.
+// none of it, and a table with two workspaces that is not a payment both see stays out of both.
 func TestB5947_TheExportCarriesTwoPartyPaymentsWithTheOtherPartyByName(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -30,6 +30,10 @@ func TestB5947_TheExportCarriesTwoPartyPaymentsWithTheOtherPartyByName(t *testin
 	if _, err := pool.Exec(ctx, `INSERT INTO agent_transfers (id, entry_id, from_workspace_id, from_agent_id, to_workspace_id, to_agent_id,
 		amount_ulxc, memo, class) VALUES ($1, gen_random_uuid(), $2, 'agent-a', $3, 'agent-b', 2500000, 'b5947 invoice', 'AMBER')`,
 		"xfer_b5947_"+stamp, wsA, wsB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distill_serve_attribution (owner_workspace_id, requester_workspace_id, content_hash)
+		VALUES ($1, $2, 'b5947')`, wsA, wsB); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,6 +69,9 @@ func TestB5947_TheExportCarriesTwoPartyPaymentsWithTheOtherPartyByName(t *testin
 		}
 		if row[side.theirs+"_name"] != names[side.other] {
 			t.Fatalf("%s's transfer row names the other party %v; want %q", side.ws, row[side.theirs+"_name"], names[side.other])
+		}
+		if n := len(tables["distill_serve_attribution"]); n != 0 {
+			t.Fatalf("%s's export holds %d serve attributions; want none, it is no payment both parties see", side.ws, n)
 		}
 		if _, ok := row[side.theirs+"_id"]; ok || strings.Contains(raw, side.other) {
 			t.Fatalf("%s's export names the other party's workspace id %s", side.ws, side.other)
