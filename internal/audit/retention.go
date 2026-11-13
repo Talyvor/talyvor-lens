@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -168,6 +169,40 @@ func (r *Retention) deleteBatch(ctx context.Context, cutoff time.Time, upper *ti
 		return 0, fmt.Errorf("audit retention: commit: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// DeleteDeletedAccountsEvents deletes, under the same flag, every token_events row of an account that was deleted
+// (account_deletions): what a deletion's own delete missed — a request still running when it committed, or that
+// delete's commit failing — goes on the next run (B52.37). pool is the lens_retention role's.
+func DeleteDeletedAccountsEvents(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("audit: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lens.audit_retention = 'on'`); err != nil {
+		return 0, fmt.Errorf("audit: set flag: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM token_events WHERE workspace_id IN (SELECT workspace_id FROM account_deletions)`)
+	if err != nil {
+		return 0, fmt.Errorf("audit: delete deleted accounts' events: %w", err)
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
+
+// DeleteWorkspaceEvents deletes every token_events row of workspaceID inside tx, under the same flag, set and then
+// cleared within the statement's reach: the second sanctioned delete, for a person who deletes their account (B52.37).
+func DeleteWorkspaceEvents(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lens.audit_retention = 'on'`); err != nil {
+		return fmt.Errorf("audit: set flag: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM token_events WHERE workspace_id = $1`, workspaceID); err != nil {
+		return fmt.Errorf("audit: delete the workspace's events: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lens.audit_retention = 'off'`); err != nil {
+		return fmt.Errorf("audit: clear flag: %w", err)
+	}
+	return nil
 }
 
 // StartSweeper runs SweepOnce on a fixed interval until ctx is cancelled. A

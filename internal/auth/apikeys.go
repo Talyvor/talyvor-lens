@@ -256,6 +256,18 @@ func (k *KeyStore) Revoke(ctx context.Context, keyID string) error {
 	return nil
 }
 
+// EvictWorkspace drops every cached key of a workspace, so a key whose row is gone is looked up, and refused,
+// on its next use (B52.37: the account was deleted).
+func (k *KeyStore) EvictWorkspace(workspaceID string) {
+	k.mu.Lock()
+	for hash, entry := range k.cache {
+		if entry.key.WorkspaceID == workspaceID {
+			delete(k.cache, hash)
+		}
+	}
+	k.mu.Unlock()
+}
+
 const selectKeyWorkspaceSQL = `SELECT workspace_id FROM api_keys WHERE id = $1`
 
 // WorkspaceForKeyID resolves the owning workspace of an API key by its ID, and
