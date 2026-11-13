@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Provision the scenario workspaces for the routing-pattern earning trial.
-# Mints a tlv_ key per workspace (explicit distinct workspace_id — omitting it
-# defaults to "default", which earn excludes) and opts in the ones that should
-# earn. Opt-in uses the admin key (admin bypasses workspace isolation).
+# Mints a proxy-scoped tlv_ key per workspace on the workspace's own key route
+# (a distinct workspace_id per scenario: "default" is excluded from earn) and
+# opts in the ones that should earn. The admin key drives both (admin bypasses
+# workspace isolation).
 #
 #   Run from the repo root:  LENS_API_KEY=... bash tools/trial/seed.sh
 #
@@ -16,9 +17,10 @@ OUT=${OUT:-tools/trial/keys.tsv}
 
 mintkey() { # <workspace_id> -> tlv_ key, appended to keys.tsv
   local ws="$1" key
-  key=$(curl -fsS -X POST "$BASE/v1/api/keys" \
+  # POST /v1/api/keys is retired (410, B50.33): it minted scopeless keys, which pass no scope gate.
+  key=$(curl -fsS -X POST "$BASE/v1/workspaces/$ws/api-keys" \
     -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
-    -d "{\"workspace_id\":\"$ws\",\"name\":\"trial\"}" \
+    -d '{"name":"trial","scopes":["proxy"]}' \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["key"])')
   printf '%s\t%s\n' "$ws" "$key" >> "$OUT"
   echo "$key"
