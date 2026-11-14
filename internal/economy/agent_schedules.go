@@ -531,7 +531,7 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 	case sc.ToPayeeID != "": // B30.18: a payment out in its own transactions, under the tick's key, so a tick run twice pays once
 		var p OutsidePayment
 		p, perr = s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: sc.FromAgentID, PayeeID: sc.ToPayeeID, AmountMinor: sc.AmountMinor,
-			Currency: sc.Currency, Reference: sc.Memo, IdempotencyKey: "schedule:" + sc.ID + ":" + sc.NextRunAt.UTC().Format(time.RFC3339), at: now})
+			Currency: sc.Currency, Reference: sc.Memo, IdempotencyKey: "schedule:" + sc.ID + ":" + sc.NextRunAt.UTC().Format(time.RFC3339), at: now, lensKey: true})
 		if perr == nil {
 			paymentID, detail = p.ID, p.Status
 		}
