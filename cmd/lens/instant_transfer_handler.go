@@ -37,6 +37,11 @@ import (
 // B59.16 — to an outside wallet: {quote_id, to_payee_id, funding} at a quote for a wallet sends the USDC to the saved
 // payee's address; an address or beneficiary that screening refuses is refused 403 with code screened and field
 // to_payee_id, before anything moves.
+//
+// B59.17 — to an outside bank account: {quote_id, to_payee_id, funding} at a quote for a bank account pays the saved
+// payee's bank in its country: converted, moved and paid out, or paid straight at a direct quote. A beneficiary that
+// screening refuses is refused 403 with code screened and field to_payee_id, before anything moves; the transfer carries
+// arrives_within_seconds when the bank's rail does not land in seconds.
 
 type instantTransferBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
