@@ -281,7 +281,7 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	judged := WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
 		Payee:    to.payee,
 		Memo:     "Instant transfer of " + Money(q.SendMinor, q.SendCurrency) + " to " + beneficiary,
-		PaidFrom: PaidFrom{Kind: "account", AccountID: from, Currency: q.SendCurrency, AmountMinor: q.SendMinor}})
+		PaidFrom: PaidFrom{Kind: "account", AccountID: from, Currency: q.SendCurrency, AmountMinor: q.SendMinor, funding: in.Funding}})
 	if !paidBefore { // a new payee waits for the owner's approval, whatever the rules allow
 		judged = WithConnectPrepareOnly(judged)
 	}
