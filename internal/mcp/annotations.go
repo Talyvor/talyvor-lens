@@ -80,6 +80,9 @@ var toolAnnotations = map[string]toolAnnotation{
 	"market_licences": {"Your licences", reads},
 	"market_cancel":   {"Stop a licence renewing", moves},
 
+	"instant_transfer_quote": {"Price an Instant transfer", writes},
+	"instant_transfer_send":  {"Prepare an Instant transfer for approval", moves},
+
 	"room_list":     {"Rooms", reads},
 	"room_join":     {"Join a room", writes},
 	"room_messages": {"Room messages", reads},

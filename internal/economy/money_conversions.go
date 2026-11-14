@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -139,6 +138,14 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	if err != nil {
 		return Conversion{}, err
 	}
+	in.WorkspaceID, in.AgentID, in.FromAccountID, in.ToAccountID = workspaceID, agentID, from, to
+	return s.quoteConversion(ctx, in)
+}
+
+// quoteConversion prices and keeps in, a conversion between its two accounts: the plan's margin, taken in the
+// currency sold, and what the conversion partner buys with the rest.
+func (s *DualTokenStore) quoteConversion(ctx context.Context, in Conversion) (Conversion, error) {
+	workspaceID := in.WorkspaceID
 	bps, plan, err := s.fxMargin(ctx, s.pool, workspaceID)
 	switch {
 	case err != nil:
@@ -148,7 +155,7 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	case in.Funding == FundingLive && (plan == "" || plan == "free"):
 		return Conversion{}, fmt.Errorf("%w: live conversions come with the Team, Business and Enterprise plans", ErrConversion)
 	}
-	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: agentID, FromAccountID: from, ToAccountID: to,
+	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: in.AgentID, FromAccountID: in.FromAccountID, ToAccountID: in.ToAccountID,
 		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: PlatformFee(in.SellMinor, bps),
 		BuyCurrency: in.BuyCurrency, Funding: in.Funding, Status: ConversionQuoted}
 	if c.MarginMinor >= c.SellMinor {
@@ -169,16 +176,15 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	case pq.Sell != sell || pq.Buy.Currency != c.BuyCurrency || pq.Buy.Minor <= 0:
 		return Conversion{}, fmt.Errorf("economy: conversion quote: the partner priced %s as selling %s for %s", sell, pq.Sell, pq.Buy)
 	}
-	// GBP, EUR and USD all count hundredths, so minor units divide as whole units do.
 	c.BuyMinor, c.ReferenceRate, c.partnerRef, c.ExpiresAt = pq.Buy.Minor, pq.Rate, pq.Ref, pq.ExpiresAt
 	if latest := time.Now().Add(conversionQuoteLife); c.ExpiresAt.After(latest) {
 		c.ExpiresAt = latest
 	}
-	c.Rate = big.NewRat(c.BuyMinor, c.SellMinor).FloatString(8)
+	c.Rate = instantRate(c.SellMinor, c.SellCurrency, c.BuyMinor, c.BuyCurrency) // in whole units: USDC counts millionths
 	c, err = scanConversion(s.pool.QueryRow(ctx, `INSERT INTO money_conversions (id, workspace_id, agent_id, from_account_id, to_account_id,
 		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING `+conversionCols,
-		c.ID, workspaceID, agentID, c.FromAccountID, c.ToAccountID, c.SellMinor, c.SellCurrency, c.MarginBPS, c.MarginMinor, c.BuyMinor,
+		c.ID, workspaceID, c.AgentID, c.FromAccountID, c.ToAccountID, c.SellMinor, c.SellCurrency, c.MarginBPS, c.MarginMinor, c.BuyMinor,
 		c.BuyCurrency, c.ReferenceRate, c.Rate, c.Funding, c.Partner, c.partnerRef, c.ExpiresAt))
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion quote: %w", err)

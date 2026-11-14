@@ -208,6 +208,8 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 	yesNo := map[bool]string{true: "yes", false: "no"}
 	wasSub, nowSub := was.MaySubscribe != nil && *was.MaySubscribe, now.MaySubscribe != nil && *now.MaySubscribe
 	add("May subscribe", yesNo[wasSub], yesNo[nowSub], nowSub)
+	wasInstant, nowInstant := was.MayInstantTransfer != nil && *was.MayInstantTransfer, now.MayInstantTransfer != nil && *now.MayInstantTransfer
+	add("Can use Instant transfer", yesNo[wasInstant], yesNo[nowInstant], nowInstant)
 	return out
 }
 

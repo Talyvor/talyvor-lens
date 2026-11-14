@@ -3,6 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
@@ -109,7 +116,9 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, layer := b596Bank(t, pool, secret)
+	store.SetDeviceKeys(devicekey.Verifier{AllowTest: true})
 	r := chi.NewRouter()
+	mountDeviceKeyRoutes(r, store)
 	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
 	mountWorkspaceMoneyKindRoutes(r, store)
 	r.Post("/v1/money/webhooks/{partner}", layer.ServeWebhook)
@@ -132,9 +141,31 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 		}
 		return out["money_kind"].(string)
 	}
+	// B59.46: each change is signed with the owner's phone key over its own challenge.
+	b64 := base64.RawURLEncoding.EncodeToString
+	phone, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	spki, _ := x509.MarshalPKIXPublicKey(&phone.PublicKey)
+	sign := func(challenge string) string {
+		h := sha256.Sum256(devicekey.Message(challenge))
+		sig, _ := ecdsa.SignASN1(rand.Reader, phone, h[:])
+		return b64(sig)
+	}
+	_, ch := call(http.MethodPost, "/v1/money/devices/challenge", "")
+	regChallenge, _ := ch["challenge"].(string)
+	code, dev := call(http.MethodPost, "/v1/money/devices", jsonOf(map[string]string{"platform": "test", "name": "Owner's phone",
+		"public_key": b64(spki), "challenge": regChallenge, "signature": sign(regChallenge), "attestation": ""}))
+	if code != http.StatusCreated {
+		t.Fatalf("register device = %d %v", code, dev)
+	}
 	setKind := func(kind string) (int, map[string]any) {
 		t.Helper()
-		return call(http.MethodPut, "/v1/workspaces/"+ws+"/account/money-kind", `{"money_kind":"`+kind+`"}`)
+		body := `{"money_kind":"` + kind + `"}`
+		if code, c := call(http.MethodPost, "/v1/workspaces/"+ws+"/account/money-kind/challenge", body); code == http.StatusOK {
+			challenge := c["challenge"].(string)
+			body = jsonOf(map[string]any{"money_kind": kind, "assertion": map[string]string{"device_id": dev["id"].(string), "challenge": challenge,
+				"signature": sign(challenge)}})
+		}
+		return call(http.MethodPut, "/v1/workspaces/"+ws+"/account/money-kind", body)
 	}
 	refused := func(what string, code int, out map[string]any, field string) {
 		t.Helper()

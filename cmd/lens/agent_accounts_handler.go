@@ -1106,7 +1106,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				}
 			}
 			switch {
-			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrCardChallengeUnsigned):
+			case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrCardChallengeUnsigned), errors.Is(err, economy.ErrKeyBeforeLivePayment):
 				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
@@ -1725,7 +1725,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		list, err := bank.DecideAgentApprovals(ctx, chi.URLParam(req, "wsID"), in.IDs, in.Decision == "approve", in.Assertion)
 		switch {
-		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid):
+		case errors.Is(err, economy.ErrPasskeyRequired), errors.Is(err, passkey.ErrInvalid), errors.Is(err, economy.ErrKeyBeforeLivePayment):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrApprovalsChanged), errors.Is(err, economy.ErrApprovalNotFound):
 			writeJSONErr(w, http.StatusConflict, err.Error())

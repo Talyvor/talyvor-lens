@@ -257,6 +257,10 @@ var moneyRoutes = map[string]moneySide{
 	// instant_transfer_handler.go
 	"/v1/workspaces/{}/money/instant-transfers/quote": moneySideBoth,
 
+	// instant_transfer_handler.go, B59.15: the send and its receipt
+	"/v1/workspaces/{}/agents/{}/money/instant-transfers": moneySideBoth,
+	"/v1/workspaces/{}/money/instant-transfers/{}":        moneySideBoth,
+
 	// money_convert_handler.go
 	"/v1/workspaces/{}/agents/{}/money/convert":       moneySideEither,
 	"/v1/workspaces/{}/agents/{}/money/convert/quote": moneySideEither,
@@ -333,6 +337,13 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/spending/subscriptions": moneySideEither,
 	"/v1/money/spending/unusual":       moneySideEither,
 
+	// money_wallets_handler.go
+	"/v1/money/accounts/{}/withdraw":           moneySideFiat,
+	"/v1/money/accounts/{}/withdraw/challenge": moneySideFiat,
+	"/v1/money/convert":                        moneySideBoth,
+	"/v1/money/convert/challenge":              moneySideBoth,
+	"/v1/money/convert/quote":                  moneySideBoth,
+
 	// payment_requests_handler.go
 	"/v1/money/assistant-limits":             moneySideEither,
 	"/v1/money/payment-requests":             moneySideEither,
@@ -369,8 +380,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/wallet/tax":                 moneySideEither,
 
 	// workspace_money_kind_handler.go
-	"/v1/workspaces/{}/account":            moneySideEither,
-	"/v1/workspaces/{}/account/money-kind": moneySideEither,
+	"/v1/workspaces/{}/account":                      moneySideEither,
+	"/v1/workspaces/{}/account/money-kind":           moneySideEither,
+	"/v1/workspaces/{}/account/money-kind/challenge": moneySideEither,
 
 	// agent_accounts_handler.go, B52.41: a raise filed for the owner's passkey
 	"/v1/workspaces/{}/agents/{}/rules/proposals":              moneySideEither,

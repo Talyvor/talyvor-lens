@@ -2975,6 +2975,7 @@ func run() error {
 	mcpServer.SetPaymentRequests(dualToken)   // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	mcpServer.SetAreas(areaStore)             // B59.4: an area's tools only for a workspace that has it
+	mcpServer.SetInstantTransfers(dualToken)  // B59.18: instant_transfer_quote, instant_transfer_send, to a hybrid workspace
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -5058,6 +5059,7 @@ func run() error {
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
+		mountMoneyWalletRoutes(authed, dualToken)                                       // B59.51
 		mountInstantTransferRoutes(authed, dualToken)                                   // B59.14
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
