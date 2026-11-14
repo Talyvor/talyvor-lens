@@ -5025,6 +5025,7 @@ func run() error {
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
+		mountAgentCryptoSendRoutes(authed, dualToken)                                   // B48.9
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
