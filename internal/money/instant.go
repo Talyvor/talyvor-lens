@@ -201,12 +201,7 @@ func (w gatedOnchain) Send(ctx context.Context, req OnchainSend) (Result, error)
 	h := w.g.r.cfg.Hooks
 	to := Payee{Name: req.Beneficiary.Name, Network: req.Network, Address: req.Address}
 	check := func() error {
-		if req.Address != "" {
-			if err := screened(h.ScreenAddress(ctx, req.Network, req.Address)); err != nil {
-				return err
-			}
-		}
-		if err := screened(h.ScreenBeneficiary(ctx, partners.NameScreen{Name: req.Beneficiary.Name, Country: req.Beneficiary.Country})); err != nil {
+		if err := screenOnchain(ctx, h, req.Network, req.Address, req.Beneficiary); err != nil {
 			return err
 		}
 		_, err := h.OnchainDetails(ctx, partners.TravelRuleTransfer{ID: req.Key, Network: req.Network, Asset: req.Amount.Asset,
@@ -217,6 +212,28 @@ func (w gatedOnchain) Send(ctx context.Context, req OnchainSend) (Result, error)
 	}
 	return leg(ctx, w.g, req.Transfer, call{method: "send", key: req.Key, ref: req.From, out: &req.Amount, payee: to.Name, to: to, write: true},
 		req.Amount, check, func() (Result, error) { return w.a.Send(ctx, req) })
+}
+
+// ScreenOnchainPayee screens address on network and beneficiary as an on-chain leg paying them will, so a transfer
+// that leg would refuse is refused before any of its legs moves money (B59.16): a hit refused, a close match held.
+func (r *Registry) ScreenOnchainPayee(ctx context.Context, network, address string, beneficiary Party) error {
+	if r.cfg.Hooks == nil {
+		return fmt.Errorf("%w: an Instant transfer's legs need the transfer hooks", ErrInvalid)
+	}
+	if strings.TrimSpace(address) == "" {
+		return fmt.Errorf("%w: an address screening names the address", ErrInvalid)
+	}
+	return screenOnchain(ctx, r.cfg.Hooks, network, address, beneficiary)
+}
+
+// screenOnchain screens the address an on-chain leg pays, when it pays one, and its beneficiary.
+func screenOnchain(ctx context.Context, h partners.TransferHooks, network, address string, beneficiary Party) error {
+	if address != "" {
+		if err := screened(h.ScreenAddress(ctx, network, address)); err != nil {
+			return err
+		}
+	}
+	return screened(h.ScreenBeneficiary(ctx, partners.NameScreen{Name: beneficiary.Name, Country: beneficiary.Country}))
 }
 
 type gatedBankPayouts struct {
