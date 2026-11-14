@@ -81,6 +81,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		}
 		a, err := bank.OpenCurrencyAccount(req.Context(), ws, agentID, in.Currency, in.Funding)
 		switch {
+		case writeMoneyKindRefusal(w, err): // B59.42
 		case errors.Is(err, economy.ErrCurrencyAccount):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, economy.ErrAgentNotFound):

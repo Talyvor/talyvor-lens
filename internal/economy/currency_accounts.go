@@ -77,6 +77,9 @@ func (s *DualTokenStore) OpenCurrencyAccount(ctx context.Context, workspaceID, a
 	case currency == CurrencyUSDC && agentID != "":
 		return CurrencyAccount{}, fmt.Errorf("%w: an agent's USDC account is its wallet, opened with the agent", ErrCurrencyAccount)
 	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "currency", moneyKindOf(currency)); err != nil { // B59.42
+		return CurrencyAccount{}, err
+	}
 	c, _ := CapabilityByKey(CapabilityCurrencyAccounts)
 	if currency == CurrencyUSDC {
 		c, _ = CapabilityByKey(CapabilityStablecoins)

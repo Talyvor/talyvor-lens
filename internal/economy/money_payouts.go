@@ -298,6 +298,9 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 		return b, nil
 	}
 	if b.Status == PayoutAwaitingApproval {
+		if err := liveKeyFirst(ctx, tx, workspaceID, b.Funding); err != nil { // B58.7
+			return PayoutBatch{}, err
+		}
 		if err := s.authorizeSignedTx(ctx, tx, workspaceID, payoutBatchPurpose(b), a, ErrPasskeyRequired); err != nil {
 			return PayoutBatch{}, err
 		}

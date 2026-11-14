@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -357,15 +358,15 @@ func (s *Store) WriteExport(ctx context.Context, w io.Writer, workspaceID string
 	}
 	first := true
 	for _, t := range tables {
-		owner, hidden, err := s.exportColumns(ctx, t, keyedByID[t])
+		owners, hidden, err := s.exportColumns(ctx, t, keyedByID[t])
 		if err != nil {
 			return err
 		}
-		if owner == "" {
+		if len(owners) == 0 {
 			continue
 		}
-		rows, err := s.pool.Query(ctx, `SELECT (to_jsonb(t) - $2::text[])::text FROM `+pgx.Identifier{t}.Sanitize()+
-			` t WHERE `+pgx.Identifier{owner}.Sanitize()+`::text = $1`, workspaceID, hidden)
+		q, args := exportQuery(t, owners, workspaceID, hidden)
+		rows, err := s.pool.Query(ctx, q, args...)
 		if err != nil {
 			return fmt.Errorf("support: export %s: %w", t, err)
 		}
@@ -404,20 +405,48 @@ func (s *Store) WriteExport(ctx context.Context, w io.Writer, workspaceID string
 	return err
 }
 
-// exportColumns is the column naming the workspace that owns each of table's rows, and the columns its export leaves
+// exportQuery is the SQL reading table's rows for workspaceID's export, and its arguments. With one owner column, a row is
+// the workspace's when that column names it. With two parties, a row is the workspace's when either names it, and each
+// party column naming another workspace gives way to "<party>_name": that workspace's display name, which is how the
+// workspace's own statement names it. Identifiers go through pgx.Identifier.Sanitize; values are $n.
+func exportQuery(table string, owners []string, workspaceID string, hidden []string) (string, []any) {
+	args := []any{workspaceID, hidden}
+	row := `(to_jsonb(t) - $2::text[])`
+	var where []string
+	for _, o := range owners {
+		col := `t.` + pgx.Identifier{o}.Sanitize() + `::text`
+		where = append(where, col+` = $1`)
+		if len(owners) == 1 {
+			break
+		}
+		args = append(args, o, strings.TrimSuffix(o, "_id")+"_name")
+		n, k := strconv.Itoa(len(args)-1), strconv.Itoa(len(args))
+		row = `((` + row + ` - CASE WHEN ` + col + ` = $1 THEN '{}'::text[] ELSE ARRAY[$` + n + `::text] END) || CASE WHEN ` + col +
+			` = $1 THEN '{}'::jsonb ELSE jsonb_build_object($` + k + `::text, (SELECT w.name FROM workspaces w WHERE w.id = ` + col + `)) END)`
+	}
+	return `SELECT ` + row + `::text FROM ` + pgx.Identifier{table}.Sanitize() + ` t WHERE ` + strings.Join(where, ` OR `), args
+}
+
+// twoParty names the tables of payments between two workspaces whose rows each party already sees in full in its own
+// statement, so each party's export carries them (B59.47). Any other table with two workspace columns and no
+// workspace_id is left out: what one party may see of it is not the other's.
+var twoParty = map[string]bool{"agent_transfers": true, "agent_money_requests": true, "agent_escrows": true, "agent_loans": true}
+
+// exportColumns is the columns naming the workspace that owns each of table's rows, and the columns its export leaves
 // out. The owner is workspace_id; id for a table keyed by the workspace; otherwise the table's one column whose name
-// holds "workspace". A table with two such columns and no workspace_id — two parties and no owner — is left out, as is
-// a table this schema does not have or one reached only through a parent's cascade: owner "". Every other workspace
-// column is left out of the rows, so an export never names another workspace.
-func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool) (owner string, hidden []string, err error) {
+// holds "workspace". A twoParty table is owned by each of its workspace columns, and exportQuery names the other party
+// only by its display name. Any other table with two such columns and no workspace_id, a table this schema does not
+// have, or one reached only through a parent's cascade, has no owner. Every other workspace column is left
+// out of the rows, so an export never names another workspace by its id.
+func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool) (owners []string, hidden []string, err error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.attname FROM pg_attribute a WHERE a.attrelid = to_regclass($1)
 		AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`, pgx.Identifier{table}.Sanitize())
 	if err != nil {
-		return "", nil, fmt.Errorf("support: export %s: %w", table, err)
+		return nil, nil, fmt.Errorf("support: export %s: %w", table, err)
 	}
 	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return "", nil, fmt.Errorf("support: export %s: %w", table, err)
+		return nil, nil, fmt.Errorf("support: export %s: %w", table, err)
 	}
 	var tenant []string
 	hidden = []string{}
@@ -431,18 +460,20 @@ func (s *Store) exportColumns(ctx context.Context, table string, keyedByID bool)
 	}
 	switch {
 	case keyedByID:
-		owner = "id"
+		owners = []string{"id"}
 	case slices.Contains(tenant, "workspace_id"):
-		owner = "workspace_id"
+		owners = []string{"workspace_id"}
 	case len(tenant) == 1:
-		owner = tenant[0]
+		owners = tenant
+	case twoParty[table]:
+		return tenant, hidden, nil
 	default:
-		return "", nil, nil
+		return nil, nil, nil
 	}
 	for _, n := range tenant {
-		if n != owner {
+		if n != owners[0] {
 			hidden = append(hidden, n)
 		}
 	}
-	return owner, hidden, nil
+	return owners, hidden, nil
 }
