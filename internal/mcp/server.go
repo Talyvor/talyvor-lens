@@ -87,8 +87,9 @@ type Server struct {
 	searcher       Searcher      // B41.107: search_workspace; nil leaves it out
 	// B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact; nil leaves them out
 	paymentRequests PaymentRequester
-	recurring       RecurringPlanner // B45.13: prepare_recurring_payments; nil leaves it out
-	areas           AreaReader       // B59.4: the workspace's areas, whose tools it is offered; nil offers none
+	recurring       RecurringPlanner  // B45.13: prepare_recurring_payments; nil leaves it out
+	areas           AreaReader        // B59.4: the workspace's areas, whose tools it is offered; nil offers none
+	instant         InstantTransferer // B59.18: instant_transfer_quote, instant_transfer_send, to a hybrid workspace; nil leaves them out
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id
@@ -324,10 +325,18 @@ func (s *Server) dispatch(ctx context.Context, req rpcRequest) rpcResponse {
 			}
 			return s.dispatchListing(ctx, req, id)
 		}
-		if req.Method == "tools/list" {
-			return rpcOK(req.ID, map[string]any{"tools": offered(s.tools(), open)})
+		instant, err := s.instantOpen(ctx) // B59.18: Instant transfer only for a hybrid workspace
+		if err != nil {
+			return rpcErr(req.ID, rpcErrInternal, "could not read the workspace's kind of money")
 		}
-		if a, ok := toolArea(req.toolName()); ok && !open[a] {
+		if req.Method == "tools/list" {
+			tools := offered(s.tools(), open)
+			if !instant {
+				tools = withoutInstant(tools)
+			}
+			return rpcOK(req.ID, map[string]any{"tools": tools})
+		}
+		if a, ok := toolArea(req.toolName()); (ok && !open[a]) || (isInstantTool(req.toolName()) && !instant) {
 			return rpcErr(req.ID, rpcErrMethodNotFnd, "unknown tool: "+req.toolName())
 		}
 		return s.handleToolsCall(ctx, req.ID, req.Params)
@@ -406,6 +415,9 @@ func (s *Server) tools() []map[string]any {
 		return annotate(all)
 	}
 	all = append(append(all, agentToolDefinitions()...), walletToolDefinitions()...)
+	if s.instant != nil {
+		all = append(all, instantToolDefinitions()...)
+	}
 	if s.market != nil {
 		all = append(all, marketToolDefinitions()...)
 	}
@@ -501,7 +513,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 	}
 
 	// B50.4: a model fills the arguments; the agent tools check them in runAgentTool, so the refusal is logged.
-	if !strings.HasPrefix(params.Name, "agent_") && !isWalletTool(params.Name) && !isMarketTool(params.Name) && !isRoomTool(params.Name) {
+	if !strings.HasPrefix(params.Name, "agent_") && !isWalletTool(params.Name) && !isMarketTool(params.Name) && !isRoomTool(params.Name) && !isInstantTool(params.Name) {
 		if err := s.checkArguments(params.Name, params.Arguments); err != nil {
 			if perr := economy.RefuseAssistantPayeeDetails(params.Arguments); perr != nil {
 				err = perr // B40.3's own words for bank details an assistant wrote
@@ -552,11 +564,12 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 		}
 		result, err = s.toolPrepareRecurringPayments(ctx, params.Arguments)
 	default:
-		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil)
+		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil) ||
+			(isInstantTool(params.Name) && s.instant != nil)
 		if !known || s.agentBank == nil {
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
-		result, err = s.callAgentTool(ctx, params.Name, params.Arguments) // B22.11, B32.23, B32.36: run and logged as the agent tools are
+		result, err = s.callAgentTool(ctx, params.Name, params.Arguments) // B22.11, B32.23, B32.36, B59.18: run and logged as the agent tools are
 	}
 	var refusal *toolRefusal
 	if errors.As(err, &refusal) {

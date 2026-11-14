@@ -179,6 +179,7 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 
 func writePaymentErr(w http.ResponseWriter, err error) {
 	switch {
+	case writeMoneyKindRefusal(w, err): // B59.42
 	case errors.Is(err, economy.ErrOutsidePayment):
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrOutsidePaymentNotFound), errors.Is(err, economy.ErrPayeeNotFound),
@@ -188,7 +189,8 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
-		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, passkey.ErrInvalid), errors.As(err, new(*screening.Refusal)):
+		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, economy.ErrKeyBeforeLivePayment), errors.Is(err, passkey.ErrInvalid),
+		errors.As(err, new(*screening.Refusal)):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, partners.ErrScreeningUnavailable), errors.Is(err, economy.ErrAccountNotOpened):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())

@@ -17,14 +17,14 @@ type RuleTemplate struct {
 // ruleTemplate is the template's rules with every rule named: those it sets, and no rule for the rest.
 func ruleTemplate(id, name, summary string, set func(*AgentRules)) RuleTemplate {
 	var hourly, weekly, rpm, commitment, fxDaily int64
-	var maySubscribe bool
+	var maySubscribe, mayInstant bool
 	r := AgentRules{HourlyLimitULXC: &hourly, WeeklyLimitULXC: &weekly, RequestsPerMinute: &rpm,
 		AllowedModels: []string{}, AllowedProviders: []string{}, AllowedListings: []string{},
 		AllowedPayees: []string{}, BlockedPayees: []string{}, ModelDailyLimitsULXC: map[string]int64{},
 		PayeeDailyLimitsULXC: map[string]int64{}, Timezone: "UTC",
 		MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
 		PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
-		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily}
+		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant}
 	set(&r)
 	return RuleTemplate{ID: id, Name: name, Summary: summary, Rules: r}
 }
