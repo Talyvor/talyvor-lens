@@ -1270,6 +1270,9 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	status := "denied"
 	if approve {
 		status = "approved"
+		if err := approvalsLiveKeyFirst(ctx, s.pool, workspaceID, []string{approvalID}); err != nil { // B58.7
+			return AgentApproval{}, err
+		}
 	}
 	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
