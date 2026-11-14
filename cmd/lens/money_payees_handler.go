@@ -21,7 +21,8 @@ import (
 // B30.16 — saved payees outside Talyvor, with confirmation of payee (economy/money_payees.go).
 //
 //	POST /v1/money/payees     {name, country, sort_code, account_number | iban, bic | routing_number, account_number
-//	                          | address, network "base"} — saves the payee with what its bank said of the name: check
+//	                          | address, network "base", own} — saves the payee (own: B59.51, a bank account of the
+//	                          owner's own, the one Wallets withdraws to) with what its bank said of the name: check
 //	                          exact_match, close_match (with suggested_name) or no_match; a USDC address on Base (B46.18)
 //	                          is check address, paid once the owner confirms it; a sanctioned name is refused (403)
 //	GET  /v1/money/payees     — the workspace's payees, each with its check and whether it needs confirmation
@@ -78,7 +79,7 @@ func mountMoneyPayeeRoutes(r chi.Router, bank moneyPayeeBank) {
 			return
 		}
 		p, err := bank.CreateOutsidePayee(req.Context(), ws, economy.OutsidePayee{Name: in.Name, Country: in.Country, SortCode: in.SortCode,
-			AccountNumber: in.AccountNumber, IBAN: in.IBAN, BIC: in.BIC, RoutingNumber: in.RoutingNumber, Network: in.Network, Address: in.Address})
+			AccountNumber: in.AccountNumber, IBAN: in.IBAN, BIC: in.BIC, RoutingNumber: in.RoutingNumber, Network: in.Network, Address: in.Address, Own: in.Own})
 		switch {
 		case writeMoneyKindRefusal(w, err): // B59.42
 		case errors.Is(err, economy.ErrPayee):
