@@ -250,6 +250,10 @@ var moneyRoutes = map[string]moneySide{
 	// instant_transfer_handler.go
 	"/v1/workspaces/{}/money/instant-transfers/quote": moneySideBoth,
 
+	// instant_transfer_handler.go, B59.15: the send and its receipt
+	"/v1/workspaces/{}/agents/{}/money/instant-transfers": moneySideBoth,
+	"/v1/workspaces/{}/money/instant-transfers/{}":        moneySideBoth,
+
 	// money_convert_handler.go
 	"/v1/workspaces/{}/agents/{}/money/convert":       moneySideEither,
 	"/v1/workspaces/{}/agents/{}/money/convert/quote": moneySideEither,
