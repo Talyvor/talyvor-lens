@@ -366,8 +366,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/wallet/tax":                 moneySideEither,
 
 	// workspace_money_kind_handler.go
-	"/v1/workspaces/{}/account":            moneySideEither,
-	"/v1/workspaces/{}/account/money-kind": moneySideEither,
+	"/v1/workspaces/{}/account":                      moneySideEither,
+	"/v1/workspaces/{}/account/money-kind":           moneySideEither,
+	"/v1/workspaces/{}/account/money-kind/challenge": moneySideEither,
 
 	// agent_accounts_handler.go, B52.41: a raise filed for the owner's passkey
 	"/v1/workspaces/{}/agents/{}/rules/proposals":              moneySideEither,
