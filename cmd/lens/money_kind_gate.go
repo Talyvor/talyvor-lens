@@ -330,6 +330,13 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/spending/subscriptions": moneySideEither,
 	"/v1/money/spending/unusual":       moneySideEither,
 
+	// money_wallets_handler.go
+	"/v1/money/accounts/{}/withdraw":           moneySideFiat,
+	"/v1/money/accounts/{}/withdraw/challenge": moneySideFiat,
+	"/v1/money/convert":                        moneySideBoth,
+	"/v1/money/convert/challenge":              moneySideBoth,
+	"/v1/money/convert/quote":                  moneySideBoth,
+
 	// payment_requests_handler.go
 	"/v1/money/assistant-limits":             moneySideEither,
 	"/v1/money/payment-requests":             moneySideEither,
