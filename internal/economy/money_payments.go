@@ -284,7 +284,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if in.signed { // B54.33: the challenge is spent only with the payment it pays
-		if err := s.authorizeSignedTx(ctx, tx, workspaceID, paymentPurpose(in), in.assertion, ErrPaymentUnsigned); err != nil {
+		if err := s.authorizePaymentTx(ctx, tx, workspaceID, in); err != nil {
 			return OutsidePayment{}, err
 		}
 	}

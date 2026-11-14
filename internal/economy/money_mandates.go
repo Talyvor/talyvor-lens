@@ -450,6 +450,9 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	if allPaused {
 		return MandatePull{}, ErrMandateWorkspacePaused
 	}
+	if err := liveKeyFirst(ctx, tx, m.WorkspaceID, funding); err != nil { // B58.7: the payer's workspace signs live money with a key
+		return MandatePull{}, err
+	}
 	// The account is held too, so no other movement spends the same money while this one is judged, and its balance is
 	// read after the lock, as the mandate is.
 	var held int64

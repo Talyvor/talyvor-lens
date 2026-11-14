@@ -189,7 +189,8 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
-		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, passkey.ErrInvalid), errors.As(err, new(*screening.Refusal)):
+		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, economy.ErrKeyBeforeLivePayment), errors.Is(err, passkey.ErrInvalid),
+		errors.As(err, new(*screening.Refusal)):
 		writeJSONErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, partners.ErrScreeningUnavailable), errors.Is(err, economy.ErrAccountNotOpened):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
