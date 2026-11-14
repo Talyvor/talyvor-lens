@@ -42,6 +42,14 @@ import (
 // — it files an approval and waits for the owner to sign it; sending again after that goes through once. A Business
 // account's second-approver line will apply once it exists (B28.40); until then the owner's approval stands in.
 //
+// B59.16 — to an outside wallet (launch pack 4.2 (2)): the agent names one of its owner's saved payees at a USDC address
+// (to_payee_id, a payee the owner approved) instead of a Talyvor account, at a quote for a wallet. The address and the
+// payee are screened through the money layer's transfer hooks before any leg moves, so a screened-out address is
+// refused with nothing moved; the move leg then sends the USDC to the address through OnchainProvider with the
+// originator's and the beneficiary's details attached, and that is the transfer received: the beneficiary converts it
+// themselves, so there is no credit leg. A failed move reverses the conversion, as for an account. A payee the agent has
+// never sent an Instant transfer to — counted by the address, as it was paid — waits for the owner's approval.
+//
 // shortcut: the provider's side of a transfer is held in accounts opened at the provider for it — one for the currency
 // sent, credited with what the convert leg sells, and one for each side's USDC and the currency delivered — and a
 // reversal is the ledger's alone, at the locked figures: what the provider holds for a reversed transfer stays there.
@@ -77,11 +85,12 @@ func (r *InstantRuleRefusal) Error() string {
 
 func (r *InstantRuleRefusal) Unwrap() error { return ErrAgentRule }
 
-// InstantSend is a send against quote QuoteID to the Talyvor account ToAccountID, under IdempotencyKey; Funding is
-// test ("" too) or live.
+// InstantSend is a send against quote QuoteID to the Talyvor account ToAccountID, or to the outside wallet of the saved
+// payee ToPayeeID, under IdempotencyKey; Funding is test ("" too) or live.
 type InstantSend struct {
 	QuoteID        string `json:"quote_id"`
-	ToAccountID    string `json:"to_account_id"`
+	ToAccountID    string `json:"to_account_id,omitempty"`
+	ToPayeeID      string `json:"to_payee_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Funding        string `json:"funding"`
 }
@@ -113,7 +122,10 @@ type InstantTransfer struct {
 	IdempotencyKey  string       `json:"idempotency_key"`
 	Funding         string       `json:"funding"`
 	FromAccountID   string       `json:"from_account_id"`
-	ToAccountID     string       `json:"to_account_id"`
+	ToAccountID     string       `json:"to_account_id,omitempty"`
+	ToPayeeID       string       `json:"to_payee_id,omitempty"` // an outside wallet: the payee, and the address it was paid at
+	ToNetwork       string       `json:"to_network,omitempty"`
+	ToAddress       string       `json:"to_address,omitempty"`
 	BeneficiaryName string       `json:"beneficiary_name"`
 	SendMinor       int64        `json:"send_minor"`
 	SendCurrency    string       `json:"send_currency"`
@@ -129,26 +141,28 @@ type InstantTransfer struct {
 	CreatedAt       time.Time    `json:"created_at"`
 	UpdatedAt       time.Time    `json:"updated_at"`
 
-	toWorkspaceID string
-	onchainMinor  int64
-	convertEntry  string
-	moveEntry     string
-	creditEntry   string
-	convertRef    string
-	onchainRef    string
-	creditRef     string
+	toWorkspaceID      string
+	beneficiaryCountry string
+	onchainMinor       int64
+	convertEntry       string
+	moveEntry          string
+	creditEntry        string
+	convertRef         string
+	onchainRef         string
+	creditRef          string
 }
 
 const instantTransferCols = `id, workspace_id, agent_id, quote_id, idempotency_key, funding, from_account_id, to_workspace_id, to_account_id,
 	beneficiary_name, send_minor, send_currency, fee_minor, onchain_minor, receive_minor, receive_currency, rate, status, convert_entry_id,
-	move_entry_id, credit_entry_id, convert_ref, onchain_ref, credit_ref, failed_leg, failure, reversal_entry_ids, created_at, updated_at`
+	move_entry_id, credit_entry_id, convert_ref, onchain_ref, credit_ref, failed_leg, failure, reversal_entry_ids, created_at, updated_at,
+	to_payee_id, to_network, to_address, beneficiary_country`
 
 func scanInstantTransfer(row pgx.Row) (InstantTransfer, error) {
 	var t InstantTransfer
 	err := row.Scan(&t.ID, &t.WorkspaceID, &t.AgentID, &t.QuoteID, &t.IdempotencyKey, &t.Funding, &t.FromAccountID, &t.toWorkspaceID,
 		&t.ToAccountID, &t.BeneficiaryName, &t.SendMinor, &t.SendCurrency, &t.FeeMinor, &t.onchainMinor, &t.ReceiveMinor, &t.ReceiveCurrency,
 		&t.Rate, &t.Status, &t.convertEntry, &t.moveEntry, &t.creditEntry, &t.convertRef, &t.onchainRef, &t.creditRef, &t.FailedLeg,
-		&t.Failure, &t.ReversalEntries, &t.CreatedAt, &t.UpdatedAt)
+		&t.Failure, &t.ReversalEntries, &t.CreatedAt, &t.UpdatedAt, &t.ToPayeeID, &t.ToNetwork, &t.ToAddress, &t.beneficiaryCountry)
 	if err != nil {
 		return t, err
 	}
@@ -157,11 +171,16 @@ func scanInstantTransfer(row pgx.Row) (InstantTransfer, error) {
 			PartnerRef: t.convertRef, Sell: InstantAmount{t.SendMinor, t.SendCurrency}, Buy: InstantAmount{t.onchainMinor, CurrencyUSDC}},
 		{ID: t.ID + ":" + InstantLegMove, Leg: InstantLegMove, Done: t.onchainRef != "" && t.Status != InstantReversed, EntryID: t.moveEntry,
 			PartnerRef: t.onchainRef, Sell: InstantAmount{t.onchainMinor, CurrencyUSDC}, Buy: InstantAmount{t.onchainMinor, CurrencyUSDC}},
-		{ID: t.ID + ":" + InstantLegCredit, Leg: InstantLegCredit, Done: t.Status == InstantReceived, EntryID: t.creditEntry,
-			PartnerRef: t.creditRef, Sell: InstantAmount{t.onchainMinor, CurrencyUSDC}, Buy: InstantAmount{t.ReceiveMinor, t.ReceiveCurrency}},
+	}
+	if !t.toWallet() { // an outside wallet's beneficiary converts the USDC themselves
+		t.Legs = append(t.Legs, InstantLeg{ID: t.ID + ":" + InstantLegCredit, Leg: InstantLegCredit, Done: t.Status == InstantReceived, EntryID: t.creditEntry,
+			PartnerRef: t.creditRef, Sell: InstantAmount{t.onchainMinor, CurrencyUSDC}, Buy: InstantAmount{t.ReceiveMinor, t.ReceiveCurrency}})
 	}
 	return t, nil
 }
+
+// toWallet is whether t pays an outside wallet rather than a Talyvor account.
+func (t InstantTransfer) toWallet() bool { return t.ToAddress != "" }
 
 // InstantTransfer is workspaceID's Instant transfer id, its receipt; ErrInstantTransfer when there is none.
 func (s *DualTokenStore) InstantTransfer(ctx context.Context, workspaceID, id string) (InstantTransfer, error) {
@@ -184,6 +203,10 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	}
 	if in.Funding == "" {
 		in.Funding = FundingTest
+	}
+	in.ToAccountID, in.ToPayeeID = strings.TrimSpace(in.ToAccountID), strings.TrimSpace(in.ToPayeeID)
+	if (in.ToAccountID == "") == (in.ToPayeeID == "") {
+		return InstantTransfer{}, fmt.Errorf("%w: a send names to_account_id, a Talyvor account, or to_payee_id, a saved payee at a wallet address", ErrInstantTransfer)
 	}
 	if t, found, err := s.instantTransferByKey(ctx, s.pool, workspaceID, agentID, key, in); found || err != nil {
 		if err != nil {
@@ -215,9 +238,13 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	if err != nil {
 		return InstantTransfer{}, err
 	}
+	wantTo := InstantToAccount
+	if in.ToPayeeID != "" {
+		wantTo = InstantToWallet
+	}
 	switch {
-	case q.To != InstantToAccount:
-		return InstantTransfer{}, fmt.Errorf("%w: quote %s is for a %s, not a Talyvor account", ErrInstantTransfer, q.ID, q.To)
+	case q.To != wantTo:
+		return InstantTransfer{}, fmt.Errorf("%w: quote %s is for a %s, not a %s", ErrInstantTransfer, q.ID, q.To, wantTo)
 	case q.route != instantRoute || q.onchainMinor <= 0:
 		return InstantTransfer{}, fmt.Errorf("%w: quote %s is not for an Instant transfer", ErrInstantTransfer, q.ID)
 	}
@@ -228,41 +255,31 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	if err != nil {
 		return InstantTransfer{}, err
 	}
-	var toWS, toCurrency, sender, beneficiary string
-	err = s.pool.QueryRow(ctx, `SELECT a.workspace_id, a.currency, COALESCE((SELECT name FROM workspaces WHERE id = $2), ''),
-		COALESCE(NULLIF(w.name, ''), a.name) FROM money_accounts a LEFT JOIN workspaces w ON w.id = a.workspace_id
-		WHERE a.id = $1 AND a.purpose IN ('company', 'agent') AND a.status = 'open'`, in.ToAccountID, workspaceID).
-		Scan(&toWS, &toCurrency, &sender, &beneficiary)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return InstantTransfer{}, fmt.Errorf("%w: no open Talyvor account %q to send to", ErrMoneyAccountNotFound, in.ToAccountID)
+	var to instantDestination
+	if in.ToPayeeID != "" {
+		to, err = s.instantWallet(ctx, workspaceID, in.ToPayeeID)
+	} else {
+		to, err = s.instantAccount(ctx, workspaceID, in.ToAccountID, q.ReceiveCurrency)
 	}
 	if err != nil {
-		return InstantTransfer{}, fmt.Errorf("economy: Instant transfer: %w", err)
-	}
-	if toCurrency != q.ReceiveCurrency {
-		return InstantTransfer{}, fmt.Errorf("%w: the account holds %s and the quote delivers %s", ErrInstantTransfer, toCurrency, q.ReceiveCurrency)
-	}
-	// A fiat or hybrid beneficiary is paid in its currency, converted on arrival; a stablecoin one keeps the USDC.
-	if err := checkMoneySide(ctx, s.pool, toWS, "to_account_id", moneyKindOf(toCurrency)); err != nil {
 		return InstantTransfer{}, err
 	}
-	if sender == "" {
-		sender = workspaceID
-	}
+	beneficiary := to.name
 	value, err := s.paymentValue(ctx, OutsidePayment{WorkspaceID: workspaceID, IdempotencyKey: "instant:" + q.ID, AmountMinor: q.SendMinor, Currency: q.SendCurrency})
 	if err != nil {
 		return InstantTransfer{}, err
 	}
 	var paidBefore bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM instant_transfers WHERE agent_id = $1 AND to_account_id = $2 AND status = 'received')`,
-		agentID, in.ToAccountID).Scan(&paidBefore); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM instant_transfers WHERE agent_id = $1 AND status = 'received'
+		AND ((to_address = '' AND to_account_id = $2) OR (to_address <> '' AND to_address = $3)))`,
+		agentID, in.ToAccountID, to.address).Scan(&paidBefore); err != nil {
 		return InstantTransfer{}, fmt.Errorf("economy: Instant transfer: %w", err)
 	}
 	// An approval is for the transfer, not the quote: sent again after it, at a new quote, it finds it.
-	fp := sha256.Sum256([]byte("instant\x00" + agentID + "\x00" + from + "\x00" + in.ToAccountID + "\x00" + strconv.FormatInt(q.SendMinor, 10) +
+	fp := sha256.Sum256([]byte("instant\x00" + agentID + "\x00" + from + "\x00" + in.ToAccountID + in.ToPayeeID + "\x00" + strconv.FormatInt(q.SendMinor, 10) +
 		"\x00" + q.SendCurrency + "\x00" + q.ReceiveCurrency + "\x00" + in.Funding))
 	judged := WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
-		Payee:    Payee{Kind: "company", ID: in.ToAccountID, Name: beneficiary}, // a Talyvor account, a company's or its agent's
+		Payee:    to.payee,
 		Memo:     "Instant transfer of " + Money(q.SendMinor, q.SendCurrency) + " to " + beneficiary,
 		PaidFrom: PaidFrom{Kind: "account", AccountID: from, Currency: q.SendCurrency, AmountMinor: q.SendMinor}})
 	if !paidBefore { // a new payee waits for the owner's approval, whatever the rules allow
@@ -342,9 +359,11 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	}
 	t, err := scanInstantTransfer(tx.QueryRow(ctx, `INSERT INTO instant_transfers (id, workspace_id, agent_id, quote_id, idempotency_key, funding,
 		from_account_id, to_workspace_id, to_account_id, beneficiary_name, send_minor, send_currency, fee_minor, onchain_minor, receive_minor,
-		receive_currency, rate, status, convert_entry_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-		RETURNING `+instantTransferCols, id, workspaceID, agentID, q.ID, key, in.Funding, from, toWS, in.ToAccountID, beneficiary, q.SendMinor,
-		q.SendCurrency, q.FeeMinor, q.onchainMinor, q.ReceiveMinor, q.ReceiveCurrency, q.Rate, InstantSent, e.ID))
+		receive_currency, rate, status, convert_entry_id, to_payee_id, to_network, to_address, beneficiary_country)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		RETURNING `+instantTransferCols, id, workspaceID, agentID, q.ID, key, in.Funding, from, to.workspace, in.ToAccountID, beneficiary, q.SendMinor,
+		q.SendCurrency, q.FeeMinor, q.onchainMinor, q.ReceiveMinor, q.ReceiveCurrency, q.Rate, InstantSent, e.ID, in.ToPayeeID, to.network, to.address,
+		to.country))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the key or the quote, used at the same moment by another send
@@ -359,6 +378,61 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	return s.driveInstantTransfer(ctx, t)
 }
 
+// instantDestination is who an Instant transfer pays: a Talyvor account in workspace, or an outside wallet at address on
+// network; payee is how the agent's rules judge it.
+type instantDestination struct {
+	workspace, name, country, network, address string
+	payee                                      Payee
+}
+
+// instantAccount is the open Talyvor account accountID, which must hold currency: a fiat or hybrid beneficiary is paid
+// in its currency, converted on arrival, and a stablecoin one keeps the USDC.
+func (s *DualTokenStore) instantAccount(ctx context.Context, workspaceID, accountID, currency string) (instantDestination, error) {
+	var d instantDestination
+	var toCurrency string
+	err := s.pool.QueryRow(ctx, `SELECT a.workspace_id, a.currency, COALESCE(NULLIF(w.name, ''), a.name) FROM money_accounts a
+		LEFT JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = $1 AND a.purpose IN ('company', 'agent') AND a.status = 'open'`, accountID).
+		Scan(&d.workspace, &toCurrency, &d.name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return d, fmt.Errorf("%w: no open Talyvor account %q to send to", ErrMoneyAccountNotFound, accountID)
+	}
+	if err != nil {
+		return d, fmt.Errorf("economy: Instant transfer: %w", err)
+	}
+	if toCurrency != currency {
+		return d, fmt.Errorf("%w: the account holds %s and the quote delivers %s", ErrInstantTransfer, toCurrency, currency)
+	}
+	if err := checkMoneySide(ctx, s.pool, d.workspace, "to_account_id", moneyKindOf(toCurrency)); err != nil {
+		return d, err
+	}
+	d.payee = Payee{Kind: "company", ID: accountID, Name: d.name} // a Talyvor account, a company's or its agent's
+	return d, nil
+}
+
+// ErrAddressScreened: an Instant transfer to a wallet address, or a beneficiary, that screening does not let through.
+var ErrAddressScreened = errors.New("economy: the wallet address or its beneficiary did not pass screening, so nothing was sent")
+
+// instantWallet is workspaceID's saved payee payeeID at a USDC address, payable and screened through the money layer's
+// transfer hooks as the move leg will screen it — so a screened-out address is refused before any leg moves.
+func (s *DualTokenStore) instantWallet(ctx context.Context, workspaceID, payeeID string) (instantDestination, error) {
+	p, err := s.PayableOutsidePayee(ctx, workspaceID, payeeID)
+	if err != nil {
+		return instantDestination{}, err
+	}
+	if p.Address == "" {
+		return instantDestination{}, fmt.Errorf("%w: %s is paid at a bank, not at a wallet address", ErrInstantTransfer, p.Name)
+	}
+	d := instantDestination{name: p.Name, country: p.Country, network: p.Network, address: p.Address,
+		payee: Payee{Kind: "outside", ID: p.ID, Name: p.Name}}
+	if err := s.moneyLayer.ScreenOnchainPayee(ctx, d.network, d.address, money.Party{Name: d.name, Country: d.country}); err != nil {
+		if errors.Is(err, money.ErrRefused) || errors.Is(err, money.ErrHeld) {
+			return d, fmt.Errorf("%w: %v", ErrAddressScreened, err)
+		}
+		return d, fmt.Errorf("economy: Instant transfer: screening %s: %w", d.address, err)
+	}
+	return d, nil
+}
+
 // instantTransferByKey is workspaceID's transfer sent under key, if there is one: ErrIdempotencyKeyReused when it is not
 // the same send.
 func (s *DualTokenStore) instantTransferByKey(ctx context.Context, q pgxDB, workspaceID, agentID, key string, in InstantSend) (InstantTransfer, bool, error) {
@@ -369,7 +443,7 @@ func (s *DualTokenStore) instantTransferByKey(ctx context.Context, q pgxDB, work
 		return t, false, nil
 	case err != nil:
 		return t, false, fmt.Errorf("economy: Instant transfer: %w", err)
-	case t.AgentID != agentID || t.QuoteID != in.QuoteID || t.ToAccountID != in.ToAccountID || t.Funding != in.Funding:
+	case t.AgentID != agentID || t.QuoteID != in.QuoteID || t.ToAccountID != in.ToAccountID || t.ToPayeeID != in.ToPayeeID || t.Funding != in.Funding:
 		return t, false, ErrIdempotencyKeyReused
 	}
 	return t, true, nil
@@ -520,28 +594,33 @@ func (s *DualTokenStore) instantMove(ctx context.Context, t InstantTransfer) (st
 	if err != nil {
 		return "", err
 	}
-	in, err := s.instantHolding(ctx, rt, t.ID+":usdc-in", t.BeneficiaryName, money.USDC)
-	if err != nil {
+	send := money.OnchainSend{Key: t.ID + ":" + InstantLegMove, Transfer: t.ID, From: out, Amount: money.Amount{Minor: t.onchainMinor, Asset: money.USDC},
+		Originator: money.Party{Name: sender}, Beneficiary: money.Party{Name: t.BeneficiaryName, Country: t.beneficiaryCountry}}
+	// To a Talyvor account the USDC goes to the beneficiary's side at the provider, and the credit leg lands it; to an
+	// outside wallet it goes to the address, with both sides' details attached, and that is it received.
+	next := InstantOnItsWay
+	if t.toWallet() {
+		send.Network, send.Address, next = t.ToNetwork, t.ToAddress, InstantReceived
+	} else if send.To, err = s.instantHolding(ctx, rt, t.ID+":usdc-in", t.BeneficiaryName, money.USDC); err != nil {
 		return "", err
 	}
 	chainLeg, err := s.moneyLayer.Onchain(ctx, rt)
 	if err != nil {
 		return "", providerUnanswered(err)
 	}
-	r, err := chainLeg.Send(ctx, money.OnchainSend{Key: t.ID + ":" + InstantLegMove, Transfer: t.ID, From: out, To: in,
-		Amount: money.Amount{Minor: t.onchainMinor, Asset: money.USDC}, Originator: money.Party{Name: sender}, Beneficiary: money.Party{Name: t.BeneficiaryName}})
+	r, err := chainLeg.Send(ctx, send)
 	if err != nil {
 		return "", providerUnanswered(err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE instant_transfers SET status = $2, move_entry_id = $3, onchain_ref = $4, updated_at = now() WHERE id = $1`,
-		t.ID, InstantOnItsWay, e.ID, r.Ref); err != nil {
+		t.ID, next, e.ID, r.Ref); err != nil {
 		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
 	}
 	s.monitorMoved(ctx, e)
-	return InstantOnItsWay, nil
+	return next, nil
 }
 
 // instantCredit is the credit leg, in the beneficiary's workspace: the USDC arrives, and is converted to the account's

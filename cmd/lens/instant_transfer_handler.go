@@ -33,6 +33,10 @@ import (
 //
 // A send takes the agent's own key, the workspace's owner or an admin; an agent without "Can use Instant transfer" is
 // refused 403 with field may_instant_transfer, and one that needs the owner's approval files it and is refused 403.
+//
+// B59.16 — to an outside wallet: {quote_id, to_payee_id, funding} at a quote for a wallet sends the USDC to the saved
+// payee's address; an address or beneficiary that screening refuses is refused 403 with code screened and field
+// to_payee_id, before anything moves.
 
 type instantTransferBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
@@ -77,8 +81,8 @@ func mountInstantTransferRoutes(r chi.Router, bank instantTransferBank) {
 			}
 		}
 		var in economy.InstantSend
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.QuoteID == "" || in.ToAccountID == "" {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"quote_id", "to_account_id", "funding"}: POST …/money/instant-transfers/quote first`)
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.QuoteID == "" || (in.ToAccountID == "") == (in.ToPayeeID == "") {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"quote_id", "to_account_id" or "to_payee_id", "funding"}: POST …/money/instant-transfers/quote first`)
 			return
 		}
 		if key := req.Header.Get("Idempotency-Key"); key != "" {
@@ -91,6 +95,8 @@ func mountInstantTransferRoutes(r chi.Router, bank instantTransferBank) {
 			writeJSONOK(w, http.StatusOK, t)
 		case errors.As(err, &rule):
 			writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(rule.Error()), "code": "agent_rule", "field": rule.Field})
+		case errors.Is(err, economy.ErrAddressScreened):
+			writeJSONOK(w, http.StatusForbidden, map[string]any{"error": api.Refusal(err.Error()), "code": "screened", "field": "to_payee_id"})
 		case writeMoneyKindRefusal(w, err):
 		case errors.Is(err, economy.ErrInstantTransfer), errors.Is(err, money.ErrInvalid):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
