@@ -370,6 +370,11 @@ func (s *DualTokenStore) DecideAgentApprovals(ctx context.Context, workspaceID s
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&keys); err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
 	}
+	if approve {
+		if err := approvalsLiveKeyFirst(ctx, tx, workspaceID, ids); err != nil { // B58.7
+			return nil, err
+		}
+	}
 	if keys == 0 {
 		a = nil // unsigned, as AuthorizeApprovalDecision lets a workspace with no key decide
 	} else if a == nil {
