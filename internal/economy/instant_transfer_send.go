@@ -277,7 +277,7 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	switch {
 	case (in.ToPayeeID == "") != (q.To == InstantToAccount):
 		return InstantTransfer{}, fmt.Errorf("%w: quote %s is for a %s: send it with to_account_id for a Talyvor account, to_payee_id for a saved payee", ErrInstantTransfer, q.ID, q.To)
-	case !(q.route == instantRoute && q.onchainMinor > 0) && !(q.route == directRoute && q.To == InstantToBank):
+	case !instantSendable(q):
 		return InstantTransfer{}, fmt.Errorf("%w: quote %s is not for an Instant transfer", ErrInstantTransfer, q.ID)
 	}
 	direct := q.route == directRoute
@@ -433,6 +433,12 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	}
 	s.monitorMoved(ctx, e)
 	return s.driveInstantTransfer(ctx, t)
+}
+
+// instantSendable is whether q can be sent as an Instant transfer: converted and moved on chain, or — to a bank account
+// in the currency sent — paid straight.
+func instantSendable(q InstantQuote) bool {
+	return (q.route == instantRoute && q.onchainMinor > 0) || (q.route == directRoute && q.To == InstantToBank)
 }
 
 // instantDestination is who an Instant transfer pays: a Talyvor account in workspace, or an outside wallet at address on
