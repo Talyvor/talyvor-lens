@@ -392,12 +392,22 @@ const (
 // (output-aware) estimate so it is an upper bound on the delivered cost — the ceiling stays airtight. The
 // hold is later reconciled by SettleLXCReservation (bill the delivered cost, refund the rest) or refunded in
 // full by ReleaseLXCReservation. Returns ErrSubBudgetExceeded / ErrInsufficientLXC on a rejected hold (whole
-// tx rolls back — no orphan reservation, retriable); nil on a fresh hold AND on an idempotent replay.
+// tx rolls back — no orphan reservation, retriable); nil on a fresh hold AND on an idempotent replay, which is
+// counted (B50.47): the replay may be answering on this hold, so a single request's release no longer gives it back.
 func (s *DualTokenStore) ReserveLXCForAgent(ctx context.Context, scopedKeyID, workspaceID, reservationID string, heldLXC int64, meta AgentDebitMeta) error {
-	return retryLocks(ctx, func() error {
-		return s.reserveLXCForAgent(ctx, scopedKeyID, workspaceID, reservationID, heldLXC, meta)
-	})
+	for range 3 { // a release that frees the id between the claim and the count is rare: take the new hold
+		err := retryLocks(ctx, func() error {
+			return s.reserveLXCForAgent(ctx, scopedKeyID, workspaceID, reservationID, heldLXC, meta)
+		})
+		if !errors.Is(err, errHoldFreed) {
+			return err
+		}
+	}
+	return errHoldFreed
 }
+
+// errHoldFreed is a replay whose hold a release gave back, and moved off its id, before the replay was counted.
+var errHoldFreed = errors.New("economy: the hold this request replays was given back; take a new one")
 
 // reserveLXCForAgent is one attempt of ReserveLXCForAgent, in one transaction.
 func (s *DualTokenStore) reserveLXCForAgent(ctx context.Context, scopedKeyID, workspaceID, reservationID string, heldLXC int64, meta AgentDebitMeta) error {
@@ -434,7 +444,16 @@ func (s *DualTokenStore) reserveLXCForAgent(ctx context.Context, scopedKeyID, wo
 		return fmt.Errorf("economy: reservation claim: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // idempotent replay — already held under this reservation_id
+		// Idempotent replay — already held under this reservation_id. Counted (B50.47): the hold may now pay for
+		// this request's answer, so another request's release must not give it back.
+		tag, err := tx.Exec(ctx, `UPDATE lxc_reservations SET replays = replays + 1 WHERE reservation_id = $1`, reservationID)
+		if err != nil {
+			return fmt.Errorf("economy: count reservation replay: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return errHoldFreed // released and freed under this replay: never serve on no hold
+		}
+		return tx.Commit(ctx)
 	}
 
 	// (2) Ceiling — ensure + LOCK the sub-budget (FOR UPDATE serializes concurrent holds for this agent).
@@ -667,12 +686,16 @@ func (s *DualTokenStore) settleLXCReservation(ctx context.Context, reservationID
 // call, no contributor ⇒ free), or a serve that never delivered (crash/failure ⇒ the customer must not pay).
 // One compensating LXCTypeReservationRelease credit of +held; spent_lxc drops by the whole held. Idempotent
 // via the status-CAS. A release of an unknown reservation is a no-op (a stranded-sweeper double-run is safe).
+// B50.47: the release frees reservationID, so a retry under the same Idempotency-Key takes a new hold and is
+// charged for its answer. A hold an Idempotency-Key retry was served on is not given back here — that retry may
+// be answering on it — but by the sweeper.
 func (s *DualTokenStore) ReleaseLXCReservation(ctx context.Context, reservationID, reason string) error {
-	return retryLocks(ctx, func() error { return s.releaseLXCReservation(ctx, reservationID, reason) })
+	return retryLocks(ctx, func() error { return s.releaseLXCReservation(ctx, reservationID, reason, false) })
 }
 
-// releaseLXCReservation is one attempt of ReleaseLXCReservation, in one transaction.
-func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationID, reason string) error {
+// releaseLXCReservation is one attempt of ReleaseLXCReservation, in one transaction; swept gives back a replayed
+// hold too (ReleaseStrandedReservations).
+func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationID, reason string, swept bool) error {
 	if reservationID == "" {
 		return errors.New("economy: release requires reservation_id")
 	}
@@ -688,12 +711,14 @@ func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationI
 
 	var scopedKeyID, workspaceID, status, reqModel, reqID string
 	var heldLXC int64
+	var replays int
 	// requested_model + request_id from the reservation ROW so the release row (in-band OR stranded-swept —
 	// both flow through here) stamps the same model/id the hold recorded. A refund serves nothing → no served_model.
+	// FOR UPDATE: a release judges the hold's replays against an Idempotency-Key retry counting itself in (B50.47).
 	err = tx.QueryRow(ctx,
-		`SELECT scoped_key_id, workspace_id, held_ulxc, status, COALESCE(requested_model, ''), COALESCE(request_id, '')
+		`SELECT scoped_key_id, workspace_id, held_ulxc, status, COALESCE(requested_model, ''), COALESCE(request_id, ''), replays
 		   FROM lxc_reservations WHERE reservation_id = $1 FOR UPDATE`,
-		reservationID).Scan(&scopedKeyID, &workspaceID, &heldLXC, &status, &reqModel, &reqID)
+		reservationID).Scan(&scopedKeyID, &workspaceID, &heldLXC, &status, &reqModel, &reqID, &replays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // nothing to release — a double-sweep or a never-held id is a safe no-op
 	}
@@ -702,6 +727,9 @@ func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationI
 	}
 	if status != "held" {
 		return nil // already resolved — idempotent
+	}
+	if replays > 0 && !swept {
+		return nil // a retry may be answering on this hold: it settles it, or the sweeper gives it back
 	}
 	// The lock order: the key's sub-budget and its agent before the workspace's balance, as the hold took them.
 	if err := lockKeyAndAgent(ctx, tx, scopedKeyID); err != nil {
@@ -739,6 +767,11 @@ func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationI
 	if _, err := agentMovement(ctx, tx, scopedKeyID, -heldLXC, "release", reservationID, reqModel); err != nil {
 		return err
 	}
+	// B50.47: the hold moves off reservationID, so a retry under it takes a new hold.
+	if _, err := tx.Exec(ctx, `UPDATE lxc_reservations SET reservation_id = reservation_id || ':released:' || gen_random_uuid()
+		WHERE reservation_id = $1`, reservationID); err != nil {
+		return fmt.Errorf("economy: free the released hold's id: %w", err)
+	}
 	return tx.Commit(ctx)
 }
 
@@ -770,7 +803,9 @@ func (s *DualTokenStore) ReleaseStrandedReservations(ctx context.Context, olderT
 	}
 	n := 0
 	for _, id := range ids {
-		if err := s.ReleaseLXCReservation(ctx, id, "stranded hold swept (crash refund)"); err != nil {
+		if err := retryLocks(ctx, func() error {
+			return s.releaseLXCReservation(ctx, id, "stranded hold swept (crash refund)", true)
+		}); err != nil {
 			return n, err
 		}
 		n++
