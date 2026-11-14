@@ -26,7 +26,8 @@ import (
 //	                                           same request; the same key with another body: 409)
 //	GET  /v1/money/payment-requests?status=pending_approval — {"requests": […]} waiting for approval, newest first (B40.38)
 //	GET  /v1/money/payment-requests?status=decided — {"requests": […]} approved, cancelled or expired, each with its
-//	                                           decided_at, newest decision first, at most 50 (B57.148)
+//	                                           decided_at and its decision in words ("Approved and paid", "Approved",
+//	                                           "Declined", "Expired"), newest decision first, at most 20 (B57.148, B57.161)
 //	GET  /v1/money/payment-requests/{id}       — its status
 //	POST /v1/money/payment-requests/{id}/cancel — cancelled
 //
