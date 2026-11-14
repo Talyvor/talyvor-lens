@@ -39,7 +39,7 @@ func (h *failAfterLeg) arm(afterLeg, keySuffix string, fail money.Capability) {
 func (h *failAfterLeg) disarm(t *testing.T) {
 	t.Helper()
 	h.arm("", "", "")
-	for _, c := range []money.Capability{money.CapConvert, money.CapOnchain} {
+	for _, c := range []money.Capability{money.CapConvert, money.CapOnchain, money.CapBankPayout} {
 		if err := money.FailAt(h.sandbox, c, nil); err != nil {
 			t.Fatal(err)
 		}

@@ -414,3 +414,12 @@ func (p sandboxBankPayouts) Pay(ctx context.Context, req BankPayout) (Result, er
 		return p.s.send(ctx, "bank_payout:"+req.Key, req.From, req.To, req.Amount, req.Reference)
 	})
 }
+
+// ScreenPayoutPayee screens beneficiary as a bank payout paying them will, so a transfer that leg would refuse is
+// refused before any of its legs moves money (B59.17): a hit refused, a close match held.
+func (r *Registry) ScreenPayoutPayee(ctx context.Context, beneficiary Party) error {
+	if r.cfg.Hooks == nil {
+		return fmt.Errorf("%w: an Instant transfer's legs need the transfer hooks", ErrInvalid)
+	}
+	return screenOnchain(ctx, r.cfg.Hooks, "", "", beneficiary)
+}
