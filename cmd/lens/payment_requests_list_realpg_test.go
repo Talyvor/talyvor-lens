@@ -245,3 +245,128 @@ func TestPaymentRequests_ListDecided(t *testing.T) {
 		t.Errorf("the other workspace's decided list = %d %v, want only %s", code, got, theirs)
 	}
 }
+
+// B57.161 — the decided list says how each request was decided, in the words Approvals chips it with: "Approved and
+// paid", "Approved" while what it approved is not all paid, "Declined" and "Expired". It holds the newest 20 decisions;
+// an agent's key lists only that agent's own decided requests, never another agent's or another workspace's.
+func TestPaymentRequests_DecidedListWordsAndScope(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws, other = "ws-b57161-mine", "ws-b57161-other"
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	store.SetPayeeScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
+	store.SetApprovalTTL(time.Hour)
+	r := chi.NewRouter()
+	mountPaymentRequestRoutes(r, store)
+	list := func(who *auth.AuthContext) []map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/money/payment-requests?status=decided", nil)
+		req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out struct {
+			Requests []map[string]any `json:"requests"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("the decided list = %d %s", w.Code, w.Body.String())
+		}
+		return out.Requests
+	}
+	owner := func(workspace string) *auth.AuthContext {
+		return &auth.AuthContext{WorkspaceID: workspace, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}
+	}
+	agent := func(workspace, name string) (string, *auth.AuthContext) {
+		t.Helper()
+		a, err := store.CreateAgent(ctx, workspace, name, "ada")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := "key_" + a.ID
+		if _, err := pool.Exec(ctx, `INSERT INTO agent_account_keys (scoped_key_id, agent_id) VALUES ($1, $2)`, key, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		return a.ID, &auth.AuthContext{WorkspaceID: workspace, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: key, Scopes: []string{auth.ScopeProxy}}
+	}
+	prepare := func(workspace, agentID, key string) string {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number, check_result, checked_by)
+			VALUES ($1, $2, 'Northwind Data', 'GB', '20-00-00', '55779911', 'exact_match', 'test') ON CONFLICT DO NOTHING`, "payee_"+workspace, workspace); err != nil {
+			t.Fatal(err)
+		}
+		in := economy.PaymentRequestIn{Client: "chat", AgentID: agentID,
+			Items: []economy.PaymentRequestItemIn{{PayeeID: "payee_" + workspace, Currency: "GBP", AmountMinor: 18000, Reference: key}}}
+		if agentID != "" {
+			in.Client = "key:key_" + agentID
+		}
+		pr, _, err := store.PreparePaymentRequest(ctx, workspace, "ada", key, in)
+		if err != nil || pr.Status != "pending_approval" {
+			t.Fatalf("prepare %s = %v %v, want pending_approval", key, pr.Status, err)
+		}
+		return pr.ID
+	}
+	decideAt := func(id, status string, at time.Time) {
+		t.Helper()
+		switch status {
+		case "approved":
+			if _, err := pool.Exec(ctx, `INSERT INTO payment_request_approvals (request_id, workspace_id, statement, signature, approved_by, approved_at)
+				SELECT id, workspace_id, '{}', 'sig', 'ada', $2 FROM payment_requests WHERE id = $1`, id, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE payment_requests SET status = 'approved' WHERE id = $1`, id); err != nil {
+				t.Fatal(err)
+			}
+		case "cancelled":
+			if _, err := pool.Exec(ctx, `UPDATE payment_requests SET status = 'cancelled', cancelled_at = $2, cancelled_by = 'ada' WHERE id = $1`, id, at); err != nil {
+				t.Fatal(err)
+			}
+		case "expired":
+			if _, err := pool.Exec(ctx, `UPDATE payment_requests SET created_at = $2::timestamptz - interval '1 hour' WHERE id = $1`, id, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	day := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+
+	// How each was decided, in words.
+	paid, approved, declined, expired := prepare(ws, "", "paid"), prepare(ws, "", "approved"), prepare(ws, "", "declined"), prepare(ws, "", "expired")
+	decideAt(paid, "approved", day.Add(4*time.Hour))
+	if _, err := pool.Exec(ctx, `UPDATE payment_request_items SET payment_id = 'pay_b57161', pay_status = '' WHERE request_id = $1`, paid); err != nil {
+		t.Fatal(err)
+	}
+	decideAt(approved, "approved", day.Add(3*time.Hour))
+	decideAt(declined, "cancelled", day.Add(2*time.Hour))
+	decideAt(expired, "expired", day.Add(1*time.Hour))
+	got := list(owner(ws))
+	want := []struct{ id, decision string }{{paid, "Approved and paid"}, {approved, "Approved"}, {declined, "Declined"}, {expired, "Expired"}}
+	if len(got) != len(want) {
+		t.Fatalf("the decided list = %v, want %d requests", got, len(want))
+	}
+	for i, w := range want {
+		if got[i]["id"] != w.id || got[i]["decision"] != w.decision || got[i]["decided_at"] == nil {
+			t.Errorf("decided[%d] = %v %v at %v, want %s %q", i, got[i]["id"], got[i]["decision"], got[i]["decided_at"], w.id, w.decision)
+		}
+	}
+
+	// An agent's key lists only its own; the owner lists every agent's.
+	agentA, keyA := agent(ws, "agent-a")
+	agentB, _ := agent(ws, "agent-b")
+	mineA, mineB := prepare(ws, agentA, "a-declined"), prepare(ws, agentB, "b-declined")
+	decideAt(mineA, "cancelled", day.Add(5*time.Hour))
+	decideAt(mineB, "cancelled", day.Add(6*time.Hour))
+	theirs := prepare(other, "", "theirs")
+	decideAt(theirs, "cancelled", day.Add(7*time.Hour))
+	if got := list(keyA); len(got) != 1 || got[0]["id"] != mineA || got[0]["decision"] != "Declined" {
+		t.Errorf("agent A's decided list = %v, want only %s", got, mineA)
+	}
+	if got := list(owner(ws)); len(got) != 6 || got[0]["id"] != mineB || got[1]["id"] != mineA {
+		t.Errorf("the owner's decided list = %v, want both agents' and the four before them", got)
+	}
+
+	// The newest 20 decisions, and no more.
+	for i := range 20 {
+		decideAt(prepare(other, "", fmt.Sprintf("many-%d", i)), "cancelled", day.Add(time.Duration(8+i)*time.Hour))
+	}
+	if got := list(owner(other)); len(got) != 20 || got[19]["id"] == theirs {
+		t.Errorf("the decided list holds %d, the oldest %v; want the newest 20, without %s", len(got), got[len(got)-1]["id"], theirs)
+	}
+}
