@@ -207,6 +207,7 @@ type CardAuthorization struct {
 	MerchantCurrency    string
 	MerchantName        string
 	MerchantCategory    string
+	MerchantMCC         string // the merchant category code (ISO 18245) the network reports: what the agent's rules judge (B61.43)
 	MerchantID          string // the merchant's network id: with the amount, what an approval is for
 	Livemode            bool
 	At                  time.Time
@@ -269,7 +270,7 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 
 	fp := sha256.Sum256([]byte("card\x00" + a.CardID + "\x00" + a.MerchantID + "\x00" + a.Currency + "\x00" + strconv.FormatInt(a.AmountMinor, 10)))
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), At: a.At,
-		Payee:    Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName},
+		Payee: Payee{Kind: "merchant", ID: a.MerchantID, Name: a.MerchantName}, ByCard: true, MerchantCategory: a.MerchantMCC,
 		PaidFrom: PaidFrom{Kind: "card", AccountID: a.CardID, Currency: strings.ToUpper(a.Currency), AmountMinor: a.AmountMinor}})
 	var drawsOn, cardCurrency string
 	if err := s.pool.QueryRow(ctx, `SELECT draws_on, currency FROM agent_cards WHERE id = $1`, a.CardID).Scan(&drawsOn, &cardCurrency); err != nil {

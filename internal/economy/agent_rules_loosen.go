@@ -175,6 +175,8 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		{"Licences it may hold", "any", was.AllowedLicences, now.AllowedLicences, false},
 		{"May convert between", "any", was.AllowedCurrencies, now.AllowedCurrencies, false},
 		{"May never pay", "nobody", was.BlockedPayees, now.BlockedPayees, true},
+		{"Merchants and categories", "any", was.AllowedMerchantCategories, now.AllowedMerchantCategories, false},
+		{"Never pays in", "none", was.BlockedMerchantCategories, now.BlockedMerchantCategories, true},
 	} {
 		text := func(ids []string) string {
 			if len(ids) == 0 {
