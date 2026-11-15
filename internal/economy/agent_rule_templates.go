@@ -26,6 +26,10 @@ func ruleTemplate(id, name, summary string, set func(*AgentRules)) RuleTemplate 
 		PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
 		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant}
 	set(&r)
+	// B61.12: the same limits held in dollars at the peg, the currency the rules are judged in.
+	r.Currency, r.MaxPerPaymentMinor, r.DailyLimitMinor = CurrencyUSD, centsAtPeg(r.MaxPerRequestULXC), centsAtPeg(r.DailyLimitULXC)
+	r.MonthlyLimitMinor, r.ApprovalAboveMinor = centsAtPeg(r.MonthlyLimitULXC), centsAtPeg(r.ApprovalAboveULXC)
+	r.HourlyLimitMinor, r.WeeklyLimitMinor = centsAtPegOf(r.HourlyLimitULXC), centsAtPegOf(r.WeeklyLimitULXC)
 	return RuleTemplate{ID: id, Name: name, Summary: summary, Rules: r}
 }
 

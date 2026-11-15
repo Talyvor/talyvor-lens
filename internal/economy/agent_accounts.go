@@ -513,13 +513,13 @@ func (s *DualTokenStore) moveAgentFunds(ctx context.Context, workspaceID, agentI
 // refusal, beyond the agent's balance; delta < 0 (a settle's refund or a release) moves it back.
 // isAgent is false for a key attached to no agent, which keeps its per-key ceiling and posts nothing. model is
 // the model the question asked for, which the postings name (B28.301): a refund names its hold's or debit's.
-func agentMovement(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta int64, kind, ref, model string) (isAgent bool, err error) {
-	return agentMovementFee(ctx, tx, scopedKeyID, delta, 0, 0, kind, ref, model)
+func (s *DualTokenStore) agentMovement(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta int64, kind, ref, model string) (isAgent bool, err error) {
+	return s.agentMovementFee(ctx, tx, scopedKeyID, delta, 0, 0, kind, ref, model)
 }
 
 // agentMovementFee is agentMovement for a spend that carries a platform fee (B32.11): the agent's balance, its
 // credit line and its rules judge delta + fee, the whole price, and the fee is posted as its own movement.
-func agentMovementFee(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta, fee, bps int64, kind, ref, model string) (isAgent bool, err error) {
+func (s *DualTokenStore) agentMovementFee(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta, fee, bps int64, kind, ref, model string) (isAgent bool, err error) {
 	var agentID, workspaceID string
 	err = tx.QueryRow(ctx,
 		`SELECT a.id, a.workspace_id FROM agent_account_keys k JOIN agent_accounts a ON a.id = k.agent_id
@@ -554,7 +554,7 @@ func agentMovementFee(ctx context.Context, tx pgx.Tx, scopedKeyID string, delta,
 			return true, agentHolds(ctx, tx, ErrSubBudgetExceeded, agentID, bal, need)
 		}
 		// B19.2: the agent's spending rules, under the same lock, before anything is held or debited.
-		if err := enforceAgentRules(ctx, tx, workspaceID, agentID, need, ref); err != nil {
+		if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, need, ref); err != nil {
 			return true, err
 		}
 	}

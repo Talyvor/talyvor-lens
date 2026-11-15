@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // agent_rules.go — B19.2: SPENDING RULES PER AGENT, ENFORCED BEFORE THE PROVIDER IS CALLED.
@@ -127,6 +129,20 @@ type AgentRules struct {
 	// which it may not until its owner says so. Read, it is never nil; nil (absent from the JSON) saves the rules
 	// without changing it.
 	MayInstantTransfer *bool `json:"may_instant_transfer"`
+	// Currency (B61.12) is the currency the rules are held and judged in: the account's, as the owner typed them. The
+	// limits below are in its minor units, and every movement is judged by them (judgedAmount): one in this currency on
+	// its own amount, any other at what it is worth in it at the conversion provider's rate, rounded up. The µLXC limits
+	// above are what these are worth in LXC, for the parked gateway to read. A save without Currency names the µLXC
+	// limits, and is moved to dollars at the peg.
+	Currency           string `json:"currency"`
+	MaxPerPaymentMinor int64  `json:"max_per_payment_minor"`
+	// HourlyLimitMinor and WeeklyLimitMinor are, like their µLXC forms, never nil read; nil saves the rules without
+	// changing them.
+	HourlyLimitMinor   *int64 `json:"hourly_limit_minor"`
+	DailyLimitMinor    int64  `json:"daily_limit_minor"`
+	WeeklyLimitMinor   *int64 `json:"weekly_limit_minor"`
+	MonthlyLimitMinor  int64  `json:"monthly_limit_minor"`
+	ApprovalAboveMinor int64  `json:"approval_above_minor"`
 }
 
 // PayeeAllowance is one payee's "always allow" (B41.104): up to ULXC a day or a month (Per) without approval.
@@ -163,6 +179,9 @@ type AgentRequest struct {
 	// Approved: the owner signed for this payment in advance — a pull within the mandate they approved (B55.24) — so
 	// it needs no approval of its own. Every other rule still judges it.
 	Approved bool
+	// Own is the movement in its own currency when it moves money from a currency account or a card, as the rules
+	// judge it (B61.12, judgedAmount); zero for LXC, and PaidFrom's account or card amount stands in for it.
+	Own partners.Money
 }
 
 // PaidFrom is what pays an approval's payment (B57.11): the agent's LXC balance, one of its currency accounts, the
@@ -300,7 +319,8 @@ func limitOf(v *int64) int64 {
 
 func (r AgentRules) validate() error {
 	for _, v := range []int64{r.MaxPerRequestULXC, limitOf(r.HourlyLimitULXC), r.DailyLimitULXC, limitOf(r.WeeklyLimitULXC),
-		r.MonthlyLimitULXC, r.ApprovalAboveULXC, limitOf(r.RequestsPerMinute), limitOf(r.MaxCommitmentULXC), limitOf(r.FXDailyLimitULXC)} {
+		r.MonthlyLimitULXC, r.ApprovalAboveULXC, limitOf(r.RequestsPerMinute), limitOf(r.MaxCommitmentULXC), limitOf(r.FXDailyLimitULXC),
+		r.MaxPerPaymentMinor, limitOf(r.HourlyLimitMinor), r.DailyLimitMinor, limitOf(r.WeeklyLimitMinor), r.MonthlyLimitMinor, r.ApprovalAboveMinor} {
 		if v < 0 {
 			return errors.New("a limit cannot be negative (0 means no limit)")
 		}
@@ -395,18 +415,21 @@ const agentRulesColumns = `COALESCE(max_per_request_ulxc, 0), COALESCE(daily_lim
 	COALESCE(requests_per_minute, 0), allowed_payees, blocked_payees, payee_daily_limits_ulxc,
 	COALESCE(max_commitment_ulxc, 0), COALESCE(allowed_licences, '{}'), COALESCE(may_subscribe, false),
 	COALESCE(payee_monthly_limits_ulxc, '{}'), COALESCE(payee_allowances, '{}'), allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0),
-	COALESCE(may_instant_transfer, false)`
+	COALESCE(may_instant_transfer, false), COALESCE(currency, 'USD'), COALESCE(max_per_payment_minor, 0), COALESCE(hourly_limit_minor, 0),
+	COALESCE(daily_limit_minor, 0), COALESCE(weekly_limit_minor, 0), COALESCE(monthly_limit_minor, 0), COALESCE(approval_above_minor, 0)`
 
 func scanAgentRules(row pgx.Row) (AgentRules, error) {
 	var r AgentRules
-	var hourly, weekly, rpm, commitment, fxDaily int64
+	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor int64
 	var maySubscribe, mayInstant bool
 	err := row.Scan(&r.MaxPerRequestULXC, &r.DailyLimitULXC, &r.MonthlyLimitULXC, &r.ApprovalAboveULXC,
 		&r.AllowedModels, &r.AllowedProviders, &r.ActiveFrom, &r.ActiveUntil, &r.Timezone, &r.PauseOnUnusualSpend, &r.AllowedListings,
 		&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
 		&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily,
-		&mayInstant)
+		&mayInstant, &r.Currency, &r.MaxPerPaymentMinor, &hourlyMinor, &r.DailyLimitMinor, &weeklyMinor, &r.MonthlyLimitMinor,
+		&r.ApprovalAboveMinor)
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
+	r.HourlyLimitMinor, r.WeeklyLimitMinor = &hourlyMinor, &weeklyMinor
 	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC, r.MayInstantTransfer = &commitment, &maySubscribe, &fxDaily, &mayInstant
 	return r, err
 }
@@ -493,6 +516,9 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	if err := r.validate(); err != nil {
 		return r, fmt.Errorf("%w: %s", ErrAgentRule, err)
 	}
+	if err := s.rulesInCurrency(ctx, tx, workspaceID, agentID, &r); err != nil {
+		return r, err
+	}
 	if r.AllowedModels == nil {
 		r.AllowedModels = []string{}
 	}
@@ -528,20 +554,23 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	}
 	// $14 to $28 are NULL when absent, which keeps the stored caps, payees, licence and conversion rules; a zero or an
 	// empty list clears one.
-	var hourly, weekly, rpm, commitment, fxDaily int64
+	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor int64
 	var maySubscribe, mayInstant bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO agent_rules (agent_id, workspace_id, max_per_request_ulxc, daily_limit_ulxc, monthly_limit_ulxc,
 		       approval_above_ulxc, allowed_models, allowed_providers, active_from, active_until, timezone, pause_on_unusual_spend,
 		       allowed_listings, hourly_limit_ulxc, weekly_limit_ulxc, model_daily_limits_ulxc, requests_per_minute,
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, max_commitment_ulxc, allowed_licences, may_subscribe,
-		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, fx_daily_limit_ulxc, may_instant_transfer)
+		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, fx_daily_limit_ulxc, may_instant_transfer,
+		       currency, max_per_payment_minor, hourly_limit_minor, daily_limit_minor, weekly_limit_minor, monthly_limit_minor,
+		       approval_above_minor)
 		SELECT id, workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::text[], '{}'),
 		       NULLIF($14::bigint, 0), NULLIF($15::bigint, 0), COALESCE($16::text::jsonb, '{}'), NULLIF($17::integer, 0),
 		       COALESCE($18::text[], '{}'), COALESCE($19::text[], '{}'), COALESCE($20::text::jsonb, '{}'),
 		       NULLIF($21::bigint, 0), COALESCE($22::text[], '{}'), COALESCE($23::boolean, false),
 		       COALESCE($24::text::jsonb, '{}'), COALESCE($25::text::jsonb, '{}'),
-		       COALESCE($26::text[], '{}'), NULLIF($27::bigint, 0), COALESCE($28::boolean, false)
+		       COALESCE($26::text[], '{}'), NULLIF($27::bigint, 0), COALESCE($28::boolean, false),
+		       $29, $30, NULLIF($31::bigint, 0), $32, NULLIF($33::bigint, 0), $34, $35
 		  FROM agent_accounts WHERE id = $1 AND workspace_id = $2
 		ON CONFLICT (agent_id) DO UPDATE SET max_per_request_ulxc = EXCLUDED.max_per_request_ulxc,
 		       daily_limit_ulxc = EXCLUDED.daily_limit_ulxc, monthly_limit_ulxc = EXCLUDED.monthly_limit_ulxc,
@@ -563,16 +592,25 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 		       payee_allowances = COALESCE($25::text::jsonb, agent_rules.payee_allowances),
 		       allowed_currencies = COALESCE($26::text[], agent_rules.allowed_currencies),
 		       fx_daily_limit_ulxc = NULLIF(COALESCE($27::bigint, agent_rules.fx_daily_limit_ulxc), 0),
-		       may_instant_transfer = COALESCE($28::boolean, agent_rules.may_instant_transfer), updated_at = now()
+		       may_instant_transfer = COALESCE($28::boolean, agent_rules.may_instant_transfer),
+		       currency = EXCLUDED.currency, max_per_payment_minor = EXCLUDED.max_per_payment_minor,
+		       hourly_limit_minor = NULLIF(COALESCE($31::bigint, agent_rules.hourly_limit_minor), 0),
+		       daily_limit_minor = EXCLUDED.daily_limit_minor,
+		       weekly_limit_minor = NULLIF(COALESCE($33::bigint, agent_rules.weekly_limit_minor), 0),
+		       monthly_limit_minor = EXCLUDED.monthly_limit_minor, approval_above_minor = EXCLUDED.approval_above_minor, updated_at = now()
 		RETURNING COALESCE(hourly_limit_ulxc, 0), COALESCE(weekly_limit_ulxc, 0), model_daily_limits_ulxc, COALESCE(requests_per_minute, 0),
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, COALESCE(max_commitment_ulxc, 0), allowed_licences, may_subscribe,
-		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0), may_instant_transfer`,
+		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0), may_instant_transfer,
+		       COALESCE(hourly_limit_minor, 0), COALESCE(weekly_limit_minor, 0)`,
 		agentID, workspaceID, nullIfZero(r.MaxPerRequestULXC), nullIfZero(r.DailyLimitULXC), nullIfZero(r.MonthlyLimitULXC),
 		nullIfZero(r.ApprovalAboveULXC), r.AllowedModels, r.AllowedProviders, from, until, r.Timezone, r.PauseOnUnusualSpend,
 		r.AllowedListings, r.HourlyLimitULXC, r.WeeklyLimitULXC, models, r.RequestsPerMinute, r.AllowedPayees, r.BlockedPayees, payeeCaps,
-		r.MaxCommitmentULXC, r.AllowedLicences, r.MaySubscribe, payeeMonthlyCaps, allowances, r.AllowedCurrencies, r.FXDailyLimitULXC, r.MayInstantTransfer).
+		r.MaxCommitmentULXC, r.AllowedLicences, r.MaySubscribe, payeeMonthlyCaps, allowances, r.AllowedCurrencies, r.FXDailyLimitULXC, r.MayInstantTransfer,
+		r.Currency, nullIfZero(r.MaxPerPaymentMinor), r.HourlyLimitMinor, nullIfZero(r.DailyLimitMinor), r.WeeklyLimitMinor,
+		nullIfZero(r.MonthlyLimitMinor), nullIfZero(r.ApprovalAboveMinor)).
 		Scan(&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
-			&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily, &mayInstant)
+			&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily, &mayInstant,
+			&hourlyMinor, &weeklyMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrAgentNotFound
 	}
@@ -584,6 +622,7 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	}
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
 	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC, r.MayInstantTransfer = &commitment, &maySubscribe, &fxDaily, &mayInstant
+	r.HourlyLimitMinor, r.WeeklyLimitMinor = &hourlyMinor, &weeklyMinor
 	return r, nil
 }
 
@@ -610,7 +649,8 @@ func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 			BlockedPayees: []string{}, PayeeDailyLimitsULXC: map[string]int64{}, Timezone: "UTC",
 			MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
 			PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
-			AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant}, nil
+			AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant,
+			Currency: CurrencyUSD, HourlyLimitMinor: new(int64), WeeklyLimitMinor: new(int64)}, nil
 	}
 	if err != nil {
 		return r, fmt.Errorf("economy: agent rules: %w", err)
@@ -620,9 +660,9 @@ func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 
 // agentPeriodLimit is one of an agent's spending limits over a period: what it may spend since `since`.
 type agentPeriodLimit struct {
-	ulxc  int64
-	since time.Time
-	name  string
+	amount int64 // in the rules' currency (B61.12); µLXC from periodLimitsULXC
+	since  time.Time
+	name   string
 }
 
 // periodLimits are r's hourly, daily, weekly and monthly limits, their periods begun in loc as of now (in
@@ -633,11 +673,18 @@ func (r AgentRules) periodLimits(now time.Time, loc *time.Location) []agentPerio
 	monday := now.Day() - (int(now.Weekday())+6)%7
 	hour := now.Add(-(time.Duration(now.Minute())*time.Minute + time.Duration(now.Second())*time.Second + time.Duration(now.Nanosecond())))
 	return []agentPeriodLimit{
-		{limitOf(r.HourlyLimitULXC), hour, "hourly"},
-		{r.DailyLimitULXC, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), "daily"},
-		{limitOf(r.WeeklyLimitULXC), time.Date(now.Year(), now.Month(), monday, 0, 0, 0, 0, loc), "weekly"},
-		{r.MonthlyLimitULXC, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc), "monthly"},
+		{limitOf(r.HourlyLimitMinor), hour, "hourly"},
+		{r.DailyLimitMinor, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), "daily"},
+		{limitOf(r.WeeklyLimitMinor), time.Date(now.Year(), now.Month(), monday, 0, 0, 0, 0, loc), "weekly"},
+		{r.MonthlyLimitMinor, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc), "monthly"},
 	}
+}
+
+// periodLimitsULXC are periodLimits in µLXC, as the parked gateway's allowance and the LXC limit alerts count them.
+func (r AgentRules) periodLimitsULXC(now time.Time, loc *time.Location) []agentPeriodLimit {
+	l := r
+	l.HourlyLimitMinor, l.DailyLimitMinor, l.WeeklyLimitMinor, l.MonthlyLimitMinor = r.HourlyLimitULXC, r.DailyLimitULXC, r.WeeklyLimitULXC, r.MonthlyLimitULXC
+	return l.periodLimits(now, loc)
 }
 
 // agentSpentSince is what an agent has spent since `since`, as its period limits count it.
@@ -760,16 +807,17 @@ func (s *DualTokenStore) CheckAgentRules(ctx context.Context, scopedKeyID string
 	if err != nil {
 		return fmt.Errorf("economy: agent of key: %w", err)
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, 0, "byok"); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, 0, "byok"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
 // enforceAgentRules judges a positive movement of amount µLXC (a hold or a debit, ref its reservation or
-// request id) against the agent's rules, inside the movement's transaction with the agent's row locked.
-// A paused agent is refused first; a movement the rules let through is then watched for unusual spend (B19.6).
-func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, amount int64, ref string) error {
+// request id) against the agent's rules, inside the movement's transaction with the agent's row locked. Its limits
+// judge it in the rules' currency (judgedAmount, B61.12). A paused agent is refused first; a movement the rules let
+// through is then watched for unusual spend (B19.6).
+func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, amount int64, ref string) error {
 	if err := refuseIfPaused(ctx, tx, agentID); err != nil {
 		return err
 	}
@@ -857,25 +905,38 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 				ErrAgentRequestRate, rpm, asked)
 		}
 	}
-	if r.MaxPerRequestULXC > 0 && amount > r.MaxPerRequestULXC {
-		return ruleRefusal("this %s would cost up to %s; the agent's limit per request is %s",
-			what, LXCMoney(amount), LXCMoney(r.MaxPerRequestULXC))
+	// B61.12: money from a currency account is judged in the rules' currency, LXC in µLXC (judgedAmount).
+	j, err := s.judgedAmount(ctx, workspaceID, r, req, amount, now, loc)
+	if err != nil {
+		return err
+	}
+	if j.perPayment > 0 && j.amount > j.perPayment {
+		limit := "request"
+		if _, inCurrency := ownMoney(req); inCurrency {
+			limit = "payment"
+		}
+		return ruleRefusal("this %s would cost up to %s; the agent's limit per %s is %s",
+			what, j.words(j.amount), limit, j.words(j.perPayment))
 	}
 	var monthLeft *int64
-	for _, limit := range r.periodLimits(now, loc) {
-		if limit.ulxc == 0 {
+	for _, limit := range j.periods {
+		if limit.amount == 0 {
 			continue
 		}
-		spent, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
+		spentULXC, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
 		if err != nil {
 			return fmt.Errorf("economy: agent spend so far: %w", err)
 		}
-		if spent+amount > limit.ulxc {
-			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
-				LXCMoney(spent), limit.name, LXCMoney(limit.ulxc), what, LXCMoney(amount))
+		spent, err := j.spentIn(spentULXC)
+		if err != nil {
+			return err
 		}
-		if limit.name == "monthly" {
-			left := limit.ulxc - spent - amount
+		if spent+j.amount > limit.amount {
+			return ruleRefusal("the agent has spent %s of its %s limit of %s, and this %s would cost up to %s",
+				j.words(spent), limit.name, j.words(limit.amount), what, j.words(j.amount))
+		}
+		if limit.name == "monthly" && r.MonthlyLimitULXC > 0 { // the approval sheet's "left this month", in LXC (B57.11)
+			left := r.MonthlyLimitULXC - spentULXC - amount
 			monthLeft = &left
 		}
 	}
@@ -909,7 +970,7 @@ func enforceAgentRules(ctx context.Context, tx pgx.Tx, workspaceID, agentID stri
 			}
 		}
 	}
-	if prepared || (r.ApprovalAboveULXC > 0 && amount > r.ApprovalAboveULXC && !req.Approved) {
+	if prepared || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
 			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft}
 		// An approved request goes through once: the approval is used up in this transaction, so a

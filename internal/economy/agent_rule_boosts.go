@@ -42,7 +42,19 @@ var boostableRules = map[string]func(*AgentRules) *int64{
 	"monthly_limit_ulxc":   func(r *AgentRules) *int64 { return &r.MonthlyLimitULXC },
 	"approval_above_ulxc":  func(r *AgentRules) *int64 { return &r.ApprovalAboveULXC },
 	"requests_per_minute":  func(r *AgentRules) *int64 { return r.RequestsPerMinute },
+	// B61.12: the limits in the rules' currency.
+	"max_per_payment_minor": func(r *AgentRules) *int64 { return &r.MaxPerPaymentMinor },
+	"hourly_limit_minor":    func(r *AgentRules) *int64 { return r.HourlyLimitMinor },
+	"daily_limit_minor":     func(r *AgentRules) *int64 { return &r.DailyLimitMinor },
+	"weekly_limit_minor":    func(r *AgentRules) *int64 { return r.WeeklyLimitMinor },
+	"monthly_limit_minor":   func(r *AgentRules) *int64 { return &r.MonthlyLimitMinor },
+	"approval_above_minor":  func(r *AgentRules) *int64 { return &r.ApprovalAboveMinor },
 }
+
+// boostedInCurrency is the limit in the rules' currency (B61.12) a boost on a µLXC limit raises, in dollars at the peg.
+var boostedInCurrency = map[string]string{"max_per_request_ulxc": "max_per_payment_minor", "hourly_limit_ulxc": "hourly_limit_minor",
+	"daily_limit_ulxc": "daily_limit_minor", "weekly_limit_ulxc": "weekly_limit_minor", "monthly_limit_ulxc": "monthly_limit_minor",
+	"approval_above_ulxc": "approval_above_minor"}
 
 // BoostableRules are the names of the limits a boost may raise, sorted.
 func BoostableRules() []string {
@@ -62,8 +74,16 @@ func (r *AgentRules) applyBoosts(boosts []AgentRuleBoost) {
 		if !ok {
 			continue
 		}
-		if v := field(r); v != nil && *v == b.RaisedFrom && b.Value > *v {
-			*v = b.Value
+		v := field(r)
+		if v == nil || *v != b.RaisedFrom || b.Value <= *v {
+			continue
+		}
+		*v = b.Value
+		// A boost on a µLXC limit, set before B61.12 or by a client that names µLXC, raises dollar rules at the peg.
+		if twin, ok := boostedInCurrency[b.Rule]; ok && r.currency() == CurrencyUSD {
+			if m := boostableRules[twin](r); m != nil && *m == centsAtPeg(b.RaisedFrom) {
+				*m = max(*m, centsAtPeg(b.Value))
+			}
 		}
 	}
 }
@@ -102,10 +122,13 @@ func agentBoosts(ctx context.Context, q pgxDB, agentID string, at time.Time) ([]
 	return out, rows.Err()
 }
 
-// ruleAmount is v as the limit rule counts it: LXC, or requests a minute.
-func ruleAmount(rule string, v int64) string {
-	if rule == "requests_per_minute" {
+// ruleAmount is v as the limit rule counts it: the rules' currency, LXC, or requests a minute.
+func ruleAmount(r AgentRules, rule string, v int64) string {
+	switch {
+	case rule == "requests_per_minute":
 		return strconv.FormatInt(v, 10) + " requests a minute"
+	case strings.HasSuffix(rule, "_minor"):
+		return r.rulesAmount(v)
 	}
 	return LXCMoney(v)
 }
@@ -142,16 +165,31 @@ func (s *DualTokenStore) boostAgentRule(ctx context.Context, q pgxDB, workspaceI
 	if err != nil {
 		return b, err
 	}
-	name := strings.ReplaceAll(strings.TrimSuffix(b.Rule, "_ulxc"), "_", " ")
+	if _, ok := boostedInCurrency[b.Rule]; ok && r.currency() != CurrencyUSD {
+		return b, fmt.Errorf("%w: they are in %s; boost %s in it", ErrRulesCurrency, r.currency(), boostedInCurrency[b.Rule])
+	}
+	name := strings.ReplaceAll(strings.TrimSuffix(strings.TrimSuffix(b.Rule, "_ulxc"), "_minor"), "_", " ")
+	if field(&r) == nil {
+		return b, fmt.Errorf("%w: the agent has no %s to raise; set it in the rules first", ErrAgentRule, name)
+	}
 	switch current := *field(&r); {
 	case current == 0:
 		return b, fmt.Errorf("%w: the agent has no %s to raise; set it in the rules first", ErrAgentRule, name)
 	case b.Value <= current:
-		return b, fmt.Errorf("%w: the agent's %s is %s, so a boost must raise it above that", ErrAgentRule, name, ruleAmount(b.Rule, current))
+		return b, fmt.Errorf("%w: the agent's %s is %s, so a boost must raise it above that", ErrAgentRule, name, ruleAmount(r, b.Rule, current))
 	}
 	// B32.32: a room wallet's monthly limit is not raised past what the room owner's plan allows, even for a while.
 	if b.Rule == "monthly_limit_ulxc" {
 		if err := s.checkRoomBudget(ctx, q, workspaceID, agentID, b.Value); err != nil {
+			return b, err
+		}
+	}
+	if b.Rule == "monthly_limit_minor" { // judged at what it is worth in LXC, rounded up
+		usdMicro, err := s.convertMinor(ctx, workspaceID, b.Value, r.currency(), CurrencyUSDC, true)
+		if err != nil {
+			return b, err
+		}
+		if err := s.checkRoomBudget(ctx, q, workspaceID, agentID, usdMicro*ULXCPerUSDMicro); err != nil {
 			return b, err
 		}
 	}

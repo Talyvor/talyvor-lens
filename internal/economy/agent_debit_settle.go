@@ -341,15 +341,15 @@ func agentAllowance(ctx context.Context, tx pgx.Tx, workspaceID, agentID string,
 		}
 		want = min(want, max(limit-spent, 0))
 	}
-	for _, limit := range r.periodLimits(now, loc) {
-		if limit.ulxc == 0 {
+	for _, limit := range r.periodLimitsULXC(now, loc) {
+		if limit.amount == 0 {
 			continue
 		}
 		spent, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
 		if err != nil {
 			return 0, fmt.Errorf("economy: agent spend so far: %w", err)
 		}
-		want = min(want, max(limit.ulxc-spent, 0))
+		want = min(want, max(limit.amount-spent, 0))
 	}
 	if want == 0 {
 		return 0, nil
