@@ -68,10 +68,10 @@ func TestB5618_SSOConnection(t *testing.T) {
 	const secret = "s3cret-client-value-b5618"
 	save := `{"issuer":"https://login.acme-b5618.example/","client_id":"lens-app","client_secret":"` + secret + `","domains":["Acme-B5618.example"]}`
 
-	// Free is refused in words naming the plan that has it.
+	// Studio is refused in words naming the plan that has it (B61.57).
 	if code, body := do("PUT", "/v1/workspaces/ws-b5618-free/sso", save); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "Free does not include single sign-on. Business includes it.") {
-		t.Fatalf("Free PUT = %d %s", code, body)
+		!strings.Contains(body, "Studio does not include single sign-on. Group includes it.") {
+		t.Fatalf("Studio PUT = %d %s", code, body)
 	}
 	// A workspace key is not the owner signed in.
 	if code, body := do("PUT", "/v1/workspaces/ws-b5618-biz/sso", save, "X-Test-Key", "1"); code != http.StatusForbidden {

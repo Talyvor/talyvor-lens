@@ -34,10 +34,9 @@ func PlanOf(ctx context.Context, db PlanQuerier, workspaceID string) (string, er
 	return plans.PlanOf(ctx, db, workspaceID)
 }
 
-// PlatformFeeBPS is the platform fee on workspaceID's AI spend charged to credits, in basis points (B32.11):
-// the Enterprise contract's own figure where the operator recorded one; else its plan's in s.PlatformFeeBPS —
-// plus, pro, max and byok take team's, and a workspace with no plan, or a plan the setting does not name,
-// takes free's.
+// PlatformFeeBPS is the platform fee on workspaceID's AI spend charged to credits, in basis points (B32.11): the
+// contract's own figure where the operator recorded one; else its plan's in s.PlatformFeeBPS (B61.57), which fees.Load
+// holds to name every plan.
 func PlatformFeeBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, error) {
 	c, err := ContractOf(ctx, db, workspaceID)
 	if err != nil {
@@ -50,19 +49,12 @@ func PlatformFeeBPS(ctx context.Context, db PlanQuerier, workspaceID string, s f
 	if err != nil {
 		return 0, err
 	}
-	switch plan {
-	case "plus", "pro", "max", BYOKPlan:
-		plan = TeamPlan
-	}
-	if bps, ok := s.PlatformFeeBPS[plan]; ok {
-		return bps, nil
-	}
-	return s.PlatformFeeBPS[FreePlan], nil
+	return s.PlatformFeeBPS[plan], nil
 }
 
 // FXMarginBPS is the margin over the reference rate on workspaceID's currency conversions, in basis points (B56.23):
-// the Enterprise contract's own figure where the operator recorded one; else its plan's in s.FXMarginBPS, the plans
-// mapped as PlatformFeeBPS maps them. It answers the plan too, mapped the same way (B30.29: free converts test money only).
+// the contract's own figure where the operator recorded one; else its plan's in s.FXMarginBPS (B61.57), which fees.Load
+// holds to name every plan. It answers the plan too.
 func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees.Settings) (int64, string, error) {
 	plan, err := PlanOf(ctx, db, workspaceID)
 	if err != nil {
@@ -75,19 +67,12 @@ func FXMarginBPS(ctx context.Context, db PlanQuerier, workspaceID string, s fees
 	if c != nil && c.FXMarginBPS != nil {
 		return *c.FXMarginBPS, plan, nil
 	}
-	switch plan {
-	case "plus", "pro", "max", BYOKPlan:
-		plan = TeamPlan
-	}
-	if bps, ok := s.FXMarginBPS[plan]; ok {
-		return bps, plan, nil
-	}
-	return s.FXMarginBPS[FreePlan], FreePlan, nil
+	return s.FXMarginBPS[plan], plan, nil
 }
 
-// Contract is an Enterprise contract as the operator records it: the contract's own platform fee and FX
-// margin, in basis points, where it agreed one (nil follows the enterprise figure in internal/fees), and its own
-// limits on agents and seats, -1 unlimited (nil follows enterprise's gates in LENS_PLAN_GATES, B32.12).
+// Contract is a business's Custom contract as the operator records it (B61.57): the contract's own platform fee and FX
+// margin, in basis points, where it agreed one (nil follows Custom's figure in internal/fees), and its own limits on
+// agents and seats, -1 unlimited (nil follows Custom's gates in LENS_PLAN_GATES, B32.12).
 type Contract struct {
 	WorkspaceID    string    `json:"workspace_id"`
 	Plan           string    `json:"plan"`
@@ -106,12 +91,13 @@ var ErrInvalidContract = errors.New("billing: invalid contract")
 // ErrNoContract is ending a contract a workspace does not have.
 var ErrNoContract = errors.New("billing: the workspace has no contract")
 
-// ContractOf is workspaceID's contract, or nil.
+// ContractOf is workspaceID's contract, or nil. A personal account's counts for nothing (B61.57): Custom is a business's.
 func ContractOf(ctx context.Context, db PlanQuerier, workspaceID string) (*Contract, error) {
 	c := Contract{WorkspaceID: workspaceID}
 	err := db.QueryRow(ctx, `
 		SELECT plan, platform_fee_bps, fx_margin_bps, agents, seats, reference, set_by, set_at
-		FROM workspace_contracts WHERE workspace_id = $1`, workspaceID).
+		FROM workspace_contracts c WHERE workspace_id = $1
+		AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = c.workspace_id AND w.account_type = 'personal')`, workspaceID).
 		Scan(&c.Plan, &c.PlatformFeeBPS, &c.FXMarginBPS, &c.Agents, &c.Seats, &c.Reference, &c.SetBy, &c.SetAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -122,16 +108,16 @@ func ContractOf(ctx context.Context, db PlanQuerier, workspaceID string) (*Contr
 	return &c, nil
 }
 
-// SetContract puts c.WorkspaceID on an Enterprise contract, or replaces its terms, and records the operator who
+// SetContract puts a business, c.WorkspaceID, on a Custom contract (B61.57), or replaces its terms, and records the operator who
 // did it in the operator audit trail — in one transaction.
 func SetContract(ctx context.Context, pool *pgxpool.Pool, c Contract, actor string) (*Contract, error) {
 	c.WorkspaceID, c.Reference, actor = strings.TrimSpace(c.WorkspaceID), strings.TrimSpace(c.Reference), strings.TrimSpace(actor)
 	if c.Plan == "" {
-		c.Plan = EnterprisePlan
+		c.Plan = plans.BusinessCustom
 	}
 	switch {
-	case c.Plan != EnterprisePlan:
-		return nil, fmt.Errorf("%w: the operator contracts only %s; %q is bought through Stripe", ErrInvalidContract, EnterprisePlan, c.Plan)
+	case c.Plan != plans.BusinessCustom:
+		return nil, fmt.Errorf("%w: the operator contracts only %s; %q is chosen by the account", ErrInvalidContract, plans.BusinessCustom, c.Plan)
 	case c.WorkspaceID == "":
 		return nil, fmt.Errorf("%w: no workspace", ErrInvalidContract)
 	case actor == "":
@@ -152,12 +138,15 @@ func SetContract(ctx context.Context, pool *pgxpool.Pool, c Contract, actor stri
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1)`, c.WorkspaceID).Scan(&exists); err != nil {
-		return nil, err
-	}
-	if !exists {
+	var accountType string
+	err = tx.QueryRow(ctx, `SELECT account_type FROM workspaces WHERE id = $1`, c.WorkspaceID).Scan(&accountType)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return nil, fmt.Errorf("%w: no workspace %q", ErrInvalidContract, c.WorkspaceID)
+	case err != nil:
+		return nil, err
+	case accountType == plans.AccountPersonal:
+		return nil, fmt.Errorf("%w: %q is a personal account; Custom is a business's plan", ErrInvalidContract, c.WorkspaceID)
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO workspace_contracts (workspace_id, plan, platform_fee_bps, fx_margin_bps, agents, seats, reference, set_by)
@@ -180,7 +169,7 @@ func SetContract(ctx context.Context, pool *pgxpool.Pool, c Contract, actor stri
 	return &c, nil
 }
 
-// EndContract takes workspaceID off its contract, back to the plan its subscription bills (or free), and records
+// EndContract takes workspaceID off its contract, back to the plan it chose (or the first step of its ladder), and records
 // the operator who did it in the operator audit trail — in one transaction.
 func EndContract(ctx context.Context, pool *pgxpool.Pool, workspaceID, actor string) error {
 	if actor = strings.TrimSpace(actor); actor == "" {

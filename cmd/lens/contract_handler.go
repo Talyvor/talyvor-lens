@@ -12,9 +12,9 @@ import (
 	"github.com/talyvor/lens/internal/billing"
 )
 
-// contract_handler.go — B32.10: the operator's Enterprise contracts. Enterprise is contracted and invoiced by
-// the operator, never sold through Stripe; recording it here makes billing.PlanOf answer enterprise for the
-// workspace, with the contract's own fees.
+// contract_handler.go — B32.10: the operator's contracts. Custom (business_custom, B61.57) is contracted and invoiced
+// by the operator, never chosen in the app; recording it here makes billing.PlanOf answer business_custom for a
+// business, with the contract's own fees.
 
 // contractActor is the operator who acts: the one X-Talyvor-Operator names, or the body's actor. A body naming
 // someone else than the header is refused, as the operator audit trail's own record route refuses it.
@@ -59,8 +59,8 @@ func newContractGetHandler(pool *pgxpool.Pool) http.Handler {
 	})
 }
 
-// newContractPutHandler — PUT /v1/admin/workspaces/{wsID}/contract {"plan":"enterprise", "platform_fee_bps",
-// "fx_margin_bps", "reference", "actor"}: puts the workspace on an Enterprise contract, or replaces its terms.
+// newContractPutHandler — PUT /v1/admin/workspaces/{wsID}/contract {"plan":"business_custom", "platform_fee_bps",
+// "fx_margin_bps", "reference", "actor"}: puts a business on a Custom contract, or replaces its terms.
 func newContractPutHandler(pool *pgxpool.Pool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {

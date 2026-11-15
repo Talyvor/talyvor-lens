@@ -35,8 +35,9 @@ func TestLoadLimits_TheEnvExampleIsTheDefaults(t *testing.T) {
 			t.Errorf("%s: LoadLimits = %v, want refused naming %s", name, err, LimitsEnv)
 		}
 	}
-	for plan, want := range map[string]string{"plus": "team", "pro": "team", "max": "team", "byok": "business",
-		"team": "team", "enterprise": "enterprise", "free": "free", "legacy": "free", "": "free"} {
+	for plan, want := range map[string]string{"personal_solo": "free", "personal_crew": "team", "personal_fleet": "business",
+		"business_studio": "free", "business_company": "team", "business_group": "business", "business_custom": "enterprise",
+		"legacy": "free", "": "free"} {
 		if got := limitsPlanOf(plan); got != want {
 			t.Errorf("limitsPlanOf(%q) = %q, want %q", plan, got, want)
 		}

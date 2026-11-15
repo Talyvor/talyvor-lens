@@ -193,10 +193,10 @@ func (s *Store) judgeBudget(p PlanLimits, monthlyULXC int64) error {
 		return nil
 	}
 	e := &PlanLimitError{Setting: LimitsSetting, Plan: p.Plan, Limit: "room_budget_max_usd", Max: p.RoomBudgetMaxUSD}
-	past := false
-	for _, name := range plans.Order {
+	past, tier := false, ""
+	for _, name := range Tiers {
 		if n := s.limits[name].RoomBudgetMaxUSD; past && (n == plans.Unlimited || n > p.RoomBudgetMaxUSD) {
-			e.Allows = name
+			e.Allows, tier = planAt(p.Plan, name), name
 			break
 		}
 		past = past || name == p.LimitAs
@@ -207,7 +207,7 @@ func (s *Store) judgeBudget(p PlanLimits, monthlyULXC int64) error {
 		return e
 	}
 	e.Detail = fmt.Sprintf("%s allows a room a budget of %s.", plans.Name(p.Plan), upTo)
-	switch n := s.limits[e.Allows].RoomBudgetMaxUSD; {
+	switch n := s.limits[tier].RoomBudgetMaxUSD; {
 	case e.Allows == "":
 		e.Detail += " A contract with Talyvor sets more."
 	case n == plans.Unlimited:
