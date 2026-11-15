@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"slices"
 	"time"
@@ -38,6 +39,9 @@ func (r AgentRules) currency() string {
 
 // rulesAmount is minor units of the rules' currency for a person: "€500.00".
 func (r AgentRules) rulesAmount(minor int64) string { return Money(minor, r.currency()) }
+
+// ulxcPerCent is how many µLXC one US cent buys at the peg (100,000 at $0.10).
+var ulxcPerCent = int64(math.Round(1e4 / LXCUSDValue))
 
 // centsAtPeg is a µLXC limit in US cents at the peg: exact in whole cents; a part of a cent keeps its whole cents but
 // never fewer than one, so no limit becomes none (migration 0393 moves the stored rules the same way).
