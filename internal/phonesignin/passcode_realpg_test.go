@@ -352,3 +352,37 @@ func TestPasscodeLockCountClearedByARightLockEntry(t *testing.T) {
 		}
 	}
 }
+
+// B61.24's key rules ask the real passcode: a person who set one at sign-up and has no key yet adds a first key only
+// with it (or a key's sign-in), and a wrong one counts at the lock.
+func TestPasscodeRuleGuardsANewKey(t *testing.T) {
+	ctx := context.Background()
+	s, pool := keyStore(t)
+	s.PasscodeSecret = []byte("passcode-secret-for-tests-0123456789")
+	s.Passcodes = s.PasscodeRule()
+	newPerson(t, pool, "per_pc", "+447700900481")
+	if err := s.ReplacePasscodeAfterKey(ctx, "per_pc", testPasscode, ""); err != nil {
+		t.Fatal(err)
+	}
+	add := func(proof KeyProof) error {
+		rc, err := s.RegisterChallenge(ctx, "per_pc", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.AddKey(ctx, "per_pc", NewKey{Name: "Phone", Passkey: newAuthenticator(t).register(t, rc.Challenge)}, proof, "")
+		return err
+	}
+	if err := add(KeyProof{}); !errors.Is(err, ErrKeyProof) {
+		t.Fatalf("a first key with a passcode set and no proof = %v, want ErrKeyProof", err)
+	}
+	if err := add(KeyProof{Passcode: "000000"}); !errors.Is(err, ErrWrongPasscode) {
+		t.Fatalf("a first key with a wrong passcode = %v, want ErrWrongPasscode", err)
+	}
+	var lockWrong int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM passcode_events WHERE person_id = 'per_pc' AND event = 'wrong' AND way = 'lock'`).Scan(&lockWrong); err != nil || lockWrong != 1 {
+		t.Fatalf("the wrong try counted at the lock: %d (%v), want 1", lockWrong, err)
+	}
+	if err := add(KeyProof{Passcode: testPasscode}); err != nil {
+		t.Fatalf("a first key with the right passcode: %v", err)
+	}
+}

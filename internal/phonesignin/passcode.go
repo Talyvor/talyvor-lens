@@ -207,6 +207,20 @@ func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode
 	return ErrWrongPasscode
 }
 
+// PasscodeRule is the passcode as B61.24's key rules ask about it (Store.Passcodes). A passcode given to add a key
+// comes with a session of the person, so it counts at the lock.
+func (s *Store) PasscodeRule() PasscodeRule { return storePasscodes{s} }
+
+type storePasscodes struct{ s *Store }
+
+func (r storePasscodes) HasPasscode(ctx context.Context, tx pgx.Tx, personID string) (bool, error) {
+	return hasPasscode(ctx, tx, personID)
+}
+
+func (r storePasscodes) CheckPasscode(ctx context.Context, tx pgx.Tx, personID, passcode, address string) error {
+	return r.s.checkPasscode(ctx, tx, personID, passcode, address, passcodeAtLock)
+}
+
 // CheckPasscode is the phone app's lock: the BFF holds a session of the person and asks whether passcode is theirs.
 // nil is right; a wrong try is counted whatever the answer.
 func (s *Store) CheckPasscode(ctx context.Context, personID, passcode, address string) error {
