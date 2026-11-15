@@ -452,7 +452,7 @@ func createAgentTx(ctx context.Context, tx pgx.Tx, workspaceID, name, ownerUserI
 	}
 	a := Agent{ID: "agt_" + uuid.NewString(), Name: name, Keys: []string{}, OwnerUserID: ownerUserID, Kind: "agent", WalletKind: kind, FiatCurrency: fiat,
 		Role: look.Role, RoleWord: look.RoleWord}
-	// A colour or face left NULL is picked by the insert's trigger (0360); a picture left NULL is its colour's (0391).
+	// A colour or face left NULL is picked by the insert's trigger (0360); a picture left NULL is its colour's (0392).
 	err = tx.QueryRow(ctx, `INSERT INTO agent_accounts (id, workspace_id, name, owner_user_id, wallet_kind, wallet_fiat_currency, colour, face, role, role_word, picture)
 		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, $10, NULLIF($11, '')) RETURNING created_at, colour, face, COALESCE(picture, colour)`,
 		a.ID, workspaceID, name, ownerUserID, kind, fiat, look.Colour, look.Face, look.Role, look.RoleWord, look.Picture).Scan(&a.CreatedAt, &a.Colour, &a.Face, &a.Picture)
