@@ -284,8 +284,8 @@ func (s *DualTokenStore) agentLimitProgress(ctx context.Context, workspaceID str
 			loc = time.UTC
 		}
 		err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-			for _, limit := range r.periodLimits(now.In(loc), loc) {
-				if limit.ulxc <= 0 {
+			for _, limit := range r.periodLimitsULXC(now.In(loc), loc) {
+				if limit.amount <= 0 {
 					continue
 				}
 				spent, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
@@ -293,7 +293,7 @@ func (s *DualTokenStore) agentLimitProgress(ctx context.Context, workspaceID str
 					return err
 				}
 				out = append(out, SpendAlert{Kind: SpendAlertAgentLimit, Subject: agentID, AgentID: agentID, Period: limit.name,
-					PeriodStart: limit.since, SpentMinor: spent, LimitMinor: limit.ulxc, Currency: "LXC"})
+					PeriodStart: limit.since, SpentMinor: spent, LimitMinor: limit.amount, Currency: "LXC"})
 			}
 			return nil
 		})

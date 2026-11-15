@@ -35,6 +35,10 @@ type SimulatedRequest struct {
 	At         *time.Time  `json:"at"` // when it is asked, for the active hours and the periods; now when absent
 	// AlwaysAllow judges a payment as though this allowance for its payee were saved (B41.104); it is not.
 	AlwaysAllow *PayeeAllowance `json:"always_allow"`
+	// AmountMinor and Currency (B61.12) ask about a payment from one of the agent's currency accounts in that currency,
+	// judged as one would be: on its own amount in the rules' currency, otherwise at the rate. AmountULXC is then 0.
+	AmountMinor int64  `json:"amount_minor"`
+	Currency    string `json:"currency"`
 }
 
 // RuleSimulation is the rules' answer: allowed, refused, or approval_required (it would wait for the workspace's
@@ -54,10 +58,21 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 	if in.At != nil {
 		out.At = *in.At
 	}
-	if in.AmountULXC < 0 {
+	if in.AmountULXC < 0 || in.AmountMinor < 0 {
 		return out, fmt.Errorf("%w: the amount cannot be negative", ErrBadSimulation)
 	}
 	req := AgentRequest{Model: in.Model, Provider: in.Provider, At: out.At, Fingerprint: "simulated:" + uuid.NewString()}
+	if in.AmountMinor > 0 || in.Currency != "" {
+		if _, ok := MoneyCurrencies[in.Currency]; !ok || in.AmountULXC != 0 {
+			return out, fmt.Errorf("%w: a payment from an account names its amount_minor and currency (GBP, EUR, USD or USDC), and no amount_ulxc", ErrBadSimulation)
+		}
+		req.PaidFrom = PaidFrom{Kind: "account", Currency: in.Currency, AmountMinor: in.AmountMinor}
+		usdMicro, err := s.convertMinor(ctx, workspaceID, in.AmountMinor, in.Currency, CurrencyUSDC, true)
+		if err != nil {
+			return out, err
+		}
+		in.AmountULXC = usdMicro * ULXCPerUSDMicro // what the rules still judged in LXC count it as, as a payment's value is
+	}
 	what := "request"
 	if in.Payee != nil {
 		switch in.Payee.Kind {
@@ -114,15 +129,19 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 	}
 	// The fingerprint is new, so no approval matches it: a request above the approval amount answers that it
 	// needs one rather than using one a person granted to a real request.
-	err = enforceAgentRules(WithAgentRequest(ctx, req), tx, workspaceID, agentID, in.AmountULXC, "simulated")
+	err = s.enforceAgentRules(WithAgentRequest(ctx, req), tx, workspaceID, agentID, in.AmountULXC, "simulated")
 	var need *ApprovalNeededError
 	switch {
 	case err == nil:
 		out.Verdict = "allowed"
 	case errors.As(err, &need):
+		cost := LXCMoney(in.AmountULXC)
+		if in.Currency != "" {
+			cost = Money(in.AmountMinor, in.Currency)
+		}
 		out.Verdict = "approval_required"
 		out.Reason = fmt.Sprintf("this %s would cost up to %s, above the agent's approval amount: it would wait for the workspace's owner to approve it",
-			what, LXCMoney(in.AmountULXC))
+			what, cost)
 	case errors.Is(err, ErrAgentRule):
 		out.Verdict = "refused"
 		out.Reason = strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": ")

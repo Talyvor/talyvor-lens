@@ -2128,23 +2128,23 @@ func agentStatementPDF(st economy.Statement) []byte {
 		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04"))},
 		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 70},
 			{Name: "WITH", Width: 99}, {Name: "AMOUNT", Width: 88, Right: true}, {Name: "BALANCE", Width: 88.28, Right: true}},
-		Footer: "Times are UTC. Amounts are in LXC."}
+		Footer: "Times are UTC. Amounts are in US dollars."}
 	if st.AgentID != "" {
 		t.Lines = append(t.Lines, "Agent "+st.AgentID)
 	}
 	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXC(a.OpeningULXC)})
+		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXCMoney(a.OpeningULXC)})
 	}
 	for _, l := range st.Lines {
 		t.Rows = append(t.Rows, []string{day(l.At), l.Account, cmp.Or(l.Label, l.Kind), cmp.Or(l.Counterparty, l.Memo),
-			economy.LXC(l.AmountULXC), economy.LXC(l.BalanceAfterULXC)})
+			economy.LXCMoney(l.AmountULXC), economy.LXCMoney(l.BalanceAfterULXC)})
 	}
 	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXC(a.ClosingULXC)})
+		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXCMoney(a.ClosingULXC)})
 	}
 	for _, l := range st.MarketplaceBill {
 		t.Rows = append(t.Rows, []string{day(l.At), economy.OnMarketplaceBill, l.Kind, cmp.Or(l.PayeeAgentID, l.ListingID, l.Memo),
-			economy.LXC(l.AmountULXC), ""})
+			economy.LXCMoney(l.AmountULXC), ""})
 	}
 	return t.PDF()
 }

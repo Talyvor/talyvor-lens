@@ -224,7 +224,7 @@ func (s *DualTokenStore) judgeCardSpend(ctx context.Context, sp CardSpend) error
 		return err
 	}
 	var need *ApprovalNeededError
-	switch err := enforceAgentRules(ctx, tx, sp.WorkspaceID, sp.AgentID, value, key); {
+	switch err := s.enforceAgentRules(ctx, tx, sp.WorkspaceID, sp.AgentID, value, key); {
 	case errors.As(err, &need):
 		_ = tx.Rollback(ctx)
 		filed := s.fileApproval(ctx, need)

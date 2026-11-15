@@ -101,7 +101,7 @@ func (s *DualTokenStore) PayAgent(ctx context.Context, workspaceID, fromAgentID,
 		// B50.1: with an Idempotency-Key the entry is the key's, so a retry finds what it first posted.
 		entry = uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent_pay\x00"+workspaceID+"\x00"+fromAgentID+"\x00"+key))
 	}
-	if pay, err = payAgentTx(ctx, tx, workspaceID, pay, entry); err != nil {
+	if pay, err = s.payAgentTx(ctx, tx, workspaceID, pay, entry); err != nil {
 		return pay, s.refusedMovement(ctx, tx, err)
 	}
 	return pay, tx.Commit(ctx)
@@ -161,7 +161,7 @@ func (s *DualTokenStore) payCompanyAgent(ctx context.Context, workspaceID, payee
 			return pay, err
 		}
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, pay.FromAgentID, pay.AmountULXC, "company:"+payeeWorkspace); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, pay.FromAgentID, pay.AmountULXC, "company:"+payeeWorkspace); err != nil {
 		return pay, s.refusedMovement(ctx, tx, err)
 	}
 	if pay.EntryID, err = s.companyPayments.ChargeAgentPayment(ctx, tx, useID, workspaceID, pay.FromAgentID, payeeWorkspace, pay.ToAgentID,
@@ -182,7 +182,7 @@ func paymentFingerprint(fromAgentID, toAgentID string, amount int64, memo string
 
 // payAgentTx posts pay as entry inside tx, judged by the payer's rules. Its refusals are returned as
 // they are; PayAgent files the approval one needs.
-func payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPayment, entry uuid.UUID) (AgentPayment, error) {
+func (s *DualTokenStore) payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPayment, entry uuid.UUID) (AgentPayment, error) {
 	fromAgentID, toAgentID, amount, memo := pay.FromAgentID, pay.ToAgentID, pay.AmountULXC, pay.Memo
 	// Both agents' rows, in id order, so two opposite payments cannot deadlock.
 	first, second := fromAgentID, toAgentID
@@ -224,7 +224,7 @@ func payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPay
 		return pay, agentHolds(ctx, tx, ErrAgentFunds, fromAgentID, bal, 0)
 	}
 	pay.EntryID = entry.String()
-	if err := enforceAgentRules(ctx, tx, workspaceID, fromAgentID, amount, pay.EntryID); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, fromAgentID, amount, pay.EntryID); err != nil {
 		return pay, err
 	}
 	for _, l := range []leg{{agentAccount(fromAgentID), -amount}, {agentAccount(toAgentID), amount}} {

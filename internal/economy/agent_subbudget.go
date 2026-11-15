@@ -97,7 +97,7 @@ func lockKeyAndAgent(ctx context.Context, tx pgx.Tx, scopedKeyID string) error {
 
 // ErrSubBudgetExceeded is returned when a debit would push the agent's spent_lxc past its ceiling. The whole
 // transaction rolls back — no claim, no debit — so the request_id stays retriable (e.g. after a ceiling raise).
-var ErrSubBudgetExceeded = errors.New("economy: agent LXC sub-budget ceiling exceeded")
+var ErrSubBudgetExceeded = errors.New("economy: agent sub-budget ceiling exceeded")
 
 // DefaultAgentCeilingLXC is the ceiling applied to a scoped key with no explicit ceiling — 50 LXC ($5 at the
 // 1 LXC = $0.10 peg), in µLXC (SEC-2). Baked here per the owner's step-A instruction (the capstone ships
@@ -323,7 +323,7 @@ func (s *DualTokenStore) spendLXCForAgent(ctx context.Context, scopedKeyID, work
 	// (3) CEILING check — reject (rollback ⇒ no orphan claim) if this debit would exceed remaining.
 	// B19.1: a key attached to an agent account spends the agent's balance, posted in this transaction;
 	// the per-key ceiling binds only a key with no agent.
-	isAgent, err := agentMovementFee(ctx, tx, scopedKeyID, lxcAmount, fee, bps, "spend", requestID, meta.RequestedModel)
+	isAgent, err := s.agentMovementFee(ctx, tx, scopedKeyID, lxcAmount, fee, bps, "spend", requestID, meta.RequestedModel)
 	if err != nil {
 		return s.refusedMovement(ctx, tx, err)
 	}
@@ -470,7 +470,7 @@ func (s *DualTokenStore) reserveLXCForAgent(ctx context.Context, scopedKeyID, wo
 		return fmt.Errorf("economy: read sub-budget: %w", err)
 	}
 	// B19.1: an agent's key holds against the agent's balance (posted here), not the per-key ceiling.
-	isAgent, err := agentMovement(ctx, tx, scopedKeyID, heldLXC, "hold", reservationID, meta.RequestedModel)
+	isAgent, err := s.agentMovement(ctx, tx, scopedKeyID, heldLXC, "hold", reservationID, meta.RequestedModel)
 	if err != nil {
 		return s.refusedMovement(ctx, tx, err) // rollback ⇒ no orphan reservation
 	}
@@ -670,7 +670,7 @@ func (s *DualTokenStore) settleLXCReservation(ctx context.Context, reservationID
 		return 0, 0, fmt.Errorf("economy: reclaim spent (settle): %w", err)
 	}
 	// B19.1: the part of the hold not charged goes back to the agent, and its platform fee is its own posting.
-	if _, err := agentMovement(ctx, tx, scopedKeyID, -(refund + fee), "settle", reservationID, reqModel); err != nil {
+	if _, err := s.agentMovement(ctx, tx, scopedKeyID, -(refund + fee), "settle", reservationID, reqModel); err != nil {
 		return 0, 0, err
 	}
 	if err := postAgentFee(ctx, tx, scopedKeyID, fee, bps, reservationID, reqModel); err != nil {
@@ -764,7 +764,7 @@ func (s *DualTokenStore) releaseLXCReservation(ctx context.Context, reservationI
 		return fmt.Errorf("economy: reclaim spent (release): %w", err)
 	}
 	// B19.1: a released hold goes back to the agent in full.
-	if _, err := agentMovement(ctx, tx, scopedKeyID, -heldLXC, "release", reservationID, reqModel); err != nil {
+	if _, err := s.agentMovement(ctx, tx, scopedKeyID, -heldLXC, "release", reservationID, reqModel); err != nil {
 		return err
 	}
 	// B50.47: the hold moves off reservationID, so a retry under it takes a new hold.

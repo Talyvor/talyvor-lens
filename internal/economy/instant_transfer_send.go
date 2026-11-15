@@ -361,7 +361,7 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 			Money(balance, q.SendCurrency), in.Funding, Money(q.SendMinor, q.SendCurrency))
 	}
 	id := "itr_" + uuid.NewString()
-	if err := enforceAgentRules(judged, tx, workspaceID, agentID, value, id); err != nil {
+	if err := s.enforceAgentRules(judged, tx, workspaceID, agentID, value, id); err != nil {
 		return InstantTransfer{}, s.refusedMovement(ctx, tx, err)
 	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, q.SendCurrency, MoneyRevenue, "", "Talyvor fees")
