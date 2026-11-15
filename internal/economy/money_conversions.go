@@ -22,7 +22,7 @@ import (
 //
 // A conversion is quoted first (QuoteConversion): selling an amount from one of the agent's accounts in pounds, euros
 // or dollars for another of its currencies, at the conversion partner's reference rate less the plan's FX margin —
-// LENS_FX_MARGIN_BPS by plan, or an Enterprise contract's own (billing.FXMarginBPS, wired in cmd/lens). The margin is
+// LENS_FX_MARGIN_BPS by plan, or a Custom contract's own (billing.FXMarginBPS, wired in cmd/lens). The margin is
 // taken in the currency sold, rounded up to its minor unit as the platform fee is, and the partner converts the rest.
 // The quote is kept, and converts once (Convert), within its life, under one idempotency key: the same key again
 // answers the conversion it made.
@@ -33,7 +33,7 @@ import (
 // rest to the partner's conversion account; in the currency bought, what it buys comes from the partner's conversion
 // account into the agent's. Each currency sums to zero, and both legs are lines on the agent's account statements.
 //
-// B30.29: a quote is good for 30 seconds at most, and the free plan converts test money only. Two of the agent's rules
+// B30.29: a quote is good for 30 seconds at most. Every plan converts live money once fx is cleared (B61.57). Two of the agent's rules
 // bound its conversions on top of its spending rules: the currencies it may convert between (the one sold and the one
 // bought), and its daily conversion maximum, on what it converted since the start of its day, in its time zone.
 
@@ -44,8 +44,7 @@ var ErrConversion = errors.New("economy: invalid conversion")
 // conversionQuoteLife is the longest a quote is good for (B30.29), however long the partner holds its own.
 const conversionQuoteLife = 30 * time.Second
 
-// FXMarginResolver answers a workspace's FX margin in basis points, and the plan it is on (B30.29: free converts test
-// money only).
+// FXMarginResolver answers a workspace's FX margin in basis points, and the plan it is on.
 type FXMarginResolver func(ctx context.Context, q FeeQuerier, workspaceID string) (bps int64, plan string, err error)
 
 // The states of a conversion.
@@ -146,14 +145,13 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 // currency sold, and what the conversion partner buys with the rest.
 func (s *DualTokenStore) quoteConversion(ctx context.Context, in Conversion) (Conversion, error) {
 	workspaceID := in.WorkspaceID
-	bps, plan, err := s.fxMargin(ctx, s.pool, workspaceID)
+	// B61.57: every plan converts live money once the capability is cleared; the plan sets only the margin.
+	bps, _, err := s.fxMargin(ctx, s.pool, workspaceID)
 	switch {
 	case err != nil:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s: %w", workspaceID, err)
 	case bps < 0 || bps > feeDenominator:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s is %d basis points, outside 0 to %d", workspaceID, bps, feeDenominator)
-	case in.Funding == FundingLive && (plan == "" || plan == "free"):
-		return Conversion{}, fmt.Errorf("%w: live conversions come with the Team, Business and Enterprise plans", ErrConversion)
 	}
 	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: in.AgentID, FromAccountID: in.FromAccountID, ToAccountID: in.ToAccountID,
 		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: PlatformFee(in.SellMinor, bps),

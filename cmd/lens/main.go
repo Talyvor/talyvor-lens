@@ -3111,6 +3111,8 @@ func run() error {
 
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
+		// B61.57 — both ladders, each plan's price in every currency and what it allows (plan_gates_handler.go).
+		pub.Get("/v1/public/plans", publicPlansHandler)
 
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
@@ -4224,6 +4226,9 @@ func run() error {
 		// B32.12 — the workspace's plan and what it unlocks, and the seats check the members feature asks before
 		// it adds one (plan_gates_handler.go). {wsID} is bound to the caller's credential like its siblings.
 		authed.Get("/v1/workspaces/{wsID}/plan", newWorkspacePlanHandler(pool))
+		// B61.57 — the owner moves the account along its own ladder; nothing is charged, and while Lens's Stripe key is
+		// live a paid plan is refused.
+		authed.Put("/v1/workspaces/{wsID}/plan", newWorkspacePlanChangeHandler(pool, billing.LiveKey(cfg.StripeSecretKey)))
 		authed.Get("/v1/workspaces/{wsID}/plan/seats", newSeatsCheckHandler(pool))
 
 		// B27.26 — "Your provider keys" (provider_keys_routes.go), only while custody is armed.

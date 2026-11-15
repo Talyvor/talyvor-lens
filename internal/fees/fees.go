@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/talyvor/lens/internal/plans"
 )
 
 // BPSDenominator is 100%, in basis points.
@@ -27,9 +30,11 @@ type Settings struct {
 	// What a registered compute node earns for serving another workspace's request: Talyvor keeps this much (B56.20).
 	ComputeTakeBPS int64 `json:"compute_take_bps"`
 	LendingFeeBPS  int64 `json:"lending_fee_bps"` // on a loan arranged
-	// On AI spend charged to credits, by plan.
+	// On AI spend charged to credits, by plan (internal/plans): each plan the 5 Oct plan at its step paid (B61.57).
 	PlatformFeeBPS map[string]int64 `json:"platform_fee_bps"`
-	// Over the reference rate on a currency conversion, by plan.
+	// Over the reference rate on a currency conversion, and so on an Instant transfer, by plan (B61.57). Set, each
+	// by-plan fee names every plan in plans.Order and no other, so a setting naming the 5 Oct plans stops Lens starting
+	// rather than charging nothing.
 	FXMarginBPS map[string]int64 `json:"fx_margin_bps"`
 	// On an international payment, in minor units of the currency it is sent in, plus the partner's cost.
 	IntlPaymentFeeMinor map[string]int64 `json:"intl_payment_fee_minor"`
@@ -51,12 +56,14 @@ var Charged = map[string]bool{
 // Defaults are Nicolai's values.
 func Defaults() Settings {
 	return Settings{
-		MarketTakeBPS:       1500,
-		ServicesTakeBPS:     500,
-		ComputeTakeBPS:      500,
-		LendingFeeBPS:       100,
-		PlatformFeeBPS:      map[string]int64{"free": 550, "team": 300, "business": 100, "enterprise": 100},
-		FXMarginBPS:         map[string]int64{"free": 0, "team": 50, "business": 25, "enterprise": 15},
+		MarketTakeBPS:   1500,
+		ServicesTakeBPS: 500,
+		ComputeTakeBPS:  500,
+		LendingFeeBPS:   100,
+		PlatformFeeBPS: map[string]int64{"personal_solo": 550, "personal_crew": 300, "personal_fleet": 100,
+			"business_studio": 550, "business_company": 300, "business_group": 100, "business_custom": 100},
+		FXMarginBPS: map[string]int64{"personal_solo": 100, "personal_crew": 50, "personal_fleet": 0,
+			"business_studio": 60, "business_company": 60, "business_group": 60, "business_custom": 15},
 		IntlPaymentFeeMinor: map[string]int64{"GBP": 500, "EUR": 600, "USD": 700},
 		MerchantFeeBPS:      75,
 		MerchantA2AFeeBPS:   100,
@@ -82,14 +89,15 @@ func Load(getenv func(string) string) (Settings, error) {
 		}
 	}
 	for _, f := range []struct {
-		name  string
-		into  *map[string]int64
-		ceil  int64
-		units string
+		name   string
+		into   *map[string]int64
+		ceil   int64
+		units  string
+		byPlan bool
 	}{
-		{"LENS_PLATFORM_FEE_BPS", &s.PlatformFeeBPS, BPSDenominator, "basis points"},
-		{"LENS_FX_MARGIN_BPS", &s.FXMarginBPS, BPSDenominator, "basis points"},
-		{"LENS_INTL_PAYMENT_FEE_MINOR", &s.IntlPaymentFeeMinor, -1, "minor units"},
+		{"LENS_PLATFORM_FEE_BPS", &s.PlatformFeeBPS, BPSDenominator, "basis points", true},
+		{"LENS_FX_MARGIN_BPS", &s.FXMarginBPS, BPSDenominator, "basis points", true},
+		{"LENS_INTL_PAYMENT_FEE_MINOR", &s.IntlPaymentFeeMinor, -1, "minor units", false},
 	} {
 		v := strings.TrimSpace(getenv(f.name))
 		if v == "" {
@@ -103,6 +111,9 @@ func Load(getenv func(string) string) (Settings, error) {
 			if n < 0 || (f.ceil >= 0 && n > f.ceil) {
 				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0 to %d", f.name, k, n, f.units, f.ceil)
 			}
+		}
+		if named := slices.Sorted(maps.Keys(m)); f.byPlan && !slices.Equal(named, slices.Sorted(slices.Values(plans.Order))) {
+			return s, fmt.Errorf("fees: %s names %s; it names every plan, %s, and no other", f.name, strings.Join(named, ", "), strings.Join(plans.Order, ", "))
 		}
 		*f.into = m
 	}

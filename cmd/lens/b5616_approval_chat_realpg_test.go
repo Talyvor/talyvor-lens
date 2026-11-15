@@ -115,8 +115,8 @@ func TestB5616_ApprovalsPostToSlackAndTeams(t *testing.T) {
 		}
 	}
 	if code, body := call(http.MethodPut, "ws-b5616-free", `{"kind":"slack","url":"`+slackURL+`"}`, owner("ws-b5616-free")); code != http.StatusPaymentRequired ||
-		!strings.Contains(body, "Free does not include Slack and Teams approvals. Team includes them.") {
-		t.Errorf("Free saving the webhook = %d %s, want 402 naming Team", code, body)
+		!strings.Contains(body, "Studio does not include Slack and Teams approvals. Company includes them.") {
+		t.Errorf("Studio saving the webhook = %d %s, want 402 naming Company", code, body)
 	}
 	if code, body := call(http.MethodPut, "ws-b5616-team", `{"kind":"slack","url":"`+slackURL+`"}`, owner("ws-b5616-team")); code != http.StatusOK ||
 		!strings.Contains(body, `"kind":"slack"`) || !strings.Contains(body, `"host":"hooks.slack.com"`) {
