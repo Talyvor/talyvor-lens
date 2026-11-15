@@ -3,12 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/talyvor/lens/internal/auth"
-	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
@@ -107,7 +100,8 @@ func TestB596_NewWorkspaceIsItsTypeAndKindAndItsFirstAgentFollowsIt(t *testing.T
 // Every allowed and every refused change of kind, on real balances: fiat to stablecoin is refused; fiat becomes hybrid
 // and its agents both; hybrid becomes fiat only once no stablecoin is held, refused naming the balance until then;
 // hybrid becomes stablecoin once the fiat side is empty, closing the agents' fiat wallets; stablecoin becomes hybrid
-// again. An agent of a kind the workspace does not allow is refused, made or changed. Each change is audited.
+// again. An agent of a kind the workspace does not allow is refused, made or changed. Each change is the operator's
+// (B61.6) and is audited, naming the operator.
 func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -116,9 +110,7 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, layer := b596Bank(t, pool, secret)
-	store.SetDeviceKeys(devicekey.Verifier{AllowTest: true})
 	r := chi.NewRouter()
-	mountDeviceKeyRoutes(r, store)
 	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
 	mountWorkspaceMoneyKindRoutes(r, store)
 	r.Post("/v1/money/webhooks/{partner}", layer.ServeWebhook)
@@ -141,31 +133,17 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 		}
 		return out["money_kind"].(string)
 	}
-	// B59.46: each change is signed with the owner's phone key over its own challenge.
-	b64 := base64.RawURLEncoding.EncodeToString
-	phone, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	spki, _ := x509.MarshalPKIXPublicKey(&phone.PublicKey)
-	sign := func(challenge string) string {
-		h := sha256.Sum256(devicekey.Message(challenge))
-		sig, _ := ecdsa.SignASN1(rand.Reader, phone, h[:])
-		return b64(sig)
-	}
-	_, ch := call(http.MethodPost, "/v1/money/devices/challenge", "")
-	regChallenge, _ := ch["challenge"].(string)
-	code, dev := call(http.MethodPost, "/v1/money/devices", jsonOf(map[string]string{"platform": "test", "name": "Owner's phone",
-		"public_key": b64(spki), "challenge": regChallenge, "signature": sign(regChallenge), "attestation": ""}))
-	if code != http.StatusCreated {
-		t.Fatalf("register device = %d %v", code, dev)
-	}
+	// B61.6: only the operator changes the kind, for support.
+	r.Put("/v1/admin/workspaces/{wsID}/money-kind", newOperatorMoneyKindHandler(store).ServeHTTP)
 	setKind := func(kind string) (int, map[string]any) {
 		t.Helper()
-		body := `{"money_kind":"` + kind + `"}`
-		if code, c := call(http.MethodPost, "/v1/workspaces/"+ws+"/account/money-kind/challenge", body); code == http.StatusOK {
-			challenge := c["challenge"].(string)
-			body = jsonOf(map[string]any{"money_kind": kind, "assertion": map[string]string{"device_id": dev["id"].(string), "challenge": challenge,
-				"signature": sign(challenge)}})
-		}
-		return call(http.MethodPut, "/v1/workspaces/"+ws+"/account/money-kind", body)
+		req := httptest.NewRequest(http.MethodPut, "/v1/admin/workspaces/"+ws+"/money-kind", strings.NewReader(`{"money_kind":"`+kind+`"}`))
+		req.Header.Set(moderatorOperatorHeader, "nicolai")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		out := map[string]any{}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
 	}
 	refused := func(what string, code int, out map[string]any, field string) {
 		t.Helper()
@@ -256,9 +234,9 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 	}
 
 	var audited int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'workspace.money_kind'`,
-		ws, "workspace:"+ws).Scan(&audited); err != nil || audited != 3 {
-		t.Fatalf("kind changes in the audit trail = %d (%v), want 3", audited, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'workspace.money_kind'
+		AND body::jsonb->>'by' = 'operator:nicolai'`, ws, "workspace:"+ws).Scan(&audited); err != nil || audited != 3 {
+		t.Fatalf("kind changes by the operator in the audit trail = %d (%v), want 3", audited, err)
 	}
 	var accountType string
 	if err := pool.QueryRow(ctx, `SELECT account_type FROM workspaces WHERE id = $1`, ws).Scan(&accountType); err != nil || accountType != "business" {
