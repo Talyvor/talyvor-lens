@@ -2024,7 +2024,8 @@ func run() error {
 	// B61.22 — the front door by phone number: codes texted by the registry's text sender (the Sandbox one until a
 	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
 	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
-		PerAddressHour: cfg.PhoneChecksPerAddressHour, PasscodeSecret: []byte(cfg.PasscodeSecret),
+		PerAddressHour: cfg.PhoneChecksPerAddressHour,
+		PasscodeSecret: []byte(cfg.PasscodeSecret),
 		// B61.24 — a person's sign-in keys are checked as approvals check theirs: the same relying party and origins,
 		// and the same check of a phone's device key.
 		RP:      &passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins},
