@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // money_reusable_cards.go — B53.2: THE OWNER'S OWN CARD, AND AN AGENT'S: REUSABLE, WITH LIMITS AND BLOCKED CATEGORIES.
@@ -413,9 +414,10 @@ func (s *DualTokenStore) agentCardCharge(ctx context.Context, tx pgx.Tx, c Reusa
 		return 0, "the charge cannot be valued against the agent's limits", nil
 	}
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: "merchant:" + a.Merchant, Name: a.Merchant},
+		Own:  partners.Money{Minor: a.Amount.Minor, Currency: a.Amount.Asset},
 		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant})
 	var need *ApprovalNeededError
-	switch err = enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
+	switch err = s.enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
 	case err == nil:
 		return value, "", nil
 	case errors.As(err, &need):

@@ -51,15 +51,21 @@ type RulesJudgement struct {
 
 // ruleLabels name the limits as the Rules card and rules history do.
 var ruleLabels = map[string]string{
-	"max_per_request_ulxc": "Limit per request",
-	"hourly_limit_ulxc":    "Hourly limit",
-	"daily_limit_ulxc":     "Daily limit",
-	"weekly_limit_ulxc":    "Weekly limit",
-	"monthly_limit_ulxc":   "Monthly limit",
-	"approval_above_ulxc":  "Ask a person above",
-	"requests_per_minute":  "Requests a minute",
-	"max_commitment_ulxc":  "Most it may commit",
-	"fx_daily_limit_ulxc":  "Daily conversion maximum",
+	"max_per_request_ulxc":  "Limit per request",
+	"max_per_payment_minor": "Limit per payment",
+	"hourly_limit_minor":    "Hourly limit",
+	"daily_limit_minor":     "Daily limit",
+	"weekly_limit_minor":    "Weekly limit",
+	"monthly_limit_minor":   "Monthly limit",
+	"approval_above_minor":  "Ask a person above",
+	"hourly_limit_ulxc":     "Hourly limit",
+	"daily_limit_ulxc":      "Daily limit",
+	"weekly_limit_ulxc":     "Weekly limit",
+	"monthly_limit_ulxc":    "Monthly limit",
+	"approval_above_ulxc":   "Ask a person above",
+	"requests_per_minute":   "Requests a minute",
+	"max_commitment_ulxc":   "Most it may commit",
+	"fx_daily_limit_ulxc":   "Daily conversion maximum",
 }
 
 type ruleChange struct {
@@ -126,16 +132,39 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		}
 		return "none"
 	}
+	// B61.12: the amount limits are judged in the rules' currency, so they are compared in it; a change of currency
+	// with any of them set loosens, as a limit in another currency may be worth more.
+	inCurrency := []struct {
+		rule     string
+		was, now int64
+	}{
+		{"max_per_payment_minor", was.MaxPerPaymentMinor, now.MaxPerPaymentMinor},
+		{"hourly_limit_minor", limitOf(was.HourlyLimitMinor), limitOf(now.HourlyLimitMinor)},
+		{"daily_limit_minor", was.DailyLimitMinor, now.DailyLimitMinor},
+		{"weekly_limit_minor", limitOf(was.WeeklyLimitMinor), limitOf(now.WeeklyLimitMinor)},
+		{"monthly_limit_minor", was.MonthlyLimitMinor, now.MonthlyLimitMinor},
+		{"approval_above_minor", was.ApprovalAboveMinor, now.ApprovalAboveMinor},
+	}
+	anySet := false
+	for _, l := range inCurrency {
+		anySet = anySet || l.was > 0
+	}
+	add("Currency", was.currency(), now.currency(), anySet)
+	for _, l := range inCurrency {
+		text := func(r AgentRules) func(int64) string {
+			return func(v int64) string {
+				if v > 0 {
+					return r.rulesAmount(v)
+				}
+				return "none"
+			}
+		}
+		add(ruleLabels[l.rule], text(was)(l.was), text(now)(l.now), limitLoosened(l.was, l.now) || was.currency() != now.currency() && l.was > 0)
+	}
 	for _, l := range []struct {
 		rule     string
 		was, now int64
 	}{
-		{"max_per_request_ulxc", was.MaxPerRequestULXC, now.MaxPerRequestULXC},
-		{"hourly_limit_ulxc", limitOf(was.HourlyLimitULXC), limitOf(now.HourlyLimitULXC)},
-		{"daily_limit_ulxc", was.DailyLimitULXC, now.DailyLimitULXC},
-		{"weekly_limit_ulxc", limitOf(was.WeeklyLimitULXC), limitOf(now.WeeklyLimitULXC)},
-		{"monthly_limit_ulxc", was.MonthlyLimitULXC, now.MonthlyLimitULXC},
-		{"approval_above_ulxc", was.ApprovalAboveULXC, now.ApprovalAboveULXC},
 		{"requests_per_minute", limitOf(was.RequestsPerMinute), limitOf(now.RequestsPerMinute)},
 		{"max_commitment_ulxc", limitOf(was.MaxCommitmentULXC), limitOf(now.MaxCommitmentULXC)},
 		{"fx_daily_limit_ulxc", limitOf(was.FXDailyLimitULXC), limitOf(now.FXDailyLimitULXC)},
@@ -319,7 +348,7 @@ func (s *DualTokenStore) RulesChallenge(ctx context.Context, workspaceID, agentI
 		}
 		j.Looser = true
 		j.Changes = append(j.Changes, fmt.Sprintf("%s: was %s, now %s until %s", cmp.Or(ruleLabels[p.Boost.Rule], p.Boost.Rule),
-			ruleAmount(p.Boost.Rule, was), ruleAmount(p.Boost.Rule, p.Boost.Value), p.Boost.Until.UTC().Format(time.RFC3339)))
+			ruleAmount(r, p.Boost.Rule, was), ruleAmount(r, p.Boost.Rule, p.Boost.Value), p.Boost.Until.UTC().Format(time.RFC3339)))
 		if purpose, err = boostPurpose(agentID, *p.Boost); err != nil {
 			return j, err
 		}

@@ -372,7 +372,7 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		rctx := WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Payee: Payee{Kind: "outside", ID: e.Source,
 			Name: e.Kind + " " + e.Source}, Memo: minorString(freshTotal, e.Currency) + " of " + e.Kind + " " + e.Source + " paid out",
 			PaidFrom: PaidFrom{Kind: "account", Currency: e.Currency, AmountMinor: freshTotal, funding: e.Funding}})
-		if err := enforceAgentRules(rctx, tx, workspaceID, e.AgentID, value, key); err != nil {
+		if err := s.enforceAgentRules(rctx, tx, workspaceID, e.AgentID, value, key); err != nil {
 			return nil, s.refusedMovement(rctx, tx, err)
 		}
 	}
