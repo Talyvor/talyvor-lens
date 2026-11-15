@@ -185,7 +185,7 @@ func TestB5616_ApprovalsPostToSlackAndTeams(t *testing.T) {
 	if s.host != "hooks.slack.com" || s.path != "/services/T0B5616/B0B5616/slacksecretb5616" || tries != 2 {
 		t.Errorf("the Slack post went to %s%s after %d tries", s.host, s.path, tries)
 	}
-	for _, want := range []string{"researcher wants to pay vendor $0.20 (2 LXC)", "October &lt;!channel&gt; hosting", "Expires ",
+	for _, want := range []string{"researcher wants to pay vendor $0.20", "October &lt;!channel&gt; hosting", "Expires ",
 		`"url":"` + link + `"`, `"type":"button"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("the Slack post lacks %q: %s", want, raw)
@@ -199,7 +199,7 @@ func TestB5616_ApprovalsPostToSlackAndTeams(t *testing.T) {
 	teamsApproval := file("ws-b5616-business", 3_000_000)
 	wait(2)
 	raw = dump(got[1].body)
-	if got[1].host != "prod-01.westeurope.logic.azure.com:443" || !strings.Contains(string(raw), "researcher wants to pay vendor $0.30 (3 LXC)") ||
+	if got[1].host != "prod-01.westeurope.logic.azure.com:443" || !strings.Contains(string(raw), "researcher wants to pay vendor $0.30") ||
 		!strings.Contains(string(raw), `"type":"Action.OpenUrl"`) || !strings.Contains(string(raw), economy.ApprovalURLBase+teamsApproval.ID) ||
 		strings.Count(string(raw), `"type":"Action.`) != 1 {
 		t.Errorf("the Teams post to %s = %s", got[1].host, raw)

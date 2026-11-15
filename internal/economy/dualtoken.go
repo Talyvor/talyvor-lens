@@ -92,7 +92,7 @@ func ChargeULXC(usd float64) int64 {
 // ─── errors ──────────────────────────────────────
 
 var (
-	ErrInsufficientLXC     = errors.New("economy: insufficient LXC balance")
+	ErrInsufficientLXC     = errors.New("economy: insufficient balance")
 	ErrConversionTooSmall  = fmt.Errorf("economy: conversion below minimum of %d µLXC", MinConversionLXC)
 	ErrInsufficientLENSFor = errors.New("economy: insufficient LENS balance for conversion")
 )

@@ -466,9 +466,6 @@ func run() error {
 	if err := rooms.CheckLimits(); err != nil {
 		return err
 	}
-	if err := economy.CheckMoneyOrder(); err != nil {
-		return err
-	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
 	if err != nil {
 		return err
@@ -2027,7 +2024,11 @@ func run() error {
 	// B61.22 — the front door by phone number: codes texted by the registry's text sender (the Sandbox one until a
 	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
 	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
-		PerAddressHour: cfg.PhoneChecksPerAddressHour}
+		PerAddressHour: cfg.PhoneChecksPerAddressHour,
+		// B61.24 — a person's sign-in keys are checked as approvals check theirs: the same relying party and origins,
+		// and the same check of a phone's device key.
+		RP:      &passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins},
+		Devices: &devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
@@ -3219,6 +3220,9 @@ func run() error {
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
+	// makes the account's approval key, over a challenge the account issues.
+	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
