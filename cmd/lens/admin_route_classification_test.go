@@ -76,6 +76,7 @@ var operatorMustNotReach = map[string]string{
 	"/v1/admin/lxc/grant":                                        "MINTS LXC. Moves money.",
 	"/v1/admin/workspaces/{wsID}/contract":                       "B32.10: puts a workspace on an Enterprise contract or ends it, with the contract's own fees. Sets a price; requireAdmin only.",
 	"/v1/admin/workspaces/{wsID}/rate-limits":                    "B39.9: sets one workspace's request limits. Lifts a protection; requireAdmin only.",
+	"/v1/admin/workspaces/{wsID}/money-kind":                     "B61.6: CHANGES A WORKSPACE'S KIND OF MONEY for support, closing its agents' wallets of the other kind. requireAdminStepUp (B28.264), with an operator audit row.",
 	"/v1/admin/workspaces/{wsID}/areas/{area}":                   "B59.1: switches a hidden area on or off for one workspace. Opens routes; requireAdmin only.",
 	"/v1/admin/requests/{id}":                                    "B59.27: answers a workspace's request and moves its state; done releases a data export for download. requireAdmin only.",
 	"/v1/admin/deletion-requests":                                "B21.3: which workspaces asked Talyvor to delete their data. requireAdmin only.",

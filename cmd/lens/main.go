@@ -2897,6 +2897,9 @@ func run() error {
 	r.Post("/v1/admin/operator-audit/record", requireAdminOrModerator(authManager, moderatorKeys, newOperatorAuditRecordHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit", requireAdminOrOperatorRead(authManager, newOperatorAuditListHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit/export", requireAdminOrOperatorRead(authManager, newOperatorAuditExportHandler(operatorAudit)))
+	// B61.6 — the owner never changes a workspace's kind of money; the operator may, for support, with the step-up code,
+	// an operator_audit row per use and the change in the workspace's audit trail. workspace_money_kind_handler.go.
+	r.Put("/v1/admin/workspaces/{wsID}/money-kind", requireAdminStepUp(authManager, stepUp, operatorAudit, "workspace.money_kind", requireAdmin(authManager, newOperatorMoneyKindHandler(dualToken))))
 	// B44.6 — every talyvor.com waitlist signup, oldest first, for the operator.
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
