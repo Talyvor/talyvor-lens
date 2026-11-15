@@ -234,8 +234,9 @@ import (
 //
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
-//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?}   rename it, describe it,
-//	                                          change its face (B57.10); returns the agent
+//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?, "picture"?, "role"?,
+//	                                          "role_word"?}   rename it, describe it, change its face (B57.10), its
+//	                                          picture or what it does (B61.35); returns the agent
 //	POST  /v1/workspaces/{wsID}/agents/{id}/archive   retire it: its whole balance back to the workspace in one
 //	                                                  withdraw entry, its keys revoked, its top-up and schedules
 //	                                                  stopped; it is listed with archived_at from then on
@@ -244,7 +245,7 @@ import (
 // agents and issuing keys take the workspace's owner or an admin; reading takes any of its credentials.
 
 type agentBank interface {
-	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (economy.Agent, error)
+	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string, look economy.AgentLook) (economy.Agent, error)
 	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
 	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
@@ -268,7 +269,7 @@ type agentBank interface {
 	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
-	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description, colour, face *string) (economy.Agent, error)
+	UpdateAgent(ctx context.Context, workspaceID, agentID string, c economy.AgentChange) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
 	AttachAgentKey(ctx context.Context, workspaceID, agentID, scopedKeyID string) error
@@ -385,6 +386,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			// B57.10: its face; Lens picks whichever is left out.
 			Colour string `json:"colour"`
 			Face   string `json:"face"`
+			// B61.35: its picture, which sets its colour, and what it does — one of the six, or other in role_word.
+			Picture  string `json:"picture"`
+			Role     string `json:"role"`
+			RoleWord string `json:"role_word"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.Name == "" {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<agent name>"}`)
@@ -402,7 +407,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				owner = in.Owner
 			}
 		}
-		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency, in.Colour, in.Face)
+		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency,
+			economy.AgentLook{Colour: in.Colour, Face: in.Face, Picture: in.Picture, Role: in.Role, RoleWord: in.RoleWord})
 		if writeMoneyKindRefusal(w, err) { // B59.6: a kind the workspace's kind of money does not allow
 			return
 		}
@@ -445,14 +451,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			Description *string `json:"description"`
 			Colour      *string `json:"colour"`
 			Face        *string `json:"face"`
+			Picture     *string `json:"picture"`
+			Role        *string `json:"role"`
+			RoleWord    *string `json:"role_word"`
 		}
 		dec := json.NewDecoder(req.Body)
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil && in.Colour == nil && in.Face == nil) {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>", "colour": "<colour>", "face": "<face>"}, any of them`)
+		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil && in.Colour == nil && in.Face == nil &&
+			in.Picture == nil && in.Role == nil && in.RoleWord == nil) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>", "colour": "<colour>", "face": "<face>", "picture": "<picture>", "role": "<what it does>", "role_word": "<its own word, with role other>"}, any of them`)
 			return
 		}
-		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Name, in.Description, in.Colour, in.Face)
+		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), economy.AgentChange{
+			Name: in.Name, Description: in.Description, Colour: in.Colour, Face: in.Face, Picture: in.Picture, Role: in.Role, RoleWord: in.RoleWord})
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())

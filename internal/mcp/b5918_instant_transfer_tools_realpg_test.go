@@ -45,7 +45,7 @@ func TestB5918_InstantTransferConnectorTools(t *testing.T) {
 	store.SetMoneyLayer(layer)
 	agents := map[string]string{}
 	for ws := range kinds {
-		a, err := store.CreateAgentOfKind(ctx, ws, "clerk", "owner-"+ws, "", "", "", "")
+		a, err := store.CreateAgentOfKind(ctx, ws, "clerk", "owner-"+ws, "", "", economy.AgentLook{})
 		if err != nil {
 			t.Fatal(err)
 		}
