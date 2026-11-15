@@ -57,6 +57,7 @@ var operatorReadable = map[string]string{
 	"/v1/admin/operator-audit":            "B27.28: the operator audit trail, filtered — the Operator screen shows it. operatoraudit.Store.List is Query-only.",
 	"/v1/admin/operator-audit/export":     "B27.28: the same trail as a CSV download. operatoraudit.Store.List is Query-only.",
 	"/v1/admin/waitlist":                  "B44.6: every talyvor.com waitlist signup, oldest first, for the operator's CSV. A SELECT only.",
+	"/v1/admin/people/counts":             "B61.22: how many people there are and what the phone door did in a day, counts only, never whose. phonesignin.Store.Counts is a SELECT only.",
 	"/v1/admin/agent-operators":           "B45.24: the signing domains Talyvor has checked belong to a business, and who checked them. A SELECT only.",
 	"/v1/admin/requests":                  "B59.27: every workspace's support, complaint, closure, export and deletion requests, oldest first, for an operator to answer. support.Store.Inbox is Query-only.",
 	"/v1/admin/pool-royalty/detect":       "self-dealing detection read. Query-only reader, explicitly NOT economy-gated so forensics survive the kill switch.",
