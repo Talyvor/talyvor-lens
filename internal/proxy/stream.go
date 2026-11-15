@@ -426,6 +426,7 @@ func (s *StreamHandler) serve(
 	streamClient := *s.proxy.httpClient
 	streamClient.Timeout = 0
 	upstreamStart := time.Now()
+	var sentReq *http.Request // the last attempt, whose credentials an error body is cleaned of (B28.250)
 	result := retry.Do(streamCtx, retry.DefaultConfig(), func(c context.Context) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(c, http.MethodPost, ops.upstreamURL(), bytes.NewReader(body))
 		if err != nil {
@@ -451,6 +452,7 @@ func (s *StreamHandler) serve(
 		if poolKey != nil {
 			ops.applyPoolKey(req, poolKey.Key)
 		}
+		sentReq = req
 		return streamClient.Do(req)
 	})
 	if poolKey != nil {
@@ -463,16 +465,21 @@ func (s *StreamHandler) serve(
 	if result.LastError != nil {
 		result.LastError = inference.HideURLQuery(result.LastError)
 		metrics.RecordUpstream(upstreamProviderLabel(provider), "error", time.Since(upstreamStart))
-		writeError(w, http.StatusBadGateway, "upstream LLM error: "+result.LastError.Error())
+		// B28.250: the tenant is told the call failed, never the upstream's address or a key in it.
+		writeError(w, http.StatusBadGateway, "upstream LLM error: "+inference.ClientError(result.LastError))
 		s.proxy.releaseReservation(r.Context(), "upstream error") // B17.128: nothing was served
 		return result.LastError
 	}
 	resp := result.Response
 	defer resp.Body.Close()
 	metrics.RecordUpstream(upstreamProviderLabel(provider), upstreamStatusClass(resp, nil), time.Since(upstreamStart))
+	if resp.StatusCode == http.StatusOK {
+		s.proxy.liveLatency.record(latencyKey(true, provider, model), time.Since(upstreamStart)) // B28.250
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
+		errBody = inference.HideCredentials(errBody, sentReq) // B28.250: a 401 that echoes the key never shows it
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(errBody) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- the upstream error is sent as text/event-stream with nosniff, never as HTML
 		s.proxy.releaseReservation(r.Context(), fmt.Sprintf("upstream status %d", resp.StatusCode))
