@@ -41,7 +41,7 @@ func TestB6118_AnAgentPaysAnotherAgentFromItsCurrencyAccount(t *testing.T) {
 	// payee makes an agent whose own currency is currency, and answers its account in it.
 	payee := func(w, name, currency string) (string, string) {
 		t.Helper()
-		a, err := store.CreateAgentOfKind(ctx, w, name, "owner-"+w, "", currency, "", "")
+		a, err := store.CreateAgentOfKind(ctx, w, name, "owner-"+w, "", currency, economy.AgentLook{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestB6118_AnAgentPaysAnotherAgentFromItsCurrencyAccount(t *testing.T) {
 	far, farAcct := payee(other, "Supplier", "EUR")
 	dollars, _ := payee(ws, "Dollars", "USD")
 	fiatAgent := func() string {
-		a, err := store.CreateAgentOfKind(ctx, fiat, "Fiat only", "owner-"+fiat, "", "", "", "")
+		a, err := store.CreateAgentOfKind(ctx, fiat, "Fiat only", "owner-"+fiat, "", "", economy.AgentLook{})
 		if err != nil {
 			t.Fatal(err)
 		}
