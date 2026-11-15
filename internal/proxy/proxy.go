@@ -1474,7 +1474,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 			// B28.250: and another workspace's answer is served no faster than a live call, so the clock cannot
 			// tell a tenant that someone else asked this.
 			if pooledHit != nil {
-				p.holdLikeALiveCall(ctx, cfg.ProviderName(), model, streaming, len(cached))
+				p.holdLikeALiveCall(ctx, cfg.ProviderName(), model, streaming, len(answered))
 			}
 			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
 			if price.ChargedULXC == 0 && !poolProbing {
@@ -1930,7 +1930,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		ctx, r, cfg.ProviderName(), upstreamModel, wsID, upstreamBodyOut, w, own,
 	)
 	if err == nil && statusCode == http.StatusOK {
-		p.liveLatency.record(latencyKey(false, cfg.ProviderName(), model, len(upstreamBody)), time.Since(forwardStart)) // B28.250
+		p.liveLatency.record(latencyKey(false, cfg.ProviderName(), model), len(upstreamBody), time.Since(forwardStart)) // B28.250
 	}
 	attempts := fbResult.Attempts
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"math/bits"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -22,46 +21,58 @@ const latencyRingSize = 256
 // latencyKeys bounds how many provider-and-model pairs are kept, so a stream of made-up model names cannot grow it.
 const latencyKeys = 512
 
+// sizeBuckets is one bucket per power of two an answer's length in bytes can reach (bits.Len of an int).
+const sizeBuckets = 65
+
 type latencyRing struct {
 	d    [latencyRingSize]time.Duration
 	n    int
 	next int
 }
 
-// upstreamLatencies holds recent live-call latencies by provider, model and kind of call. Its zero value is ready.
+// upstreamLatencies holds recent live-call latencies by kind of call, provider and model, and within those by the
+// answer's size. Its zero value is ready.
 type upstreamLatencies struct {
 	mu    sync.Mutex
-	rings map[string]*latencyRing
+	rings map[string]*[sizeBuckets]*latencyRing
 }
 
-// latencyKey names the samples a call is kept with and drawn from. A buffered call's time grows with its answer, so
-// it is kept by the answer's size to the nearest power of two: a pooled answer waits as long as live answers of its
-// own length took, and a tenant cannot shorten that wait by filling the samples with fast one-word calls.
-func latencyKey(stream bool, provider, model string, answerBytes int) string {
+// latencyKey names the provider, model and kind of call a latency is kept with and drawn from.
+func latencyKey(stream bool, provider, model string) string {
 	if stream {
 		return "stream\x00" + provider + "\x00" + model
 	}
-	return "call\x00" + provider + "\x00" + model + "\x00" + strconv.Itoa(bits.Len(uint(answerBytes)))
+	return "call\x00" + provider + "\x00" + model
 }
 
+// sizeBucket is an answer's length to the nearest power of two. A buffered call's time grows with its answer, so a
+// pooled answer waits as long as live answers of its own length took, and a tenant cannot shorten that wait by
+// filling the samples with fast one-word calls. A stream is matched on its first byte, so it passes 0.
+func sizeBucket(answerBytes int) int { return bits.Len(uint(answerBytes)) }
+
 // record keeps one live call's latency.
-func (l *upstreamLatencies) record(key string, d time.Duration) {
+func (l *upstreamLatencies) record(key string, answerBytes int, d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.rings == nil {
-		l.rings = map[string]*latencyRing{}
+		l.rings = map[string]*[sizeBuckets]*latencyRing{}
 	}
-	r := l.rings[key]
-	if r == nil {
+	sizes := l.rings[key]
+	if sizes == nil {
 		if len(l.rings) >= latencyKeys {
 			return
 		}
-		r = &latencyRing{}
-		l.rings[key] = r
+		sizes = &[sizeBuckets]*latencyRing{}
+		l.rings[key] = sizes
 	}
+	b := sizeBucket(answerBytes)
+	if sizes[b] == nil {
+		sizes[b] = &latencyRing{}
+	}
+	r := sizes[b]
 	r.d[r.next] = d
 	r.next = (r.next + 1) % latencyRingSize
 	if r.n < latencyRingSize {
@@ -69,23 +80,38 @@ func (l *upstreamLatencies) record(key string, d time.Duration) {
 	}
 }
 
-// sample draws one of the kept latencies at random; false when no live call has been seen yet.
-func (l *upstreamLatencies) sample(key string) (time.Duration, bool) {
+// sample draws one of the kept latencies at random from the answer's size bucket, or the nearest one holding any,
+// longer answers first; false only when no live call to this provider and model has been seen.
+func (l *upstreamLatencies) sample(key string, answerBytes int) (time.Duration, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	r := l.rings[key]
-	if r == nil || r.n == 0 {
+	sizes := l.rings[key]
+	if sizes == nil {
 		return 0, false
 	}
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return r.d[binary.LittleEndian.Uint64(b[:])%uint64(r.n)], true
+	b := sizeBucket(answerBytes)
+	for step := 0; step < sizeBuckets; step++ {
+		for _, at := range []int{b + step, b - step} {
+			if at < 0 || at >= sizeBuckets {
+				continue
+			}
+			if r := sizes[at]; r != nil && r.n > 0 {
+				var rb [8]byte
+				_, _ = rand.Read(rb[:])
+				return r.d[binary.LittleEndian.Uint64(rb[:])%uint64(r.n)], true
+			}
+		}
+	}
+	return 0, false
 }
 
 // holdLikeALiveCall waits as long as a live call to provider and model, with an answer of answerBytes, would have
 // taken, or until ctx ends.
 func (p *Proxy) holdLikeALiveCall(ctx context.Context, provider, model string, stream bool, answerBytes int) {
-	d, ok := p.liveLatency.sample(latencyKey(stream, provider, model, answerBytes))
+	if stream {
+		answerBytes = 0 // matched on the first byte, which does not grow with the answer
+	}
+	d, ok := p.liveLatency.sample(latencyKey(stream, provider, model), answerBytes)
 	if !ok {
 		return
 	}

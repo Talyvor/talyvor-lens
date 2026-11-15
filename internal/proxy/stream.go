@@ -474,7 +474,7 @@ func (s *StreamHandler) serve(
 	defer resp.Body.Close()
 	metrics.RecordUpstream(upstreamProviderLabel(provider), upstreamStatusClass(resp, nil), time.Since(upstreamStart))
 	if resp.StatusCode == http.StatusOK {
-		s.proxy.liveLatency.record(latencyKey(true, provider, model, 0), time.Since(upstreamStart)) // B28.250
+		s.proxy.liveLatency.record(latencyKey(true, provider, model), 0, time.Since(upstreamStart)) // B28.250
 	}
 
 	if resp.StatusCode != http.StatusOK {
