@@ -80,8 +80,8 @@ func TestB17266_ABoostedDailyLimitServesUntilItsTime_ThenTheSameRequestIsRefused
 	// the owner reads, and writes nothing.
 	before = postings()
 	err = hold("res-after", until.Add(time.Second))
-	if !errors.Is(err, ErrAgentRule) || !strings.Contains(err.Error(), "of its daily limit of $0.00 (0.000001 LXC)") {
-		t.Fatalf("the same request after the boost = %v, want the refusal by the 0.000001 LXC daily limit", err)
+	if !errors.Is(err, ErrAgentRule) || !strings.Contains(err.Error(), "of its daily limit of $0.0000001") || strings.Contains(err.Error(), "LXC") {
+		t.Fatalf("the same request after the boost = %v, want the refusal by the $0.0000001 daily limit, in dollars alone (B61.16)", err)
 	}
 	if n := postings() - before; n != 0 {
 		t.Fatalf("the refused request wrote %d postings on the agent's account, want none", n)

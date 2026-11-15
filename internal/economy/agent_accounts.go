@@ -177,8 +177,8 @@ func accountBalance(ctx context.Context, tx pgx.Tx, workspaceID, account string)
 const allocatedSQL = `SELECT COALESCE(sum(balance_ulxc), 0)::bigint FROM agent_account_balances
   WHERE workspace_id = $1 AND (account LIKE 'agent:%' OR account LIKE 'pot:%')`
 
-// agentHolds is the refusal for an agent short of what a move needs (B55.30): "Research holds $4.00 (40 LXC)", and
-// with need ", and this needs $1.20 (12 LXC)".
+// agentHolds is the refusal for an agent short of what a move needs (B55.30): "Research holds $4.00", and
+// with need ", and this needs $1.20".
 func agentHolds(ctx context.Context, q pgxDB, sentinel error, agentID string, bal, need int64) error {
 	name, err := agentName(ctx, q, agentID)
 	if err != nil {
