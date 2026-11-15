@@ -573,6 +573,16 @@ func (stubProvisioner) RegisterWorkspace(context.Context, workspace.Workspace, .
 	return nil
 }
 func (stubProvisioner) CachePoolableConsent(string) (bool, bool) { return false, false }
+func (stubProvisioner) PersonAccounts(context.Context, string, string) ([]workspace.PersonAccount, error) {
+	return nil, nil
+}
+func (stubProvisioner) PersonOwnsAccount(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
+func (stubProvisioner) ReservePersonAccount(context.Context, string, string, string) error {
+	return nil
+}
+func (stubProvisioner) ReleasePersonAccount(context.Context, string, string) error { return nil }
 
 // B45.7: a first sign-in starts the new workspace with test money and a first agent whose key works; signing in
 // again changes nothing.
