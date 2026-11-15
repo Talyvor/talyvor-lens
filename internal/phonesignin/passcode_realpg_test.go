@@ -183,7 +183,7 @@ func TestPasscodeOffAfterTenInADay(t *testing.T) {
 	}
 
 	// A key sign-in (B61.24's passkey, standing in here) sets a new one, and it is on again.
-	if err := d.SetPasscodeAfterKey(ctx, p.ID, "314159", ""); err != nil {
+	if err := d.ReplacePasscodeAfterKey(ctx, p.ID, "314159", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.CheckPasscode(ctx, p.ID, "314159", ""); err != nil {
@@ -209,7 +209,7 @@ func TestPasscodeWeakOnesRefused(t *testing.T) {
 	if err := d.ChangePasscode(ctx, p.ID, testPasscode, "000000", ""); !errors.As(err, new(*WeakPasscodeError)) {
 		t.Fatalf("a weak change: %v", err)
 	}
-	if err := d.SetPasscodeAfterKey(ctx, p.ID, "987654", ""); !errors.As(err, new(*WeakPasscodeError)) {
+	if err := d.ReplacePasscodeAfterKey(ctx, p.ID, "987654", ""); !errors.As(err, new(*WeakPasscodeError)) {
 		t.Fatalf("a weak set after a key: %v", err)
 	}
 }

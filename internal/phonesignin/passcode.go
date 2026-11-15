@@ -220,10 +220,10 @@ func (s *Store) ChangePasscode(ctx context.Context, personID, old, passcode, add
 	})
 }
 
-// SetPasscodeAfterKey sets passcode for a person who has just signed in with a key — a passkey, or their number
+// ReplacePasscodeAfterKey sets passcode for a person who has just signed in with a key — a passkey, or their number
 // confirmed by text and a key (B61.24 calls it). It is the one way an off passcode comes back on, and the way to
 // change a passcode without the old one.
-func (s *Store) SetPasscodeAfterKey(ctx context.Context, personID, passcode, address string) error {
+func (s *Store) ReplacePasscodeAfterKey(ctx context.Context, personID, passcode, address string) error {
 	return s.changePasscode(ctx, personID, passcode, address, "set_after_key", nil)
 }
 
