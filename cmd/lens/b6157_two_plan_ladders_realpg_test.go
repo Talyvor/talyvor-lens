@@ -144,9 +144,10 @@ func TestB6157_TwoLaddersByTheAccountsType(t *testing.T) {
 	}
 }
 
-// B61.57 — the migration moves every existing workspace by its type and its 5 Oct plan: free to the first step, team
-// (and byok, plus, pro and max) to the second, business to the third, enterprise to Custom and a personal one to
-// Fleet; a business on a contract keeps Custom while it lasts and returns to its own plan after.
+// B61.57 — after the migration every existing workspace is on its 5 Oct plan's successor by its type: free the first
+// step, team (and byok, plus, pro and max) the second, business the third, enterprise Custom and a personal one Fleet;
+// a business on a contract keeps Custom while it lasts and returns to its own plan after. A paying subscription's plan
+// is never stored: when the subscription ends the account falls to its first step, keeping no paid plan unpaid.
 func TestB6157_TheMigrationMovesEveryOldPlan(t *testing.T) {
 	pool := syntheticDB(t)
 	ctx := context.Background()
@@ -154,15 +155,18 @@ func TestB6157_TheMigrationMovesEveryOldPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	type was struct{ kind, subscription, synthetic, want string }
+	type was struct{ kind, subscription, synthetic, want, stored string }
 	cases := map[string]was{
-		"b-free": {"business", "", "", plans.BusinessStudio}, "p-free": {"personal", "", "", plans.PersonalSolo},
-		"b-plus": {"business", "plus", "", plans.BusinessCompany}, "p-max": {"personal", "max", "", plans.PersonalCrew},
-		"b-team": {"business", "team", "", plans.BusinessCompany}, "p-team": {"personal", "team", "", plans.PersonalCrew},
-		"b-byok": {"business", "byok", "", plans.BusinessCompany}, "p-byok": {"personal", "byok", "", plans.PersonalCrew},
-		"b-business": {"business", "business", "", plans.BusinessGroup}, "p-business": {"personal", "business", "", plans.PersonalFleet},
-		"b-syn-team": {"business", "", "team", plans.BusinessCompany}, "b-syn-enterprise": {"business", "", "enterprise", plans.BusinessCustom},
-		"b-contract": {"business", "team", "", plans.BusinessCompany}, "p-contract": {"personal", "", "", plans.PersonalFleet},
+		"b-free": {"business", "", "", plans.BusinessStudio, ""}, "p-free": {"personal", "", "", plans.PersonalSolo, ""},
+		"b-plus": {"business", "plus", "", plans.BusinessCompany, ""}, "p-max": {"personal", "max", "", plans.PersonalCrew, ""},
+		"b-team": {"business", "team", "", plans.BusinessCompany, ""}, "p-team": {"personal", "team", "", plans.PersonalCrew, ""},
+		"b-byok": {"business", "byok", "", plans.BusinessCompany, ""}, "p-byok": {"personal", "byok", "", plans.PersonalCrew, ""},
+		"b-business": {"business", "business", "", plans.BusinessGroup, ""}, "p-business": {"personal", "business", "", plans.PersonalFleet, ""},
+		"b-syn-team":       {"business", "", "team", plans.BusinessCompany, plans.BusinessCompany},
+		"b-syn-enterprise": {"business", "", "enterprise", plans.BusinessCustom, plans.BusinessCustom},
+		"b-syn-paid":       {"business", "business", "team", plans.BusinessGroup, ""},
+		"b-contract":       {"business", "team", "", plans.BusinessCustom, ""},
+		"p-contract":       {"personal", "", "", plans.PersonalFleet, plans.PersonalFleet},
 	}
 	for id, c := range cases {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type, synthetic, synthetic_plan)
@@ -190,19 +194,32 @@ func TestB6157_TheMigrationMovesEveryOldPlan(t *testing.T) {
 		t.Fatalf("the migration again: %v", err)
 	}
 	for id, c := range cases {
-		var stored string
-		if err := pool.QueryRow(ctx, `SELECT plan FROM workspaces WHERE id = $1`, id).Scan(&stored); err != nil || stored != c.want {
-			t.Errorf("%s (%s on %q/%q) moved to %q (%v), want %s", id, c.kind, c.subscription, c.synthetic, stored, err, c.want)
+		var stored *string
+		if err := pool.QueryRow(ctx, `SELECT plan FROM workspaces WHERE id = $1`, id).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		got := ""
+		if stored != nil {
+			got = *stored
+		}
+		if got != c.stored {
+			t.Errorf("%s stores plan %q, want %q", id, got, c.stored)
+		}
+		if p, err := plans.Of(ctx, pool, id); err != nil || p.Plan != c.want {
+			t.Errorf("%s (%s on %q/%q) is on %q (%v), want %s", id, c.kind, c.subscription, c.synthetic, p.Plan, err, c.want)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE subscriptions SET status = 'canceled' WHERE workspace_id IN ('b-business', 'p-team')`); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"b-business": plans.BusinessStudio, "p-team": plans.PersonalSolo} {
+		if p, err := plans.Of(ctx, pool, id); err != nil || p.Plan != want {
+			t.Errorf("%s after its subscription ends is on %q (%v), want %s, its first step", id, p.Plan, err, want)
 		}
 	}
 	var contract string
 	if err := pool.QueryRow(ctx, `SELECT plan FROM workspace_contracts WHERE workspace_id = 'b-contract'`).Scan(&contract); err != nil || contract != plans.BusinessCustom {
 		t.Fatalf("the business's contract names %q (%v), want %s", contract, err, plans.BusinessCustom)
-	}
-	for id, want := range map[string]string{"b-contract": plans.BusinessCustom, "p-contract": plans.PersonalFleet} {
-		if p, err := plans.Of(ctx, pool, id); err != nil || p.Plan != want {
-			t.Errorf("%s is on %+v (%v), want %s", id, p, err, want)
-		}
 	}
 	if err := billing.EndContract(ctx, pool, "b-contract", "op"); err != nil {
 		t.Fatal(err)

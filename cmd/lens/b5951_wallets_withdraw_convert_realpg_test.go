@@ -194,7 +194,7 @@ func TestB5951_HybridConvertsBetweenTheTwoSides(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	w := newB5951Wallet(t, pool, "ws-b5951-convert", economy.MoneyKindHybrid)
-	if _, err := pool.Exec(ctx, `INSERT INTO workspace_contracts (workspace_id, plan, fx_margin_bps, set_by) VALUES ($1, 'enterprise', 50, 'test')`, w.ws); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_contracts (workspace_id, plan, fx_margin_bps, set_by) VALUES ($1, 'business_custom', 50, 'test')`, w.ws); err != nil {
 		t.Fatal(err)
 	}
 
