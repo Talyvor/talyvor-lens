@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -29,17 +30,21 @@ type Limits struct {
 	RoomBudgetMaxUSD int64 `json:"room_budget_max_usd"` // the room wallet's largest monthly limit (B32.32)
 }
 
+// Tiers are the room limits' own four steps, named as the 5 Oct plans were. A plan takes the tier at its step on its
+// ladder (B61.57): Solo and Studio free's, Crew and Company team's, Fleet and Group business's, Custom enterprise's.
+var Tiers = []string{"free", "team", "business", "enterprise"}
+
 // DefaultLimits are the proposal in B32.29.
 func DefaultLimits() map[string]Limits {
 	return map[string]Limits{
-		plans.Free:       {PublicRooms: 3, PrivateRooms: 0, MembersPerRoom: 50, AgentsPerRoom: 10, RoomBudgetMaxUSD: 100},
-		plans.Team:       {PublicRooms: 25, PrivateRooms: 10, MembersPerRoom: 250, AgentsPerRoom: 50, RoomBudgetMaxUSD: 5000},
-		plans.Business:   {PublicRooms: -1, PrivateRooms: 100, MembersPerRoom: 1000, AgentsPerRoom: 250, RoomBudgetMaxUSD: 50000},
-		plans.Enterprise: {PublicRooms: -1, PrivateRooms: -1, MembersPerRoom: -1, AgentsPerRoom: -1, RoomBudgetMaxUSD: -1},
+		"free":       {PublicRooms: 3, PrivateRooms: 0, MembersPerRoom: 50, AgentsPerRoom: 10, RoomBudgetMaxUSD: 100},
+		"team":       {PublicRooms: 25, PrivateRooms: 10, MembersPerRoom: 250, AgentsPerRoom: 50, RoomBudgetMaxUSD: 5000},
+		"business":   {PublicRooms: -1, PrivateRooms: 100, MembersPerRoom: 1000, AgentsPerRoom: 250, RoomBudgetMaxUSD: 50000},
+		"enterprise": {PublicRooms: -1, PrivateRooms: -1, MembersPerRoom: -1, AgentsPerRoom: -1, RoomBudgetMaxUSD: -1},
 	}
 }
 
-// LoadLimits reads rooms_plan_limits from getenv: unset is DefaultLimits; set, it names every plan in plans.Order.
+// LoadLimits reads rooms_plan_limits from getenv: unset is DefaultLimits; set, it names every one of Tiers.
 func LoadLimits(getenv func(string) string) (map[string]Limits, error) {
 	v := strings.TrimSpace(getenv(LimitsEnv))
 	if v == "" {
@@ -53,10 +58,10 @@ func LoadLimits(getenv func(string) string) (map[string]Limits, error) {
 	}
 	for name := range m {
 		if !limitsPlan(name) {
-			return nil, fmt.Errorf("rooms: %s names %q; the plans are %s", LimitsEnv, name, strings.Join(plans.Order, ", "))
+			return nil, fmt.Errorf("rooms: %s names %q; the plans are %s", LimitsEnv, name, strings.Join(Tiers, ", "))
 		}
 	}
-	for _, name := range plans.Order {
+	for _, name := range Tiers {
 		l, ok := m[name]
 		if !ok {
 			return nil, fmt.Errorf("rooms: %s does not name the %s plan", LimitsEnv, name)
@@ -71,7 +76,7 @@ func LoadLimits(getenv func(string) string) (map[string]Limits, error) {
 }
 
 func limitsPlan(name string) bool {
-	for _, p := range plans.Order {
+	for _, p := range Tiers {
 		if p == name {
 			return true
 		}
@@ -102,23 +107,30 @@ func CurrentLimits() map[string]Limits {
 	return maps.Clone(limitsCurrent)
 }
 
-// limitsPlanOf is the plan in plans.Order whose room limits a workspace on plan takes: plus, pro and max take
-// team's, byok takes business's, and any plan the setting does not name takes free's.
+// limitsPlanOf is the tier whose room limits a workspace on plan takes: the one at the plan's step on its ladder, and
+// free's for a plan that is none.
 func limitsPlanOf(plan string) string {
-	switch plan {
-	case "plus", "pro", "max":
-		return plans.Team
-	case "byok":
-		return plans.Business
-	case plans.Free, plans.Team, plans.Business, plans.Enterprise:
-		return plan
+	if i := plans.Step(plan); i >= 0 {
+		return Tiers[i]
 	}
-	return plans.Free
+	return Tiers[0]
+}
+
+// planAt is the plan at tier's step on plan's own ladder, the one a refusal names as allowing more; "" past its end.
+func planAt(plan, tier string) string {
+	ladder := plans.BusinessLadder
+	if slices.Contains(plans.PersonalLadder, plan) {
+		ladder = plans.PersonalLadder
+	}
+	if i := slices.Index(Tiers, tier); i >= 0 && i < len(ladder) {
+		return ladder[i]
+	}
+	return ""
 }
 
 // PlanLimits is a workspace's plan and the room limits it has.
 type PlanLimits struct {
-	Plan    string `json:"plan"`     // as plans.PlanOf answers it — the live subscription's plan, or free
+	Plan    string `json:"plan"`     // as plans.PlanOf answers it
 	LimitAs string `json:"limit_as"` // the plan whose rooms_plan_limits it takes
 	Limits
 }
@@ -179,10 +191,10 @@ func (s *Store) refuse(p PlanLimits, limit, whose string, used int64) error {
 		return nil
 	}
 	e := &PlanLimitError{Setting: LimitsSetting, Plan: p.Plan, Limit: limit, Max: ceiling}
-	past := false
-	for _, name := range plans.Order {
+	past, tier := false, ""
+	for _, name := range Tiers {
 		if n := s.limits[name].count(limit); past && (n == plans.Unlimited || n > ceiling) {
-			e.Allows = name
+			e.Allows, tier = planAt(p.Plan, name), name
 			break
 		}
 		past = past || name == p.LimitAs
@@ -200,7 +212,7 @@ func (s *Store) refuse(p PlanLimits, limit, whose string, used int64) error {
 	if ceiling > 0 {
 		e.Detail += fmt.Sprintf(", and you have %s open", plans.Thousands(used))
 	}
-	switch n := s.limits[e.Allows].count(limit); {
+	switch n := s.limits[tier].count(limit); {
 	case e.Allows == "":
 		e.Detail += ". A contract with Talyvor sets more."
 	case n == plans.Unlimited:

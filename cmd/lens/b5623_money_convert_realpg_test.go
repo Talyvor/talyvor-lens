@@ -20,7 +20,7 @@ import (
 )
 
 // B56.23 — an agent converts between its currency accounts at the Test partner's reference rate (£1 = $1.25) plus its
-// plan's FX margin: free's 0, team's 50 basis points, an Enterprise contract's own. The conversion is one money entry
+// plan's FX margin (B61.57): Solo's 100, Crew's 50 basis points, Fleet's none. The conversion is one money entry
 // under its key, so a retry converts once; a quote converts once and never after it expires; both legs are lines on
 // the agent's account statements. All read off the ledger.
 func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
@@ -35,7 +35,7 @@ func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
 	store.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, string, error) {
 		return billing.FXMarginBPS(ctx, q, workspaceID, fees.Defaults())
 	})
-	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, 'Convert Ltd', $1)`, ws); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type) VALUES ($1, 'Convert', $1, 'personal')`, ws); err != nil {
 		t.Fatal(err)
 	}
 	agent, err := store.CreateAgent(ctx, ws, "Converter", "owner")
@@ -97,9 +97,9 @@ func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
 		return n
 	}
 
-	// The margin per plan and contract: £100.00 less the margin, at $1.25.
-	if q := quote(); q.MarginBPS != 0 || q.MarginMinor != 0 || q.BuyMinor != 125_00 || q.ReferenceRate != "1.25000000" || q.Rate != "1.25000000" {
-		t.Fatalf("free quote %+v; want no margin, $125.00 at 1.25", q)
+	// The margin per plan: £100.00 less the margin, at $1.25.
+	if q := quote(); q.MarginBPS != 100 || q.MarginMinor != 100 || q.BuyMinor != 123_75 || q.ReferenceRate != "1.25000000" || q.Rate != "1.23750000" {
+		t.Fatalf("Solo's quote %+v; want 100 bps, £1.00 margin, $123.75 at 1.25", q)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO subscriptions (workspace_id, stripe_subscription_id, stripe_customer_id, price_id,
 		status, livemode, last_event_at, plan, byok) VALUES ($1, 'sub_b5623', 'cus_b5623', 'price_team', 'active', false, NOW(), 'team', false)`, ws); err != nil {
@@ -107,17 +107,16 @@ func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
 	}
 	team := quote()
 	if team.MarginBPS != 50 || team.MarginMinor != 50 || team.BuyMinor != 124_37 || team.Rate != "1.24370000" {
-		t.Fatalf("team quote %+v; want 50 bps, 50p margin, $124.37 for £100.00", team)
+		t.Fatalf("Crew's quote %+v; want 50 bps, 50p margin, $124.37 for £100.00", team)
 	}
-	seven := int64(7)
-	if _, err := billing.SetContract(ctx, pool, billing.Contract{WorkspaceID: ws, FXMarginBPS: &seven, Reference: "B56.23"}, "tester"); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE workspaces SET plan = 'personal_fleet' WHERE id = $1`, ws); err != nil {
 		t.Fatal(err)
 	}
-	if q := quote(); q.MarginBPS != 7 || q.MarginMinor != 7 || q.BuyMinor != 124_91 {
-		t.Fatalf("contract quote %+v; want 7 bps, 7p margin, $124.91 for £99.93", q)
+	if q := quote(); q.MarginBPS != 0 || q.MarginMinor != 0 || q.BuyMinor != 125_00 {
+		t.Fatalf("Fleet's quote %+v; want no margin, $125.00 for £100.00", q)
 	}
 
-	// Converting at the team quote moves both legs in one entry; the same key again converts nothing more.
+	// Converting at Crew's quote moves both legs in one entry; the same key again converts nothing more.
 	code, c, body := call(base, "k1", `{"quote_id":"`+team.ID+`"}`)
 	if code != http.StatusOK || c.Status != economy.ConversionConverted || c.EntryID == "" || c.ValueULXC != 1_250_000_000 {
 		t.Fatalf("convert = %d %s; want converted, valued at 1,250 LXC", code, body)

@@ -33,9 +33,10 @@ import (
 //
 //	POST /v1/synthetic/workspaces        {"count":100} — creates that many synthetic workspaces, each
 //	                                     with test credits and a token the harness uses as that user;
-//	                                     "plan" (free, the default, team, business or enterprise) puts
-//	                                     each on that plan (B35.1).
-//	POST /v1/synthetic/workspaces/{wsID}/plan  {"plan":"team"} — moves a synthetic workspace to another
+//	                                     "plan" (any business plan, business_custom included; Studio is
+//	                                     the default) puts each on that plan (B35.1, B61.57); a 5 Oct name
+//	                                     (free, team, business, enterprise) is taken as its successor.
+//	POST /v1/synthetic/workspaces/{wsID}/plan  {"plan":"business_company"} — moves a synthetic workspace to another
 //	                                     plan, to test an upgrade or a downgrade; any other is refused 403.
 //	POST /v1/synthetic/workspaces/reset  — every synthetic workspace, or only those named in
 //	                                     {"workspaces":["s…",…]}: its stored answers deleted, its test
@@ -209,7 +210,7 @@ func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, stri
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("count must be 1 to %d", syntheticMaxCount))
 		return 0, "error: bad count"
 	}
-	if in.Plan != "" && !slices.Contains(plans.Order, in.Plan) {
+	if in.Plan != "" && !syntheticPlan(in.Plan) {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("plan must be one of %s", strings.Join(plans.Order, ", ")))
 		return 0, "error: bad plan"
 	}
@@ -237,8 +238,11 @@ func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, stri
 		}
 		users = append(users, syntheticUser{WorkspaceID: id, Token: tok, ExpiresAt: expires})
 	}
-	if in.Plan == "" {
-		in.Plan = plans.Free
+	switch {
+	case in.Plan == "":
+		in.Plan = plans.BusinessLadder[0]
+	case plans.Step(in.Plan) < 0:
+		in.Plan = plans.Successor(plans.AccountBusiness, in.Plan)
 	}
 	slog.Info("synthetic: workspaces created", "count", len(users), "plan", in.Plan)
 	writeJSONOK(w, http.StatusCreated, map[string]any{"created": len(users), "plan": in.Plan, "workspaces": users})
@@ -248,12 +252,35 @@ func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, stri
 // errNotSynthetic is a plan asked for a workspace that is not an active synthetic one.
 var errNotSynthetic = errors.New("not an active synthetic workspace")
 
-// putOnPlan records plan as synthetic workspace id's plan. It changes nothing on any other workspace.
+// syntheticPlan reports whether the testers may name plan: any plan (B61.57), or a 5 Oct one, taken as its successor.
+func syntheticPlan(plan string) bool {
+	return plans.Step(plan) >= 0 || plans.Successor(plans.AccountBusiness, plan) != ""
+}
+
+// errOtherLadder is a synthetic workspace put on a plan of the other account type's ladder.
+var errOtherLadder = errors.New("that plan is for the other type of account")
+
+// putOnPlan records plan as synthetic workspace id's plan — a 5 Oct name as its successor on the workspace's ladder.
+// It changes nothing on any other workspace.
 func (d syntheticDeps) putOnPlan(ctx context.Context, id, plan string) error {
 	if d.plans == nil {
 		return errors.New("synthetic plans need the database")
 	}
-	err := d.plans.QueryRow(ctx, `UPDATE workspaces SET synthetic_plan = $2, updated_at = NOW()
+	var accountType string
+	err := d.plans.QueryRow(ctx, `SELECT account_type FROM workspaces WHERE id = $1 AND synthetic AND active`, id).Scan(&accountType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errNotSynthetic
+	}
+	if err != nil {
+		return err
+	}
+	if plans.Step(plan) < 0 {
+		plan = plans.Successor(accountType, plan)
+	}
+	if !slices.Contains(plans.Ladder(accountType), plan) {
+		return errOtherLadder
+	}
+	err = d.plans.QueryRow(ctx, `UPDATE workspaces SET plan = $2, updated_at = NOW()
 		WHERE id = $1 AND synthetic AND active RETURNING id`, id, plan).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errNotSynthetic
@@ -262,7 +289,7 @@ func (d syntheticDeps) putOnPlan(ctx context.Context, id, plan string) error {
 }
 
 // setPlan moves a synthetic workspace to another plan and answers the plan and gates it is now on — after a
-// contract or a test-mode subscription it bought, which still come first.
+// contract, which still comes first.
 func (d syntheticDeps) setPlan(w http.ResponseWriter, r *http.Request) (int, string) {
 	ws := chi.URLParam(r, "wsID")
 	var in struct {
@@ -272,11 +299,14 @@ func (d syntheticDeps) setPlan(w http.ResponseWriter, r *http.Request) (int, str
 		writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return 0, "error: bad request"
 	}
-	if !slices.Contains(plans.Order, in.Plan) {
+	if !syntheticPlan(in.Plan) {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("plan must be one of %s", strings.Join(plans.Order, ", ")))
 		return 0, "error: bad plan"
 	}
 	switch err := d.putOnPlan(r.Context(), ws, in.Plan); {
+	case errors.Is(err, errOtherLadder):
+		writeJSONErr(w, http.StatusBadRequest, "plan must be one of this workspace's own ladder: "+strings.Join(plans.Ladder(plans.AccountPersonal), ", ")+" for a personal one, "+strings.Join(plans.BusinessLadder, ", ")+" for a business")
+		return 0, "error: other ladder"
 	case errors.Is(err, errNotSynthetic):
 		writeJSONErr(w, http.StatusForbidden, "only a test (synthetic) workspace's plan can be set here")
 		return 0, "refused: not a test workspace"

@@ -19,12 +19,14 @@ func TestPublicFees_EveryFeeWithNicolaisValues(t *testing.T) {
 		t.Fatalf("GET /v1/public/fees = %d %s (%v)", w.Code, w.Body, err)
 	}
 	want := map[string]any{
-		"market_take_bps":        1500.0,
-		"services_take_bps":      500.0,
-		"compute_take_bps":       500.0,
-		"lending_fee_bps":        100.0,
-		"platform_fee_bps":       map[string]any{"free": 550.0, "team": 300.0, "business": 100.0, "enterprise": 100.0},
-		"fx_margin_bps":          map[string]any{"free": 0.0, "team": 50.0, "business": 25.0, "enterprise": 15.0},
+		"market_take_bps":   1500.0,
+		"services_take_bps": 500.0,
+		"compute_take_bps":  500.0,
+		"lending_fee_bps":   100.0,
+		"platform_fee_bps": map[string]any{"personal_solo": 550.0, "personal_crew": 300.0, "personal_fleet": 100.0,
+			"business_studio": 550.0, "business_company": 300.0, "business_group": 100.0, "business_custom": 100.0},
+		"fx_margin_bps": map[string]any{"personal_solo": 100.0, "personal_crew": 50.0, "personal_fleet": 0.0,
+			"business_studio": 60.0, "business_company": 60.0, "business_group": 60.0, "business_custom": 15.0},
 		"intl_payment_fee_minor": map[string]any{"GBP": 500.0, "EUR": 600.0, "USD": 700.0},
 		"merchant_fee_bps":       75.0,
 		"merchant_a2a_fee_bps":   100.0,

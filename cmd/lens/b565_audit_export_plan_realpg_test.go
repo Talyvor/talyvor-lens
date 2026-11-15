@@ -18,8 +18,8 @@ type noopAuditWebhook struct{}
 
 func (noopAuditWebhook) ExportWebhook(context.Context, string, audit.ExportFilter) error { return nil }
 
-// B56.5 — audit export follows the plan card: GET /v1/audit/export and POST /v1/audit/webhook refuse Free and Team
-// with 402 in words naming Business, and serve Business and Enterprise as before; a synthetic workspace by its plan.
+// B56.5, B61.57 — audit export follows the plan card: GET /v1/audit/export and POST /v1/audit/webhook refuse Studio and
+// Company with 402 in words naming Group, and serve Group and Custom as before; a synthetic workspace by its plan.
 // The refusal names no setting.
 func TestB565_AuditExportFollowsThePlanCard(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -28,10 +28,10 @@ func TestB565_AuditExportFollowsThePlanCard(t *testing.T) {
 		`INSERT INTO subscriptions (workspace_id, stripe_subscription_id, stripe_customer_id, price_id, status, livemode, last_event_at, plan)
 			VALUES ('ws-b565-team', 'sub_b565_team', 'cus_b565_team', 'price_team', 'active', false, NOW(), 'team'),
 			       ('ws-b565-business', 'sub_b565_business', 'cus_b565_business', 'price_business', 'active', false, NOW(), 'business')`,
-		`INSERT INTO workspace_contracts (workspace_id, plan, set_by) VALUES ('ws-b565-enterprise', 'enterprise', 'nicolai')`,
-		`INSERT INTO workspaces (id, name, cache_prefix, synthetic, synthetic_plan)
-			VALUES ('ws-b565-synth-team', 'ws-b565-synth-team', 'ws-b565-synth-team', true, 'team'),
-			       ('ws-b565-synth-business', 'ws-b565-synth-business', 'ws-b565-synth-business', true, 'business')`,
+		`INSERT INTO workspace_contracts (workspace_id, plan, set_by) VALUES ('ws-b565-enterprise', 'business_custom', 'nicolai')`,
+		`INSERT INTO workspaces (id, name, cache_prefix, synthetic, plan)
+			VALUES ('ws-b565-synth-team', 'ws-b565-synth-team', 'ws-b565-synth-team', true, 'business_company'),
+			       ('ws-b565-synth-business', 'ws-b565-synth-business', 'ws-b565-synth-business', true, 'business_group')`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatal(err)
@@ -52,12 +52,12 @@ func TestB565_AuditExportFollowsThePlanCard(t *testing.T) {
 		ws, plan string
 		served   bool
 	}{
-		{"ws-b565-free", "Free", false},
-		{"ws-b565-team", "Team", false},
-		{"ws-b565-synth-team", "Team", false},
-		{"ws-b565-business", "Business", true},
-		{"ws-b565-enterprise", "Enterprise", true},
-		{"ws-b565-synth-business", "Business", true},
+		{"ws-b565-free", "Studio", false},
+		{"ws-b565-team", "Company", false},
+		{"ws-b565-synth-team", "Company", false},
+		{"ws-b565-business", "Group", true},
+		{"ws-b565-enterprise", "Custom", true},
+		{"ws-b565-synth-business", "Group", true},
 	} {
 		exportCode, exportBody := call(c.ws, http.MethodGet, "/v1/audit/export", "")
 		hookCode, hookBody := call(c.ws, http.MethodPost, "/v1/audit/webhook", `{"webhook_url":"https://siem.example/hook"}`)
@@ -67,14 +67,14 @@ func TestB565_AuditExportFollowsThePlanCard(t *testing.T) {
 			}
 			continue
 		}
-		want := c.plan + " does not include audit export. Business includes it."
+		want := c.plan + " does not include audit export. Group includes it."
 		for _, got := range []struct {
 			code int
 			body string
 		}{{exportCode, exportBody}, {hookCode, hookBody}} {
 			var out map[string]any
 			_ = json.Unmarshal([]byte(got.body), &out)
-			if got.code != http.StatusPaymentRequired || out["error"] != want || out["allows"] != "business" || out["gate"] != "audit_export" {
+			if got.code != http.StatusPaymentRequired || out["error"] != want || out["allows"] != "business_group" || out["gate"] != "audit_export" {
 				t.Fatalf("%s: %d %s; want 402 saying %q", c.ws, got.code, got.body, want)
 			}
 			if strings.Contains(got.body, "LENS_") || strings.Contains(got.body, "setting") {
