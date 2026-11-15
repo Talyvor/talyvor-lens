@@ -93,7 +93,10 @@ func TestVisaPublishedExampleIsReadUpToItsKey(t *testing.T) {
 		`alg="Ed25519";nonce="e8N7S2MFd/qrd6T2R3tdfAuuANngKI7LFtKYI/vowzk4lAZyadIX6wW25MwG7DCT9RUKAJ0qVkU0mEeLElW1qg==";tag="agent-browser-auth"`
 	sig := `sig2=:jdq0SqOwHdyHr9+r5jw3iYZH6aNGKijYp/EstF4RQTQdi5N5YYKrD+mCT1HA1nZDsi6nJKuHxUi/5Syp3rLWBA==:`
 	var asked string
-	keys := func(_ context.Context, keyID string) (ed25519.PublicKey, error) { asked = keyID; return nil, ErrUnknownKey }
+	keys := func(_ context.Context, keyID string) (ed25519.PublicKey, error) {
+		asked = keyID
+		return nil, ErrUnknownKey
+	}
 	// The example lives an hour, created to expires; the specification's own rule allows 8 minutes, so the example is
 	// refused for that before its key is asked for. Within the rule, with the example's other parameters, it reads.
 	if _, err := VerifyTAP(context.Background(), "example.com", "/example-product", in, sig, keys, fakeNonces{}, tapNow.Add(time.Minute)); err == nil ||

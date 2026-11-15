@@ -109,7 +109,7 @@ func TestB626_AnAgentsCredentialInTheTrustedAgentProtocolForm(t *testing.T) {
 	}
 
 	p := present()
-	if !strings.Contains(p.SignatureInput, `tag="agent-payer-auth"`) || p.AgenticConsumer.Kid == "" || p.ExpiresAt.Sub(time.Now()) > agentsig.TAPMaxLife {
+	if !strings.Contains(p.SignatureInput, `tag="agent-payer-auth"`) || p.AgenticConsumer.Kid == "" || time.Until(p.ExpiresAt) > agentsig.TAPMaxLife {
 		t.Fatalf("the form = %+v", p)
 	}
 	if res := check(p, "elsewhere.example"); res.Valid || !strings.Contains(res.Reason, "audience") {
