@@ -2025,10 +2025,13 @@ func run() error {
 	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
 	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
 		PerAddressHour: cfg.PhoneChecksPerAddressHour,
+		PasscodeSecret: []byte(cfg.PasscodeSecret),
 		// B61.24 — a person's sign-in keys are checked as approvals check theirs: the same relying party and origins,
 		// and the same check of a phone's device key.
 		RP:      &passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins},
 		Devices: &devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}}
+	// B61.23 — the key rules ask the door's own passcode.
+	phoneDoor.Passcodes = phoneDoor.PasscodeRule()
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
