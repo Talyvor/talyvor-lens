@@ -151,7 +151,7 @@ func TestB6157_TwoLaddersByTheAccountsType(t *testing.T) {
 func TestB6157_TheMigrationMovesEveryOldPlan(t *testing.T) {
 	pool := syntheticDB(t)
 	ctx := context.Background()
-	sql, err := os.ReadFile("../../migrations/0394_two_plan_ladders.sql")
+	sql, err := os.ReadFile("../../migrations/0398_two_plan_ladders.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

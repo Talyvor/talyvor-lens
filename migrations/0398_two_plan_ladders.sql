@@ -1,4 +1,4 @@
--- 0394_two_plan_ladders.sql — B61.57: Talyvor's own plans, two ladders, chosen by the account's type (internal/plans).
+-- 0398_two_plan_ladders.sql — B61.57: Talyvor's own plans, two ladders, chosen by the account's type (internal/plans).
 --
 -- workspaces.plan is the plan the account chose, or this migration moved it to: Solo, Crew or Fleet for a personal
 -- account, Studio, Company or Group for a business (Custom, business_custom, is a contract's and the testers'). NULL is
