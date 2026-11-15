@@ -333,7 +333,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			minorString(held, p.Currency), p.Funding, minorString(p.debit(), p.Currency))
 	}
 	if p.AgentID != "" {
-		if err := enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
+		if err := s.enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
 			return OutsidePayment{}, s.refusedMovement(ctx, tx, err)
 		}
 	}

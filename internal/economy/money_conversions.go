@@ -244,7 +244,7 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	// An approval is for the conversion, not the quote: asked again after it, a new quote finds it.
 	fp := sha256.Sum256([]byte("fx\x00" + agentID + "\x00" + c.FromAccountID + "\x00" + c.ToAccountID + "\x00" +
 		strconv.FormatInt(c.SellMinor, 10) + "\x00" + c.Funding))
-	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Own: partners.Money{Minor: c.SellMinor, Currency: c.SellCurrency},
 		Payee: Payee{Kind: "agent", ID: agentID, Name: "its own " + c.BuyCurrency + " account"},
 		Memo:  Money(c.SellMinor, c.SellCurrency) + " converted to " + c.BuyCurrency + " (" + c.Funding + " money)"})
 
@@ -278,7 +278,7 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 		return Conversion{}, fmt.Errorf("%w: the account holds %s of %s money, and this conversion sells %s", ErrAgentFunds,
 			Money(balance, c.SellCurrency), c.Funding, Money(c.SellMinor, c.SellCurrency))
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
 	if err := judgeConversion(ctx, tx, c, value, time.Now()); err != nil {

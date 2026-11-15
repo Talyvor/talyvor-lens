@@ -479,9 +479,9 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	if m.PayeeBusinessID != "" {
 		paid = Payee{Kind: "outside", ID: m.PayeeID, Name: m.PayeeName}
 	}
-	rules := WithAgentRequest(ctx, AgentRequest{Payment: true, Approved: true, Payee: paid,
+	rules := WithAgentRequest(ctx, AgentRequest{Payment: true, Approved: true, Payee: paid, Own: partners.Money{Minor: amountMinor, Currency: m.Currency},
 		Memo: Money(amountMinor, m.Currency) + " pulled by " + m.PayeeName + " under mandate " + m.ID})
-	if err := enforceAgentRules(rules, tx, m.WorkspaceID, m.AgentID, value, entryKey); err != nil {
+	if err := s.enforceAgentRules(rules, tx, m.WorkspaceID, m.AgentID, value, entryKey); err != nil {
 		return MandatePull{}, err
 	}
 

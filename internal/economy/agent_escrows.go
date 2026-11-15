@@ -163,7 +163,7 @@ func (s *DualTokenStore) payIntoEscrowTx(ctx context.Context, tx pgx.Tx, e *Escr
 	if bal < e.AmountULXC {
 		return agentHolds(ctx, tx, ErrAgentFunds, e.PayerAgentID, bal, 0)
 	}
-	if err := enforceAgentRules(ctx, tx, e.PayerWorkspaceID, e.PayerAgentID, e.AmountULXC, e.ID); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, e.PayerWorkspaceID, e.PayerAgentID, e.AmountULXC, e.ID); err != nil {
 		return err
 	}
 	if _, _, _, err := readLXCBalance(ctx, tx, e.PayerWorkspaceID); err != nil {
