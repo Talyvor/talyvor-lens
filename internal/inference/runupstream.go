@@ -35,6 +35,7 @@ import (
 // upstreamURL + the provider's setAuth closure + the inbound request headers (extraHeaders) — so the
 // ProviderConfig type does NOT move (the A′ point). A scorer passes nil extraHeaders (no inbound request).
 func RunUpstream(ctx context.Context, httpClient *http.Client, rc retry.Config, upstreamURL string, setAuth func(*http.Request), body []byte, extraHeaders http.Header) (resp *http.Response, respBody []byte, attempts int, err error) {
+	var sent *http.Request // the last attempt, whose credentials an error body is cleaned of (B28.250)
 	result := retry.Do(ctx, rc, func(c context.Context) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(c, http.MethodPost, upstreamURL, bytes.NewReader(body))
 		if err != nil {
@@ -57,6 +58,7 @@ func RunUpstream(ctx context.Context, httpClient *http.Client, rc retry.Config, 
 		// Inject our current span context as traceparent on the upstream request (harmless metadata until
 		// the provider surfaces OTel itself).
 		otel.GetTextMapPropagator().Inject(c, propagation.HeaderCarrier(req.Header))
+		sent = req
 		return httpClient.Do(req)
 	})
 	if result.LastError != nil {
@@ -68,6 +70,9 @@ func RunUpstream(ctx context.Context, httpClient *http.Client, rc retry.Config, 
 	respBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, result.Attempts, fmt.Errorf("read upstream response: %w", err)
+	}
+	if resp.StatusCode/100 != 2 {
+		respBody = HideCredentials(respBody, sent)
 	}
 	return resp, respBody, result.Attempts, nil
 }

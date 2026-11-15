@@ -759,6 +759,7 @@ func run() error {
 	// flag would leave consumers paying full price for pooled hits on any deploy with minting off —
 	// the exact complaint this closes, reintroduced through the wiring rather than the code.
 	p.SetPoolConsumerDiscount(cfg.PoolConsumerDiscount)
+	p.SetPoolProbeLimit(cfg.PoolProbeLimit) // B28.250
 	slog.Info("economy: cross-tenant pooled hits are DISCOUNTED for the consumer",
 		slog.Float64("consumer_discount_rate", cfg.PoolConsumerDiscount),
 		slog.Float64("contributor_share_of_discounted_charge", cfg.PoolRoyaltyShare),

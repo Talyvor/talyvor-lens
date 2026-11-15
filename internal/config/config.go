@@ -598,6 +598,11 @@ type Config struct {
 	// response and the ledger row both carry what it WOULD have cost.
 	PoolConsumerDiscount float64
 
+	// PoolProbeLimit is how many times a minute one workspace may look in the pool for another workspace's answer
+	// before its pooled answers stop carrying the X-Talyvor-Pool-* saving headers (B28.250): asking guessed
+	// prompts at volume is probing the pool. Env: LENS_POOL_PROBE_LIMIT. Default 0, never withheld, until set.
+	PoolProbeLimit int
+
 	// POVIMinStake is the minimum LENS a node must lock as collateral to be
 	// minting-eligible (Part 2). Env: LENS_POVI_MIN_STAKE. Default 100.
 	POVIMinStake float64
@@ -2125,6 +2130,13 @@ func Load() (*Config, error) {
 					"too. That is not a generous discount, it is the pool silently ceasing to pay", v)
 		}
 		c.PoolConsumerDiscount = f
+	}
+	if v := os.Getenv("LENS_POOL_PROBE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid LENS_POOL_PROBE_LIMIT (must be ≥ 0; 0 never withholds the saving headers): %s", v)
+		}
+		c.PoolProbeLimit = n
 	}
 	c.POVISlashFraction = 0.5
 	if v := os.Getenv("LENS_POVI_SLASH_FRACTION"); v != "" {
