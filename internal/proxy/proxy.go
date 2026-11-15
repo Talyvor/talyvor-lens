@@ -1466,16 +1466,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				chargedHit = nil
 			}
 			price := p.pricePooledServe(chargedHit, prompt, answered, holdMaxOut)
+			// B28.250: a workspace probing the pool is not told by any header that its answer came from it — only a
+			// pool lookup sets poolProbing, so this answer is another workspace's.
 			if !poolProbing {
 				price.setSavingHeaders(w)
 			}
-			// B28.250: another workspace's answer is served no faster than a live call, so the clock cannot tell
-			// a tenant that someone else asked this.
+			// B28.250: and another workspace's answer is served no faster than a live call, so the clock cannot
+			// tell a tenant that someone else asked this.
 			if pooledHit != nil {
-				p.holdLikeALiveCall(ctx, cfg.ProviderName(), model, streaming)
+				p.holdLikeALiveCall(ctx, cfg.ProviderName(), model, streaming, len(cached))
 			}
 			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
-			if price.ChargedULXC == 0 {
+			if price.ChargedULXC == 0 && !poolProbing {
 				w.Header().Set("X-Talyvor-Cache-Replay", "true")
 				// B28.95 — and what it saved: the answer's list price, priced exactly as a pooled serve's.
 				listed := p.pricePooledServe(&poolroyalty.ServedHit{Provider: cfg.ProviderName(), Model: servedModel}, prompt, answered, holdMaxOut)
@@ -1928,7 +1930,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		ctx, r, cfg.ProviderName(), upstreamModel, wsID, upstreamBodyOut, w, own,
 	)
 	if err == nil && statusCode == http.StatusOK {
-		p.liveLatency.record(latencyKey(false, cfg.ProviderName(), model), time.Since(forwardStart)) // B28.250
+		p.liveLatency.record(latencyKey(false, cfg.ProviderName(), model, len(upstreamBody)), time.Since(forwardStart)) // B28.250
 	}
 	attempts := fbResult.Attempts
 	if err != nil {

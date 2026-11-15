@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"math/bits"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -32,11 +34,14 @@ type upstreamLatencies struct {
 	rings map[string]*latencyRing
 }
 
-func latencyKey(stream bool, provider, model string) string {
+// latencyKey names the samples a call is kept with and drawn from. A buffered call's time grows with its answer, so
+// it is kept by the answer's size to the nearest power of two: a pooled answer waits as long as live answers of its
+// own length took, and a tenant cannot shorten that wait by filling the samples with fast one-word calls.
+func latencyKey(stream bool, provider, model string, answerBytes int) string {
 	if stream {
 		return "stream\x00" + provider + "\x00" + model
 	}
-	return "call\x00" + provider + "\x00" + model
+	return "call\x00" + provider + "\x00" + model + "\x00" + strconv.Itoa(bits.Len(uint(answerBytes)))
 }
 
 // record keeps one live call's latency.
@@ -77,9 +82,10 @@ func (l *upstreamLatencies) sample(key string) (time.Duration, bool) {
 	return r.d[binary.LittleEndian.Uint64(b[:])%uint64(r.n)], true
 }
 
-// holdLikeALiveCall waits as long as a live call to provider and model would have taken, or until ctx ends.
-func (p *Proxy) holdLikeALiveCall(ctx context.Context, provider, model string, stream bool) {
-	d, ok := p.liveLatency.sample(latencyKey(stream, provider, model))
+// holdLikeALiveCall waits as long as a live call to provider and model, with an answer of answerBytes, would have
+// taken, or until ctx ends.
+func (p *Proxy) holdLikeALiveCall(ctx context.Context, provider, model string, stream bool, answerBytes int) {
+	d, ok := p.liveLatency.sample(latencyKey(stream, provider, model, answerBytes))
 	if !ok {
 		return
 	}
