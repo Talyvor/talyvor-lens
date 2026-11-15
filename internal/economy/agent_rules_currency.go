@@ -17,7 +17,7 @@ import (
 // agent_rules_currency.go — B61.12: AN AGENT'S RULES ARE HELD AND JUDGED IN THE ACCOUNT'S OWN CURRENCY.
 //
 // An agent's rules carry the currency the owner typed them in, and their limits per payment, hour, day, week and month
-// and the amount above which a payment asks the owner, in its minor units (migration 0391). Every movement the rules
+// and the amount above which a payment asks the owner, in its minor units (migration 0393). Every movement the rules
 // judge is valued in that currency by judgedAmount, the one function they all go through — payments out, Instant
 // transfers, card spends, mandates, invoices, conversions, payments to other agents, "Would it pass?" — so a euro
 // limit holds in euros whatever the rate does: a payment in the rules' currency is judged on its own amount with no
@@ -40,7 +40,7 @@ func (r AgentRules) currency() string {
 func (r AgentRules) rulesAmount(minor int64) string { return Money(minor, r.currency()) }
 
 // centsAtPeg is a µLXC limit in US cents at the peg: exact in whole cents; a part of a cent keeps its whole cents but
-// never fewer than one, so no limit becomes none (migration 0391 moves the stored rules the same way).
+// never fewer than one, so no limit becomes none (migration 0393 moves the stored rules the same way).
 func centsAtPeg(ulxc int64) int64 {
 	if ulxc <= 0 {
 		return 0
