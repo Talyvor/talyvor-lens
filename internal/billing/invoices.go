@@ -58,6 +58,12 @@ func (l *LiveStripe) CreateInvoiceCheckoutSession(ctx context.Context, p Invoice
 			},
 			Quantity: stripe.Int64(1),
 		}},
+		// B17.438 — captured synchronously, so the charge's balance transaction, and with it the processing fee the
+		// payment waits for (B56.21), is there when checkout.session.completed arrives. Checkout's default is
+		// asynchronous capture, which settles it only later.
+		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
+			CaptureMethod: stripe.String(string(stripe.PaymentIntentCaptureMethodAutomatic)),
+		},
 	}
 	params.Context = ctx
 	params.AddMetadata("talyvor_invoice_id", p.InvoiceID)
