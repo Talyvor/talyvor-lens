@@ -169,10 +169,19 @@ func lock(ctx context.Context, tx pgx.Tx, key string) error {
 }
 
 // limitFor is when the next text may go, or zero when one may go now: at most one in gap and max in an hour among
-// the checks where column is value.
-func limitFor(ctx context.Context, tx pgx.Tx, column, value string, now time.Time, gap time.Duration, max int) (time.Time, error) {
-	rows, err := tx.Query(ctx, `SELECT created_at FROM phone_checks WHERE `+column+` = $1 AND created_at > $2 ORDER BY created_at DESC`,
-		value, now.Add(-time.Hour))
+// the texts to the number value, or from the caller's address value when byAddress.
+func limitFor(ctx context.Context, tx pgx.Tx, byAddress bool, value string, now time.Time, gap time.Duration, max int) (time.Time, error) {
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if byAddress {
+		rows, err = tx.Query(ctx, `SELECT created_at FROM phone_checks WHERE caller_address = $1 AND created_at > $2 ORDER BY created_at DESC`,
+			value, now.Add(-time.Hour))
+	} else {
+		rows, err = tx.Query(ctx, `SELECT created_at FROM phone_checks WHERE phone = $1 AND created_at > $2 ORDER BY created_at DESC`,
+			value, now.Add(-time.Hour))
+	}
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -207,12 +216,12 @@ func (s *Store) Start(ctx context.Context, phone, address string) (Started, erro
 	if err := lock(ctx, tx, "phone-address:"+address); err != nil {
 		return Started{}, err
 	}
-	retry, err := limitFor(ctx, tx, "phone", phone, now, TextGap, TextsPerHour)
+	retry, err := limitFor(ctx, tx, false, phone, now, TextGap, TextsPerHour)
 	if err != nil {
 		return Started{}, err
 	}
 	detail := "this number"
-	if a, err := limitFor(ctx, tx, "caller_address", address, now, 0, max(1, s.PerAddressHour)); err != nil {
+	if a, err := limitFor(ctx, tx, true, address, now, 0, max(1, s.PerAddressHour)); err != nil {
 		return Started{}, err
 	} else if a.After(retry) {
 		retry, detail = a, "this address"
