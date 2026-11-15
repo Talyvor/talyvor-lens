@@ -21,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // The rules of a check.
@@ -67,6 +69,13 @@ type Store struct {
 	PerAddressHour int
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// RP is who people's sign-in passkeys are for (B61.24), the relying party approvals use; nil, no passkey is kept
+	// or signs in.
+	RP *passkey.RelyingParty
+	// Devices checks a phone app's device key before it is kept for a person; nil, none is.
+	Devices *devicekey.Verifier
+	// Passcodes is the person's passcode as the key rules ask about it (B61.23); nil, nobody has one.
+	Passcodes PasscodeRule
 }
 
 func (s *Store) now() time.Time {
