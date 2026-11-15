@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// B55.30 — a refused funding or withdrawal reads its amounts in dollars beside LXC and names the agent, never µLXC;
-// LENS_MONEY_ORDER=lxc_first puts the LXC first.
-func TestAgentFundRefusals_ReadDollarsBesideLXCAndNameTheAgent(t *testing.T) {
+// B55.30 — a refused funding or withdrawal reads its amounts in dollars and names the agent, never µLXC (B61.16:
+// nor LXC).
+func TestAgentFundRefusals_ReadDollarsAndNameTheAgent(t *testing.T) {
 	pool := supplyPool(t)
 	ctx := context.Background()
 	s := NewDualTokenStore(nil, pool, nil)
@@ -29,17 +29,13 @@ func TestAgentFundRefusals_ReadDollarsBesideLXCAndNameTheAgent(t *testing.T) {
 	}
 
 	_, err = s.FundAgent(ctx, ws, a.ID, 200_000_000)
-	if want := "not enough for this move: the workspace has $12.50 (125 LXC) that is not with an agent"; !errors.Is(err, ErrAgentFunds) ||
+	if want := "not enough for this move: the workspace has $12.50 that is not with an agent"; !errors.Is(err, ErrAgentFunds) ||
 		!strings.HasSuffix(err.Error(), want) || strings.Contains(err.Error(), "µLXC") {
 		t.Errorf("funding past the workspace's balance = %v, want it to end %q", err, want)
 	}
 	_, err = s.WithdrawAgent(ctx, ws, a.ID, 50_000_000)
-	if want := "not enough for this move: Research holds $4.00 (40 LXC)"; !errors.Is(err, ErrAgentFunds) || !strings.HasSuffix(err.Error(), want) {
+	if want := "not enough for this move: Research holds $4.00"; !errors.Is(err, ErrAgentFunds) || !strings.HasSuffix(err.Error(), want) {
 		t.Errorf("withdrawing past the agent's balance = %v, want it to end %q", err, want)
 	}
 
-	t.Setenv(MoneyOrderEnv, "lxc_first")
-	if _, err = s.WithdrawAgent(ctx, ws, a.ID, 50_000_000); err == nil || !strings.HasSuffix(err.Error(), "Research holds 40 LXC ($4.00)") {
-		t.Errorf("under lxc_first the withdrawal refusal = %v, want the LXC first", err)
-	}
 }
