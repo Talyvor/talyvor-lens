@@ -19,14 +19,22 @@ import (
 // fresh phone ticket (RedeemWithPasscode, signing in on a new device). It never approves a payment; approvals keep
 // their keys.
 
-// The passcode's limits. Wrong tries count for the person on every replica (passcode_events), since the last right
-// try or the last set, in the last day.
+// The passcode's limits. Wrong tries count for the person on every replica (passcode_events), each way in on its
+// own and with no time window: at the lock (CheckPasscode, ChangePasscode) since the last right try at the lock, and
+// with a ticket (RedeemWithPasscode) since the last right try with a ticket; setting or changing the passcode clears
+// both. So paced tries still add up, and someone who holds tickets for the number gets no fresh guesses each time the
+// owner unlocks their app.
 const (
-	PasscodeLength      = 6
-	PasscodeWaitAfter   = 5                // after this many wrong tries, each try waits PasscodeWait after the last wrong one
-	PasscodeWait        = 15 * time.Minute // a right passcode included
-	PasscodeOffAfter    = 10               // this many wrong tries in a day turn it off
-	PasscodeCountWindow = 24 * time.Hour
+	PasscodeLength    = 6
+	PasscodeWaitAfter = 5                // after this many wrong tries one way, each try that way waits PasscodeWait after its last wrong one
+	PasscodeWait      = 15 * time.Minute // a right passcode included
+	PasscodeOffAfter  = 10               // this many wrong tries one way turn it off
+)
+
+// The ways in a passcode is tried, each with its own count.
+const (
+	passcodeAtLock     = "lock"
+	passcodeWithTicket = "ticket"
 )
 
 // The slow hash: argon2id at OWASP's smallest memory, of the passcode keyed by LENS_PASSCODE_SECRET.
@@ -45,7 +53,7 @@ var (
 	ErrPasscodeNeeded = errors.New("phonesignin: enter the passcode")
 	// ErrWrongPasscode: not the passcode. It never says how close.
 	ErrWrongPasscode = errors.New("phonesignin: that passcode is not right")
-	// ErrPasscodeOff: ten wrong tries in a day turned it off until the person signs in with a key and sets a new one.
+	// ErrPasscodeOff: ten wrong tries one way turned it off until the person signs in with a key and sets a new one.
 	ErrPasscodeOff = errors.New("phonesignin: the passcode is off after too many wrong tries")
 	// ErrNoPasscode: the person has not set one.
 	ErrNoPasscode = errors.New("phonesignin: no passcode is set")
@@ -96,9 +104,10 @@ func (s *Store) hashPasscode(salt []byte, personID, passcode string) []byte {
 	return argon2.IDKey(m.Sum(nil), salt, passcodeTime, passcodeMemory, passcodeThreads, passcodeKeyLen)
 }
 
-func (s *Store) passcodeEvent(ctx context.Context, q execer, personID, address, event string) error {
-	_, err := q.Exec(ctx, `INSERT INTO passcode_events (person_id, caller_address, event, created_at) VALUES ($1, $2, $3, $4)`,
-		personID, address, event, s.now())
+// passcodeEvent writes one row; way is the way in a try came, and empty for a set or a change.
+func (s *Store) passcodeEvent(ctx context.Context, q execer, personID, address, event, way string) error {
+	_, err := q.Exec(ctx, `INSERT INTO passcode_events (person_id, caller_address, event, way, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		personID, address, event, way, s.now())
 	if err != nil {
 		return fmt.Errorf("phonesignin: passcode audit: %w", err)
 	}
@@ -128,12 +137,13 @@ func (s *Store) setPasscode(ctx context.Context, tx pgx.Tx, personID, phone, pas
 		set_at = EXCLUDED.set_at, off_at = NULL`, personID, salt, s.hashPasscode(salt, personID, passcode), passcodeParams, s.now()); err != nil {
 		return err
 	}
-	return s.passcodeEvent(ctx, tx, personID, address, event)
+	return s.passcodeEvent(ctx, tx, personID, address, event, "")
 }
 
-// checkPasscode tries passcode for the person inside tx, holding the person's lock so every replica counts the same
-// tries. Whatever it answers, the caller commits what it wrote: a wrong try counts even when the call is refused.
-func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode, address string) error {
+// checkPasscode tries passcode for the person, come the way way, inside tx, holding the person's lock so every
+// replica counts the same tries. Whatever it answers, the caller commits what it wrote: a wrong try counts even when
+// the call is refused.
+func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode, address, way string) error {
 	if len(s.PasscodeSecret) == 0 {
 		return ErrPasscodeUnavailable
 	}
@@ -152,7 +162,7 @@ func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode
 		return err
 	}
 	if offAt != nil {
-		if err := s.passcodeEvent(ctx, tx, personID, address, "refused_off"); err != nil {
+		if err := s.passcodeEvent(ctx, tx, personID, address, "refused_off", way); err != nil {
 			return err
 		}
 		return ErrPasscodeOff
@@ -163,22 +173,23 @@ func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode
 		lastWrong *time.Time
 	)
 	if err := tx.QueryRow(ctx, `SELECT count(*), max(created_at) FROM passcode_events
-		WHERE person_id = $1 AND event = 'wrong' AND created_at > $2
-		  AND id > COALESCE((SELECT max(id) FROM passcode_events WHERE person_id = $1 AND event IN ('set', 'changed', 'set_after_key', 'right')), 0)`,
-		personID, now.Add(-PasscodeCountWindow)).Scan(&wrong, &lastWrong); err != nil {
+		WHERE person_id = $1 AND event = 'wrong' AND way = $2
+		  AND id > COALESCE((SELECT max(id) FROM passcode_events WHERE person_id = $1
+		    AND (event IN ('set', 'changed', 'set_after_key') OR (event = 'right' AND way = $2))), 0)`,
+		personID, way).Scan(&wrong, &lastWrong); err != nil {
 		return err
 	}
 	if wrong >= PasscodeWaitAfter && lastWrong != nil && lastWrong.Add(PasscodeWait).After(now) {
-		if err := s.passcodeEvent(ctx, tx, personID, address, "waited"); err != nil {
+		if err := s.passcodeEvent(ctx, tx, personID, address, "waited", way); err != nil {
 			return err
 		}
 		return &PasscodeWaitError{RetryAt: lastWrong.Add(PasscodeWait)}
 	}
 	if hmac.Equal(hash, s.hashPasscode(salt, personID, passcode)) {
-		return s.passcodeEvent(ctx, tx, personID, address, "right")
+		return s.passcodeEvent(ctx, tx, personID, address, "right", way)
 	}
 	wrong++
-	if err := s.passcodeEvent(ctx, tx, personID, address, "wrong"); err != nil {
+	if err := s.passcodeEvent(ctx, tx, personID, address, "wrong", way); err != nil {
 		return err
 	}
 	switch {
@@ -186,7 +197,7 @@ func (s *Store) checkPasscode(ctx context.Context, tx pgx.Tx, personID, passcode
 		if _, err := tx.Exec(ctx, `UPDATE person_passcodes SET off_at = $2 WHERE person_id = $1`, personID, now); err != nil {
 			return err
 		}
-		if err := s.passcodeEvent(ctx, tx, personID, address, "off"); err != nil {
+		if err := s.passcodeEvent(ctx, tx, personID, address, "off", way); err != nil {
 			return err
 		}
 		return ErrPasscodeOff
@@ -204,7 +215,7 @@ func (s *Store) CheckPasscode(ctx context.Context, personID, passcode, address s
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.checkPasscode(ctx, tx, personID, passcode, address); err != nil {
+	if err := s.checkPasscode(ctx, tx, personID, passcode, address, passcodeAtLock); err != nil {
 		if errors.Is(err, ErrNoPasscode) || errors.Is(err, ErrPasscodeUnavailable) {
 			return err
 		}
@@ -216,7 +227,7 @@ func (s *Store) CheckPasscode(ctx context.Context, personID, passcode, address s
 // ChangePasscode sets passcode for a person who gave the old one. A weak new one is refused before the old is tried.
 func (s *Store) ChangePasscode(ctx context.Context, personID, old, passcode, address string) error {
 	return s.changePasscode(ctx, personID, passcode, address, "changed", func(tx pgx.Tx) error {
-		return s.checkPasscode(ctx, tx, personID, old, address)
+		return s.checkPasscode(ctx, tx, personID, old, address, passcodeAtLock)
 	})
 }
 

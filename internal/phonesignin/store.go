@@ -442,7 +442,7 @@ func (s *Store) RedeemWithPasscode(ctx context.Context, ticket, identity, passco
 		case has && passcode == "":
 			return Person{}, false, s.refuse(ctx, tx, phone, address, "a ticket without the person's passcode", ErrPasscodeNeeded)
 		case has:
-			if err := s.checkPasscode(ctx, tx, p.ID, passcode, address); err != nil {
+			if err := s.checkPasscode(ctx, tx, p.ID, passcode, address, passcodeWithTicket); err != nil {
 				if errors.Is(err, ErrPasscodeUnavailable) {
 					return Person{}, false, err
 				}

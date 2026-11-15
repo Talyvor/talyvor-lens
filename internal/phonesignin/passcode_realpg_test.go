@@ -149,7 +149,7 @@ func TestPasscodeWaitsAfterFiveWrong(t *testing.T) {
 	}
 }
 
-func TestPasscodeOffAfterTenInADay(t *testing.T) {
+func TestPasscodeOffAfterTenWrong(t *testing.T) {
 	ctx := context.Background()
 	d := newPasscodeDoor(t, phoneDB(t))
 	const phone = "+447700900421"
@@ -309,4 +309,46 @@ func TestPasscodeTwoReplicasShareTheCount(t *testing.T) {
 		t.Fatalf("two replicas: %d wrong and %d waited, want %d and %d", wrong, waited, PasscodeWaitAfter, 12-PasscodeWaitAfter)
 	}
 	wantWait(t, a.CheckPasscode(ctx, p.ID, testPasscode, ""), a.clock.Add(PasscodeWait))
+}
+
+// The count is per way in, with no time window (v7 review of #1170): someone who holds tickets for the number (a SIM
+// swap, texts read on the way) gets no fresh guesses each time the real owner unlocks their app, and paced tries
+// still add up.
+func TestPasscodeTicketTriesCountAcrossDaysAndLockEntries(t *testing.T) {
+	ctx := context.Background()
+	d := newPasscodeDoor(t, phoneDB(t))
+	const phone = "+447700900461"
+	p := joinWith(t, d, phone, testPasscode)
+	for i := 1; i < PasscodeOffAfter; i++ {
+		d.later(5 * time.Hour) // nine tries over two days, each long after any wait
+		if _, _, err := d.RedeemWithPasscode(ctx, ticketFor(t, d, phone), "", "000000", ""); errors.Is(err, ErrPasscodeOff) || err == nil {
+			t.Fatalf("wrong ticket try %d: %v, want it refused and the passcode still on", i, err)
+		}
+		if err := d.CheckPasscode(ctx, p.ID, testPasscode, ""); err != nil {
+			t.Fatalf("the owner at the lock after ticket try %d: %v", i, err)
+		}
+	}
+	d.later(5 * time.Hour)
+	if _, _, err := d.RedeemWithPasscode(ctx, ticketFor(t, d, phone), "", "000000", ""); !errors.Is(err, ErrPasscodeOff) {
+		t.Fatalf("the tenth wrong ticket try: %v, want ErrPasscodeOff", err)
+	}
+	if err := d.CheckPasscode(ctx, p.ID, testPasscode, ""); !errors.Is(err, ErrPasscodeOff) {
+		t.Fatalf("the lock once off: %v, want ErrPasscodeOff", err)
+	}
+}
+
+func TestPasscodeLockCountClearedByARightLockEntry(t *testing.T) {
+	ctx := context.Background()
+	d := newPasscodeDoor(t, phoneDB(t))
+	p := joinWith(t, d, "+447700900471", testPasscode)
+	for round := 1; round <= 2; round++ {
+		for i := 1; i <= 4; i++ {
+			if err := d.CheckPasscode(ctx, p.ID, "000000", ""); !errors.Is(err, ErrWrongPasscode) {
+				t.Fatalf("round %d, wrong try %d at the lock: %v, want only ErrWrongPasscode", round, i, err)
+			}
+		}
+		if err := d.CheckPasscode(ctx, p.ID, testPasscode, ""); err != nil {
+			t.Fatalf("round %d, the right passcode at the lock: %v", round, err)
+		}
+	}
 }
