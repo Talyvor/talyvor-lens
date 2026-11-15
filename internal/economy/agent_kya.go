@@ -38,12 +38,18 @@ type KYAAgent struct {
 }
 
 // KYAOwner is who answers for the agent: its workspace, the name its verification checks confirmed, the level they
-// reach, and the level a real provider's checks reach — the Test provider's count for test money only.
+// reach, and the level a real provider's checks reach — the Test provider's count for test money only. B62.6: and
+// what the card networks' Know Your Agent checks link an agent to — whether a business or a person answers for it
+// (Kind, the account's type), the country the named check confirmed (ISO 3166-1 alpha-2) and, for a business, the
+// registration number it confirmed.
 type KYAOwner struct {
-	WorkspaceID string            `json:"workspace_id"`
-	Name        string            `json:"name,omitempty"`
-	Level       VerificationLevel `json:"level"`
-	LiveLevel   VerificationLevel `json:"live_level"`
+	WorkspaceID        string            `json:"workspace_id"`
+	Kind               string            `json:"kind,omitempty"` // "business" or "personal"
+	Name               string            `json:"name,omitempty"`
+	Country            string            `json:"country,omitempty"`
+	RegistrationNumber string            `json:"registration_number,omitempty"`
+	Level              VerificationLevel `json:"level"`
+	LiveLevel          VerificationLevel `json:"live_level"`
 }
 
 // KYACapability is one capability and the money it takes for this agent now: "live", or "test" (test money only).
@@ -170,10 +176,14 @@ func agentKYAFacts(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 	return f, nil
 }
 
-// kyaOwner is who answers for workspaceID's agents: the levels its checks reach and the name the highest check within
-// them confirmed.
+// kyaOwner is who answers for workspaceID's agents: its account's type, the levels its checks reach, and the name,
+// country and registration number the highest check within them confirmed.
 func kyaOwner(ctx context.Context, q pgxDB, workspaceID string) (KYAOwner, error) {
 	o := KYAOwner{WorkspaceID: workspaceID}
+	err := q.QueryRow(ctx, `SELECT account_type FROM workspaces WHERE id = $1`, workspaceID).Scan(&o.Kind)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) { // a workspace with no row says no kind
+		return o, fmt.Errorf("economy: agent credential owner: %w", err)
+	}
 	checks, err := readVerificationChecks(ctx, q, workspaceID)
 	if err != nil {
 		return o, err
@@ -182,7 +192,7 @@ func kyaOwner(ctx context.Context, q pgxDB, workspaceID string) (KYAOwner, error
 	named := VerificationLevel(0)
 	for _, c := range checks {
 		if c.Status == string(partners.StatusCompleted) && c.VerifiedName != "" && c.Level <= o.Level && c.Level > named {
-			o.Name, named = c.VerifiedName, c.Level
+			o.Name, o.Country, o.RegistrationNumber, named = c.VerifiedName, c.Country, c.CompanyNumber, c.Level
 		}
 	}
 	return o, nil

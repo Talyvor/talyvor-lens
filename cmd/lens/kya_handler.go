@@ -12,6 +12,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/kya"
+	"github.com/talyvor/lens/internal/kyatap"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
 
@@ -81,16 +82,8 @@ type agentKeyResolver interface {
 func mountKYAAgentRoutes(r chi.Router, svc kyaService, keys agentKeyResolver) {
 	r.Get("/v1/workspaces/{wsID}/agents/{id}/credential", func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "id")
-		// Whoever holds a credential can show it, so only the agent itself and those who answer for it are given it.
-		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
-			keyAgent := ""
-			if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
-				keyAgent, _, _ = keys.AgentOfKey(req.Context(), actx.APIKeyID)
-			}
-			if keyAgent != agentID {
-				writeJSONErr(w, http.StatusForbidden, "only the agent's own key, the workspace's owner or an admin may read its credential")
-				return
-			}
+		if !mayShowCredential(w, req, keys, agentID) {
+			return
 		}
 		c, err := svc.Current(req.Context(), chi.URLParam(req, "wsID"), agentID)
 		var standing *kya.StandingError
@@ -103,6 +96,85 @@ func mountKYAAgentRoutes(r chi.Router, svc kyaService, keys agentKeyResolver) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, c)
+		}
+	})
+}
+
+// mayShowCredential answers whether the caller may be given agentID's credential, and refuses them when not: whoever
+// holds a credential can show it, so only the agent itself and those who answer for it are given it.
+func mayShowCredential(w http.ResponseWriter, req *http.Request, keys agentKeyResolver, agentID string) bool {
+	if _, owner := storedanswers.OwnerOrAdmin(req.Context()); owner {
+		return true
+	}
+	keyAgent := ""
+	if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
+		keyAgent, _, _ = keys.AgentOfKey(req.Context(), actx.APIKeyID)
+	}
+	if keyAgent != agentID {
+		writeJSONErr(w, http.StatusForbidden, "only the agent's own key, the workspace's owner or an admin may read its credential")
+		return false
+	}
+	return true
+}
+
+// B62.6 — the credential in the form Visa's Trusted Agent Protocol publishes (internal/kyatap, docs/kya.md):
+//
+//	POST /v1/kya/verify/tap   {"authority", "path", "signature_input", "signature", "agentic_consumer"}
+//	                          Talyvor's answer on one: valid, or why not, its tag and what the credential says
+//	POST /v1/workspaces/{wsID}/agents/{id}/credential/tap   {"authority", "path", "tag"}
+//	                          the signature headers and Agentic Consumer Recognition Object for one request to a
+//	                          merchant; 409 while the agent is frozen or archived
+//
+// The first is public, in the rate-limited group; the second in the authed group, for whoever may read the agent's
+// credential.
+
+type kyaTAPService interface {
+	Present(ctx context.Context, workspaceID, agentID string, in kyatap.Request) (kyatap.Presentation, error)
+	Verify(ctx context.Context, in kyatap.Check) (kyatap.Result, error)
+}
+
+func mountKYATAPPublicRoutes(r chi.Router, svc kyaTAPService) {
+	r.Post("/v1/kya/verify/tap", func(w http.ResponseWriter, req *http.Request) {
+		var in kyatap.Check
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 64<<10)).Decode(&in); err != nil ||
+			in.SignatureInput == "" || in.Signature == "" || in.AgenticConsumer.IDToken == "" {
+			writeJSONErr(w, http.StatusBadRequest,
+				`body must be {"authority", "path", "signature_input", "signature", "agentic_consumer": {"nonce", "idToken", "kid", "alg", "signature"}}`)
+			return
+		}
+		res, err := svc.Verify(req.Context(), in)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONOK(w, http.StatusOK, res)
+	})
+}
+
+func mountKYATAPAgentRoutes(r chi.Router, svc kyaTAPService, keys agentKeyResolver) {
+	r.Post("/v1/workspaces/{wsID}/agents/{id}/credential/tap", func(w http.ResponseWriter, req *http.Request) {
+		agentID := chi.URLParam(req, "id")
+		if !mayShowCredential(w, req, keys, agentID) {
+			return
+		}
+		var in kyatap.Request
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 8<<10)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"authority", "path", "tag"}`)
+			return
+		}
+		p, err := svc.Present(req.Context(), chi.URLParam(req, "wsID"), agentID, in)
+		var standing *kya.StandingError
+		switch {
+		case errors.Is(err, kyatap.ErrBadRequest):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.As(err, &standing):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, p)
 		}
 	})
 }
