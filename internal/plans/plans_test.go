@@ -49,7 +49,7 @@ func TestLoad_TheEnvExampleIsNicolaisValues(t *testing.T) {
 		"not JSON":       `{`,
 		"a plan short":   `{"personal_solo":{"agents":3,"seats":1,"own_provider_keys":"none"}}`,
 		"an odd plan":    strings.Replace(example, `"personal_solo"`, `"personal_gratis"`, 1),
-		"the 5 Oct ones": `{"free":{"agents":3,"seats":1,"own_provider_keys":"none"},"team":{"agents":25,"seats":5,"own_provider_keys":"add_on"},"business":{"agents":-1,"seats":25,"own_provider_keys":"included"},"enterprise":{"agents":-1,"seats":-1,"own_provider_keys":"included"}}`,
+		"3 of the 5 Oct": `{"free":{"agents":3,"seats":1,"own_provider_keys":"none"},"team":{"agents":25,"seats":5,"own_provider_keys":"add_on"},"business":{"agents":-1,"seats":25,"own_provider_keys":"included"}}`,
 		"agents -2":      strings.Replace(example, `"agents":3`, `"agents":-2`, 1),
 		"own keys typo":  strings.Replace(example, `"own_provider_keys":"none"`, `"own_provider_keys":"no"`, 1),
 		"a typo'd gate":  strings.Replace(example, `"sso":false`, `"ssso":false`, 1),

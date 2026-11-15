@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"slices"
@@ -200,6 +201,10 @@ func Load(getenv func(string) string) (map[string]Gates, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("plans: %s must be a JSON object of each plan's gates, like the default in lens.env.example: %w", Setting, err)
 	}
+	if NamesOctoberPlans(slices.Collect(maps.Keys(m))) {
+		OutOfDate(Setting)
+		return Defaults(), nil
+	}
 	for name := range m {
 		if !known(name) {
 			return nil, fmt.Errorf("plans: %s names %q; the plans are %s", Setting, name, strings.Join(Order, ", "))
@@ -217,6 +222,22 @@ func Load(getenv func(string) string) (map[string]Gates, error) {
 		}
 	}
 	return m, nil
+}
+
+// OctoberPlans are the 5 Oct plans every workspace was on before the two ladders, sorted.
+var OctoberPlans = []string{"business", "enterprise", "free", "team"}
+
+// NamesOctoberPlans is whether a by-plan setting names exactly the 5 Oct plans: a lens.env written before the two
+// ladders. Lens runs on the defaults rather than refusing to start on one, because migration 0398 has moved every
+// account off those plans by then and the version before it cannot read the database any more.
+func NamesOctoberPlans(names []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(names)), OctoberPlans)
+}
+
+// OutOfDate says in the log that setting names the 5 Oct plans and Lens runs on its defaults instead.
+func OutOfDate(setting string) {
+	slog.Error("setting out of date: it names the 5 Oct plans free, team, business and enterprise, which no account is on since the two ladders (B61.57); Lens runs on its defaults for it. Rewrite it from lens.env.example, or unset it.",
+		"setting", setting)
 }
 
 func known(plan string) bool {

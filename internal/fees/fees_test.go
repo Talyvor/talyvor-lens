@@ -39,7 +39,7 @@ func TestLoad_DefaultsAreNicolaisValuesAndASettingReplacesOne(t *testing.T) {
 		"LENS_MARKET_TAKE_BPS":        "15%",
 		"LENS_SERVICES_TAKE_BPS":      "10001",
 		"LENS_PLATFORM_FEE_BPS":       `{"personal_solo":-1}`,
-		"LENS_FX_MARGIN_BPS":          `{"free":0,"team":50,"business":25,"enterprise":15}`, // the 5 Oct plans (B61.57)
+		"LENS_FX_MARGIN_BPS":          `{"free":0,"team":50,"business":25}`, // three of the 5 Oct plans; all four run on the default (B61.57)
 		"LENS_INTL_PAYMENT_FEE_MINOR": `500`,
 	} {
 		if _, err := Load(func(n string) string {

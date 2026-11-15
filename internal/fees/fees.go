@@ -33,8 +33,8 @@ type Settings struct {
 	// On AI spend charged to credits, by plan (internal/plans): each plan the 5 Oct plan at its step paid (B61.57).
 	PlatformFeeBPS map[string]int64 `json:"platform_fee_bps"`
 	// Over the reference rate on a currency conversion, and so on an Instant transfer, by plan (B61.57). Set, each
-	// by-plan fee names every plan in plans.Order and no other, so a setting naming the 5 Oct plans stops Lens starting
-	// rather than charging nothing.
+	// by-plan fee names every plan in plans.Order and no other; one naming exactly the 5 Oct plans is out of date, and
+	// Lens says so in its log and runs on the default. Any other plan set stops Lens starting rather than charging nothing.
 	FXMarginBPS map[string]int64 `json:"fx_margin_bps"`
 	// On an international payment, in minor units of the currency it is sent in, plus the partner's cost.
 	IntlPaymentFeeMinor map[string]int64 `json:"intl_payment_fee_minor"`
@@ -112,7 +112,12 @@ func Load(getenv func(string) string) (Settings, error) {
 				return s, fmt.Errorf("fees: %s[%q] is %d %s, outside 0 to %d", f.name, k, n, f.units, f.ceil)
 			}
 		}
-		if named := slices.Sorted(maps.Keys(m)); f.byPlan && !slices.Equal(named, slices.Sorted(slices.Values(plans.Order))) {
+		named := slices.Sorted(maps.Keys(m))
+		if f.byPlan && plans.NamesOctoberPlans(named) {
+			plans.OutOfDate(f.name)
+			continue
+		}
+		if f.byPlan && !slices.Equal(named, slices.Sorted(slices.Values(plans.Order))) {
 			return s, fmt.Errorf("fees: %s names %s; it names every plan, %s, and no other", f.name, strings.Join(named, ", "), strings.Join(plans.Order, ", "))
 		}
 		*f.into = m
