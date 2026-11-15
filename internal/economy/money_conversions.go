@@ -374,8 +374,8 @@ func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, 
 		return fmt.Errorf("economy: agent conversions: %w", err)
 	}
 	if done+value > limit {
-		return ruleRefusal("converting %s would take today's conversions to %s LXC, over this agent's daily conversion maximum of %s LXC",
-			Money(c.SellMinor, c.SellCurrency), lxcString(done+value), lxcString(limit))
+		return ruleRefusal("converting %s would take today's conversions to %s, over this agent's daily conversion maximum of %s",
+			Money(c.SellMinor, c.SellCurrency), LXCMoney(done+value), LXCMoney(limit))
 	}
 	return nil
 }
