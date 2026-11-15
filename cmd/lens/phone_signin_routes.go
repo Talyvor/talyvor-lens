@@ -23,7 +23,9 @@ import (
 type phoneSignIn interface {
 	Start(ctx context.Context, phone, address string) (phonesignin.Started, error)
 	Finish(ctx context.Context, phone, code, address string) (phonesignin.Finished, error)
-	Redeem(ctx context.Context, ticket, identity, address string) (phonesignin.Person, bool, error)
+	RedeemWithPasscode(ctx context.Context, ticket, identity, passcode, address string) (phonesignin.Person, bool, error)
+	CheckPasscode(ctx context.Context, personID, passcode, address string) error
+	ChangePasscode(ctx context.Context, personID, old, passcode, address string) error
 	PhoneCheckDue(p phonesignin.Person) bool
 	Refused(ctx context.Context, phone, address, detail string) error
 }
@@ -56,7 +58,19 @@ type phoneFinishResponse struct {
 type phonePersonRequest struct {
 	Ticket   string `json:"ticket"`
 	Identity string `json:"identity"`
+	// Passcode (B61.23): for a person who has one, theirs, or the ticket signs nobody in; for a new person, or one
+	// who has not set one, the passcode to set.
+	Passcode string `json:"passcode"`
 	Address  string `json:"caller_address"`
+}
+
+// passcodeRequest is the phone app's lock (check) and a change: the BFF calls them only for the person whose
+// session it holds, so the passcode alone opens nothing.
+type passcodeRequest struct {
+	PersonID    string `json:"person_id"`
+	Passcode    string `json:"passcode"`
+	OldPasscode string `json:"old_passcode"`
+	Address     string `json:"caller_address"`
 }
 
 type phonePersonResponse struct {
@@ -75,6 +89,82 @@ func mountPhoneSignInRoutes(r chi.Router, secret string, s phoneSignIn) {
 	r.Post("/v1/auth/phone/start", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { phoneStart(w, req, s) }))
 	r.Post("/v1/auth/phone/finish", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { phoneFinish(w, req, s) }))
 	r.Post("/v1/auth/phone/person", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { phonePerson(w, req, s) }))
+	// B61.23 — the passcode, for a session of the person the BFF holds.
+	r.Post("/v1/auth/passcode/check", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { passcodeCheck(w, req, s) }))
+	r.Post("/v1/auth/passcode/change", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { passcodeChange(w, req, s) }))
+}
+
+// writePasscodeRefusal answers a passcode refused; false when err is none of the passcode's own. A wrong try's
+// answer never says how close it was.
+func writePasscodeRefusal(w http.ResponseWriter, err error) bool {
+	var (
+		wait *phonesignin.PasscodeWaitError
+		weak *phonesignin.WeakPasscodeError
+	)
+	switch {
+	case errors.As(err, &wait):
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(time.Until(wait.RetryAt).Seconds()+0.999))))
+		at := wait.RetryAt.UTC().Format(time.RFC3339)
+		writeJSONOK(w, http.StatusTooManyRequests, map[string]string{"error": "Too many wrong passcodes. Try again at " + at + ".",
+			"reason": "passcode_wait", "retry_at": at})
+	case errors.As(err, &weak):
+		writePhoneRefusal(w, http.StatusBadRequest, "weak_passcode", weak.Reason)
+	case errors.Is(err, phonesignin.ErrPasscodeNeeded):
+		writePhoneRefusal(w, http.StatusBadRequest, "passcode_needed", "Enter your passcode.")
+	case errors.Is(err, phonesignin.ErrWrongPasscode):
+		writePhoneRefusal(w, http.StatusBadRequest, "wrong_passcode", "That passcode is not right.")
+	case errors.Is(err, phonesignin.ErrPasscodeOff):
+		writePhoneRefusal(w, http.StatusForbidden, "passcode_off", "Your passcode is off after too many wrong tries. Sign in with your key and set a new one.")
+	case errors.Is(err, phonesignin.ErrNoPasscode):
+		writePhoneRefusal(w, http.StatusNotFound, "no_passcode", "No passcode is set.")
+	case errors.Is(err, phonesignin.ErrPasscodeUnavailable):
+		writeJSONErr(w, http.StatusServiceUnavailable, "the passcode cannot be set or checked now; try again later")
+	default:
+		return false
+	}
+	return true
+}
+
+func decodePasscode(w http.ResponseWriter, req *http.Request) (passcodeRequest, bool) {
+	var in passcodeRequest
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid JSON")
+		return in, false
+	}
+	if in.PersonID = strings.TrimSpace(in.PersonID); in.PersonID == "" {
+		writeJSONErr(w, http.StatusBadRequest, "person_id required: the person whose session asks")
+		return in, false
+	}
+	in.Address = strings.TrimSpace(in.Address)
+	return in, true
+}
+
+func passcodeCheck(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
+	in, ok := decodePasscode(w, req)
+	if !ok {
+		return
+	}
+	if err := s.CheckPasscode(req.Context(), in.PersonID, in.Passcode, in.Address); err != nil {
+		if !writePasscodeRefusal(w, err) {
+			writeJSONErr(w, http.StatusServiceUnavailable, "the passcode could not be checked; try again")
+		}
+		return
+	}
+	writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func passcodeChange(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
+	in, ok := decodePasscode(w, req)
+	if !ok {
+		return
+	}
+	if err := s.ChangePasscode(req.Context(), in.PersonID, in.OldPasscode, in.Passcode, in.Address); err != nil {
+		if !writePasscodeRefusal(w, err) {
+			writeJSONErr(w, http.StatusServiceUnavailable, "the passcode could not be changed; try again")
+		}
+		return
+	}
+	writeJSONOK(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func phoneSignInHandler(secret string, next http.HandlerFunc) http.HandlerFunc {
@@ -165,7 +255,10 @@ func phonePerson(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
 		writeJSONErr(w, http.StatusBadRequest, "ticket required")
 		return
 	}
-	p, created, err := s.Redeem(req.Context(), in.Ticket, strings.TrimSpace(in.Identity), strings.TrimSpace(in.Address))
+	p, created, err := s.RedeemWithPasscode(req.Context(), in.Ticket, strings.TrimSpace(in.Identity), in.Passcode, strings.TrimSpace(in.Address))
+	if writePasscodeRefusal(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, phonesignin.ErrTicket):
 		writePhoneRefusal(w, http.StatusBadRequest, "ticket_ended", "That confirmation has ended. Confirm the number again.")
