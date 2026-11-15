@@ -298,6 +298,7 @@ type agentBank interface {
 	DecideCardChallenge(ctx context.Context, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (economy.AgentApproval, error)
 	AllowPayee(ctx context.Context, workspaceID, approvalID string, a economy.PayeeAllowance) (economy.AgentRules, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
+	PayAgentMoney(ctx context.Context, workspaceID, fromAgentID string, in economy.AgentMoneyPayment) (economy.AgentMoneyPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
 	AgentPeriodStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.Statement, error)
@@ -1827,15 +1828,51 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			ToAgentID  string `json:"to_agent_id"`
 			AmountULXC int64  `json:"amount_ulxc"`
 			Memo       string `json:"memo"`
+			// B61.18: from the agent's currency account, in its minor units.
+			AmountMinor int64  `json:"amount_minor"`
+			Currency    string `json:"currency"`
+			Funding     string `json:"funding"`
 		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.ToAgentID == "" || in.AmountULXC <= 0 {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id": "<agent>", "amount_ulxc": <positive µLXC>, "memo": "<optional>"}`)
+		inCurrency := false
+		err := json.NewDecoder(req.Body).Decode(&in)
+		if err == nil {
+			inCurrency = in.AmountMinor != 0 || in.Currency != ""
+		}
+		if err != nil || in.ToAgentID == "" || (inCurrency && (in.AmountMinor <= 0 || in.Currency == "" || in.AmountULXC != 0)) || (!inCurrency && in.AmountULXC <= 0) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id": "<agent>", "amount_minor": <positive minor units>, "currency": "GBP|EUR|USD|USDC", "memo": "<optional>"}`)
 			return
 		}
 		// B50.1: a payment retried with the same Idempotency-Key lands once.
 		key := req.Header.Get("Idempotency-Key")
 		if len(key) > 128 {
 			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+			return
+		}
+		if inCurrency { // B61.18: one transfer between the two agents' accounts in the currency, once under its key
+			pay, err := bank.PayAgentMoney(ctx, wsID, agentID, economy.AgentMoneyPayment{ToAgentID: in.ToAgentID, AmountMinor: in.AmountMinor,
+				Currency: in.Currency, Funding: in.Funding, Memo: in.Memo, IdempotencyKey: key})
+			switch {
+			case writeMoneyKindRefusal(w, err): // B59.42
+			case errors.Is(err, economy.ErrConnectApprovalsWaiting):
+				writeJSONErr(w, http.StatusTooManyRequests, err.Error())
+			case writePendingApproval(w, err):
+			case errors.Is(err, economy.ErrAgentMoneyPayment), errors.Is(err, economy.ErrSameAgent):
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrMoneyAccountNotFound):
+				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, economy.ErrPayeeCurrency), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
+				errors.Is(err, economy.ErrMoneyAccountNotOpen):
+				writeJSONErr(w, http.StatusConflict, err.Error())
+			case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
+				errors.Is(err, workspace.ErrMoneyWall):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
+			case errors.Is(err, economy.ErrAccountNotOpened):
+				writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+			case err != nil:
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			default:
+				writeJSONOK(w, http.StatusOK, pay)
+			}
 			return
 		}
 		pay, err := bank.PayAgent(economy.WithMoveKey(ctx, key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
