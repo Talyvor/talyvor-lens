@@ -214,6 +214,9 @@ func (s *DualTokenStore) judgeCardSpend(ctx context.Context, sp CardSpend) error
 	}
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
 		Payee: Payee{Kind: "merchant", ID: "merchant:" + sp.Merchant, Name: sp.Merchant}, Memo: memo,
+		// B61.43: the merchant's category is not known before it charges, so an agent whose rules name its merchant
+		// categories is refused a card spend rather than let a card pay where they may not hold.
+		ByCard:   true,
 		PaidFrom: PaidFrom{Kind: "account", AccountID: from.id, Currency: sp.Currency, AmountMinor: sp.AmountMinor, funding: sp.Funding}})
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

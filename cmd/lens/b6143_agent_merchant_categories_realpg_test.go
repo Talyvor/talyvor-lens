@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/issuerfake"
@@ -91,5 +96,58 @@ func TestB6143_AnAgentsRulesHoldMerchantsAndCategories(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM money_card_authorizations WHERE card_id = $1 AND NOT approved AND mcc = '4214'`, card.ID).
 		Scan(&refused); err != nil || refused != 2 {
 		t.Fatalf("refused freight authorisations = %d %v, want 2 recorded declined", refused, err)
+	}
+}
+
+// B61.43 — a one-time card the owner approved for an agent pays only in the agent's merchant categories too: its charge
+// at a freight carrier, when the agent may pay only in software, is refused and spends nothing from the card's hold.
+func TestB6143_AOneTimeCardFollowsTheAgentsMerchantCategories(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b6143-once"
+	var issuer *issuerfake.Issuer
+	b := newB468Payer(t, pool, ws, "GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"},
+		func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry {
+			layer, err := money.NewRegistry(money.Config{Sandbox: money.NewSandbox(reg, "whsec_b6143_once"), Clearances: b468Cleared{}, Limits: store.MoneyLimits(),
+				Audit: store, Ledger: moneyLedger{store}, Replays: money.NewReplayStore(pool),
+				Switches: money.SwitchSet{{Capability: money.CapCards, Partner: issuerfake.Name}: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issuer = issuerfake.New(store.AuthorizeCardCharge)
+			if err := layer.Register(issuer.Adapter()); err != nil {
+				t.Fatal(err)
+			}
+			return layer
+		})
+	if _, err := b.store.SetAgentRules(ctx, ws, b.acct.AgentID, economy.AgentRules{Timezone: "UTC", AllowedMerchantCategories: []string{"software"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountMoneyCardRoutes(r, b.store)
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	call := func(method, path, body string) (int, economy.CardBatch) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(auth.WithAuthContext(ctx, owner))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out economy.CardBatch
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	code, batch := call(http.MethodPost, "/v1/money/cards", `{"agent_id":"`+b.acct.AgentID+`","purpose":"Ship the servers","currency":"GBP",
+		"idempotency_key":"ship","cards":[{"merchant":"DHL Freight","cap_minor":5000}]}`)
+	if code == http.StatusCreated && batch.Status == economy.CardBatchAwaitingApproval {
+		code, batch = call(http.MethodPost, "/v1/money/cards/"+batch.ID+"/approve", "")
+	}
+	if code != http.StatusOK || batch.Status != economy.CardBatchIssued || len(batch.Cards) != 1 {
+		t.Fatalf("ask for and approve a card at DHL Freight = %d %+v, want it issued", code, batch)
+	}
+	ok, reason, err := issuer.Charge(ctx, issuerRef(t, pool, batch.Cards[0].ID), "DHL Freight", money.Amount{Minor: 4000, Asset: "GBP"})
+	if err != nil || ok || !strings.Contains(reason, "outside the agent's merchants and categories") {
+		t.Fatalf("the freight charge = %v %q %v, want it refused as outside the agent's merchants and categories", ok, reason, err)
+	}
+	if got, want := b4610Postings(t, pool, ws), "card_hold agent -5000; card_hold hold 5000"; got != want {
+		t.Fatalf("the card posted %q, want %q: the hold, and nothing for the refused charge", got, want)
 	}
 }

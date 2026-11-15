@@ -1,10 +1,15 @@
 package economy
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // merchant_categories.go — B61.43: THE MERCHANT CATEGORIES AN AGENT'S RULES NAME.
@@ -101,11 +106,27 @@ func (r AgentRules) judgeMerchantCategory(merchant, mcc string) error {
 		return nil
 	}
 	if !merchantCategoryCode(mcc) {
-		return ruleRefusal("%s reports no merchant category, so it is outside the agent's merchants and categories", merchant)
+		return ruleRefusal("the merchant category of %s is not known, so the payment is outside the agent's merchants and categories", merchant)
 	}
 	if merchantCategoriesName(r.BlockedMerchantCategories, mcc) ||
 		len(r.AllowedMerchantCategories) > 0 && !merchantCategoriesName(r.AllowedMerchantCategories, mcc) {
 		return ruleRefusal("%s (merchant category %s) is outside the agent's merchants and categories", merchant, mcc)
 	}
 	return nil
+}
+
+// merchantCategoryRefusal is why agentID's rules in force at now refuse a card payment at merchant in the category mcc,
+// or "": the charge on a one-time card, which no other rule judges as it is made.
+func merchantCategoryRefusal(ctx context.Context, tx pgx.Tx, agentID, merchant, mcc string, now time.Time) (string, error) {
+	r, err := agentRulesInForce(ctx, tx, agentID, now)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("economy: agent rules: %w", err)
+	}
+	if err := r.judgeMerchantCategory(merchant, mcc); err != nil {
+		return strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": "), nil
+	}
+	return "", nil
 }
