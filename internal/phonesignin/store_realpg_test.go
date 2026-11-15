@@ -344,6 +344,18 @@ func TestPhoneDoorSandboxNumberAskedAgainUnderRealSender(t *testing.T) {
 	if err != nil || p.PhoneSandbox || d.PhoneCheckDue(p) {
 		t.Fatalf("a real text clears the mark: %+v %v", p, err)
 	}
+
+	// Back under the Sandbox, its handed-back code never signs in a person a real text confirmed.
+	d.sender = partners.SandboxTextSender{}
+	d.later(time.Minute)
+	st, _ = d.Start(ctx, phone, "203.0.113.9")
+	fin, err = d.Finish(ctx, phone, st.SandboxCode, "203.0.113.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := d.Redeem(ctx, fin.Ticket, "", "203.0.113.9"); !errors.Is(err, ErrTicket) {
+		t.Fatalf("a Sandbox ticket for a number a real text confirmed: %v, want ErrTicket", err)
+	}
 }
 
 func TestPhoneDoorSandboxCodeEndsUnderRealSender(t *testing.T) {

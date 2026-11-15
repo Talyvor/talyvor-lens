@@ -399,6 +399,10 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 		if identity != "" && identity != p.Identity {
 			return Person{}, false, s.refuse(ctx, tx, phone, address, "the number is another identity's", ErrHeld)
 		}
+		// A code anyone can read off the Sandbox's answer never signs in a person a real text confirmed.
+		if sandbox && !p.PhoneSandbox {
+			return Person{}, false, s.refuse(ctx, tx, phone, address, "a Sandbox confirmation for a number a real text confirmed", ErrTicket)
+		}
 		p, err = scanPerson(tx.QueryRow(ctx, `UPDATE people SET phone_confirmed_at = $2, phone_sandbox = phone_sandbox AND $3
 			WHERE id = $1 RETURNING `+personColumns, p.ID, now, sandbox))
 		if err != nil {
