@@ -129,6 +129,8 @@ Fund `default` with the admin grant (the route exists because Step 1 set `LENS_A
 curl -X POST http://localhost:8080/v1/admin/lxc/grant \
   -H "Authorization: Bearer $LENS_API_KEY" \
   -H "Content-Type: application/json" \
+  -H "X-Talyvor-Operator: $USER" \
+  -H "X-Talyvor-Step-Up: <the current code from the authenticator app holding LENS_OPERATOR_STEP_UP_SECRET>" \
   -d '{"workspace_id":"default","amount_ulxc":50000000,"reason":"quickstart funding"}'
 # → {"workspace_id":"default","granted_ulxc":50000000,"new_balance_ulxc":50000000}
 ```

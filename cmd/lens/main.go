@@ -3332,7 +3332,8 @@ func run() error {
 		// admin can ONLY approve the algorithm's output (within
 		// band + floor) — there is no way to set an arbitrary rate.
 		// The full computation (all inputs) is returned + persisted.
-		econ.post(authed, "/v1/admin/conversion-rate/approve", func(w http.ResponseWriter, req *http.Request) {
+		// B28.264: behind requireAdminStepUp — the step-up code, and an operator_audit row per use.
+		econ.post(authed, "/v1/admin/conversion-rate/approve", requireAdminStepUp(authManager, stepUp, operatorAudit, "conversion_rate.approve", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			actx, err := authManager.Authenticate(req)
 			if refuseAuthUnavailable(w, err) {
 				return
@@ -3351,7 +3352,7 @@ func run() error {
 				return
 			}
 			writeJSONOK(w, http.StatusOK, comp)
-		})
+		})))
 
 		// Admin-only DISTILL preview: a DRY RUN that converts an uploaded
 		// document to Markdown through the KILLABLE subprocess (ProcessIsolator,
@@ -3471,7 +3472,7 @@ func run() error {
 		// admin AND the P-o-I mint rate>0 — no held rows exist otherwise).
 		for _, mt := range []string{"eval_contribution_mints", "routing_prediction_mints", "node_latency_mints", "confidential_compute_mints"} {
 			adj := poolroyalty.NewAdjudicationWriterForTable(pool, poolroyalty.NewRevokerForTable(pool, tokenLedger, mt), "held_mint_adjudications")
-			econ.post(authed, "/v1/admin/held-mints/"+mt+"/adjudicate", newAdjudicateHandler(authManager, adj))
+			econ.post(authed, "/v1/admin/held-mints/"+mt+"/adjudicate", requireAdminStepUp(authManager, stepUp, operatorAudit, "held_mints.revoke", newAdjudicateHandler(authManager, adj)))
 		}
 
 		// Phase-3 Item 2: manual clawback for traffic_mint_holds (the cache/compute/
@@ -3481,7 +3482,7 @@ func run() error {
 		// "request_id|workspace_id|mint_type". Admin-gated; inert until the node network
 		// produces held rows.
 		trafficRevoker := mining.NewTrafficRevoker(pool, tokenLedger)
-		econ.post(authed, "/v1/admin/held-mints/traffic/adjudicate", newTrafficRevokeHandler(authManager, pool, trafficRevoker))
+		econ.post(authed, "/v1/admin/held-mints/traffic/adjudicate", requireAdminStepUp(authManager, stepUp, operatorAudit, "held_mints.revoke", newTrafficRevokeHandler(authManager, pool, trafficRevoker)))
 
 		// Pool-B royalty OBSERVABILITY (read-only, admin-gated, NOT economy-gated).
 		// Forensic infra must survive the kill-switch — the economy is likeliest OFF
@@ -3748,10 +3749,11 @@ func run() error {
 		// escape hatch for a closed trial: a fresh workspace has 0 LXC and no funding path without
 		// Stripe, so it cannot transact. This funds it through economy.GrantLXC (the atomic ledger+
 		// balance move, recorded under LXCTypeGrant so a comp is never mistaken for a paid purchase).
-		// Off ⇒ the route is never registered (chi 404). Body-param target, no {wsID} — requireAdmin
-		// is the sole authority (matching the workspace-register admin route above).
+		// Off ⇒ the route is never registered (chi 404). Body-param target, no {wsID}. B28.264: the
+		// admin key alone is not enough — requireAdminStepUp also wants the operator's step-up code
+		// and writes the use to operator_audit (admin_step_up.go), as for the rate and the revokes.
 		if cfg.AdminLXCGrantEnabled {
-			authed.Post("/v1/admin/lxc/grant", requireAdmin(authManager, newAdminLXCGrantHandler(dualToken)))
+			authed.Post("/v1/admin/lxc/grant", requireAdminStepUp(authManager, stepUp, operatorAudit, "lxc.grant", requireAdmin(authManager, newAdminLXCGrantHandler(dualToken))))
 		}
 
 		// Self-scoped list of the workspaces the caller's credential can act on. No {wsID} segment, so

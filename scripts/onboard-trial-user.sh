@@ -17,6 +17,9 @@
 #                      in the server's .env (docs/remote-host.md §4/§5). Read it
 #                      with `read -r -s LENS_API_KEY && export LENS_API_KEY` so it
 #                      never lands in shell history. This script never prints it.
+#     TALYVOR_OPERATOR who you are, for the audit row: the LXC grant is behind
+#                      step-up (B28.264), so the script asks for the current
+#                      code from your authenticator app just before it grants.
 #     LENS_ADMIN_URL   admin base URL. Default http://127.0.0.1:8080 — the VM
 #                      loopback, reached over `ssh -N -L 8080:127.0.0.1:8080 …`
 #                      (admin never goes through the public door).
@@ -74,6 +77,9 @@ EOF
   exit 1
 fi
 
+[[ -n "${TALYVOR_OPERATOR:-}" ]] \
+  || die "TALYVOR_OPERATOR is not set — the LXC grant names the operator who takes it (B28.264)"
+
 WS=$1
 [[ $WS =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] \
   || die "workspace '$WS' — use lowercase letters, digits, '-' or '_' (max 63 chars)"
@@ -93,14 +99,17 @@ done
 # dies (tunnel down); HTTP status is the caller's to branch on. NEVER echoes the
 # admin key; success bodies are parsed with jq, not printed (the mint response
 # contains the raw workspace key).
-HTTP_STATUS='' HTTP_BODY=''
+# STEP_UP_CODE, when set, goes with the request as the step-up code.
+HTTP_STATUS='' HTTP_BODY='' STEP_UP_CODE=''
 http() {
   local method=$1 path=$2 body=${3:-} out
   local -a args=(-sS --max-time 30 -X "$method" "$LENS_ADMIN_URL$path"
     -H "Authorization: Bearer $LENS_API_KEY"
     -H 'Content-Type: application/json'
+    -H "X-Talyvor-Operator: $TALYVOR_OPERATOR"
     -w $'\n%{http_code}')
   [[ -n $body ]] && args+=(-d "$body")
+  [[ -n $STEP_UP_CODE ]] && args+=(-H "X-Talyvor-Step-Up: $STEP_UP_CODE")
   out=$(curl "${args[@]}") \
     || die "cannot reach $LENS_ADMIN_URL ($method $path) — is the SSH tunnel to the VM loopback up?"
   HTTP_STATUS=${out##*$'\n'}
@@ -111,11 +120,12 @@ http() {
 http GET /healthz
 [[ $HTTP_STATUS == 200 ]] || die "lens at $LENS_ADMIN_URL is unhealthy (HTTP $HTTP_STATUS on /healthz)"
 
-# Probe the grant route with an empty body: 400 ("workspace_id is required")
-# proves the route is registered AND the admin key works — nothing is granted.
+# Probe the grant route with no step-up code: 403 ("step-up required") proves the
+# route is registered AND the admin key works — nothing is granted, no code used.
 http POST /v1/admin/lxc/grant '{}'
 case $HTTP_STATUS in
-  400) ;; # route present, admin accepted — the expected probe outcome
+  403) ;; # route present, admin accepted, step-up asked for — the expected probe outcome
+  503) die "the grant route answers 503: $HTTP_BODY" ;;
   404) die "grant route absent — set LENS_ADMIN_LXC_GRANT_ENABLED=true in the server's .env and 'docker compose up -d lens' (docs/remote-host.md §5)" ;;
   401) die "admin rejected (401) — LENS_API_KEY here must equal the value currently armed in the server's .env (unset there ⇒ admin fails closed; docs/remote-host.md §4)" ;;
   *)   die "unexpected HTTP $HTTP_STATUS probing the grant route: $HTTP_BODY" ;;
@@ -147,6 +157,7 @@ KEY_PREFIX=$(jq -er '.prefix' <<<"$HTTP_BODY") || KEY_PREFIX='?'
 log "✔ key '$KEY_NAME' minted (id $KEY_ID, prefix $KEY_PREFIX, scopes [proxy])"
 
 # ── Act 3: grant LXC ──────────────────────────────────────────────────────────
+read -r -p "step-up code from your authenticator app: " STEP_UP_CODE </dev/tty
 http POST /v1/admin/lxc/grant "$(jq -cn --arg ws "$WS" --argjson amt "$GRANT_ULXC" \
   '{workspace_id:$ws, amount_ulxc:$amt, reason:"trial onboarding"}')"
 [[ $HTTP_STATUS == 200 ]] || die "LXC grant failed (HTTP $HTTP_STATUS): $HTTP_BODY — workspace '$WS' and key $KEY_ID exist but are UNFUNDED (first request will 402); fix the cause and grant by hand (docs/remote-host.md §5), do NOT re-run this script"
