@@ -405,6 +405,7 @@ var Manifest = map[string]Entry{
 	"lxc_reservations":              {Delete, ""},
 	"output_attributions":           {Delete, ""},
 	"pattern_mine_credits":          {Delete, ""},
+	"person_accounts":               {Delete, "B61.7: which person (a hash of their identity) opened this workspace after their first account"},
 	"povi_challenges":               {Delete, ""},
 	"povi_stakes":                   {Delete, ""},
 	"prompt_embeddings":             {Delete, "the cached ANSWERS — the most sensitive thing held"},
