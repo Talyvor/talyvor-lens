@@ -209,6 +209,7 @@ var moneyRoutes = map[string]moneySide{
 	// money_accounts_handler.go
 	"/v1/money/accounts":               moneySideEither,
 	"/v1/money/accounts/{}/details":    moneySideEither,
+	"/v1/money/accounts/{}/funding":    moneySideEither, // B61.66: between the company and an agent, in the account's currency
 	"/v1/money/accounts/{}/statement":  moneySideEither,
 	"/v1/money/accounts/{}/test-money": moneySideEither,
 	"/v1/money/overview":               moneySideEither,
