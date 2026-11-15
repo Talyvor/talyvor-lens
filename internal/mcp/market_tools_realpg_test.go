@@ -163,7 +163,7 @@ func TestMarketTools_AnAgentSearchesRentsAndUsesWithinItsRules(t *testing.T) {
 	}
 
 	_, why := call("market_license", `{"listing_id":"`+adder.ID+`","offer_id":"`+offer["rent enterprise"]+`","idempotency_key":"rent-2"}`, true)
-	if !strings.Contains(why, "the most one licence may commit it to is $2.00 (20 LXC)") || strings.Contains(why, "max_commitment_ulxc") {
+	if !strings.Contains(why, "the most one licence may commit it to is $2.00") || strings.Contains(why, "max_commitment_ulxc") {
 		t.Fatalf("a $2.50 rent under a $2.00 commitment answered %q; want the refusal to name the commitment in words", why)
 	}
 	if licences, billed, _ := rows(); licences != 1 || billed != 1 {

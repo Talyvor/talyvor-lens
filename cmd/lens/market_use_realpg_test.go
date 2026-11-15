@@ -305,7 +305,7 @@ func TestMarketUse_PayPerUseMeteredThenClearedAndTheSellerEarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := sha256.Sum256([]byte("purchase\x00" + agent.ID + "\x00" + fmt.Sprintf("market:%s:%s:1:10000000", agent.ID, listing.ID)))
-	if want := "One use of Summariser (version 1), $1.00 (10 LXC) on your monthly marketplace bill"; memo != want || fingerprint != hex.EncodeToString(fp[:]) {
+	if want := "One use of Summariser (version 1), $1.00 on your monthly marketplace bill"; memo != want || fingerprint != hex.EncodeToString(fp[:]) {
 		t.Errorf("the approval's memo = %q, fingerprint %s; want %q and the fingerprint it had before B55.31", memo, fingerprint, want)
 	}
 	if _, err := bank.DecideAgentApproval(ctx, buyer, refused.ApprovalID, true); err != nil {

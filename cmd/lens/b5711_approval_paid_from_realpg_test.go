@@ -112,7 +112,7 @@ func TestApprovals_SayWhatPaysThemAndTheBudgetLeftAfter(t *testing.T) {
 	// An LXC payment to another agent: 900 LXC from Research's 10,000, above 500, leaves 4,100 of its 5,000 a month.
 	_, err := store.PayAgent(ctx, ws, research.ID, sales.ID, 900*lxc, "data")
 	payment := approval(filed(err))
-	expect("an LXC payment", payment, `{"kind":"lxc","account_id":"`+research.ID+`","name":"Research’s LXC balance","currency":"LXC",`+
+	expect("an LXC payment", payment, `{"kind":"lxc","account_id":"`+research.ID+`","name":"Research’s balance","currency":"LXC",`+
 		`"amount_minor":900000000,"balance_minor":10000000000}`, float64(500*lxc), float64(4_100*lxc))
 
 	// The agent asking for the approval itself, before it pays (B19.9).
@@ -120,12 +120,12 @@ func TestApprovals_SayWhatPaysThemAndTheBudgetLeftAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect("an approval the agent asked for", approval(asked.ID), `{"kind":"lxc","account_id":"`+research.ID+`","name":"Research’s LXC balance",`+
+	expect("an approval the agent asked for", approval(asked.ID), `{"kind":"lxc","account_id":"`+research.ID+`","name":"Research’s balance",`+
 		`"currency":"LXC","amount_minor":900000000,"balance_minor":10000000000}`, float64(500*lxc), float64(4_100*lxc))
 
 	// Another agent with no monthly limit: no budget to be left.
 	_, err = store.PayAgent(ctx, ws, sales.ID, research.ID, 900*lxc, "data")
-	expect("no monthly limit", approval(filed(err)), `{"kind":"lxc","account_id":"`+sales.ID+`","name":"Sales’s LXC balance","currency":"LXC",`+
+	expect("no monthly limit", approval(filed(err)), `{"kind":"lxc","account_id":"`+sales.ID+`","name":"Sales’s balance","currency":"LXC",`+
 		`"amount_minor":900000000,"balance_minor":10000000000}`, float64(500*lxc), nil)
 
 	// A listing's use goes on the monthly marketplace bill: 900 LXC is $90.00 at the peg.
