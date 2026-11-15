@@ -94,6 +94,7 @@ import (
 	"github.com/talyvor/lens/internal/keel"
 	"github.com/talyvor/lens/internal/keypool"
 	"github.com/talyvor/lens/internal/kya"
+	"github.com/talyvor/lens/internal/kyatap"
 	"github.com/talyvor/lens/internal/learner"
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
@@ -116,6 +117,7 @@ import (
 	"github.com/talyvor/lens/internal/pairverify"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/phonesignin"
 	"github.com/talyvor/lens/internal/pii"
 	"github.com/talyvor/lens/internal/plans"
 	"github.com/talyvor/lens/internal/platformreport"
@@ -1879,6 +1881,8 @@ func run() error {
 	lensPublicURL, _ := url.Parse(cfg.PublicURL) // config.Load already refused a malformed one
 	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: newAgentKeyDirectory(),
 		Nonces: agentSigStore, Businesses: agentSigStore, Now: time.Now}
+	// B62.6: the credential in the form Visa's Trusted Agent Protocol publishes, with a key of each agent's own.
+	kyaTAP := kyatap.New(kyaSvc, kyaKey.Derive, agentSigStore, time.Now)
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2017,6 +2021,10 @@ func run() error {
 	if cfg.CompaniesHouseAPIKey != "" {
 		partnerRegistry.UseVerifier(partners.KYCCompany, &partners.CompaniesHouseKYC{Key: cfg.CompaniesHouseAPIKey}, "GB")
 	}
+	// B61.22 — the front door by phone number: codes texted by the registry's text sender (the Sandbox one until a
+	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
+	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
+		PerAddressHour: cfg.PhoneChecksPerAddressHour}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
@@ -2774,6 +2782,7 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		mountKYATAPPublicRoutes(pub, kyaTAP) // B62.6
 		// B41.178: the Talyvor connector — discovery, registration, authorize and token for Claude, ChatGPT and Cursor.
 		mountConnectorPublicRoutes(pub, connectorGrantStore, dualToken, tenantStore, cfg.PublicURL)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
@@ -2895,6 +2904,8 @@ func run() error {
 	r.Put("/v1/admin/workspaces/{wsID}/money-kind", requireAdminStepUp(authManager, stepUp, operatorAudit, "workspace.money_kind", requireAdmin(authManager, newOperatorMoneyKindHandler(dualToken))))
 	// B44.6 — every talyvor.com waitlist signup, oldest first, for the operator.
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
+	// B61.22 — how many people and what the phone door did in a day, never whose.
+	r.Get("/v1/admin/people/counts", requireAdminOrOperatorRead(authManager, newPeopleCountsHandler(phoneDoor)))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
 	// (non-money read of ledger metadata + keel_findings; keeps the U8/U9 ExactlySix replica-reader invariant
 	// unchanged).
@@ -3201,6 +3212,8 @@ func run() error {
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
+	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
+	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
@@ -5088,6 +5101,7 @@ func run() error {
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
+		mountKYATAPAgentRoutes(authed, kyaTAP, dualToken)                               // B62.6
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
 		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16

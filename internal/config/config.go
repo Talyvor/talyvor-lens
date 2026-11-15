@@ -1182,6 +1182,11 @@ type Config struct {
 	// key and rules, with no money.
 	StarterTestMoneyULXC int64
 
+	// PhoneChecksPerAddressHour is how many texted sign-in codes one caller's address may ask for in an hour (B61.22).
+	// Env: LENS_PHONE_CHECKS_PER_ADDRESS_HOUR, default 5 (phonesignin.DefaultTextsPerAddressHour, what one number may
+	// get) until Nicolai sets it.
+	PhoneChecksPerAddressHour int
+
 	// GasBudgetWei is each workspace's budget, on each chain, for the network fees a paymaster pays for its agents,
 	// in wei of the chain's coin, before the owner tops it up (B48.5). Env: LENS_GAS_BUDGET_WEI, default 0 —
 	// Nicolai's to set: until he does, an agent's first sponsored send asks its owner to top the budget up.
@@ -2601,6 +2606,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_STARTER_TEST_MONEY_ULXC must be a non-negative integer (µLXC), got %q", v)
 		}
 		c.StarterTestMoneyULXC = n
+	}
+	c.PhoneChecksPerAddressHour = 5
+	if v := os.Getenv("LENS_PHONE_CHECKS_PER_ADDRESS_HOUR"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("config: LENS_PHONE_CHECKS_PER_ADDRESS_HOUR must be a positive integer, got %q", v)
+		}
+		c.PhoneChecksPerAddressHour = n
 	}
 	if v := os.Getenv("LENS_GAS_BUDGET_WEI"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)

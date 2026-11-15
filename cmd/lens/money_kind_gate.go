@@ -192,7 +192,8 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/keys/enrolments/{}/decline":   moneySideEither,
 
 	// kya_handler.go
-	"/v1/workspaces/{}/agents/{}/credential": moneySideEither,
+	"/v1/workspaces/{}/agents/{}/credential":     moneySideEither,
+	"/v1/workspaces/{}/agents/{}/credential/tap": moneySideEither, // B62.6
 
 	// lockdown_handler.go
 	"/v1/money/lockdown":      moneySideEither,
