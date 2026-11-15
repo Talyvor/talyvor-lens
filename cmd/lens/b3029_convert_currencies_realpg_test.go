@@ -20,10 +20,11 @@ import (
 	"github.com/talyvor/lens/internal/screening"
 )
 
-// B30.29 — an agent converts €100.00 to pounds at the ECB reference rate (€1 = £0.86) plus its plan's margin (team's
-// 50 basis points), good for 30 seconds: one entry posts both currencies, each summing to zero, with the margin to
-// Talyvor's revenue. An expired quote, a currency its rules do not allow, and a conversion over its daily conversion
-// maximum are refused and post nothing; the free plan converts test money only. All read off the ledger.
+// B30.29 — an agent converts €100.00 to pounds at the ECB reference rate (€1 = £0.86) plus its plan's margin (Crew's
+// 50 basis points, B61.57), good for 30 seconds: one entry posts both currencies, each summing to zero, with the margin
+// to Talyvor's revenue. An expired quote, a currency its rules do not allow, and a conversion over its daily conversion
+// maximum are refused and post nothing; no plan, Solo included, is refused a live quote (B61.57). All read off the
+// ledger.
 func TestB3029_ConvertBetweenCurrencies(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -42,7 +43,7 @@ func TestB3029_ConvertBetweenCurrencies(t *testing.T) {
 	store.SetFXMargin(func(ctx context.Context, q economy.FeeQuerier, workspaceID string) (int64, string, error) {
 		return billing.FXMarginBPS(ctx, q, workspaceID, fees.Defaults())
 	})
-	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, 'Convert Ltd', $1)`, ws); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type) VALUES ($1, 'Convert', $1, 'personal')`, ws); err != nil {
 		t.Fatal(err)
 	}
 	agent, err := store.CreateAgent(ctx, ws, "Converter", "owner")
@@ -183,11 +184,11 @@ func TestB3029_ConvertBetweenCurrencies(t *testing.T) {
 		t.Fatalf("the agent holds %d pence; want 8557, the one conversion", gbp)
 	}
 
-	// The free plan converts test money only.
+	// B61.57: the plan no longer keeps live money out — Solo is quoted live as every plan is.
 	if _, err := pool.Exec(ctx, `DELETE FROM subscriptions WHERE workspace_id = $1`, ws); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, body := quote("GBP", "live"); code != http.StatusBadRequest || !strings.Contains(body, "live conversions") {
-		t.Fatalf("a live quote on free = %d %s; want 400", code, body)
+	if code, _, body := quote("GBP", "live"); strings.Contains(body, "live conversions") || strings.Contains(body, "plan") {
+		t.Fatalf("a live quote on Solo = %d %s; want no refusal by its plan", code, body)
 	}
 }
