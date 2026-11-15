@@ -317,6 +317,9 @@ func (s *Service) Verify(ctx context.Context, token string) (Verification, error
 	}
 	var claims Claims
 	_, err = jwt.ParseWithClaims(token, &claims, func(t *jwt.Token) (any, error) {
+		if typ, _ := t.Header["typ"].(string); typ != TokenType { // an ID token (B62.6) is checked for its audience
+			return nil, errors.New("it is not a Know Your Agent credential")
+		}
 		kid, _ := t.Header["kid"].(string)
 		if pub, ok := keys[kid]; ok {
 			return pub, nil
@@ -327,6 +330,12 @@ func (s *Service) Verify(ctx context.Context, token string) (Verification, error
 	if err != nil {
 		return Verification{Reason: "not a valid credential: " + err.Error()}, nil
 	}
+	return s.standing(ctx, &claims)
+}
+
+// standing is Talyvor's answer on a credential whose signature, issuer and times hold: that Talyvor issued it and has
+// not revoked it, and that it still says what is true of its agent — one that no longer does is revoked now.
+func (s *Service) standing(ctx context.Context, claims *Claims) (Verification, error) {
 	rec, err := s.store.KYACredential(ctx, claims.ID)
 	if errors.Is(err, economy.ErrKYACredentialNotFound) || (err == nil && rec.AgentID != claims.Subject) {
 		return Verification{Reason: "Talyvor has no record of issuing this credential"}, nil
@@ -335,11 +344,11 @@ func (s *Service) Verify(ctx context.Context, token string) (Verification, error
 		return Verification{}, err
 	}
 	if rec.RevokedAt != nil {
-		return Verification{Reason: "revoked: " + rec.RevokedReason, Claims: &claims}, nil
+		return Verification{Reason: "revoked: " + rec.RevokedReason, Claims: claims}, nil
 	}
 	facts, err := s.store.AgentKYAFacts(ctx, rec.WorkspaceID, rec.AgentID)
 	if errors.Is(err, economy.ErrAgentNotFound) {
-		return Verification{Reason: "the agent no longer exists", Claims: &claims}, nil
+		return Verification{Reason: "the agent no longer exists", Claims: claims}, nil
 	}
 	if err != nil {
 		return Verification{}, err
@@ -358,7 +367,7 @@ func (s *Service) Verify(ctx context.Context, token string) (Verification, error
 		if err := s.store.RevokeKYACredential(ctx, rec.ID, reason); err != nil {
 			return Verification{}, err
 		}
-		return Verification{Reason: "revoked: " + reason, Claims: &claims}, nil
+		return Verification{Reason: "revoked: " + reason, Claims: claims}, nil
 	}
-	return Verification{Valid: true, Claims: &claims}, nil
+	return Verification{Valid: true, Claims: claims}, nil
 }
