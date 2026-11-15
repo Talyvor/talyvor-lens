@@ -45,7 +45,7 @@ func RuleTemplates() []RuleTemplate {
 				r.MonthlyLimitULXC, r.ApprovalAboveULXC, r.PauseOnUnusualSpend = 4000*oneLXC, 5*oneLXC, true
 			}),
 		ruleTemplate("researcher", "Researcher",
-			"Reads and writes long documents in bursts: room for large requests, a weekly budget, and a person asked above 20 LXC.",
+			"Reads and writes long documents in bursts: room for large requests, a weekly budget, and a person asked above $2.",
 			func(r *AgentRules) {
 				r.MaxPerRequestULXC, r.DailyLimitULXC, *r.WeeklyLimitULXC = 10*oneLXC, 300*oneLXC, 1000*oneLXC
 				r.MonthlyLimitULXC, r.ApprovalAboveULXC = 3000*oneLXC, 20*oneLXC

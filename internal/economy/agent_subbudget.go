@@ -97,7 +97,7 @@ func lockKeyAndAgent(ctx context.Context, tx pgx.Tx, scopedKeyID string) error {
 
 // ErrSubBudgetExceeded is returned when a debit would push the agent's spent_lxc past its ceiling. The whole
 // transaction rolls back — no claim, no debit — so the request_id stays retriable (e.g. after a ceiling raise).
-var ErrSubBudgetExceeded = errors.New("economy: agent LXC sub-budget ceiling exceeded")
+var ErrSubBudgetExceeded = errors.New("economy: agent sub-budget ceiling exceeded")
 
 // DefaultAgentCeilingLXC is the ceiling applied to a scoped key with no explicit ceiling — 50 LXC ($5 at the
 // 1 LXC = $0.10 peg), in µLXC (SEC-2). Baked here per the owner's step-A instruction (the capstone ships

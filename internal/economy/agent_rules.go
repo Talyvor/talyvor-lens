@@ -207,7 +207,7 @@ func paidFromName(kind, agent, currency string) string {
 	case "card":
 		return agent + "’s card"
 	}
-	return agent + "’s LXC balance"
+	return agent + "’s balance"
 }
 
 // currencyWords are the currencies an agent's account holds, by their ISO 4217 names.

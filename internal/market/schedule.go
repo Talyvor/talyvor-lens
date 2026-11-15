@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/workspace"
 )
 
@@ -20,8 +20,6 @@ import (
 // and recorded in the tick's own transaction — so a tick is billed once, across a restart — and metered
 // onto the company's monthly marketplace bill by MeterPending, like any use Stripe has not yet accepted.
 // A tick pays; it does not run the listing.
-
-func lxc(ulxc int64) string { return strconv.FormatFloat(float64(ulxc)/1e6, 'f', -1, 64) }
 
 // ListingPrice is what one use of listingID costs buyerWorkspaceID, or a refusal saying why a schedule of
 // that workspace cannot pay it.
@@ -42,7 +40,7 @@ func (s *Store) ChargeScheduledListing(ctx context.Context, tx pgx.Tx, buyerWork
 		return "", refusal, err
 	}
 	if price > maxULXC {
-		return "", fmt.Sprintf("the listing now costs %s LXC a use, more than this schedule pays (%s LXC)", lxc(price), lxc(maxULXC)), nil
+		return "", fmt.Sprintf("the listing now costs %s a use, more than this schedule pays (%s)", economy.LXCMoney(price), economy.LXCMoney(maxULXC)), nil
 	}
 	if err := s.sellable(ctx, buyerWorkspaceID); errors.Is(err, ErrNotSoldHere) { // B32.39
 		return "", err.Error(), nil
