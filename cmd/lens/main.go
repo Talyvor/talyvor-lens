@@ -94,6 +94,7 @@ import (
 	"github.com/talyvor/lens/internal/keel"
 	"github.com/talyvor/lens/internal/keypool"
 	"github.com/talyvor/lens/internal/kya"
+	"github.com/talyvor/lens/internal/kyatap"
 	"github.com/talyvor/lens/internal/learner"
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
@@ -1883,6 +1884,8 @@ func run() error {
 	lensPublicURL, _ := url.Parse(cfg.PublicURL) // config.Load already refused a malformed one
 	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: newAgentKeyDirectory(),
 		Nonces: agentSigStore, Businesses: agentSigStore, Now: time.Now}
+	// B62.6: the credential in the form Visa's Trusted Agent Protocol publishes, with a key of each agent's own.
+	kyaTAP := kyatap.New(kyaSvc, kyaKey.Derive, agentSigStore, time.Now)
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2782,6 +2785,7 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		mountKYATAPPublicRoutes(pub, kyaTAP) // B62.6
 		// B41.178: the Talyvor connector — discovery, registration, authorize and token for Claude, ChatGPT and Cursor.
 		mountConnectorPublicRoutes(pub, connectorGrantStore, dualToken, tenantStore, cfg.PublicURL)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
@@ -5100,6 +5104,7 @@ func run() error {
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
+		mountKYATAPAgentRoutes(authed, kyaTAP, dualToken)                               // B62.6
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
 		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16
