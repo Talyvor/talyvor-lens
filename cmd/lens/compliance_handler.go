@@ -48,6 +48,9 @@ type stepUpVerifier interface {
 func requireStepUp(am adminAuthenticator, v stepUpVerifier, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actx, err := am.Authenticate(r)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if refuseModerator(w, actx, err) {
 			return
 		}

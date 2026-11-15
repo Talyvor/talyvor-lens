@@ -94,6 +94,12 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 				}
 			}
 
+			if result.Unavailable {
+				// B28.243 — the api_keys lookup failed and no other credential shape claimed the key:
+				// it may be perfectly good, so the caller retries instead of being signed out.
+				writeAuthUnavailable(w)
+				return
+			}
 			writeAuthError(w, http.StatusUnauthorized, result.Reason)
 		})
 	}
@@ -142,6 +148,10 @@ func writeAuthUnavailable(w http.ResponseWriter) {
 		"code":  authUnavailableCode,
 	})
 }
+
+// WriteAuthUnavailable is writeAuthUnavailable for a handler that calls Manager.Authenticate
+// itself and got ErrAuthUnavailable (B28.243).
+func WriteAuthUnavailable(w http.ResponseWriter) { writeAuthUnavailable(w) }
 
 func writeAuthError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

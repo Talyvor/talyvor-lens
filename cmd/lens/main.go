@@ -3334,6 +3334,9 @@ func run() error {
 		// The full computation (all inputs) is returned + persisted.
 		econ.post(authed, "/v1/admin/conversion-rate/approve", func(w http.ResponseWriter, req *http.Request) {
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil || !actx.IsAdmin {
 				writeJSONErr(w, http.StatusForbidden, "admin credentials required")
 				return
@@ -3528,6 +3531,9 @@ func run() error {
 				return
 			}
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil || actx.AuthMethod != auth.MethodJWT {
 				writeJSONErr(w, http.StatusUnauthorized, "valid JWT required")
 				return
@@ -3546,6 +3552,9 @@ func run() error {
 
 		authed.Get("/v1/auth/me", func(w http.ResponseWriter, req *http.Request) {
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil {
 				writeJSONErr(w, http.StatusUnauthorized, "unauthorized")
 				return
