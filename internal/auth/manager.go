@@ -506,8 +506,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 	// revoked key is refused (401) on the next request. The prefix is disjoint from tlv_ws_/tlv_sk_.
 	if m.moderatorKeys != nil && strings.HasPrefix(raw, moderatorkey.KeyPrefix) {
 		k, err := m.moderatorKeys.Validate(r.Context(), raw)
-		if err != nil {
+		if errors.Is(err, moderatorkey.ErrInvalid) {
 			return nil, ErrInvalidAuth
+		}
+		if err != nil {
+			// B28.243 — the lookup itself failed, which says nothing about the key.
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 		}
 		return &AuthContext{
 			Scopes:         []string{ScopeMarketModeration},
@@ -524,8 +528,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 			return nil, ErrInvalidAuth
 		}
 		key, err := m.tenantStore.ValidateAPIKey(r.Context(), raw)
-		if err != nil {
+		if errors.Is(err, tenant.ErrInvalidKey) || errors.Is(err, tenant.ErrKeyExpired) {
 			return nil, ErrInvalidAuth
+		}
+		if err != nil {
+			// B28.243 — the lookup itself failed: a database hiccup must not sign the caller out.
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 		}
 		return &AuthContext{
 			WorkspaceID: key.WorkspaceID,

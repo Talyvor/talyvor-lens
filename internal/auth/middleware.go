@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -94,6 +95,14 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 				}
 			}
 
+			if result.Unavailable && couldBeStoredKey(raw) {
+				// B28.243 — the api_keys lookup failed for a key that could live there: it may be
+				// perfectly good, so the caller retries instead of being signed out. A session,
+				// workspace or moderator key, or a JWT, never lives in api_keys, so the answer its
+				// own store gave above stands.
+				writeAuthUnavailable(w)
+				return
+			}
 			writeAuthError(w, http.StatusUnauthorized, result.Reason)
 		})
 	}
@@ -114,6 +123,17 @@ func GetAPIKey(ctx context.Context) *APIKey {
 // set it without reaching the key. Read-only helper — no behavior change.
 func WithAPIKey(ctx context.Context, ak *APIKey) context.Context {
 	return context.WithValue(ctx, apiKeyContextKey{}, ak)
+}
+
+// couldBeStoredKey reports whether raw has the shape GenerateKey mints: keyPrefix then hex. The
+// other credential prefixes (tlv_sk_, tlv_ws_, tlv_mod_) carry an underscore no hex digit can be.
+func couldBeStoredKey(raw string) bool {
+	rest, ok := strings.CutPrefix(raw, keyPrefix)
+	if !ok || rest == "" {
+		return false
+	}
+	_, err := hex.DecodeString(rest)
+	return err == nil
 }
 
 // extractKey looks at Authorization: Bearer first, then X-Talyvor-Key.
@@ -142,6 +162,10 @@ func writeAuthUnavailable(w http.ResponseWriter) {
 		"code":  authUnavailableCode,
 	})
 }
+
+// WriteAuthUnavailable is writeAuthUnavailable for a handler that calls Manager.Authenticate
+// itself and got ErrAuthUnavailable (B28.243).
+func WriteAuthUnavailable(w http.ResponseWriter) { writeAuthUnavailable(w) }
 
 func writeAuthError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
