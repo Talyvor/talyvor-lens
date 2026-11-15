@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/money"
-	"github.com/talyvor/lens/internal/passkey"
 )
 
 // workspace_money_kind.go — B59.6: A WORKSPACE IS BUSINESS OR PERSONAL, AND FIAT ONLY, STABLECOIN AND CRYPTO ONLY, OR
@@ -20,12 +19,12 @@ import (
 // Both are set when the workspace is made (migration 0373; the provision route names them). The type never changes.
 // The kind is the limit for its agents' wallet kinds (B48.1): a fiat workspace's agents are fiat, a stablecoin
 // workspace's crypto, and a hybrid workspace's agents may be any, a new one holding both a fiat and a stablecoin
-// balance. A single kind becomes hybrid at any time, and its agents then hold both; hybrid becomes a single kind only
-// once the other side's balances are all zero, and is refused naming them otherwise. Every change is in the audit trail.
+// balance.
 //
-// B59.46: a change is signed by the owner's passkey or phone key, over a single-use challenge naming the kind it
-// changes to (MoneyKindChallenge), as an approver is (SetAgentApprover): with no signature nothing changes, so a
-// workspace with no passkey or device key adds one first.
+// B61.6: the owner never changes the kind either. Another kind is another account, opened by signing up again; the
+// owner's route answers KindFixedSentence. Only the operator, for support, changes it (OperatorSetWorkspaceMoneyKind): a
+// single kind becomes hybrid at any time, and its agents then hold both; hybrid becomes a single kind only once the
+// other side's balances are all zero, and is refused naming them otherwise. Every change is in the audit trail.
 
 // The two account types.
 const (
@@ -51,6 +50,9 @@ var (
 	// ErrWorkspaceNotFound: no workspace by that id.
 	ErrWorkspaceNotFound = errors.New("economy: no such workspace")
 )
+
+// KindFixedSentence is the owner's answer to a change of the kind of money (B61.6).
+const KindFixedSentence = "An account's kind of money is fixed. Open another account to use another kind."
 
 // WorkspaceAccount is a workspace's type and kind of money, and the country and (a business's) registration number it
 // signed up with (B59.40), each "" when not given.
@@ -219,13 +221,12 @@ func (s *DualTokenStore) WorkspaceAccount(ctx context.Context, workspaceID strin
 	return out, nil
 }
 
-// SetWorkspaceMoneyKind changes workspaceID's kind of money to kind, by the person by. A single kind becomes hybrid, and
-// every agent of it then holds both; hybrid becomes a single kind only while the other side holds nothing, its agents
-// then holding that kind alone. Any other change is refused with a *MoneyKindRefusal, as is one with money left on the
-// other side. Asking for the kind it has changes nothing. B59.46: only with a's assertion over MoneyKindChallenge's
-// challenge for kind, which it spends; ErrPasskeyRequired without one, passkey.ErrInvalid for one that does not answer
-// an open challenge for kind.
-func (s *DualTokenStore) SetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, by string, a *passkey.Assertion) (WorkspaceAccount, error) {
+// OperatorSetWorkspaceMoneyKind changes workspaceID's kind of money to kind, by the operator named operator, for
+// support (B61.6: the owner never does). A single kind becomes hybrid, and every agent of it then holds both; hybrid
+// becomes a single kind only while the other side holds nothing, its agents then holding that kind alone. Any other
+// change is refused with a *MoneyKindRefusal, as is one with money left on the other side. Asking for the kind it has
+// changes nothing.
+func (s *DualTokenStore) OperatorSetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, operator string) (WorkspaceAccount, error) {
 	if err := CheckMoneyKind(kind); err != nil {
 		return WorkspaceAccount{}, err
 	}
@@ -236,63 +237,19 @@ func (s *DualTokenStore) SetWorkspaceMoneyKind(ctx context.Context, workspaceID,
 	if was.MoneyKind != kind && kind != MoneyKindHybrid && was.MoneyKind != MoneyKindHybrid {
 		return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind} // fiat to stablecoin goes through hybrid
 	}
-	// Spent before anything changes: narrowing closes the agents' other wallets before the workspace changes.
-	if err := s.authorizeMoneyKind(ctx, workspaceID, kind, a); err != nil {
-		return WorkspaceAccount{}, err
-	}
+	by := "operator:" + operator
 	switch {
 	case was.MoneyKind == kind:
 		return was, nil
 	case kind == MoneyKindHybrid:
-		return s.widenMoneyKind(ctx, was, by, signerOf(*a))
+		return s.widenMoneyKind(ctx, was, by)
 	}
-	return s.narrowMoneyKind(ctx, was, kind, by, signerOf(*a))
-}
-
-// moneyKindPurpose names the challenge a change of a workspace's kind to kind is signed over.
-func moneyKindPurpose(kind string) string { return "money-kind:" + kind }
-
-// MoneyKindChallenge issues the challenge changing workspaceID's kind to kind is signed over, and the workspace's
-// passkeys that may sign it.
-func (s *DualTokenStore) MoneyKindChallenge(ctx context.Context, workspaceID, kind string) (challenge string, credentialIDs []string, err error) {
-	if err := CheckMoneyKind(kind); err != nil {
-		return "", nil, err
-	}
-	if _, err := s.WorkspaceAccount(ctx, workspaceID); err != nil {
-		return "", nil, err
-	}
-	keys, err := s.ListPasskeys(ctx, workspaceID)
-	if err != nil {
-		return "", nil, err
-	}
-	credentialIDs = []string{}
-	for _, k := range keys {
-		credentialIDs = append(credentialIDs, k.CredentialID)
-	}
-	c, err := s.newChallenge(ctx, workspaceID, moneyKindPurpose(kind))
-	return c, credentialIDs, err
-}
-
-// authorizeMoneyKind spends a's assertion, by one of workspaceID's passkeys or device keys, over MoneyKindChallenge's
-// challenge for kind; ErrPasskeyRequired with none.
-func (s *DualTokenStore) authorizeMoneyKind(ctx context.Context, workspaceID, kind string, a *passkey.Assertion) error {
-	if a == nil {
-		return ErrPasskeyRequired
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("economy: change the kind of money: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.spendAssertion(ctx, tx, workspaceID, moneyKindPurpose(kind), *a); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.narrowMoneyKind(ctx, was, kind, by)
 }
 
 // widenMoneyKind makes was's workspace hybrid, and each of its agents both: a wallet an agent gains opens when it is
-// first read. signedBy is the passkey or device key that signed the change.
-func (s *DualTokenStore) widenMoneyKind(ctx context.Context, was WorkspaceAccount, by, signedBy string) (WorkspaceAccount, error) {
+// first read.
+func (s *DualTokenStore) widenMoneyKind(ctx context.Context, was WorkspaceAccount, by string) (WorkspaceAccount, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return WorkspaceAccount{}, fmt.Errorf("economy: change the kind of money: %w", err)
@@ -310,7 +267,7 @@ func (s *DualTokenStore) widenMoneyKind(ctx context.Context, was WorkspaceAccoun
 	if err != nil {
 		return WorkspaceAccount{}, fmt.Errorf("economy: change the kind of money: %w", err)
 	}
-	if err := setMoneyKindTx(ctx, tx, was, MoneyKindHybrid, by, signedBy, agents); err != nil {
+	if err := setMoneyKindTx(ctx, tx, was, MoneyKindHybrid, by, agents); err != nil {
 		return WorkspaceAccount{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -323,7 +280,7 @@ func (s *DualTokenStore) widenMoneyKind(ctx context.Context, was WorkspaceAccoun
 // narrowMoneyKind makes was's hybrid workspace kind, refused while the other side's accounts — the agents' wallets and
 // currency accounts, the owner's, pots and holds — hold anything. Each agent becomes kind's wallet kind, its other
 // wallet closed at its partner (B48.1), before the workspace changes, so a failure part way leaves it hybrid.
-func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccount, kind, by, signedBy string) (WorkspaceAccount, error) {
+func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccount, kind, by string) (WorkspaceAccount, error) {
 	held, err := otherSideBalances(ctx, s.pool, was.WorkspaceID, kind)
 	if err != nil {
 		return WorkspaceAccount{}, err
@@ -376,7 +333,7 @@ func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccou
 	if len(held) > 0 {
 		return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind, Balances: held}
 	}
-	if err := setMoneyKindTx(ctx, tx, was, kind, by, signedBy, agents); err != nil {
+	if err := setMoneyKindTx(ctx, tx, was, kind, by, agents); err != nil {
 		return WorkspaceAccount{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -386,9 +343,9 @@ func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccou
 	return was, nil
 }
 
-// setMoneyKindTx records was's workspace as kind in tx, and the change, with the agents it changed and the key that
-// signed it, in the audit trail.
-func setMoneyKindTx(ctx context.Context, tx pgx.Tx, was WorkspaceAccount, kind, by, signedBy string, agents []string) error {
+// setMoneyKindTx records was's workspace as kind in tx, and the change, with the agents it changed and who changed it,
+// in the audit trail.
+func setMoneyKindTx(ctx context.Context, tx pgx.Tx, was WorkspaceAccount, kind, by string, agents []string) error {
 	tag, err := tx.Exec(ctx, `UPDATE workspaces SET money_kind = $2, updated_at = now() WHERE id = $1 AND money_kind = $3`,
 		was.WorkspaceID, kind, was.MoneyKind)
 	if err != nil {
@@ -401,7 +358,7 @@ func setMoneyKindTx(ctx context.Context, tx pgx.Tx, was WorkspaceAccount, kind, 
 		agents = []string{}
 	}
 	return appendAudit(ctx, tx, was.WorkspaceID, "workspace:"+was.WorkspaceID, "workspace.money_kind",
-		map[string]any{"from": was.MoneyKind, "to": kind, "by": by, "signed_by": signedBy, "agents": agents})
+		map[string]any{"from": was.MoneyKind, "to": kind, "by": by, "agents": agents})
 }
 
 // otherSideBalances is what workspaceID's open accounts hold, by asset, on the side a workspace of kind gives up: the
