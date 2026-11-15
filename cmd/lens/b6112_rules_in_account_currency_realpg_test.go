@@ -109,7 +109,9 @@ func TestB6112_RulesInMicroLXCMoveToDollarsAtThePeg(t *testing.T) {
 	ctx := context.Background()
 	const ws = "ws-b6112-peg"
 	b := newB468Payer(t, pool, ws, "EUR", economy.OutsidePayee{Name: "Grace Hopper", Country: "DE", IBAN: "DE89370400440532013000", BIC: "COBADEFFXXX"},
-		func(store *economy.DualTokenStore, r *partners.Registry) *money.Registry { return sandboxMoneyLayer(t, pool, store, r) })
+		func(store *economy.DualTokenStore, r *partners.Registry) *money.Registry {
+			return sandboxMoneyLayer(t, pool, store, r)
+		})
 	agent := b.acct.AgentID
 	hourly := int64(20_000_000) // LXC 20 = $2.00
 	r, err := b.store.SetAgentRules(ctx, ws, agent, economy.AgentRules{MaxPerRequestULXC: 5_000_000, HourlyLimitULXC: &hourly,
