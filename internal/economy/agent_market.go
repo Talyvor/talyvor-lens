@@ -35,7 +35,7 @@ func (s *DualTokenStore) JudgeAgentPurchase(ctx context.Context, workspaceID, ag
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return err
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, amount, what); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, amount, what); err != nil {
 		return s.refusedMovement(ctx, tx, err)
 	}
 	if err := record(tx); err != nil {
