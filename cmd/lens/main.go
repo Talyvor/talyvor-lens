@@ -3235,7 +3235,7 @@ func run() error {
 	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
 	// makes the account's approval key, over a challenge the account issues.
-	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken)
+	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken, wsManager)
 	// B61.32 — a person's Talyvor name and how they are found, for the suite BFF on the same secret.
 	mountPeopleFindingRoutes(limited, cfg.ProvisionSecret, dualToken)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
