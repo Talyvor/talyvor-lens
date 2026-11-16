@@ -1861,6 +1861,10 @@ func run() error {
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
 	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
+	// B61.32: how many people an account may look up an hour, a setting Nicolai fills; unset, the default.
+	if n, err := strconv.Atoi(os.Getenv("LENS_PERSON_LOOKUPS_PER_HOUR")); err == nil {
+		dualToken.SetPersonLookupsPerHour(n)
+	}
 	// B30.5: every agent's Know Your Agent credential, signed with Ed25519.
 	kyaKey, kyaEphemeral, err := kya.ParseKey(cfg.KYASigningKey)
 	if err != nil {
@@ -3232,6 +3236,8 @@ func run() error {
 	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
 	// makes the account's approval key, over a challenge the account issues.
 	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken)
+	// B61.32 — a person's Talyvor name and how they are found, for the suite BFF on the same secret.
+	mountPeopleFindingRoutes(limited, cfg.ProvisionSecret, dualToken)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
@@ -5104,6 +5110,7 @@ func run() error {
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountPersonPaymentRoutes(authed, dualToken)                                     // B61.32
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
 		mountMoneyWalletRoutes(authed, dualToken)                                       // B59.51
 		mountInstantTransferRoutes(authed, dualToken)                                   // B59.14
