@@ -168,8 +168,11 @@ func realWith(t *testing.T, before string, extra fstest.MapFS) fstest.MapFS {
 	return out
 }
 
-// probe reads workspaces.plan, which 0398 adds, so it fails unless it runs after 0398.
-var probe = fstest.MapFS{"2611151820a_b6168_probe.sql": {Data: []byte(
+// probe reads workspaces.plan, which 0398 adds, so it fails unless it runs after 0398. Its version is the last minute
+// the form can name, so it sorts after every real migration, timestamped ones included (B61.81 added the first).
+const probeVersion = "9912312359a"
+
+var probe = fstest.MapFS{probeVersion + "_b6168_probe.sql": {Data: []byte(
 	`CREATE TABLE dbmigrate_b6168_probe AS SELECT plan FROM workspaces`)}}
 
 func TestRun_TimestampMigrationAppliesLastFromZero(t *testing.T) {
@@ -181,8 +184,8 @@ func TestRun_TimestampMigrationAppliesLastFromZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run from zero: %v", err)
 	}
-	if len(applied) == 0 || applied[len(applied)-1] != "2611151820a" {
-		t.Fatalf("applied %v, want 2611151820a last", applied)
+	if len(applied) == 0 || applied[len(applied)-1] != probeVersion {
+		t.Fatalf("applied %v, want %s last", applied, probeVersion)
 	}
 	again, err := Run(ctx, conn, all)
 	if err != nil || len(again) != 0 {
@@ -212,7 +215,7 @@ func TestRun_TimestampMigrationAppliesAfterTheRestOnADatabaseAt0392(t *testing.T
 			numbered = append(numbered, v)
 		}
 	}
-	if want := strings.Join(append(numbered, "2611151820a"), " "); strings.Join(applied, " ") != want {
+	if want := strings.Join(append(numbered, probeVersion), " "); strings.Join(applied, " ") != want {
 		t.Fatalf("applied %v, want %s", applied, want)
 	}
 	again, err := Run(ctx, conn, realWith(t, "", probe))

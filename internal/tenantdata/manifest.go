@@ -405,6 +405,7 @@ var Manifest = map[string]Entry{
 	"lxc_reservations":              {Delete, ""},
 	"output_attributions":           {Delete, ""},
 	"pattern_mine_credits":          {Delete, ""},
+	"number_move_holds":             {Delete, "B61.30: until when the account cannot move money after its person's number was moved"},
 	"person_accounts":               {Delete, "B61.7: which person (a hash of their identity) opened this workspace after their first account"},
 	"povi_challenges":               {Delete, ""},
 	"povi_stakes":                   {Delete, ""},

@@ -33,6 +33,7 @@ func TestAdminStepUp_DangerousRoutesAreRegisteredBehindIt(t *testing.T) {
 		"/v1/admin/held-mints/traffic/adjudicate": false,
 		"/v1/admin/lxc/grant":                     false,
 		"/v1/admin/workspaces/{wsID}/money-kind":  false, // B61.6
+		"/v1/admin/people/move-number":            false, // B61.30
 	}
 	seen := map[string]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {

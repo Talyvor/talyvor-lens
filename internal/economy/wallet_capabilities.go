@@ -198,12 +198,14 @@ var ErrCapabilityNotCleared = errors.New("economy: this capability takes no real
 // cleared but the workspace's plan keeps it on test money (B32.12), the plan's refusal; or, when the workspace's
 // verification keeps it out (B30.4), the level it needs, or the limit it is over; or, while an operator has the
 // workspace frozen (B30.8), the freeze; or, until the workspace accepts the capability's latest terms (B30.9), their
-// version; or, when the capability is cleared but not for the owner's country (B30.10), that country.
+// version; or, when the capability is cleared but not for the owner's country (B30.10), that country; or, for a day
+// after the person's number was moved (B61.30), that hold.
 type CapabilityRefusal struct {
 	Capability Capability
 	Plan       *plans.Refusal
 	Level      *LevelRefusal
 	Freeze     *Freeze
+	Hold       *NumberMoveHold
 	Terms      *TermsNeeded
 	Country    *CountryRefusal
 }
@@ -230,6 +232,10 @@ func (e *CapabilityRefusal) Error() string {
 		// The workspace is told it is frozen and on which case, never the operator's reason.
 		return fmt.Sprintf("%s is refused: an operator has frozen this workspace's money capabilities on compliance case %s. "+
 			"Talyvor's own services still work", e.Capability.Name, e.Freeze.CaseID)
+	case e.Hold != nil:
+		return fmt.Sprintf("%s is refused until %s: this account's phone number was changed by Talyvor's help team less than a day ago, "+
+			"so for a day it can look and cannot move money. Talyvor's own services still work", e.Capability.Name,
+			e.Hold.HeldUntil.UTC().Format(time.RFC3339))
 	case e.Terms != nil:
 		return fmt.Sprintf("%s needs its terms accepted before it is used: this workspace has not accepted version %d of them. "+
 			"Read them and accept them, then try again", e.Capability.Name, e.Terms.Version)
@@ -245,10 +251,11 @@ func (e *CapabilityRefusal) Error() string {
 }
 
 // Is makes a refusal an ErrCapabilityNotCleared, a verification level's an ErrVerificationNeeded too, a freeze's
-// an ErrWorkspaceFrozen, and unaccepted terms' an ErrTermsNotAccepted.
+// an ErrWorkspaceFrozen, a number move's hold an ErrNumberMoveHold, and unaccepted terms' an ErrTermsNotAccepted.
 func (e *CapabilityRefusal) Is(target error) bool {
 	return target == ErrCapabilityNotCleared || (target == ErrVerificationNeeded && e.Level != nil) ||
-		(target == ErrWorkspaceFrozen && e.Freeze != nil) || (target == ErrTermsNotAccepted && e.Terms != nil)
+		(target == ErrWorkspaceFrozen && e.Freeze != nil) || (target == ErrNumberMoveHold && e.Hold != nil) ||
+		(target == ErrTermsNotAccepted && e.Terms != nil)
 }
 
 // Unwrap is the plan's refusal, when the plan refused.
