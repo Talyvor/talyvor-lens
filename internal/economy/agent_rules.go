@@ -284,6 +284,15 @@ type ApprovalNeededError struct {
 	req         AgentRequest
 	asksAbove   int64  // the approval amount it is above (B57.11)
 	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
+	inRules     rulesSheet
+}
+
+// rulesSheet is what an approval's sheet says of the rules, in their currency (B61.42): the amount they ask above and
+// the month they leave after it, in its minor units; monthLeft nil with no monthly limit.
+type rulesSheet struct {
+	currency  string
+	asksAbove int64
+	monthLeft *int64
 }
 
 func (e *ApprovalNeededError) Error() string {
@@ -709,7 +718,7 @@ func (r AgentRules) periodLimits(now time.Time, loc *time.Location) []agentPerio
 	}
 }
 
-// periodLimitsULXC are periodLimits in µLXC, as the parked gateway's allowance and the LXC limit alerts count them.
+// periodLimitsULXC are periodLimits in µLXC, as the parked gateway's allowance counts them.
 func (r AgentRules) periodLimitsULXC(now time.Time, loc *time.Location) []agentPeriodLimit {
 	l := r
 	l.HourlyLimitMinor, l.DailyLimitMinor, l.WeeklyLimitMinor, l.MonthlyLimitMinor = r.HourlyLimitULXC, r.DailyLimitULXC, r.WeeklyLimitULXC, r.MonthlyLimitULXC
@@ -1017,7 +1026,7 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		return ruleRefusal("this %s would cost up to %s; the agent's limit per %s is %s",
 			what, j.words(j.amount), limit, j.words(j.perPayment))
 	}
-	var monthLeft *int64
+	var monthLeft, monthLeftMinor *int64
 	for _, limit := range j.periods {
 		if limit.amount == 0 {
 			continue
@@ -1038,6 +1047,17 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		if limit.name == "monthly" && r.MonthlyLimitULXC > 0 { // the approval sheet's "left this month", in LXC (B57.11)
 			left := r.MonthlyLimitULXC - spentULXC - amount
 			monthLeft = &left
+		}
+		if limit.name == "monthly" && r.MonthlyLimitMinor > 0 { // and in the rules' currency (B61.42)
+			left := limit.amount - spent - j.amount
+			if !j.inCurrency { // an LXC movement, judged in µLXC: valued in the rules' currency
+				sheet, err := s.sheetFor(ctx, tx, workspaceID, agentID, r, limit.since, amount)
+				if err != nil {
+					return err
+				}
+				left = *sheet.monthLeft
+			}
+			monthLeftMinor = &left
 		}
 	}
 	if limit, since := r.modelDailyLimit(req.Model, now, loc); limit > 0 && !req.Payment {
@@ -1074,7 +1094,8 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	}
 	if prepared || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
-			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft}
+			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft,
+			inRules: rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor, monthLeft: monthLeftMinor}}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
@@ -1287,12 +1308,15 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
-				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19)
+				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc,
+				rules_currency, asks_above_minor, budget_left_after_minor)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19,
+				$20, $21, $22)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
 			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
-			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft,
+			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
@@ -1386,6 +1410,12 @@ type AgentApproval struct {
 	// spend and this amount, both when it was filed; null with no monthly limit, and both on one filed before they were kept.
 	AsksAboveULXC       *int64 `json:"asks_above_ulxc"`
 	BudgetLeftAfterULXC *int64 `json:"budget_left_after_ulxc"`
+	// RulesCurrency is the currency the agent's rules were held in when it was filed, and AsksAboveMinor and
+	// BudgetLeftAfterMinor the same two figures in its minor units (B61.42) — what the sheet says; "" and nulls on one
+	// filed before they were kept.
+	RulesCurrency        string `json:"rules_currency"`
+	AsksAboveMinor       *int64 `json:"asks_above_minor"`
+	BudgetLeftAfterMinor *int64 `json:"budget_left_after_minor"`
 	// Kind is "" for a request of the agent's, and ApprovalCardChallenge for a 3-D Secure challenge on its card (B59.22).
 	Kind string `json:"kind,omitempty"`
 	// ConnectClientID is the assistant whose payment filed it (B52.41), so an approval screen can name it; empty otherwise.
@@ -1402,7 +1432,8 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE workspace_id = agent_approvals.workspace_id AND account = 'agent:' || agent_approvals.agent_id)
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
-	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id`
+	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
+	budget_left_after_minor`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1413,7 +1444,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor)
 	if p.Kind != "" {
 		a.Payee = &p
 	}
