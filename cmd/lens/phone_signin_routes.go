@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/phonesignin"
 )
@@ -295,6 +297,7 @@ func phonePerson(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
 		writePhoneRefusal(w, http.StatusConflict, "held", "That number or identity belongs to another person.")
 		return
 	case err != nil:
+		slog.Warn("phone door: the person could not be found or made", "cause", errorCause(err))
 		writeJSONErr(w, http.StatusServiceUnavailable, "the person could not be found; try again")
 		return
 	}
@@ -311,4 +314,17 @@ func newPeopleCountsHandler(s *phonesignin.Store) http.HandlerFunc {
 		}
 		writeJSONOK(w, http.StatusOK, c)
 	}
+}
+
+// errorCause names what err is for a log line (B61.114): a database error's SQLSTATE, or else the Go type of the error
+// it wraps. Never its text, which can carry the identity, the number or the ticket.
+func errorCause(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return "SQLSTATE " + pgErr.Code
+	}
+	for errors.Unwrap(err) != nil {
+		err = errors.Unwrap(err)
+	}
+	return fmt.Sprintf("%T", err)
 }

@@ -26,6 +26,7 @@ import (
 
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // The rules of a key sign-in.
@@ -494,6 +495,7 @@ func scanPersonKey(row pgx.Row) (PersonKey, error) {
 func (s *Store) PersonIdentity(ctx context.Context, personID string) (string, error) {
 	var identity string
 	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1`, personID).Scan(&identity)
+	identity = workspace.IdentityFromStored(identity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNoPerson
 	}
