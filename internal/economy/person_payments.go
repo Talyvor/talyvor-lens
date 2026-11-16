@@ -366,7 +366,7 @@ func workspaceKeys(ctx context.Context, q pgxDB, workspaceID string) (int, error
 // passed, else the company its company check confirmed, else a plain label — never a name the account chose for
 // itself, which could be anyone's.
 func (s *DualTokenStore) accountShownName(ctx context.Context, workspaceID string) (string, error) {
-	full, err := verifiedPersonName(ctx, s.pool, `v.workspace_id = $1`, workspaceID)
+	full, err := verifiedPersonName(ctx, s.pool, workspaceID, "")
 	if err != nil {
 		return "", err
 	}

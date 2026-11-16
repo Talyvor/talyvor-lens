@@ -51,9 +51,9 @@ var (
 // PersonNotFoundWords are what a person is told when a lookup finds nobody.
 const PersonNotFoundWords = "Nobody found. Check the name or number, or ask them to turn on being found in Settings."
 
-// DefaultPersonLookupsPerHour is how many people an account may look up an hour until Nicolai sets another
+// defaultPersonLookupsPerHour is how many people an account may look up an hour until Nicolai sets another
 // (LENS_PERSON_LOOKUPS_PER_HOUR).
-const DefaultPersonLookupsPerHour = 30
+const defaultPersonLookupsPerHour = 30
 
 // personFindFloor is the least time a lookup answers in, found or not, so an answer's time says nothing of why.
 var personFindFloor = 150 * time.Millisecond
@@ -65,7 +65,7 @@ func (s *DualTokenStore) lookupsPerHour() int {
 	if s.personLookupsPerHour > 0 {
 		return s.personLookupsPerHour
 	}
-	return DefaultPersonLookupsPerHour
+	return defaultPersonLookupsPerHour
 }
 
 // PersonFinding is how a person is found, as their settings show it.
@@ -414,17 +414,18 @@ func (s *DualTokenStore) resolvePerson(ctx context.Context, to string) (foundPer
 // personVerifiedName is the name the person's newest identity check that stands passed confirmed, on any of their
 // accounts, or "".
 func (s *DualTokenStore) personVerifiedName(ctx context.Context, personKey, firstID string) (string, error) {
-	return verifiedPersonName(ctx, s.pool, `v.workspace_id = $1 OR v.workspace_id IN (SELECT workspace_id FROM person_accounts WHERE person_key = $2)`,
-		firstID, personKey)
+	return verifiedPersonName(ctx, s.pool, firstID, personKey)
 }
 
-// verifiedPersonName is the verified name of the newest standing passed identity check of the accounts where says.
-func verifiedPersonName(ctx context.Context, q pgxDB, where string, args ...any) (string, error) {
+// verifiedPersonName is the verified name of the newest standing passed identity check of workspaceID and, when
+// personKey is not "", of every account the person opened after it.
+func verifiedPersonName(ctx context.Context, q pgxDB, workspaceID, personKey string) (string, error) {
 	var name string
 	err := q.QueryRow(ctx, `SELECT v.verified_name FROM workspace_verifications v
-		WHERE (`+where+`) AND v.level = 2 AND v.subject = 'person' AND v.status = 'completed' AND v.verified_name <> ''
+		WHERE (v.workspace_id = $1 OR v.workspace_id IN (SELECT workspace_id FROM person_accounts WHERE person_key = $2 AND $2 <> ''))
+		  AND v.level = 2 AND v.subject = 'person' AND v.status = 'completed' AND v.verified_name <> ''
 		  AND v.id = (SELECT max(w.id) FROM workspace_verifications w WHERE w.workspace_id = v.workspace_id AND w.evidence_ref = v.evidence_ref)
-		ORDER BY v.id DESC LIMIT 1`, args...).Scan(&name)
+		ORDER BY v.id DESC LIMIT 1`, workspaceID, personKey).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
