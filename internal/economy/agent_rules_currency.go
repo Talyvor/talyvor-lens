@@ -374,3 +374,46 @@ func (s *DualTokenStore) minorInLXC(ctx context.Context, workspaceID string, min
 	v, err := ratInt64(new(big.Rat).SetInt(new(big.Int).Mul(big.NewInt(usdMicro), big.NewInt(ULXCPerUSDMicro))), false)
 	return max(v, 1), err
 }
+
+// asksAboveOrNil is the amount the sheet's rules ask above, nil when they ask above none.
+func (r rulesSheet) asksAboveOrNil() *int64 {
+	if r.asksAbove <= 0 {
+		return nil
+	}
+	return &r.asksAbove
+}
+
+// sheetFor is what an approval's sheet says of r in its currency for agentID's movement of amount µLXC, judged in
+// µLXC, in the month begun at monthStart (B61.42): what the month's spend was worth in the rules' currency as they
+// recorded it (B61.41), and the rest and this movement valued in it, rounded up, so it never leaves more than there is.
+func (s *DualTokenStore) sheetFor(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, r AgentRules, monthStart time.Time,
+	amount int64) (rulesSheet, error) {
+	sheet := rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor}
+	if r.MonthlyLimitMinor <= 0 {
+		return sheet, nil
+	}
+	so, err := agentSpentIn(ctx, tx, workspaceID, agentID, monthStart, r.spendRecordedIn())
+	if err != nil {
+		return sheet, fmt.Errorf("economy: agent spend so far: %w", err)
+	}
+	used, err := s.spentInRules(ctx, workspaceID, r, so, amount)
+	left := r.MonthlyLimitMinor - used
+	sheet.monthLeft = &left
+	return sheet, err
+}
+
+// spendRecordedIn is the currency r records what each movement was worth in as it lets it through (B61.41): none for
+// dollar rules, which count µLXC at the peg.
+func (r AgentRules) spendRecordedIn() string {
+	if dollarLike(r.currency()) {
+		return ""
+	}
+	return r.currency()
+}
+
+// spentInRules is so, and extraULXC µLXC more, in r's currency: what the rules recorded of it in their currency, and
+// the rest valued in it, rounded up.
+func (s *DualTokenStore) spentInRules(ctx context.Context, workspaceID string, r AgentRules, so agentSpend, extraULXC int64) (int64, error) {
+	rest, err := s.ulxcIn(ctx, workspaceID, so.restULXC+extraULXC, r.currency(), true)
+	return so.recordedMinor + rest, err
+}
