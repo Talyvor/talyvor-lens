@@ -90,6 +90,7 @@ func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *t
 	s := screenedStore(pool)
 	s.SetAccountPartners(partners.NewRegistry(nil))
 	const ws, payerWS = "ws-b5621-issuer", "ws-b5621-payer"
+	sandboxConfirmed(t, pool, ws, payerWS) // B61.52: they move money, so they have confirmed who they are
 	_, buyer, company, sellerGBP := b5621Issuer(t, ctx, s, ws, payerWS)
 
 	byCard := b5621Invoice(t, ctx, s, ws, sellerGBP.ID, 12000)

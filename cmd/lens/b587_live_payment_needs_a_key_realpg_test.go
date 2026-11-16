@@ -26,6 +26,7 @@ import (
 func TestLivePayment_WaitsForTheWorkspacesFirstKey(t *testing.T) {
 	pool := agentRoutesDB(t)
 	const ws = "ws-b587-live-needs-key"
+	confirmedAccounts(t, pool, ws) // B61.52
 	ctx := economy.WithUseCountry(context.Background(), "GB")
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
@@ -202,6 +203,7 @@ func TestLiveMandatePull_WaitsForThePayersFirstKey(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := economy.WithUseCountry(context.Background(), "GB")
 	const ws, payeeWS = "ws-b587-payer", "ws-b587-payee"
+	confirmedAccounts(t, pool, ws, payeeWS) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

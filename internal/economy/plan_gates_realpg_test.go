@@ -135,6 +135,7 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1) ON CONFLICT DO NOTHING`, ws); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 		if _, err := s.CreditLXC(gb, ws, 100_000_000, "stripe top-up", map[string]interface{}{"funding": funding}); err != nil {
 			t.Fatal(err)
 		}

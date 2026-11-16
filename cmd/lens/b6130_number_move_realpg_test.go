@@ -119,7 +119,7 @@ func TestB6130_TheOperatorMovesANumberOnlyWithStepUpAndThePersonsIdentity(t *tes
 			t.Fatal(err)
 		}
 		ws := deriveWorkspaceID(identity)
-		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $2, $1)`, ws, name); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type) VALUES ($1, $2, $1, 'personal')`, ws, name); err != nil {
 			t.Fatal(err)
 		}
 		for _, in := range []economy.VerificationRequest{
