@@ -27,6 +27,10 @@ func openAPIWalletTags() []map[string]any {
 var (
 	agentColour = map[string]any{"type": "string", "enum": []string{"cobalt", "orchid", "sky", "mint", "lemon", "rose", "lime"}}
 	agentFace   = map[string]any{"type": "string", "enum": []string{"circle", "squircle", "hexagon", "flower"}}
+	// B61.35: what it does, and the picture it wears, which sets its colour. B61.36 adds pictures.
+	agentRole     = map[string]any{"type": "string", "enum": []string{"research", "sales", "bookkeeping", "ads", "travel", "support", "other"}, "description": "what it does; other names it in role_word"}
+	agentRoleWord = map[string]any{"type": "string", "maxLength": 40, "description": "what it does in its owner's own word, with role other"}
+	agentPicture  = map[string]any{"type": "string", "description": "an id from Lens's gallery: cobalt, orchid, sky, mint, lemon, rose or lime today. It sets the colour"}
 )
 
 func openAPIWalletSchemas() map[string]any {
@@ -54,6 +58,9 @@ func openAPIWalletSchemas() map[string]any {
 				"archived_at":   map[string]any{"type": "string", "format": "date-time", "nullable": true, "description": "set once the agent is archived: swept to zero, its keys revoked"},
 				"colour":        agentColour,
 				"face":          agentFace,
+				"role":          map[string]any{"type": "string", "description": "what it does: research, sales, bookkeeping, ads, travel, support or other; empty for an agent made before kinds"},
+				"role_word":     agentRoleWord,
+				"picture":       agentPicture,
 			},
 		},
 		"AgentBook": map[string]any{
@@ -371,10 +378,11 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws},
 				map[string]any{"200": ok("the agents and the workspace's totals", ref("AgentBook"))}),
 			"post": withBody(op("Create an agent",
-				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too. Without colour or face, Lens picks them from the agent's id, the next free pair when another live agent of the workspace wears that one.",
+				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too. Without colour or face, Lens picks them from the agent's id, the next free pair when another live agent of the workspace wears that one. A picture sets the colour; role is what it does, and role other names it in role_word.",
 				[]map[string]any{ws},
-				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, no such template, or a colour or face not on its list"}}),
+				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, no such template, or a colour, face, picture or role not on its list"}}),
 				body(obj([]string{"name"}, map[string]any{"name": str, "owner_user_id": str, "colour": agentColour, "face": agentFace,
+					"picture": agentPicture, "role": agentRole, "role_word": agentRoleWord,
 					"template": map[string]any{"type": "string", "example": "support-bot", "description": "the id of a rule template to start from"}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/rule-templates": map[string]any{
@@ -412,10 +420,11 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}": map[string]any{
 			"patch": withBody(op("Rename, describe or change the face of the agent",
-				"Owner or admin. Any of the fields; a name cannot be blank, a description is at most 500 characters, and a colour or face is one on its list.",
+				"Owner or admin. Any of the fields; a name cannot be blank, a description is at most 500 characters, and a colour, face, picture or role is one on its list. A picture sets the colour, and a colour without one takes its colour's picture; role_word comes only with role other.",
 				[]map[string]any{ws, agent},
-				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, a colour or face not on its list, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
-				body(obj(nil, map[string]any{"name": str, "description": str, "colour": agentColour, "face": agentFace}))),
+				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, a colour, face, picture or role not on its list, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
+				body(obj(nil, map[string]any{"name": str, "description": str, "colour": agentColour, "face": agentFace,
+					"picture": agentPicture, "role": agentRole, "role_word": agentRoleWord}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/archive": map[string]any{
 			"post": op("Archive the agent",
