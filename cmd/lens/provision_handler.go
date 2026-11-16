@@ -3,13 +3,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -104,11 +101,7 @@ type provisionResponse struct {
 }
 
 // deriveWorkspaceID turns an opaque identity into this deployment's workspace id.
-func deriveWorkspaceID(identity string) string {
-	sum := sha256.Sum256([]byte(identity))
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
-	return "u" + strings.ToLower(enc)[:26]
-}
+func deriveWorkspaceID(identity string) string { return workspace.FirstAccountID(identity) }
 
 // newAccountID is the id of an account a person opens after their first.
 var newAccountID = func() (string, error) {

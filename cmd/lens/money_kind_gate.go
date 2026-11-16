@@ -293,6 +293,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/notices":          moneySideEither,
 	"/v1/money/notices/settings": moneySideEither,
 
+	// people_handler.go
+	"/v1/money/people/find":          moneySideEither,
+	"/v1/money/people/pay":           moneySideEither,
+	"/v1/money/people/pay/challenge": moneySideEither,
+
 	// money_payees_handler.go
 	"/v1/money/payees":                      moneySideEither,
 	"/v1/money/payees/{}/address-proof":     moneySideOnChain,
