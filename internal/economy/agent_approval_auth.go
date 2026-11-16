@@ -292,6 +292,9 @@ func approvalPurpose(approvalID string, allow *PayeeAllowance) string {
 	if allow == nil {
 		return "approval:" + approvalID
 	}
+	if allow.Minor > 0 { // B61.40: an amount in the rules' currency is signed for as that amount
+		return fmt.Sprintf("approval:%s:always_allow:%d:minor:%d:%s", approvalID, allow.ULXC, allow.Minor, allow.Per)
+	}
 	return fmt.Sprintf("approval:%s:always_allow:%d:%s", approvalID, allow.ULXC, allow.Per)
 }
 

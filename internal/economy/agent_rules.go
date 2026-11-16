@@ -143,12 +143,21 @@ type AgentRules struct {
 	WeeklyLimitMinor   *int64 `json:"weekly_limit_minor"`
 	MonthlyLimitMinor  int64  `json:"monthly_limit_minor"`
 	ApprovalAboveMinor int64  `json:"approval_above_minor"`
+	// PayeeDailyLimitsMinor, PayeeMonthlyLimitsMinor and FXDailyLimitMinor (B61.40) are each payee's caps and the daily
+	// conversion maximum in the minor units of Currency, judged as the limits above are; PayeeDailyLimitsULXC,
+	// PayeeMonthlyLimitsULXC and FXDailyLimitULXC are what they are worth in LXC. Read, they are never nil; nil saves
+	// the rules without changing them, and a map saved replaces the stored caps whole.
+	PayeeDailyLimitsMinor   map[string]int64 `json:"payee_daily_limits_minor"`
+	PayeeMonthlyLimitsMinor map[string]int64 `json:"payee_monthly_limits_minor"`
+	FXDailyLimitMinor       *int64           `json:"fx_daily_limit_minor"`
 }
 
-// PayeeAllowance is one payee's "always allow" (B41.104): up to ULXC a day or a month (Per) without approval.
+// PayeeAllowance is one payee's "always allow" (B41.104): up to Minor of the rules' currency (B61.40) a day or a month
+// (Per) without approval. ULXC is what that is worth in LXC; one named in ULXC alone is moved to dollars at the peg.
 type PayeeAllowance struct {
-	ULXC int64  `json:"amount_ulxc"`
-	Per  string `json:"per"` // day | month
+	ULXC  int64  `json:"amount_ulxc"`
+	Minor int64  `json:"amount_minor"`
+	Per   string `json:"per"` // day | month
 }
 
 // AgentLicences are the marketplace licences an agent may hold (B32.22): a personal licence is one person's.
@@ -320,7 +329,8 @@ func limitOf(v *int64) int64 {
 func (r AgentRules) validate() error {
 	for _, v := range []int64{r.MaxPerRequestULXC, limitOf(r.HourlyLimitULXC), r.DailyLimitULXC, limitOf(r.WeeklyLimitULXC),
 		r.MonthlyLimitULXC, r.ApprovalAboveULXC, limitOf(r.RequestsPerMinute), limitOf(r.MaxCommitmentULXC), limitOf(r.FXDailyLimitULXC),
-		r.MaxPerPaymentMinor, limitOf(r.HourlyLimitMinor), r.DailyLimitMinor, limitOf(r.WeeklyLimitMinor), r.MonthlyLimitMinor, r.ApprovalAboveMinor} {
+		r.MaxPerPaymentMinor, limitOf(r.HourlyLimitMinor), r.DailyLimitMinor, limitOf(r.WeeklyLimitMinor), r.MonthlyLimitMinor, r.ApprovalAboveMinor,
+		limitOf(r.FXDailyLimitMinor)} {
 		if v < 0 {
 			return errors.New("a limit cannot be negative (0 means no limit)")
 		}
@@ -352,8 +362,12 @@ func (r AgentRules) validate() error {
 			return fmt.Errorf("%q is both allowed and blocked; give it one", id)
 		}
 	}
-	for window, caps := range map[string]map[string]int64{"daily": r.PayeeDailyLimitsULXC, "monthly": r.PayeeMonthlyLimitsULXC} {
-		for id, v := range caps {
+	for _, c := range []struct {
+		window string
+		caps   map[string]int64
+	}{{"daily", r.PayeeDailyLimitsULXC}, {"monthly", r.PayeeMonthlyLimitsULXC}, {"daily", r.PayeeDailyLimitsMinor}, {"monthly", r.PayeeMonthlyLimitsMinor}} {
+		window := c.window
+		for id, v := range c.caps {
 			if strings.TrimSpace(id) != id || id == "" {
 				return fmt.Errorf("%q is not a payee's id", id)
 			}
@@ -366,7 +380,7 @@ func (r AgentRules) validate() error {
 		if strings.TrimSpace(id) != id || id == "" {
 			return fmt.Errorf("%q is not a payee's id", id)
 		}
-		if a.ULXC < 0 || (a.Per != "day" && a.Per != "month") {
+		if a.ULXC < 0 || a.Minor < 0 || (a.Per != "day" && a.Per != "month") {
 			return fmt.Errorf("always allowing %q needs an amount of 0 or more and per \"day\" or \"month\"", id)
 		}
 	}
@@ -416,20 +430,21 @@ const agentRulesColumns = `COALESCE(max_per_request_ulxc, 0), COALESCE(daily_lim
 	COALESCE(max_commitment_ulxc, 0), COALESCE(allowed_licences, '{}'), COALESCE(may_subscribe, false),
 	COALESCE(payee_monthly_limits_ulxc, '{}'), COALESCE(payee_allowances, '{}'), allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0),
 	COALESCE(may_instant_transfer, false), COALESCE(currency, 'USD'), COALESCE(max_per_payment_minor, 0), COALESCE(hourly_limit_minor, 0),
-	COALESCE(daily_limit_minor, 0), COALESCE(weekly_limit_minor, 0), COALESCE(monthly_limit_minor, 0), COALESCE(approval_above_minor, 0)`
+	COALESCE(daily_limit_minor, 0), COALESCE(weekly_limit_minor, 0), COALESCE(monthly_limit_minor, 0), COALESCE(approval_above_minor, 0),
+	COALESCE(payee_daily_limits_minor, '{}'), COALESCE(payee_monthly_limits_minor, '{}'), COALESCE(fx_daily_limit_minor, 0)`
 
 func scanAgentRules(row pgx.Row) (AgentRules, error) {
 	var r AgentRules
-	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor int64
+	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor, fxDailyMinor int64
 	var maySubscribe, mayInstant bool
 	err := row.Scan(&r.MaxPerRequestULXC, &r.DailyLimitULXC, &r.MonthlyLimitULXC, &r.ApprovalAboveULXC,
 		&r.AllowedModels, &r.AllowedProviders, &r.ActiveFrom, &r.ActiveUntil, &r.Timezone, &r.PauseOnUnusualSpend, &r.AllowedListings,
 		&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
 		&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily,
 		&mayInstant, &r.Currency, &r.MaxPerPaymentMinor, &hourlyMinor, &r.DailyLimitMinor, &weeklyMinor, &r.MonthlyLimitMinor,
-		&r.ApprovalAboveMinor)
+		&r.ApprovalAboveMinor, &r.PayeeDailyLimitsMinor, &r.PayeeMonthlyLimitsMinor, &fxDailyMinor)
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
-	r.HourlyLimitMinor, r.WeeklyLimitMinor = &hourlyMinor, &weeklyMinor
+	r.HourlyLimitMinor, r.WeeklyLimitMinor, r.FXDailyLimitMinor = &hourlyMinor, &weeklyMinor, &fxDailyMinor
 	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC, r.MayInstantTransfer = &commitment, &maySubscribe, &fxDaily, &mayInstant
 	return r, err
 }
@@ -477,7 +492,7 @@ func allowancesJSON(allowances map[string]PayeeAllowance) (*string, error) {
 	}
 	kept := map[string]PayeeAllowance{}
 	for id, a := range allowances {
-		if a.ULXC > 0 {
+		if a.ULXC > 0 || a.Minor > 0 {
 			kept[id] = a
 		}
 	}
@@ -548,13 +563,21 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	if err != nil {
 		return r, fmt.Errorf("economy: set agent rules: %w", err)
 	}
+	payeeCapsMinor, err := capsJSON(r.PayeeDailyLimitsMinor, func(id string) string { return id })
+	if err != nil {
+		return r, fmt.Errorf("economy: set agent rules: %w", err)
+	}
+	payeeMonthlyCapsMinor, err := capsJSON(r.PayeeMonthlyLimitsMinor, func(id string) string { return id })
+	if err != nil {
+		return r, fmt.Errorf("economy: set agent rules: %w", err)
+	}
 	// B32.32: a room wallet's monthly limit is the room's budget, at most what the room owner's plan allows.
 	if err := s.checkRoomBudget(ctx, tx, workspaceID, agentID, r.MonthlyLimitULXC); err != nil {
 		return r, err
 	}
 	// $14 to $28 are NULL when absent, which keeps the stored caps, payees, licence and conversion rules; a zero or an
 	// empty list clears one.
-	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor int64
+	var hourly, weekly, rpm, commitment, fxDaily, hourlyMinor, weeklyMinor, fxDailyMinor int64
 	var maySubscribe, mayInstant bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO agent_rules (agent_id, workspace_id, max_per_request_ulxc, daily_limit_ulxc, monthly_limit_ulxc,
@@ -563,14 +586,15 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, max_commitment_ulxc, allowed_licences, may_subscribe,
 		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, fx_daily_limit_ulxc, may_instant_transfer,
 		       currency, max_per_payment_minor, hourly_limit_minor, daily_limit_minor, weekly_limit_minor, monthly_limit_minor,
-		       approval_above_minor)
+		       approval_above_minor, payee_daily_limits_minor, payee_monthly_limits_minor, fx_daily_limit_minor)
 		SELECT id, workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::text[], '{}'),
 		       NULLIF($14::bigint, 0), NULLIF($15::bigint, 0), COALESCE($16::text::jsonb, '{}'), NULLIF($17::integer, 0),
 		       COALESCE($18::text[], '{}'), COALESCE($19::text[], '{}'), COALESCE($20::text::jsonb, '{}'),
 		       NULLIF($21::bigint, 0), COALESCE($22::text[], '{}'), COALESCE($23::boolean, false),
 		       COALESCE($24::text::jsonb, '{}'), COALESCE($25::text::jsonb, '{}'),
 		       COALESCE($26::text[], '{}'), NULLIF($27::bigint, 0), COALESCE($28::boolean, false),
-		       $29, $30, NULLIF($31::bigint, 0), $32, NULLIF($33::bigint, 0), $34, $35
+		       $29, $30, NULLIF($31::bigint, 0), $32, NULLIF($33::bigint, 0), $34, $35,
+		       COALESCE($36::text::jsonb, '{}'), COALESCE($37::text::jsonb, '{}'), NULLIF($38::bigint, 0)
 		  FROM agent_accounts WHERE id = $1 AND workspace_id = $2
 		ON CONFLICT (agent_id) DO UPDATE SET max_per_request_ulxc = EXCLUDED.max_per_request_ulxc,
 		       daily_limit_ulxc = EXCLUDED.daily_limit_ulxc, monthly_limit_ulxc = EXCLUDED.monthly_limit_ulxc,
@@ -597,20 +621,24 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 		       hourly_limit_minor = NULLIF(COALESCE($31::bigint, agent_rules.hourly_limit_minor), 0),
 		       daily_limit_minor = EXCLUDED.daily_limit_minor,
 		       weekly_limit_minor = NULLIF(COALESCE($33::bigint, agent_rules.weekly_limit_minor), 0),
-		       monthly_limit_minor = EXCLUDED.monthly_limit_minor, approval_above_minor = EXCLUDED.approval_above_minor, updated_at = now()
+		       monthly_limit_minor = EXCLUDED.monthly_limit_minor, approval_above_minor = EXCLUDED.approval_above_minor,
+		       payee_daily_limits_minor = COALESCE($36::text::jsonb, agent_rules.payee_daily_limits_minor),
+		       payee_monthly_limits_minor = COALESCE($37::text::jsonb, agent_rules.payee_monthly_limits_minor),
+		       fx_daily_limit_minor = NULLIF(COALESCE($38::bigint, agent_rules.fx_daily_limit_minor), 0), updated_at = now()
 		RETURNING COALESCE(hourly_limit_ulxc, 0), COALESCE(weekly_limit_ulxc, 0), model_daily_limits_ulxc, COALESCE(requests_per_minute, 0),
 		       allowed_payees, blocked_payees, payee_daily_limits_ulxc, COALESCE(max_commitment_ulxc, 0), allowed_licences, may_subscribe,
 		       payee_monthly_limits_ulxc, payee_allowances, allowed_currencies, COALESCE(fx_daily_limit_ulxc, 0), may_instant_transfer,
-		       COALESCE(hourly_limit_minor, 0), COALESCE(weekly_limit_minor, 0)`,
+		       COALESCE(hourly_limit_minor, 0), COALESCE(weekly_limit_minor, 0), payee_daily_limits_minor, payee_monthly_limits_minor,
+		       COALESCE(fx_daily_limit_minor, 0)`,
 		agentID, workspaceID, nullIfZero(r.MaxPerRequestULXC), nullIfZero(r.DailyLimitULXC), nullIfZero(r.MonthlyLimitULXC),
 		nullIfZero(r.ApprovalAboveULXC), r.AllowedModels, r.AllowedProviders, from, until, r.Timezone, r.PauseOnUnusualSpend,
 		r.AllowedListings, r.HourlyLimitULXC, r.WeeklyLimitULXC, models, r.RequestsPerMinute, r.AllowedPayees, r.BlockedPayees, payeeCaps,
 		r.MaxCommitmentULXC, r.AllowedLicences, r.MaySubscribe, payeeMonthlyCaps, allowances, r.AllowedCurrencies, r.FXDailyLimitULXC, r.MayInstantTransfer,
 		r.Currency, nullIfZero(r.MaxPerPaymentMinor), r.HourlyLimitMinor, nullIfZero(r.DailyLimitMinor), r.WeeklyLimitMinor,
-		nullIfZero(r.MonthlyLimitMinor), nullIfZero(r.ApprovalAboveMinor)).
+		nullIfZero(r.MonthlyLimitMinor), nullIfZero(r.ApprovalAboveMinor), payeeCapsMinor, payeeMonthlyCapsMinor, r.FXDailyLimitMinor).
 		Scan(&hourly, &weekly, &r.ModelDailyLimitsULXC, &rpm, &r.AllowedPayees, &r.BlockedPayees, &r.PayeeDailyLimitsULXC,
 			&commitment, &r.AllowedLicences, &maySubscribe, &r.PayeeMonthlyLimitsULXC, &r.PayeeAllowances, &r.AllowedCurrencies, &fxDaily, &mayInstant,
-			&hourlyMinor, &weeklyMinor)
+			&hourlyMinor, &weeklyMinor, &r.PayeeDailyLimitsMinor, &r.PayeeMonthlyLimitsMinor, &fxDailyMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrAgentNotFound
 	}
@@ -622,7 +650,7 @@ func (s *DualTokenStore) setAgentRulesTx(ctx context.Context, tx pgx.Tx, workspa
 	}
 	r.HourlyLimitULXC, r.WeeklyLimitULXC, r.RequestsPerMinute = &hourly, &weekly, &rpm
 	r.MaxCommitmentULXC, r.MaySubscribe, r.FXDailyLimitULXC, r.MayInstantTransfer = &commitment, &maySubscribe, &fxDaily, &mayInstant
-	r.HourlyLimitMinor, r.WeeklyLimitMinor = &hourlyMinor, &weeklyMinor
+	r.HourlyLimitMinor, r.WeeklyLimitMinor, r.FXDailyLimitMinor = &hourlyMinor, &weeklyMinor, &fxDailyMinor
 	return r, nil
 }
 
@@ -650,7 +678,8 @@ func getAgentRules(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 			MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
 			PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
 			AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant,
-			Currency: CurrencyUSD, HourlyLimitMinor: new(int64), WeeklyLimitMinor: new(int64)}, nil
+			Currency: CurrencyUSD, HourlyLimitMinor: new(int64), WeeklyLimitMinor: new(int64),
+			PayeeDailyLimitsMinor: map[string]int64{}, PayeeMonthlyLimitsMinor: map[string]int64{}, FXDailyLimitMinor: new(int64)}, nil
 	}
 	if err != nil {
 		return r, fmt.Errorf("economy: agent rules: %w", err)
@@ -796,9 +825,47 @@ func agentPaidPayeeSince(ctx context.Context, tx pgx.Tx, agentID, id string, sin
 	return paid, err
 }
 
+// agentPaidPayee is what an agent has paid the payee id names since `since`: in µLXC, as agentPaidPayeeSince counts
+// it, or — inCurrency — in the minor units of currency (B61.40): payments in it on their own amounts, those in another
+// currency at the conversion provider's rate and those recorded only in µLXC at what they are worth, each rounded up,
+// so rounding never lets a payment through.
+func (s *DualTokenStore) agentPaidPayee(ctx context.Context, tx pgx.Tx, workspaceID, agentID, id string, since time.Time,
+	currency string, inCurrency bool) (int64, error) {
+	if !inCurrency {
+		return agentPaidPayeeSince(ctx, tx, agentID, id, since)
+	}
+	rows, err := tx.Query(ctx, `SELECT COALESCE(currency, ''), COALESCE(sum(COALESCE(amount_minor, amount_ulxc)), 0)::bigint
+		FROM agent_payee_payments WHERE agent_id = $1 AND $2 = ANY(payee_ids) AND created_at >= $3 GROUP BY 1`, agentID, id, since)
+	if err != nil {
+		return 0, err
+	}
+	sums, err := pgx.CollectRows(rows, pgx.RowToStructByPos[struct {
+		Currency string
+		Sum      int64
+	}])
+	if err != nil {
+		return 0, err
+	}
+	var paid int64
+	for _, p := range sums {
+		var v int64
+		if p.Currency == "" { // recorded before B61.40, or a payment in LXC
+			v, err = s.ulxcIn(ctx, workspaceID, p.Sum, currency, true)
+		} else {
+			v, err = s.convertMinor(ctx, workspaceID, p.Sum, p.Currency, currency, true)
+		}
+		if err != nil {
+			return 0, err
+		}
+		paid += v
+	}
+	return paid, nil
+}
+
 // recordPayeePayment records a payment the rules let through, in its movement's transaction, under the ids a
 // payee's daily cap may name it by (B28.304) — every payment, capped or not, so a cap set at noon counts the
-// morning. A payment of nothing, or to no one, is not one.
+// morning — and, for money from a currency account, its own amount (B61.40). A payment of nothing, or to no one, is
+// not one.
 func recordPayeePayment(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, req AgentRequest, ids []string, amount int64, ref string) error {
 	if !req.Payment || req.Payee.ID == "" || amount <= 0 {
 		return nil
@@ -809,9 +876,13 @@ func recordPayeePayment(ctx context.Context, tx pgx.Tx, workspaceID, agentID str
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_payee_payments (workspace_id, agent_id, payee_kind, payee_ids, amount_ulxc, ref)
-		VALUES ($1, $2, $3, $4, $5, $6)`, workspaceID, agentID, req.Payee.Kind, slices.DeleteFunc(ids, func(id string) bool { return id == "" }),
-		amount, ref); err != nil {
+	var currency, minor any
+	if own, ok := ownMoney(req); ok {
+		currency, minor = own.Currency, own.Minor
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_payee_payments (workspace_id, agent_id, payee_kind, payee_ids, amount_ulxc, ref, currency, amount_minor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, workspaceID, agentID, req.Payee.Kind, slices.DeleteFunc(ids, func(id string) bool { return id == "" }),
+		amount, ref, currency, minor); err != nil {
 		return fmt.Errorf("economy: record payee payment: %w", err)
 	}
 	return nil
@@ -982,20 +1053,22 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	day, month := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 	for _, id := range ids {
 		for _, c := range []struct {
-			limit      int64
-			since      time.Time
-			name, when string
-		}{{r.PayeeDailyLimitsULXC[id], day, "daily", "today"}, {r.PayeeMonthlyLimitsULXC[id], month, "monthly", "this month"}} {
-			if c.limit <= 0 {
+			minor, ulxc int64
+			since       time.Time
+			name, when  string
+		}{{r.PayeeDailyLimitsMinor[id], r.PayeeDailyLimitsULXC[id], day, "daily", "today"},
+			{r.PayeeMonthlyLimitsMinor[id], r.PayeeMonthlyLimitsULXC[id], month, "monthly", "this month"}} {
+			limit, cost, words, inCurrency := j.payeeLimit(c.minor, c.ulxc, amount)
+			if limit <= 0 {
 				continue
 			}
-			paid, err := agentPaidPayeeSince(ctx, tx, agentID, id, c.since)
+			paid, err := s.agentPaidPayee(ctx, tx, workspaceID, agentID, id, c.since, r.currency(), inCurrency)
 			if err != nil {
 				return fmt.Errorf("economy: agent payments to the payee so far: %w", err)
 			}
-			if paid+amount > c.limit {
+			if paid+cost > limit {
 				return ruleRefusal("the agent has paid %s %s of its %s limit of %s for %s, and this payment would cost %s",
-					LXCMoney(paid), c.when, c.name, LXCMoney(c.limit), payee, LXCMoney(amount))
+					words(paid), c.when, c.name, words(limit), payee, words(cost))
 			}
 		}
 	}
@@ -1017,7 +1090,7 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		if used == 0 {
 			allowed := false // a prepared payment is never "always allowed"
 			if !prepared {
-				if allowed, err = r.withinPayeeAllowance(ctx, tx, agentID, ids, amount, day, month); err != nil {
+				if allowed, err = s.withinPayeeAllowance(ctx, tx, workspaceID, agentID, r, j, ids, amount, day, month); err != nil {
 					return err
 				}
 			}
@@ -1049,23 +1122,26 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	return watchAgentSpend(ctx, tx, workspaceID, agentID, amount, req.At, r.PauseOnUnusualSpend)
 }
 
-// withinPayeeAllowance is whether a payment of amount to the payee ids name fits one of r's "always allow"s
-// (B41.104): what the agent has paid that payee in the allowance's day or month, with this payment, is within it.
-func (r AgentRules) withinPayeeAllowance(ctx context.Context, tx pgx.Tx, agentID string, ids []string, amount int64, day, month time.Time) (bool, error) {
+// withinPayeeAllowance is whether a payment of amount µLXC, judged by r as j (B61.40), to the payee ids name fits one
+// of r's "always allow"s (B41.104): what the agent has paid that payee in the allowance's day or month, with this
+// payment, is within it.
+func (s *DualTokenStore) withinPayeeAllowance(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, r AgentRules, j judgedLimits,
+	ids []string, amount int64, day, month time.Time) (bool, error) {
 	for _, id := range ids {
 		a := r.PayeeAllowances[id]
-		if a.ULXC <= 0 {
+		limit, cost, _, inCurrency := j.payeeLimit(a.Minor, a.ULXC, amount)
+		if limit <= 0 {
 			continue
 		}
 		since := day
 		if a.Per == "month" {
 			since = month
 		}
-		paid, err := agentPaidPayeeSince(ctx, tx, agentID, id, since)
+		paid, err := s.agentPaidPayee(ctx, tx, workspaceID, agentID, id, since, r.currency(), inCurrency)
 		if err != nil {
 			return false, fmt.Errorf("economy: agent payments to the payee so far: %w", err)
 		}
-		if paid+amount <= a.ULXC {
+		if paid+cost <= limit {
 			return true, nil
 		}
 	}
@@ -1073,7 +1149,7 @@ func (r AgentRules) withinPayeeAllowance(ctx context.Context, tx pgx.Tx, agentID
 }
 
 // AllowPayee saves the owner's "always allow" (B41.104) of the payee an approved approval names: the agent may pay it
-// up to a.ULXC a day or a month without approval. It replaces that payee's allowance and keeps the agent's other
+// up to a.Minor of the rules' currency (B61.40) a day or a month without approval. It replaces that payee's allowance and keeps the agent's other
 // rules; it is their next version, recorded with who ctx names (WithRulesChange).
 func (s *DualTokenStore) AllowPayee(ctx context.Context, workspaceID, approvalID string, a PayeeAllowance) (AgentRules, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -1091,7 +1167,7 @@ func (s *DualTokenStore) AllowPayee(ctx context.Context, workspaceID, approvalID
 	if err != nil {
 		return AgentRules{}, fmt.Errorf("economy: always allow: %w", err)
 	}
-	if err := allowPayeeTx(ctx, tx, workspaceID, agentID, payeeID, a); err != nil {
+	if err := s.allowPayeeTx(ctx, tx, workspaceID, agentID, payeeID, a); err != nil {
 		return AgentRules{}, err
 	}
 	if err := recordRulesVersion(ctx, tx, agentID, rulesChangeFrom(ctx)); err != nil {
@@ -1104,13 +1180,32 @@ func (s *DualTokenStore) AllowPayee(ctx context.Context, workspaceID, approvalID
 	return r, tx.Commit(ctx)
 }
 
-// allowPayeeTx sets the agent's allowance for payeeID to a in tx, keeping its other allowances and rules.
-func allowPayeeTx(ctx context.Context, tx pgx.Tx, workspaceID, agentID, payeeID string, a PayeeAllowance) error {
+// allowPayeeTx sets the agent's allowance for payeeID to a in tx, keeping its other allowances and rules. a names its
+// amount in the rules' currency (B61.40), and its worth in LXC is written beside it; one named in µLXC alone, as
+// every client before B61.40 does, is moved to dollars at the peg, and refused on rules in another currency.
+func (s *DualTokenStore) allowPayeeTx(ctx context.Context, tx pgx.Tx, workspaceID, agentID, payeeID string, a PayeeAllowance) error {
 	if payeeID == "" {
 		return fmt.Errorf("%w: only a payment has a payee to always allow", ErrAgentRule)
 	}
-	if err := (AgentRules{PayeeAllowances: map[string]PayeeAllowance{payeeID: a}}).validate(); err != nil || a.ULXC == 0 {
+	if err := (AgentRules{PayeeAllowances: map[string]PayeeAllowance{payeeID: a}}).validate(); err != nil || a.ULXC == 0 && a.Minor == 0 {
 		return fmt.Errorf("%w: always allow needs an amount above 0 and per \"day\" or \"month\"", ErrAgentRule)
+	}
+	currency := CurrencyUSD
+	if err := tx.QueryRow(ctx, `SELECT currency FROM agent_rules WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID).
+		Scan(&currency); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("economy: always allow: %w", err)
+	}
+	switch {
+	case a.Minor > 0:
+		v, err := s.minorInLXC(ctx, workspaceID, a.Minor, currency)
+		if err != nil {
+			return err
+		}
+		a.ULXC = v
+	case currency != CurrencyUSD:
+		return fmt.Errorf("%w: they are in %s; name the amount always allowed in it (amount_minor)", ErrRulesCurrency, currency)
+	default:
+		a.Minor = centsAtPeg(a.ULXC)
 	}
 	b, err := json.Marshal(a)
 	if err != nil {

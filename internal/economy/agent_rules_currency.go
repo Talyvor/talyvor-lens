@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"slices"
@@ -154,8 +155,21 @@ type judgedLimits struct {
 	periods                           []agentPeriodLimit
 	words                             func(int64) string
 	spentIn                           func(agentSpend) (int64, error)
+	inCurrency                        bool // the movement is money from a currency account, amount in the rules' currency
 	recordedIn                        string
 	worth                             int64
+}
+
+// payeeLimit is how j judges a payee's cap or "always allow" (B61.40), held as minor in the rules' currency and ulxc in
+// µLXC, for a movement of amount µLXC: the limit, the movement's cost and the words, in the rules' currency when the
+// movement is money from a currency account and the limit is held in it (inCurrency), and in µLXC otherwise — an LXC
+// movement, or a limit on rules in pounds or euros saved before B61.40 in µLXC alone, judged as it was until it is
+// set again.
+func (j judgedLimits) payeeLimit(minor, ulxc, amount int64) (limit, cost int64, words func(int64) string, inCurrency bool) {
+	if j.inCurrency && minor > 0 {
+		return minor, j.amount, j.words, true
+	}
+	return ulxc, amount, LXCMoney, false
 }
 
 // judgedAmount is how r judges a movement of amount µLXC (B61.12), the one valuation every amount rule uses: money
@@ -173,7 +187,7 @@ func (s *DualTokenStore) judgedAmount(ctx context.Context, workspaceID string, r
 		words: r.rulesAmount, spentIn: func(so agentSpend) (int64, error) {
 			rest, err := s.ulxcIn(ctx, workspaceID, so.restULXC, r.currency(), true)
 			return so.recordedMinor + rest, err
-		}}
+		}, inCurrency: true}
 	// B61.41: dollar rules count the µLXC spent at the peg, which no rate moves; pounds and euros count what each movement
 	// was worth in them when they let it through.
 	if !dollarLike(r.currency()) {
@@ -182,7 +196,8 @@ func (s *DualTokenStore) judgedAmount(ctx context.Context, workspaceID string, r
 			j.worth = own.Minor
 		}
 	}
-	if j.perPayment == 0 && j.approvalAbove == 0 && !slices.ContainsFunc(j.periods, func(l agentPeriodLimit) bool { return l.amount > 0 }) {
+	if j.perPayment == 0 && j.approvalAbove == 0 && !slices.ContainsFunc(j.periods, func(l agentPeriodLimit) bool { return l.amount > 0 }) &&
+		len(r.PayeeDailyLimitsMinor)+len(r.PayeeMonthlyLimitsMinor) == 0 {
 		return j, nil // no amount rule to judge it by, so nothing to value
 	}
 	var err error
@@ -208,14 +223,20 @@ func (s *DualTokenStore) rulesInCurrency(ctx context.Context, tx pgx.Tx, workspa
 		currency                                          string
 		perPayment, hourly, daily, weekly, monthly, asks  int64
 		perRequestULXC, hourlyULXC, dailyULXC, weeklyULXC int64
-		monthlyULXC, asksULXC                             int64
+		monthlyULXC, asksULXC, fx, fxULXC                 int64
+		payeeDaily, payeeMonthly                          map[string]int64
+		payeeDailyULXC, payeeMonthlyULXC                  map[string]int64
+		allowances                                        map[string]PayeeAllowance
 	}{currency: CurrencyUSD}
 	err := tx.QueryRow(ctx, `SELECT currency, COALESCE(max_per_payment_minor, 0), COALESCE(hourly_limit_minor, 0), COALESCE(daily_limit_minor, 0),
 		COALESCE(weekly_limit_minor, 0), COALESCE(monthly_limit_minor, 0), COALESCE(approval_above_minor, 0),
 		COALESCE(max_per_request_ulxc, 0), COALESCE(hourly_limit_ulxc, 0), COALESCE(daily_limit_ulxc, 0), COALESCE(weekly_limit_ulxc, 0),
-		COALESCE(monthly_limit_ulxc, 0), COALESCE(approval_above_ulxc, 0) FROM agent_rules WHERE agent_id = $1 AND workspace_id = $2`,
+		COALESCE(monthly_limit_ulxc, 0), COALESCE(approval_above_ulxc, 0), COALESCE(fx_daily_limit_minor, 0), COALESCE(fx_daily_limit_ulxc, 0),
+		COALESCE(payee_daily_limits_minor, '{}'), COALESCE(payee_monthly_limits_minor, '{}'), COALESCE(payee_daily_limits_ulxc, '{}'),
+		COALESCE(payee_monthly_limits_ulxc, '{}'), COALESCE(payee_allowances, '{}') FROM agent_rules WHERE agent_id = $1 AND workspace_id = $2`,
 		agentID, workspaceID).Scan(&saved.currency, &saved.perPayment, &saved.hourly, &saved.daily, &saved.weekly, &saved.monthly,
-		&saved.asks, &saved.perRequestULXC, &saved.hourlyULXC, &saved.dailyULXC, &saved.weeklyULXC, &saved.monthlyULXC, &saved.asksULXC)
+		&saved.asks, &saved.perRequestULXC, &saved.hourlyULXC, &saved.dailyULXC, &saved.weeklyULXC, &saved.monthlyULXC, &saved.asksULXC,
+		&saved.fx, &saved.fxULXC, &saved.payeeDaily, &saved.payeeMonthly, &saved.payeeDailyULXC, &saved.payeeMonthlyULXC, &saved.allowances)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("economy: set agent rules: %w", err)
 	}
@@ -269,8 +290,75 @@ func (s *DualTokenStore) rulesInCurrency(ctx context.Context, tx pgx.Tx, workspa
 	if r.HourlyLimitMinor, r.HourlyLimitULXC, err = one("hourly limit", r.HourlyLimitMinor, r.HourlyLimitULXC, saved.hourly, saved.hourlyULXC); err != nil {
 		return err
 	}
-	r.WeeklyLimitMinor, r.WeeklyLimitULXC, err = one("weekly limit", r.WeeklyLimitMinor, r.WeeklyLimitULXC, saved.weekly, saved.weeklyULXC)
-	return err
+	if r.WeeklyLimitMinor, r.WeeklyLimitULXC, err = one("weekly limit", r.WeeklyLimitMinor, r.WeeklyLimitULXC, saved.weekly, saved.weeklyULXC); err != nil {
+		return err
+	}
+	// B61.40: the daily conversion maximum, each payee's caps and each "always allow" likewise, a payee at a time.
+	if r.FXDailyLimitMinor, r.FXDailyLimitULXC, err = one("daily conversion maximum", r.FXDailyLimitMinor, r.FXDailyLimitULXC, saved.fx, saved.fxULXC); err != nil {
+		return err
+	}
+	caps := func(name string, minor, ulxc, savedMinor, savedULXC map[string]int64) (map[string]int64, map[string]int64, error) {
+		if legacy {
+			minor = nil
+		}
+		if minor == nil && ulxc == nil { // kept as saved
+			if !sameCurrency && slices.ContainsFunc(slices.Collect(maps.Values(savedMinor)), func(v int64) bool { return v > 0 }) {
+				return nil, nil, fmt.Errorf("%w: they are in %s; a change to %s names the %s in it too", ErrRulesCurrency, saved.currency, r.Currency, name)
+			}
+			return nil, nil, nil
+		}
+		outMinor, outULXC := map[string]int64{}, map[string]int64{}
+		for id := range mergedKeys(minor, ulxc) {
+			var m, u *int64
+			if minor != nil {
+				m = new(int64)
+				*m = minor[id]
+			}
+			if ulxc != nil {
+				u = new(int64)
+				*u = ulxc[id]
+			}
+			gotMinor, gotULXC, err := one(name+" for "+id, m, u, savedMinor[id], savedULXC[id])
+			if err != nil {
+				return nil, nil, err
+			}
+			// a cap saved in µLXC alone on rules in pounds or euros (payeeLimit) is kept as it is
+			if *gotMinor > 0 {
+				outMinor[id] = *gotMinor
+			}
+			if *gotULXC > 0 {
+				outULXC[id] = *gotULXC
+			}
+		}
+		return outMinor, outULXC, nil
+	}
+	if r.PayeeDailyLimitsMinor, r.PayeeDailyLimitsULXC, err = caps("daily limit", r.PayeeDailyLimitsMinor, r.PayeeDailyLimitsULXC,
+		saved.payeeDaily, saved.payeeDailyULXC); err != nil {
+		return err
+	}
+	if r.PayeeMonthlyLimitsMinor, r.PayeeMonthlyLimitsULXC, err = caps("monthly limit", r.PayeeMonthlyLimitsMinor, r.PayeeMonthlyLimitsULXC,
+		saved.payeeMonthly, saved.payeeMonthlyULXC); err != nil {
+		return err
+	}
+	if r.PayeeAllowances == nil {
+		if !sameCurrency && slices.ContainsFunc(slices.Collect(maps.Values(saved.allowances)), func(a PayeeAllowance) bool { return a.Minor > 0 }) {
+			return fmt.Errorf("%w: they are in %s; a change to %s names what it always allows in it too", ErrRulesCurrency, saved.currency, r.Currency)
+		}
+		return nil
+	}
+	allowances := map[string]PayeeAllowance{}
+	for id, a := range r.PayeeAllowances {
+		minor, ulxc := a.Minor, a.ULXC
+		gotMinor, gotULXC, err := one("amount always allowed to "+id, &minor, &ulxc, saved.allowances[id].Minor, saved.allowances[id].ULXC)
+		if err != nil {
+			return err
+		}
+		if *gotMinor > 0 || *gotULXC > 0 {
+			allowances[id] = PayeeAllowance{ULXC: *gotULXC, Minor: *gotMinor, Per: a.Per}
+		}
+	}
+	r.PayeeAllowances = allowances
+	return nil
 }
 
 // minorInLXC is minor units of currency in µLXC, for the parked gateway: dollars at the peg, exact; pounds and euros
