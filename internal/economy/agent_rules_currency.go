@@ -374,3 +374,24 @@ func (s *DualTokenStore) minorInLXC(ctx context.Context, workspaceID string, min
 	v, err := ratInt64(new(big.Rat).SetInt(new(big.Int).Mul(big.NewInt(usdMicro), big.NewInt(ULXCPerUSDMicro))), false)
 	return max(v, 1), err
 }
+
+// asksAboveOrNil is the amount the sheet's rules ask above, nil when they ask above none.
+func (r rulesSheet) asksAboveOrNil() *int64 {
+	if r.asksAbove <= 0 {
+		return nil
+	}
+	return &r.asksAbove
+}
+
+// sheetFor is what an approval's sheet says of r in its currency for a movement of amount µLXC, judged in µLXC, with
+// spentULXC spent this month (B61.42): valued in the rules' currency, rounded up, so it never leaves more than there is.
+func (s *DualTokenStore) sheetFor(ctx context.Context, workspaceID string, r AgentRules, spentULXC, amount int64) (rulesSheet, error) {
+	sheet := rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor}
+	if r.MonthlyLimitMinor <= 0 {
+		return sheet, nil
+	}
+	used, err := s.ulxcIn(ctx, workspaceID, spentULXC+amount, r.currency(), true)
+	left := r.MonthlyLimitMinor - used
+	sheet.monthLeft = &left
+	return sheet, err
+}
