@@ -38,6 +38,14 @@ func PersonKey(identity string) string {
 	return "p" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))[:26]
 }
 
+// FirstAccountID is the id of the person's first account, the workspace POST /v1/provision derives from their
+// identity.
+func FirstAccountID(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+	return "u" + strings.ToLower(enc)[:26]
+}
+
 // NewAccountID is a fresh workspace id for an account opened after a person's first, in the shape of the derived ones.
 func NewAccountID(random [16]byte) string {
 	return "u" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random[:]))[:26]

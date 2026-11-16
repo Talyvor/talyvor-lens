@@ -168,9 +168,9 @@ func realWith(t *testing.T, before string, extra fstest.MapFS) fstest.MapFS {
 	return out
 }
 
-// probe reads workspaces.plan, which 0398 adds, so it fails unless it runs after 0398. Its version is the last minute
-// the form can name, so it sorts after every real migration, timestamped ones included (B61.81 added the first).
-const probeVersion = "9912312359a"
+// probe reads workspaces.plan, which 0398 adds, so it fails unless it runs after 0398. Its minute is the last there
+// is, so it sorts after every real timestamped migration too (B61.32 added the first).
+const probeVersion = "9912312359z"
 
 var probe = fstest.MapFS{probeVersion + "_b6168_probe.sql": {Data: []byte(
 	`CREATE TABLE dbmigrate_b6168_probe AS SELECT plan FROM workspaces`)}}
