@@ -147,13 +147,17 @@ func ownMoney(req AgentRequest) (partners.Money, bool) {
 }
 
 // judgedLimits are the amount rules as one movement is judged by them: the movement and the limits in one unit, and
-// what has been spent since a time in it.
+// what has been spent since a time in it. Rules in pounds or euros record what a movement from a currency account was
+// worth in their currency as they let it through (B61.41): recordedIn is that currency ("" for none) and worth the
+// amount recorded (0 when it was not valued).
 type judgedLimits struct {
 	amount, perPayment, approvalAbove int64
 	periods                           []agentPeriodLimit
 	words                             func(int64) string
-	spentIn                           func(ulxc int64) (int64, error)
+	spentIn                           func(agentSpend) (int64, error)
 	inCurrency                        bool // the movement is money from a currency account, amount in the rules' currency
+	recordedIn                        string
+	worth                             int64
 }
 
 // payeeLimit is how j judges a payee's cap or "always allow" (B61.40), held as minor in the rules' currency and ulxc in
@@ -177,17 +181,30 @@ func (s *DualTokenStore) judgedAmount(ctx context.Context, workspaceID string, r
 	own, ok := ownMoney(req)
 	if !ok {
 		return judgedLimits{amount: amount, perPayment: r.MaxPerRequestULXC, approvalAbove: r.ApprovalAboveULXC,
-			periods: r.periodLimitsULXC(now, loc), words: LXCMoney, spentIn: func(ulxc int64) (int64, error) { return ulxc, nil }}, nil
+			periods: r.periodLimitsULXC(now, loc), words: LXCMoney, spentIn: func(so agentSpend) (int64, error) { return so.ulxc, nil }}, nil
 	}
 	j := judgedLimits{perPayment: r.MaxPerPaymentMinor, approvalAbove: r.ApprovalAboveMinor, periods: r.periodLimits(now, loc),
-		words: r.rulesAmount, spentIn: func(ulxc int64) (int64, error) { return s.ulxcIn(ctx, workspaceID, ulxc, r.currency(), true) },
-		inCurrency: true}
+		words: r.rulesAmount, spentIn: func(so agentSpend) (int64, error) {
+			rest, err := s.ulxcIn(ctx, workspaceID, so.restULXC, r.currency(), true)
+			return so.recordedMinor + rest, err
+		}, inCurrency: true}
+	// B61.41: dollar rules count the µLXC spent at the peg, which no rate moves; pounds and euros count what each movement
+	// was worth in them when they let it through.
+	if !dollarLike(r.currency()) {
+		j.recordedIn = r.currency()
+		if own.Currency == r.currency() {
+			j.worth = own.Minor
+		}
+	}
 	if j.perPayment == 0 && j.approvalAbove == 0 && !slices.ContainsFunc(j.periods, func(l agentPeriodLimit) bool { return l.amount > 0 }) &&
 		len(r.PayeeDailyLimitsMinor)+len(r.PayeeMonthlyLimitsMinor) == 0 {
 		return j, nil // no amount rule to judge it by, so nothing to value
 	}
 	var err error
 	j.amount, err = s.convertMinor(ctx, workspaceID, own.Minor, own.Currency, r.currency(), true)
+	if j.recordedIn != "" {
+		j.worth = j.amount
+	}
 	return j, err
 }
 
