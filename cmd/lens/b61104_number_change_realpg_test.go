@@ -28,7 +28,9 @@ func (a b61104Accounts) PersonAccounts(context.Context, string, string) ([]works
 
 type b61104Teller struct{ told [][]string }
 
-func (t *b61104Teller) TellNumberChanged(_ context.Context, accounts []string) { t.told = append(t.told, accounts) }
+func (t *b61104Teller) TellNumberChanged(_ context.Context, accounts []string) {
+	t.told = append(t.told, accounts)
+}
 
 // B61.104 — a person's own number change, mounted as main.go mounts it beside the phone door: the new number's code
 // and the passcode move them onto it, the door then signs them in by the new number and not the old, and their
