@@ -29,6 +29,7 @@ import (
 //	POST /v1/workspaces/{wsID}/verification/company    {name, country, company_number, directors, people_with_significant_control}
 //	                                                                                           L3: company checked
 //
+// A country Talyvor does not serve, the check's or its home address's, is 400 country_not_served (B61.53).
 // Each check needs the level below it (409 otherwise) and answers 201 with the check — passed, failed or pending —
 // and the record. A check the person completes themselves (Persona's) is pending with its link, where they do; the
 // GET carries a fresh link while it waits. The level each capability needs for live money is level_needed on GET /v1/wallets/capabilities.
@@ -67,6 +68,9 @@ func mountVerificationRoutes(r chi.Router, store verificationStore, verifiers pa
 			ws := chi.URLParam(req, "wsID")
 			c, err := store.StartVerification(req.Context(), verifiers, ws, who, in)
 			switch {
+			case errors.Is(err, economy.ErrCountryNotServed):
+				writeCountryNotServed(w)
+				return
 			case errors.Is(err, economy.ErrVerificationInvalid):
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
