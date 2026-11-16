@@ -73,7 +73,7 @@ func TestPhoneDoorRoutes(t *testing.T) {
 	reg := partners.NewRegistry(nil)
 	clock := time.Now()
 	store := &phonesignin.Store{DB: phoneRoutesDB(t), Sender: reg.TextMessages, Key: []byte(secret), PerAddressHour: 20,
-		Now: func() time.Time { return clock }}
+		PasscodeSecret: []byte("passcode-secret-for-tests-0123456789"), Now: func() time.Time { return clock }}
 	r := chi.NewRouter()
 	mountPhoneSignInRoutes(r, secret, store)
 	call := func(path string, body any, auth string) (int, map[string]any) {
