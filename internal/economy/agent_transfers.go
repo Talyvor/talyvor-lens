@@ -288,6 +288,12 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 	if _, err := spendForCapability(ctx, tx, t.FromWorkspaceID, capability, t.AmountULXC); err != nil {
 		return t, err
 	}
+	// B61.52: and no transfer, between one owner's own agents included, leaves an account that has not confirmed who it is.
+	if c, ok := CapabilityByKey(capability); ok {
+		if err := refuseUnconfirmedAnyClass(ctx, tx, t.FromWorkspaceID, c); err != nil {
+			return t, err
+		}
+	}
 	if t.ToWorkspaceID != t.FromWorkspaceID {
 		// B30.8: credits leave or enter a frozen workspace for no other one, whatever the class — the same owner's
 		// included, or a freeze would be stepped round through a second workspace.

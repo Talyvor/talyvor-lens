@@ -43,6 +43,7 @@ type paymentRequestWorld struct {
 func newPaymentRequestWorld(t *testing.T, ws string, topUpMinor int64, payees ...string) paymentRequestWorld {
 	t.Helper()
 	pool := agentRoutesDB(t)
+	confirmedAccounts(t, pool, ws) // B61.52
 	ctx := context.Background()
 	const rpID, origin = "app.talyvor.com", "https://app.talyvor.com"
 	registry := partners.NewRegistry(nil)

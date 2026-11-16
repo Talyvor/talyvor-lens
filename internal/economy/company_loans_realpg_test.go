@@ -23,6 +23,7 @@ func TestCompanyLoans_LendRepayLateDefaultAndWhoMayBorrow(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, earn_verified, company) VALUES ($1, $1, $1, true, $2)`, ws, company); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 	}
 	agent := func(ws, handle, funding string, credits int64) Agent {
 		t.Helper()
@@ -138,6 +139,7 @@ func TestCompanyLoans_OneRunTakesEveryDueLoanAndCountsTheMiss(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, earn_verified, company) VALUES ($1, $1, $1, true, true)`, ws); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 	}
 	agent := func(ws, handle string, credits int64) Agent {
 		t.Helper()

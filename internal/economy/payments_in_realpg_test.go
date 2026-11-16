@@ -21,6 +21,7 @@ func TestPaymentsIn_MatchedMoneyPostsToTheAgentAndUnmatchedMoneyIsReturnedFromSu
 	s := screenedStore(pool)
 	s.SetAccountPartners(partners.NewRegistry(nil))
 	const ws = "ws-b3015-payments-in"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	agent, err := s.CreateAgent(ctx, ws, "Collector", "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +196,7 @@ func TestPaymentsIn_AReturnThePartnerPaidIsNeverAlsoAssigned(t *testing.T) {
 	reg := partners.NewRegistry(nil)
 	s.SetAccountPartners(reg)
 	const ws = "ws-b3015-return-paid"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	company, err := s.OpenCurrencyAccount(ctx, ws, "", CurrencyGBP, FundingTest)
 	if err != nil {
 		t.Fatal(err)

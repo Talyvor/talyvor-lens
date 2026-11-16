@@ -63,6 +63,7 @@ func TestMoneyLedger_AnUnbalancedEntryIsRefusedAtCommit(t *testing.T) {
 	ctx := context.Background()
 	s := screenedStore(pool)
 	const ws = "ws-b302-unbalanced"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	company, partner := openMoney(t, s, ws, CurrencyGBP, MoneyCompany), openMoney(t, s, ws, CurrencyGBP, MoneyPartner)
 
 	refusedAtCommit := func(name string, postings ...[3]any) {
@@ -113,6 +114,7 @@ func TestMoneyLedger_APostingCannotBeUpdatedOrDeleted(t *testing.T) {
 	ctx := context.Background()
 	s := screenedStore(pool)
 	const ws = "ws-b302-append-only"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	company, partner := openMoney(t, s, ws, CurrencyEUR, MoneyCompany), openMoney(t, s, ws, CurrencyEUR, MoneyPartner)
 	e, err := s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityCurrencyAccounts, Counterparty: "Acme Ltd", Kind: "payment_in",
 		IdempotencyKey: "in-1", Funding: FundingTest, Postings: []MoneyPosting{
@@ -309,6 +311,7 @@ func TestMoneyLedger_ARetryMovesMoneyOnce(t *testing.T) {
 	ctx := context.Background()
 	s := screenedStore(pool)
 	const ws = "ws-b302-retry"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	company, partner := openMoney(t, s, ws, CurrencyUSD, MoneyCompany), openMoney(t, s, ws, CurrencyUSD, MoneyPartner)
 	move := func(key string, cents int64, account string) (MoneyEntry, error) {
 		return s.PostMoney(ctx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityCurrencyAccounts, Counterparty: "Acme Ltd", Kind: "payment_in",

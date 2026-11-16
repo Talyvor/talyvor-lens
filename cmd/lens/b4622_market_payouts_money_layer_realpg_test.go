@@ -22,6 +22,7 @@ func TestB4622_TheWeeklyRunPaysSellersAndRoyaltiesOnTheMoneyLayerOnce(t *testing
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const marketplace, seller, creator, pending = "ws-b4622-marketplace", "ws-b4622-seller", "ws-b4622-creator", "ws-b4622-pending"
+	confirmedAccounts(t, pool, marketplace, seller, creator, pending) // B61.52
 	reg := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, reg)
 	bank := economy.NewDualTokenStore(nil, pool, nil)
