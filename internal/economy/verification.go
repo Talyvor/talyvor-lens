@@ -194,6 +194,9 @@ func checkVerificationRequest(in *VerificationRequest) error {
 		return bad("the country is an ISO 3166-1 alpha-2 code, like GB, not %q", in.Country)
 	}
 	in.Country = countries[0]
+	if err := CheckServedCountry(in.Country); err != nil {
+		return fmt.Errorf("%w: %w", ErrVerificationInvalid, err)
+	}
 	if in.Name == "" {
 		return bad("the check needs the full name of the %s", subjects[in.Level])
 	}
@@ -255,6 +258,9 @@ func checkHomeAddress(a *HomeAddress) error {
 		return bad(fmt.Sprintf("its country as an ISO 3166-1 alpha-2 code, like GB, not %q", a.Country))
 	}
 	a.Country = countries[0]
+	if err := CheckServedCountry(a.Country); err != nil {
+		return fmt.Errorf("%w: %w", ErrVerificationInvalid, err)
+	}
 	return nil
 }
 

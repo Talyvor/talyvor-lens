@@ -3125,6 +3125,8 @@ func run() error {
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
 		// B61.57 — both ladders, each plan's price in every currency and what it allows (plan_gates_handler.go).
 		pub.Get("/v1/public/plans", publicPlansHandler)
+		// B61.53 — the countries Talyvor serves, for sign-up and the identity check (served_countries_handler.go).
+		pub.Get("/v1/public/countries", publicCountriesHandler)
 
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
