@@ -2917,6 +2917,10 @@ func run() error {
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
 	// B61.22 — how many people and what the phone door did in a day, never whose.
 	r.Get("/v1/admin/people/counts", requireAdminOrOperatorRead(authManager, newPeopleCountsHandler(phoneDoor)))
+	// B61.30 — the way back in for a person with neither their number nor a key: the operator moves the number, with
+	// the step-up code and an operator_audit row, after the person's identity check passes again. number_move_handler.go.
+	r.Post("/v1/admin/people/move-number", requireAdminStepUp(authManager, stepUp, operatorAudit, "person.move_number",
+		requireAdmin(authManager, newNumberMoveHandler(phoneDoor, wsManager, dualToken, partnerRegistry.Verification))))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
 	// (non-money read of ledger metadata + keel_findings; keeps the U8/U9 ExactlySix replica-reader invariant
 	// unchanged).
@@ -3227,6 +3231,8 @@ func run() error {
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
+	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
 	// makes the account's approval key, over a challenge the account issues.
 	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken)
