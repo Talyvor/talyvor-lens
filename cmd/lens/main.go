@@ -3225,7 +3225,7 @@ func run() error {
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
 	// makes the account's approval key, over a challenge the account issues.
-	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken)
+	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken, wsManager)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.

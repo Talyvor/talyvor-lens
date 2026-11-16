@@ -25,7 +25,8 @@ type keySignIn interface {
 	RegisterChallenge(ctx context.Context, personID, challenge string) (phonesignin.KeyChallenge, error)
 	AddKey(ctx context.Context, personID string, k phonesignin.NewKey, proof phonesignin.KeyProof, address string) (phonesignin.PersonKey, error)
 	ListKeys(ctx context.Context, personID string) ([]phonesignin.PersonKey, error)
-	RemoveKey(ctx context.Context, personID, keyID, address string) error
+	RemoveKey(ctx context.Context, personID, keyID string, proof phonesignin.KeyProof, address string) error
+	PersonIdentity(ctx context.Context, personID string) (string, error)
 	PhoneCheckDue(p phonesignin.Person) bool
 }
 
@@ -34,6 +35,11 @@ type keySignIn interface {
 type approvalKeyChallenges interface {
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
 	DeviceRegistrationChallenge(ctx context.Context, workspaceID string) (string, error)
+}
+
+// personAccounts says whether an account is one of a person's (workspace.Manager, B61.7).
+type personAccounts interface {
+	PersonOwnsAccount(ctx context.Context, personKey, firstID, accountID string) (bool, error)
 }
 
 type keyChallengeRequest struct {
@@ -89,12 +95,15 @@ type keyRegisterRequest struct {
 type keyRemoveRequest struct {
 	PersonID string `json:"person_id"`
 	KeyID    string `json:"key_id"`
-	Address  string `json:"caller_address"`
+	// KeyTicket and Passcode prove it is the person, as they do for a new key.
+	KeyTicket string `json:"key_ticket"`
+	Passcode  string `json:"passcode"`
+	Address   string `json:"caller_address"`
 }
 
 // mountKeySignInRoutes registers the key routes on the bare router, as mountPhoneSignInRoutes does. Unset secret ⇒
 // not registered.
-func mountKeySignInRoutes(r chi.Router, secret string, s keySignIn, approval approvalKeyChallenges) {
+func mountKeySignInRoutes(r chi.Router, secret string, s keySignIn, approval approvalKeyChallenges, accounts personAccounts) {
 	if secret == "" {
 		return
 	}
@@ -277,7 +286,8 @@ func keyRemove(w http.ResponseWriter, req *http.Request, s keySignIn) {
 	if !decodeKeyBody(w, req, &in) || !needPerson(w, &in.PersonID) {
 		return
 	}
-	if err := s.RemoveKey(req.Context(), in.PersonID, strings.TrimSpace(in.KeyID), strings.TrimSpace(in.Address)); err != nil {
+	proof := phonesignin.KeyProof{Ticket: in.KeyTicket, Passcode: in.Passcode}
+	if err := s.RemoveKey(req.Context(), in.PersonID, strings.TrimSpace(in.KeyID), proof, strings.TrimSpace(in.Address)); err != nil {
 		if !writeKeyRefusal(w, err) {
 			writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be removed; try again")
 		}

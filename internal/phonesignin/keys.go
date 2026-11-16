@@ -31,6 +31,7 @@ import (
 const (
 	KeyChallengeLife = 5 * time.Minute // a challenge is good for this long, once
 	KeyTicketLife    = 5 * time.Minute // a ticket is good for this long, once
+	KeyRowsKept      = 24 * time.Hour  // a challenge or ticket is deleted this long after its time
 )
 
 var (
@@ -466,6 +467,16 @@ func scanPersonKey(row pgx.Row) (PersonKey, error) {
 	return k, err
 }
 
+// PersonIdentity is the identity personID holds, the one POST /v1/provision is given for them.
+func (s *Store) PersonIdentity(ctx context.Context, personID string) (string, error) {
+	var identity string
+	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1`, personID).Scan(&identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNoPerson
+	}
+	return identity, err
+}
+
 // ListKeys is personID's sign-in keys, oldest first; removed ones are gone from it.
 func (s *Store) ListKeys(ctx context.Context, personID string) ([]PersonKey, error) {
 	rows, err := s.DB.Query(ctx, `SELECT `+personKeyColumns+` FROM person_keys WHERE person_id = $1 AND removed_at IS NULL ORDER BY created_at, id`, personID)
@@ -481,7 +492,7 @@ func (s *Store) ListKeys(ctx context.Context, personID string) ([]PersonKey, err
 
 // RemoveKey removes personID's key keyID: it signs nobody in from now on. The person's last key is never removed
 // while they have no passcode, because it is their last way in.
-func (s *Store) RemoveKey(ctx context.Context, personID, keyID, address string) error {
+func (s *Store) RemoveKey(ctx context.Context, personID, keyID string, proof KeyProof, address string) error {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return err

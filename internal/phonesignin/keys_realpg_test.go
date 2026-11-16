@@ -275,7 +275,11 @@ func TestB6124KeySignInRefusals(t *testing.T) {
 		if _, err := s.AddKey(ctx, "per_a", NewKey{Passkey: second.register(t, rc.Challenge)}, KeyProof{Ticket: in.Ticket}, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.RemoveKey(ctx, "per_a", in.KeyID, ""); err != nil {
+		secondIn, err := signIn(t, s, second, "per_a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RemoveKey(ctx, "per_a", in.KeyID, KeyProof{Ticket: secondIn.Ticket}, ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := signIn(t, s, a, ""); !errors.Is(err, ErrNoKey) {
@@ -302,7 +306,7 @@ func TestB6124LastWayInStays(t *testing.T) {
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("keys = %v, %v", keys, err)
 	}
-	if err := s.RemoveKey(ctx, "per_a", keys[0].ID, ""); !errors.Is(err, ErrLastWayIn) {
+	if err := s.RemoveKey(ctx, "per_a", keys[0].ID, KeyProof{}, ""); !errors.Is(err, ErrLastWayIn) {
 		t.Fatalf("removing the last key with no passcode = %v, want ErrLastWayIn", err)
 	}
 	if _, err := signIn(t, s, a, ""); err != nil {
@@ -310,7 +314,7 @@ func TestB6124LastWayInStays(t *testing.T) {
 	}
 	// With a passcode set, the passcode is a way in, so the last key may go.
 	s.Passcodes = fakePasscodes{has: true, right: "284719"}
-	if err := s.RemoveKey(ctx, "per_a", keys[0].ID, ""); err != nil {
+	if err := s.RemoveKey(ctx, "per_a", keys[0].ID, KeyProof{Passcode: "284719"}, ""); err != nil {
 		t.Fatalf("removing the last key with a passcode set: %v", err)
 	}
 	if keys, _ := s.ListKeys(ctx, "per_a"); len(keys) != 0 {
