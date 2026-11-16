@@ -46,27 +46,29 @@ func (s *DualTokenStore) RequestPaymentApproval(ctx context.Context, workspaceID
 		return AgentApproval{}, err
 	}
 	var monthLeft *int64 // B57.11: the monthly limit less the month's spend and this payment
-	var spent int64
+	// B61.42: and what the sheet says in the rules' currency
+	sheet := rulesSheet{currency: rules.currency(), asksAbove: rules.ApprovalAboveMinor}
 	if rules.MonthlyLimitULXC > 0 || rules.MonthlyLimitMinor > 0 {
 		loc, err := rules.location()
 		if err != nil {
 			return AgentApproval{}, ruleRefusal("the agent's timezone %q cannot be read", rules.Timezone)
 		}
 		now := time.Now().In(loc)
-		if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) (err error) {
-			spent, err = agentSpentSince(ctx, tx, workspaceID, agentID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc))
+		month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+		if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			spent, err := agentSpentSince(ctx, tx, workspaceID, agentID, month)
+			if err != nil {
+				return fmt.Errorf("economy: agent spend so far: %w", err)
+			}
+			if rules.MonthlyLimitULXC > 0 {
+				left := rules.MonthlyLimitULXC - spent - amount
+				monthLeft = &left
+			}
+			sheet, err = s.sheetFor(ctx, tx, workspaceID, agentID, rules, month, amount)
 			return err
 		}); err != nil {
-			return AgentApproval{}, fmt.Errorf("economy: agent spend so far: %w", err)
+			return AgentApproval{}, err
 		}
-		if rules.MonthlyLimitULXC > 0 {
-			left := rules.MonthlyLimitULXC - spent - amount
-			monthLeft = &left
-		}
-	}
-	sheet, err := s.sheetFor(ctx, workspaceID, rules, spent, amount) // B61.42: and in the rules' currency
-	if err != nil {
-		return AgentApproval{}, err
 	}
 	var filed string
 	var inserted bool

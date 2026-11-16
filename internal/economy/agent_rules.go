@@ -1051,7 +1051,7 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		if limit.name == "monthly" && r.MonthlyLimitMinor > 0 { // and in the rules' currency (B61.42)
 			left := limit.amount - spent - j.amount
 			if !j.inCurrency { // an LXC movement, judged in µLXC: valued in the rules' currency
-				sheet, err := s.sheetFor(ctx, workspaceID, r, spentULXC, amount)
+				sheet, err := s.sheetFor(ctx, tx, workspaceID, agentID, r, limit.since, amount)
 				if err != nil {
 					return err
 				}

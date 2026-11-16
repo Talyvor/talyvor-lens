@@ -77,8 +77,8 @@ func TestB6142_TheCredentialStatesTheLimitsInTheirCurrency(t *testing.T) {
 }
 
 // B61.42 — the euro agent's limit alert counts its €80.00 of a €100.00 daily limit in euros, with the euro moved by 5%
-// since the rules were saved, and says so in euros, not LXC. What it spent is valued as the rules judge it (B61.12): at
-// the provider's stated rate, rounded up, so within a cent above. On main it is 924 LXC of 1,100 LXC, which is 84%.
+// since the rules were saved, and says so in euros, not LXC: what the payment was worth in euros as the rules let it
+// through (B61.41). On main it is 924 LXC of 1,100 LXC, which is 84%.
 func TestB6142_TheLimitAlertSaysTheRulesCurrency(t *testing.T) {
 	b := b6142Payer(t, "ws-b6142-alert", `{"currency":"EUR","daily_limit_minor":10000}`)
 	b.pay(t, "eighty", 8_000)
@@ -92,7 +92,7 @@ func TestB6142_TheLimitAlertSaysTheRulesCurrency(t *testing.T) {
 			got = append(got, a)
 		}
 	}
-	if len(got) != 2 || got[1].Percent != 80 || got[1].Currency != "EUR" || got[1].SpentMinor < 8_000 || got[1].SpentMinor > 8_001 || got[1].LimitMinor != 10_000 {
+	if len(got) != 2 || got[1].Percent != 80 || got[1].Currency != "EUR" || got[1].SpentMinor != 8_000 || got[1].LimitMinor != 10_000 {
 		t.Fatalf("the agent's limit alerts are %+v, want 50%% and 80%% of €100.00 with €80.00 spent", got)
 	}
 }
