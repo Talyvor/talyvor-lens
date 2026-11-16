@@ -2036,6 +2036,10 @@ func run() error {
 		Devices: &devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}}
 	// B61.23 — the key rules ask the door's own passcode.
 	phoneDoor.Passcodes = phoneDoor.PasscodeRule()
+	// B61.113 — the door refuses to start while passcodes cannot be set; one line says which variable is missing.
+	if cfg.ProvisionSecret != "" {
+		logPhoneSignInReadiness(logger, phoneDoor)
+	}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
@@ -2735,6 +2739,10 @@ func run() error {
 	}).AddSection("requests", func(ctx context.Context) any {
 		return requestTracker.Snapshot(ctx)
 	}).ForOperator(func(r *http.Request) bool { return isAdmin(authManager, r) })
+	// B61.113 — whether the phone door can set passcodes, for everyone, while the door is mounted.
+	if cfg.ProvisionSecret != "" {
+		healthHandler.AddPublicSection("phone_signin", phoneSignInHealth(phoneDoor))
+	}
 	r.Get("/healthz", healthHandler.ServeHTTP)
 
 	// HA endpoints (Upgrade 7). The existing /healthz above is intentionally

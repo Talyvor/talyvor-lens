@@ -44,7 +44,13 @@ const (
 	passcodeThreads = 1
 	passcodeKeyLen  = 32
 	passcodeParams  = "argon2id;v=19;t=2;m=19456;p=1;pepper=hmac-sha256"
+	// MinPasscodeSecret is the shortest LENS_PASSCODE_SECRET passcodes are set under (openssl rand -hex 32).
+	MinPasscodeSecret = 32
 )
+
+// PasscodesReady says whether passcodes can be set and checked: LENS_PASSCODE_SECRET is there and long enough
+// (B61.113). Without it the door sends no code, so nobody confirms a number only to be refused the passcode.
+func (s *Store) PasscodesReady() bool { return len(s.PasscodeSecret) >= MinPasscodeSecret }
 
 var (
 	// ErrPasscodeUnavailable: LENS_PASSCODE_SECRET is not set, so no passcode is set or checked.
