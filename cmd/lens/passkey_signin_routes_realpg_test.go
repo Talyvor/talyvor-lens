@@ -20,6 +20,7 @@ import (
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/phonesignin"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // B61.24 — the key routes, mounted as main.go mounts them, on a migrated schema: sign-up's one key ceremony keeps
@@ -50,7 +51,7 @@ func TestKeySignInRoutes(t *testing.T) {
 		RP: &passkey.RelyingParty{ID: rpID, Origins: []string{origin}}}
 	approval := &sharedApprovalChallenge{}
 	r := chi.NewRouter()
-	mountKeySignInRoutes(r, secret, store, approval)
+	mountKeySignInRoutes(r, secret, store, approval, workspace.New(pool))
 	call := func(path string, body any, auth string) (int, map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(body)
@@ -71,9 +72,13 @@ func TestKeySignInRoutes(t *testing.T) {
 		VALUES ('per_r', '+447700900401', 'person:per_r', true, now())`); err != nil {
 		t.Fatal(err)
 	}
+	account := deriveWorkspaceID("person:per_r")
+	if _, err := pool.Exec(context.Background(), `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, account); err != nil {
+		t.Fatal(err)
+	}
 
 	// Sign-up's key step: one challenge, shared with the account's approval key.
-	code, rc := call("/v1/auth/passkey/register/challenge", map[string]string{"person_id": "per_r", "workspace_id": "ws_r"}, secret)
+	code, rc := call("/v1/auth/passkey/register/challenge", map[string]string{"person_id": "per_r", "workspace_id": account}, secret)
 	if code != http.StatusOK || len(approval.issued) != 1 || rc["challenge"] != approval.issued[0] || rc["user_handle"] == "" {
 		t.Fatalf("register challenge: %d %v (approval issued %v)", code, rc, approval.issued)
 	}
