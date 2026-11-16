@@ -279,7 +279,7 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
-	if err := judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
+	if err := s.judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
@@ -346,8 +346,9 @@ func (c Conversion) usable() error {
 
 // judgeConversion refuses c, worth value µLXC, when its agent's rules do not allow it (B30.29): a currency it may not
 // convert between, or what it converted since the start of its day, in its time zone, and c together over its daily
-// conversion maximum.
-func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, now time.Time) error {
+// conversion maximum — in the rules' currency (B61.40): what it sold in that currency on its own amount, and in another
+// at the conversion provider's rate, rounded up, so rounding never lets a conversion through.
+func (s *DualTokenStore) judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, now time.Time) error {
 	r, err := getAgentRules(ctx, tx, c.WorkspaceID, c.AgentID)
 	if err != nil {
 		return err
@@ -358,7 +359,7 @@ func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, 
 		}
 	}
 	limit := limitOf(r.FXDailyLimitULXC)
-	if limit == 0 {
+	if limit == 0 && limitOf(r.FXDailyLimitMinor) == 0 {
 		return nil
 	}
 	loc, err := r.location()
@@ -366,9 +367,34 @@ func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, 
 		return ruleRefusal("the agent's timezone %q cannot be read", r.Timezone)
 	}
 	t := now.In(loc)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	if limit := limitOf(r.FXDailyLimitMinor); limit > 0 {
+		rows, err := tx.Query(ctx, `SELECT COALESCE(sum(sell_minor), 0)::bigint, sell_currency FROM money_conversions WHERE agent_id = $1
+			AND status = 'converted' AND converted_at >= $2 GROUP BY sell_currency`, c.AgentID, day)
+		if err != nil {
+			return fmt.Errorf("economy: agent conversions: %w", err)
+		}
+		sold, err := pgx.CollectRows(rows, pgx.RowToStructByPos[partners.Money])
+		if err != nil {
+			return fmt.Errorf("economy: agent conversions: %w", err)
+		}
+		var done int64
+		for _, m := range append(sold, partners.Money{Currency: c.SellCurrency, Minor: c.SellMinor}) {
+			v, err := s.convertMinor(ctx, c.WorkspaceID, m.Minor, m.Currency, r.currency(), true)
+			if err != nil {
+				return err
+			}
+			done += v
+		}
+		if done > limit {
+			return ruleRefusal("converting %s would take today's conversions to %s, over this agent's daily conversion maximum of %s",
+				Money(c.SellMinor, c.SellCurrency), r.rulesAmount(done), r.rulesAmount(limit))
+		}
+		return nil
+	}
 	var done int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(value_ulxc), 0)::bigint FROM money_conversions WHERE agent_id = $1
-		AND status = 'converted' AND converted_at >= $2`, c.AgentID, time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)).Scan(&done); err != nil {
+		AND status = 'converted' AND converted_at >= $2`, c.AgentID, day).Scan(&done); err != nil {
 		return fmt.Errorf("economy: agent conversions: %w", err)
 	}
 	if done+value > limit {

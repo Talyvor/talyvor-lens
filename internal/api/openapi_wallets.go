@@ -91,6 +91,10 @@ func openAPIWalletSchemas() map[string]any {
 					"description": "µLXC it may pay one payee in a day, by the payee's id as the payee lists name it (a company's counts its agents and listings); a payment past it is refused and posts nothing. Absent keeps the stored caps; saved, it replaces them whole"},
 				"payee_monthly_limits_ulxc": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
 					"description": "payee_daily_limits_ulxc over the month, in timezone. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_daily_limits_minor": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
+					"description": "minor units of the rules' currency it may pay one payee in a day, by the payee's id; a payment in that currency is judged on its own amount, one in another at the conversion provider's rate, rounded up. payee_daily_limits_ulxc is what each is worth in LXC. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_monthly_limits_minor": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
+					"description": "payee_daily_limits_minor over the month, in timezone. Absent keeps the stored caps; saved, it replaces them whole"},
 				"payee_allowances": map[string]any{"type": "object", "additionalProperties": map[string]any{"$ref": "#/components/schemas/PayeeAllowance"},
 					"description": "the owner's \"always allow\": by payee id, what the agent may pay that payee in a day or a month without approval; past it, a payment above approval_above_ulxc waits for approval again. Absent keeps the stored allowances; saved, it replaces them whole"},
 				"requests_per_minute":    map[string]any{"type": "integer", "description": "the requests to models it may make in any sixty seconds; one more is refused 429 and holds nothing. Absent keeps the stored cap"},
@@ -99,6 +103,7 @@ func openAPIWalletSchemas() map[string]any {
 				"allowed_providers":      strs,
 				"allowed_listings":       map[string]any{"type": "array", "items": str, "description": "marketplace listings it may use; empty allows any"},
 				"allowed_currencies":     map[string]any{"type": "array", "items": str, "description": "the currencies it may convert between, the one sold and the one bought, of GBP, EUR, USD and USDC; empty allows any. Absent keeps the stored list"},
+				"fx_daily_limit_minor":   map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, in minor units of the rules' currency: what it sells in that currency on its own amount, in another at the conversion provider's rate, rounded up; 0 is no limit. Absent keeps the stored maximum"},
 				"fx_daily_limit_ulxc":    map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, valued as its payments are; 0 is no limit. Absent keeps the stored maximum"},
 				"allowed_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the agents, listings, companies (a company names its agents and listings) and card merchants it may pay; once it names any, a payment to another is refused. Absent keeps the stored list"},
 				"blocked_payees":         map[string]any{"type": "array", "items": str, "description": "the ids of the payees it may not pay; a payment to one is refused and posts nothing. Absent keeps the stored list"},
@@ -108,9 +113,10 @@ func openAPIWalletSchemas() map[string]any {
 				"pause_on_unusual_spend": map[string]any{"type": "boolean"},
 			},
 		},
-		"PayeeAllowance": map[string]any{"type": "object", "required": []string{"amount_ulxc", "per"}, "properties": map[string]any{
-			"amount_ulxc": map[string]any{"type": "integer", "format": "int64", "minimum": 1},
-			"per":         map[string]any{"type": "string", "enum": []string{"day", "month"}},
+		"PayeeAllowance": map[string]any{"type": "object", "required": []string{"per"}, "properties": map[string]any{
+			"amount_minor": map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "minor units of the rules' currency"},
+			"amount_ulxc":  map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "what amount_minor is worth in LXC; sent alone, it is moved to dollars at the peg, and refused on rules in another currency"},
+			"per":          map[string]any{"type": "string", "enum": []string{"day", "month"}},
 		}},
 		"RuleTemplate": map[string]any{
 			"type":        "object",
