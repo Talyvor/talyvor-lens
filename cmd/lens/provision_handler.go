@@ -185,11 +185,19 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// B61.53: an account is opened only in a country Talyvor serves. A sign-in to an account that exists makes
+		// nothing, so the country it names is not checked and the account keeps the one it has.
+		_, existed := p.GetWorkspace(firstID)
+		if in.Mode == provisionModeOpen || !existed {
+			if err := economy.CheckServedCountry(country); err != nil {
+				writeCountryNotServed(w)
+				return
+			}
+		}
 
 		// Open another account (B61.7): a new workspace beside the first, sharing nothing with it but its owner. A person
 		// with no account yet opens their first, the one a call without a mode would have made.
 		wsID := firstID
-		_, existed := p.GetWorkspace(firstID)
 		if in.Mode == provisionModeOpen && existed {
 			id, err := newAccountID()
 			if err != nil {
