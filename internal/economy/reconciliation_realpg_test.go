@@ -16,6 +16,7 @@ func TestReconciliation_ACleanDayHasNoBreaksAndAMissingStatementLineIsOne(t *tes
 	s := screenedStore(pool)
 	p := &partners.TestAccountPartner{}
 	const ws = "ws-b3011-reconcile"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 
 	at, err := p.OpenAccount(ctx, partners.AccountRequest{ID: "acct-gbp", Holder: "Acme Ltd", Currency: CurrencyGBP})
 	if err != nil {

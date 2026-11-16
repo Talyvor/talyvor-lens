@@ -35,6 +35,12 @@ func TestPrepareTransferToContact_OneVerifiedContactOnePayment(t *testing.T) {
 	store.SetPayeeScreener(screener)
 	store.SetScreener(screener)
 	store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
+	// B61.52: the person has confirmed who they are, so their account moves money.
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref)
+		VALUES ($1, 1, 'contact', 'test', 'completed', 'b4514-1'), ($1, 2, 'person', 'test', 'completed', 'b4514-2'),
+		($1, 3, 'company', 'test', 'completed', 'b4514-3')`, ws); err != nil {
+		t.Fatal(err)
+	}
 	company, err := store.OpenCurrencyAccount(ctx, ws, "", "USD", "test")
 	if err != nil {
 		t.Fatal(err)

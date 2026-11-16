@@ -41,6 +41,7 @@ func TestClearanceCountries_ALivePaymentFromAnUnlistedCountryIsRefusedNamingIt(t
 	}
 	verify(fr, "fr")
 	verify(gbOwner, "GB")
+	sandboxConfirmed(t, pool, fr, gbOwner) // B61.52: Businesses, so their company is checked too
 	if v, err := s.Verification(gb, kyc, fr); err != nil || v.LiveCountry != "FR" {
 		t.Fatalf("the French owner's record = %+v, %v; want live country FR", v, err)
 	}

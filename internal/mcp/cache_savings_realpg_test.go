@@ -14,6 +14,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/dbmigrate"
+	"github.com/talyvor/lens/internal/testschema"
 	"github.com/talyvor/lens/migrations"
 )
 
@@ -76,6 +77,11 @@ func savingsTestPool(t *testing.T) *pgxpool.Pool {
 	if _, err := dbmigrate.Run(ctx, mc, migrations.FS); err != nil {
 		_ = mc.Close(ctx)
 		t.Fatalf("migrate %s: %v", name, err)
+	}
+	// B61.52: the accounts these tests move money for have confirmed who they are.
+	if _, err := mc.Exec(ctx, testschema.ConfirmedAccountsSQL); err != nil {
+		_ = mc.Close(ctx)
+		t.Fatal(err)
 	}
 	_ = mc.Close(ctx)
 

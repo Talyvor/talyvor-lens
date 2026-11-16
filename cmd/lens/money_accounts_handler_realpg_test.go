@@ -193,6 +193,7 @@ func TestMoneyAccountRoutes_TheOwnerAddsTestMoneyToTheCompanyAccountOnce(t *test
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b17255-test-money"
+	confirmedAccounts(t, pool, ws) // B61.52
 	store := economy.NewDualTokenStore(nil, pool, nil)
 	store.SetAccountPartners(partners.NewRegistry(nil))
 	store.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))
@@ -252,6 +253,7 @@ func TestMoneyAccountRoutes_AStatementIsTheOwnersAndOnlyItsOwnAgentsKey(t *testi
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b5614-statement-route"
+	confirmedAccounts(t, pool, ws) // B61.52
 	store := economy.NewDualTokenStore(nil, pool, nil)
 	store.SetAccountPartners(partners.NewRegistry(nil))
 	store.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))

@@ -19,6 +19,7 @@ func TestAccountStatement_EveryKindIsALineAndThePeriodReconciles(t *testing.T) {
 	ctx := context.Background()
 	s := screenedStore(pool)
 	const ws, payer = "ws-b5614-statement", "ws-b5614-payer"
+	sandboxConfirmed(t, pool, ws, payer) // B61.52: they move money, so they have confirmed who they are
 	company, partner := openMoney(t, s, ws, CurrencyGBP, MoneyCompany), openMoney(t, s, ws, CurrencyGBP, MoneyPartner)
 	payerCo, payerPartner := openMoney(t, s, payer, CurrencyGBP, MoneyCompany), openMoney(t, s, payer, CurrencyGBP, MoneyPartner)
 

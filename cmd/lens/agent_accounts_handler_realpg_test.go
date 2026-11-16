@@ -25,6 +25,7 @@ import (
 	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/tenant"
+	"github.com/talyvor/lens/internal/testschema"
 	"github.com/talyvor/lens/migrations"
 )
 
@@ -95,6 +96,10 @@ func agentRoutesTemplate(ctx context.Context, url, schema string) error {
 	}
 	if _, err := dbmigrate.Run(ctx, conn, migrations.FS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+	// B61.52: the accounts these tests move money for have confirmed who they are.
+	if _, err := conn.Exec(ctx, testschema.ConfirmedAccountsSQL); err != nil {
+		return fmt.Errorf("confirm the test accounts: %w", err)
 	}
 	return nil
 }

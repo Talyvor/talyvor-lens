@@ -25,6 +25,7 @@ func TestMoneyWebhook_ASignedCreditPostsOnceToTheLedger(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws, secret = "ws-b463-webhook", "whsec_b463"
+	confirmedAccounts(t, pool, ws) // B61.52
 	store := economy.NewDualTokenStore(nil, pool, nil)
 	reg := partners.NewRegistry(nil)
 	store.SetAccountPartners(reg)
