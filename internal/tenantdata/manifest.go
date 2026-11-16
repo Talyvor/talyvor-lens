@@ -405,6 +405,7 @@ var Manifest = map[string]Entry{
 	"lxc_reservations":              {Delete, ""},
 	"output_attributions":           {Delete, ""},
 	"pattern_mine_credits":          {Delete, ""},
+	"number_move_holds":             {Delete, "B61.30: until when the account cannot move money after its person's number was moved"},
 	"person_accounts":               {Delete, "B61.7: which person (a hash of their identity) opened this workspace after their first account"},
 	"person_lookups":                {Delete, "B61.32: when the account looked a person up, for its limit an hour"},
 	"person_payments":               {Retain, "B61.32: audit-guarded (2611160232b, append-only): each payment to a person on Talyvor — both accounts, both sides' shown names, the amount and the note; it explains money_entries; financial-record retention"},
