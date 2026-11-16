@@ -13,6 +13,7 @@ import (
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/phonesignin"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // B61.24 — a passkey signs its person in, for the suite BFF alone on the provision secret, beside the phone door. The
@@ -110,7 +111,7 @@ func mountKeySignInRoutes(r chi.Router, secret string, s keySignIn, approval app
 	r.Post("/v1/auth/passkey/challenge", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyChallenge(w, req, s) }))
 	r.Post("/v1/auth/passkey/finish", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyFinish(w, req, s) }))
 	r.Post("/v1/auth/passkey/register/challenge", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) {
-		keyRegisterChallenge(w, req, s, approval)
+		keyRegisterChallenge(w, req, s, approval, accounts)
 	}))
 	r.Post("/v1/auth/passkey/register", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyRegister(w, req, s) }))
 	r.Post("/v1/auth/passkey/keys", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyList(w, req, s) }))
@@ -193,14 +194,33 @@ func keyFinish(w http.ResponseWriter, req *http.Request, s keySignIn) {
 		ExpiresAt: out.ExpiresAt.UTC().Format(time.RFC3339), PhoneCheckDue: s.PhoneCheckDue(out.Person)})
 }
 
-func keyRegisterChallenge(w http.ResponseWriter, req *http.Request, s keySignIn, approval approvalKeyChallenges) {
+func keyRegisterChallenge(w http.ResponseWriter, req *http.Request, s keySignIn, approval approvalKeyChallenges, accounts personAccounts) {
 	var in keyRegisterChallengeRequest
 	if !decodeKeyBody(w, req, &in) || !needPerson(w, &in.PersonID) {
 		return
 	}
 	var shared string
 	if ws := strings.TrimSpace(in.WorkspaceID); ws != "" && approval != nil {
-		var err error
+		// Lens writes into an account only for a person who holds it (B61.7): nothing is issued otherwise.
+		identity, err := s.PersonIdentity(req.Context(), in.PersonID)
+		if err != nil {
+			if !writeKeyRefusal(w, err) {
+				writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be started; try again")
+			}
+			return
+		}
+		owned := false
+		if accounts != nil {
+			owned, err = accounts.PersonOwnsAccount(req.Context(), workspace.PersonKey(identity), deriveWorkspaceID(identity), ws)
+			if err != nil {
+				writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be started; try again")
+				return
+			}
+		}
+		if !owned {
+			writePhoneRefusal(w, http.StatusForbidden, "not_your_account", "That account is not one of yours.")
+			return
+		}
 		switch in.Kind {
 		case "", "passkey":
 			shared, _, err = approval.PasskeyRegistrationChallenge(req.Context(), ws)

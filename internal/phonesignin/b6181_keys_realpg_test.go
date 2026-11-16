@@ -106,6 +106,10 @@ func TestB6181SameKeyForTwoPeopleAtOnceIsKeptOnce(t *testing.T) {
 	if _, err := hold.Exec(ctx, `LOCK TABLE phone_signin_events IN EXCLUSIVE MODE`); err != nil {
 		t.Fatal(err)
 	}
+	var holdPID int
+	if err := hold.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holdPID); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	errs := map[string]error{}
 	var mu sync.Mutex
@@ -122,10 +126,11 @@ func TestB6181SameKeyForTwoPeopleAtOnceIsKeptOnce(t *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		var waiting int
-		// Waiting on this hold, or on an add that waits on it.
-		if err := hold.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity a WHERE pg_backend_pid() = ANY (pg_blocking_pids(a.pid))
+		// Waiting on this hold, or on an add that waits on it. Asked outside the hold: a transaction sees
+		// pg_stat_activity as it was at its first look.
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity a WHERE $1 = ANY (pg_blocking_pids(a.pid))
 			OR EXISTS (SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid))
-				AND pg_backend_pid() = ANY (pg_blocking_pids(b.pid)))`).Scan(&waiting); err != nil {
+				AND $1 = ANY (pg_blocking_pids(b.pid)))`, holdPID).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= 2 {
