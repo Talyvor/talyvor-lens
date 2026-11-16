@@ -27,10 +27,10 @@ func openAPIWalletTags() []map[string]any {
 var (
 	agentColour = map[string]any{"type": "string", "enum": []string{"cobalt", "orchid", "sky", "mint", "lemon", "rose", "lime"}}
 	agentFace   = map[string]any{"type": "string", "enum": []string{"circle", "squircle", "hexagon", "flower"}}
-	// B61.35: what it does, and the picture it wears, which sets its colour. B61.36 adds pictures.
+	// B61.35: what it does, and the picture it wears, which sets its colour; B61.101 adds the twenty B61.36 drew.
 	agentRole     = map[string]any{"type": "string", "enum": []string{"research", "sales", "bookkeeping", "ads", "travel", "support", "other"}, "description": "what it does; other names it in role_word"}
 	agentRoleWord = map[string]any{"type": "string", "maxLength": 40, "description": "what it does in its owner's own word, with role other"}
-	agentPicture  = map[string]any{"type": "string", "description": "an id from Lens's gallery: cobalt, orchid, sky, mint, lemon, rose or lime today. It sets the colour"}
+	agentPicture  = map[string]any{"type": "string", "description": "an id from Lens's gallery: cobalt, orchid, sky, mint, lemon, rose, lime, shopper, grocer, bills, saver, coder, designer, writer, social, recruiter, legal, analyst, events, chef, coach, home, driver, tutor, musician, photographer or gardener. It sets the colour"}
 )
 
 func openAPIWalletSchemas() map[string]any {

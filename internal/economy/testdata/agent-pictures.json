@@ -1,0 +1,85 @@
+{
+  "from": "~/talyvor-queue/design/agent-pictures/pictures.json (B61.36), its ids and colours",
+  "pictures": [
+    {
+      "id": "shopper",
+      "colour": "lime"
+    },
+    {
+      "id": "grocer",
+      "colour": "mint"
+    },
+    {
+      "id": "bills",
+      "colour": "sky"
+    },
+    {
+      "id": "saver",
+      "colour": "rose"
+    },
+    {
+      "id": "coder",
+      "colour": "cobalt"
+    },
+    {
+      "id": "designer",
+      "colour": "orchid"
+    },
+    {
+      "id": "writer",
+      "colour": "lemon"
+    },
+    {
+      "id": "social",
+      "colour": "rose"
+    },
+    {
+      "id": "recruiter",
+      "colour": "sky"
+    },
+    {
+      "id": "legal",
+      "colour": "cobalt"
+    },
+    {
+      "id": "analyst",
+      "colour": "mint"
+    },
+    {
+      "id": "events",
+      "colour": "orchid"
+    },
+    {
+      "id": "chef",
+      "colour": "lemon"
+    },
+    {
+      "id": "coach",
+      "colour": "lime"
+    },
+    {
+      "id": "home",
+      "colour": "rose"
+    },
+    {
+      "id": "driver",
+      "colour": "sky"
+    },
+    {
+      "id": "tutor",
+      "colour": "cobalt"
+    },
+    {
+      "id": "musician",
+      "colour": "orchid"
+    },
+    {
+      "id": "photographer",
+      "colour": "lemon"
+    },
+    {
+      "id": "gardener",
+      "colour": "lime"
+    }
+  ]
+}
