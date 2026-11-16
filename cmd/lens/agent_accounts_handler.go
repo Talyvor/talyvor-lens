@@ -1099,8 +1099,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			if !ok {
 				return
 			}
-			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.ULXC <= 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
-				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
+			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.Minor <= 0 && in.AlwaysAllow.ULXC <= 0 || in.AlwaysAllow.Minor < 0 ||
+				in.AlwaysAllow.ULXC < 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
+				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_minor": <above 0, in the rules' currency>, "per": "day" | "month"}`)
 				return
 			}
 			// B59.22: a 3-D Secure challenge is the owner's signed answer to the card's issuer, decided alone and never a rule.
