@@ -35,7 +35,7 @@ const (
 )
 
 // ErrCountryNotServed: a country Talyvor does not serve, at sign-up or at the identity check.
-var ErrCountryNotServed = errors.New("economy: " + CountryNotServedSentence)
+var ErrCountryNotServed = errors.New("economy: Talyvor is not available in that country yet")
 
 // ServedCountries is every country Talyvor serves, in code order.
 func ServedCountries() []string {
