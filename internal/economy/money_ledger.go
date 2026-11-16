@@ -347,6 +347,10 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	if err := refuseUnaccepted(ctx, tx, e.WorkspaceID, c); err != nil {
 		return MoneyEntry{}, err
 	}
+	// B61.52: nor, test or live, until the account has confirmed who it is.
+	if err := refuseUnconfirmed(ctx, tx, e.WorkspaceID, c); err != nil {
+		return MoneyEntry{}, err
+	}
 	if e.payeeWorkspaceID != "" {
 		if err := refuseFrozen(ctx, tx, e.payeeWorkspaceID, c); err != nil {
 			return MoneyEntry{}, err

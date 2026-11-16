@@ -36,6 +36,7 @@ type b5951Wallet struct {
 
 func newB5951Wallet(t *testing.T, pool *pgxpool.Pool, ws, kind string) b5951Wallet {
 	t.Helper()
+	confirmedAccounts(t, pool, ws) // B61.52
 	ctx := context.Background()
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, b487Screening{})

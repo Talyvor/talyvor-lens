@@ -67,6 +67,7 @@ func TestB5915_InstantTransferToATalyvorAccount(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const sender = "ws-b5915-sender"
+	confirmedAccounts(t, pool, sender, "ws-b5915-hybrid", "ws-b5915-coin", "ws-b5915-fiat") // B61.52
 	for ws, kind := range map[string]string{sender: "hybrid", "ws-b5915-hybrid": "hybrid", "ws-b5915-coin": "stablecoin",
 		"ws-b5915-fiat": "fiat"} {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type, money_kind) VALUES ($1, $2, $1, 'business', $3)`,

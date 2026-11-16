@@ -3277,6 +3277,8 @@ func run() error {
 		authed.Use(areaGate(areaStore))
 		// B59.7 — a fiat workspace is refused an on-chain money route, and a stablecoin workspace a fiat one.
 		authed.Use(moneyKindGate(dualToken))
+		// B61.52 — an account that has not confirmed who it is moves no money, Sandbox money included.
+		authed.Use(identityGate(dualToken))
 
 		apiServer.MountAuthenticated(authed)
 
@@ -6174,6 +6176,10 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 		msg = "internal server error"
 	} else {
 		msg = api.Refusal(msg)
+	}
+	if msg == api.Refusal(economy.ConfirmIdentitySentence) { // B61.52: the economy's refusal reads as the door's
+		writeJSONOK(w, status, map[string]string{"error": msg, "code": identityNeededCode})
+		return
 	}
 	writeJSONOK(w, status, map[string]string{"error": msg})
 }

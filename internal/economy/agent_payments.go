@@ -161,6 +161,9 @@ func (s *DualTokenStore) payCompanyAgent(ctx context.Context, workspaceID, payee
 			return pay, err
 		}
 	}
+	if err := refuseUnconfirmed(ctx, tx, workspaceID, c); err != nil { // B61.52: nor an unconfirmed payer
+		return pay, err
+	}
 	if err := s.enforceAgentRules(ctx, tx, workspaceID, pay.FromAgentID, pay.AmountULXC, "company:"+payeeWorkspace); err != nil {
 		return pay, s.refusedMovement(ctx, tx, err)
 	}
@@ -184,6 +187,12 @@ func paymentFingerprint(fromAgentID, toAgentID string, amount int64, memo string
 // they are; PayAgent files the approval one needs.
 func (s *DualTokenStore) payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID string, pay AgentPayment, entry uuid.UUID) (AgentPayment, error) {
 	fromAgentID, toAgentID, amount, memo := pay.FromAgentID, pay.ToAgentID, pay.AmountULXC, pay.Memo
+	// B61.52: nothing moves between an unconfirmed account's own agents, asked by a route, the connector or a schedule.
+	if c, ok := CapabilityByKey("move_between_own_agents"); ok {
+		if err := refuseUnconfirmedAnyClass(ctx, tx, workspaceID, c); err != nil {
+			return pay, err
+		}
+	}
 	// Both agents' rows, in id order, so two opposite payments cannot deadlock.
 	first, second := fromAgentID, toAgentID
 	if second < first {

@@ -472,6 +472,9 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 	if err := refuseFrozen(ctx, s.pool, workspaceID, stablecoins); err != nil {
 		return s.endCryptoSend(ctx, c, "refused", err.Error())
 	}
+	if err := refuseUnconfirmed(ctx, s.pool, workspaceID, stablecoins); err != nil { // B61.52
+		return s.endCryptoSend(ctx, c, "refused", err.Error())
+	}
 	if n.Funding != FundingTest {
 		if err := refusalErr(capabilityLive(ctx, s.pool, workspaceID, stablecoins)); err != nil {
 			return s.endCryptoSend(ctx, c, "refused", err.Error())

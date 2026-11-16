@@ -18,6 +18,7 @@ import (
 	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/monitoring"
 	"github.com/talyvor/lens/internal/screening"
+	"github.com/talyvor/lens/internal/testschema"
 	"github.com/talyvor/lens/migrations"
 )
 
@@ -48,6 +49,11 @@ func monitoringPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	if _, err := dbmigrate.Run(ctx, mc, migrations.FS); err != nil {
+		_ = mc.Close(ctx)
+		t.Fatal(err)
+	}
+	// B61.52: the accounts these tests move money for have confirmed who they are.
+	if _, err := mc.Exec(ctx, testschema.ConfirmedAccountsSQL); err != nil {
 		_ = mc.Close(ctx)
 		t.Fatal(err)
 	}

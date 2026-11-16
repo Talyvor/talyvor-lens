@@ -20,6 +20,7 @@ func TestTestWorkspaces_GrantFundedMovesAreTestMoney(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, earn_verified, synthetic) VALUES ($1, $1, $1, true, true)`, ws); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 		a, err := s.CreateAgent(ctx, ws, "agent", "owner-"+ws)
 		if err != nil {
 			t.Fatal(err)
