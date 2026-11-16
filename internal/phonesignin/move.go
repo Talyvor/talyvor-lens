@@ -49,13 +49,16 @@ type Moved struct {
 	KeysRemoved int64     `json:"keys_removed"`
 }
 
-// NumberMoveNotice is a move whose person's email addresses are still to be told.
+// NumberMoveNotice is a move whose person's email addresses are still to be told. By is who moved it: "operator", or
+// "person" for a person's own change (B61.104).
 type NumberMoveNotice struct {
 	ID       string    `json:"id"`
 	PersonID string    `json:"person_id"`
 	Identity string    `json:"identity"`
+	OldPhone string    `json:"old_phone"`
 	NewPhone string    `json:"new_phone"`
 	MovedAt  time.Time `json:"moved_at"`
+	By       string    `json:"by"`
 }
 
 // MoveNumber moves m.PersonID's number, in one transaction, as the package comment says.
@@ -139,7 +142,7 @@ func (s *Store) ClaimNumberMoveNotices(ctx context.Context, limit int) ([]Number
 	rows, err := s.DB.Query(ctx, `UPDATE person_number_moves m SET emails_claimed_at = $2 FROM people p
 		WHERE p.id = m.person_id AND m.id IN (SELECT id FROM person_number_moves WHERE emails_claimed_at IS NULL
 			ORDER BY moved_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
-		RETURNING m.id, m.person_id, p.identity, m.new_phone, m.moved_at`, limit, s.now())
+		RETURNING m.id, m.person_id, p.identity, m.old_phone, m.new_phone, m.moved_at, m.changed_by`, limit, s.now())
 	if err != nil {
 		return nil, err
 	}

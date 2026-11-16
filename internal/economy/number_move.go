@@ -132,3 +132,12 @@ func (s *DualTokenStore) TellNumberMoved(ctx context.Context, accounts []string)
 			Data: map[string]string{"type": "number_moved", "workspace_id": ws}})
 	}
 }
+
+// TellNumberChanged pushes, to every device of each of accounts, that the person changed their own number (B61.104).
+func (s *DualTokenStore) TellNumberChanged(ctx context.Context, accounts []string) {
+	for _, ws := range accounts {
+		s.pushDevices(ctx, ws, nativepush.Message{
+			Body: "Your phone number on Talyvor was changed. If this was not you, contact help now.",
+			Data: map[string]string{"type": "number_changed", "workspace_id": ws}})
+	}
+}
