@@ -25,7 +25,8 @@ func ruleTemplate(id, name, summary string, set func(*AgentRules)) RuleTemplate 
 		MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
 		PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
 		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant,
-		PayeeDailyLimitsMinor: map[string]int64{}, PayeeMonthlyLimitsMinor: map[string]int64{}, FXDailyLimitMinor: new(int64)}
+		PayeeDailyLimitsMinor: map[string]int64{}, PayeeMonthlyLimitsMinor: map[string]int64{}, FXDailyLimitMinor: new(int64),
+		AllowedMerchantCategories: []string{}, BlockedMerchantCategories: []string{}}
 	set(&r)
 	// B61.12: the same limits held in dollars at the peg, the currency the rules are judged in.
 	r.Currency, r.MaxPerPaymentMinor, r.DailyLimitMinor = CurrencyUSD, centsAtPeg(r.MaxPerRequestULXC), centsAtPeg(r.DailyLimitULXC)

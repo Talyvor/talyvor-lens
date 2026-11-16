@@ -243,7 +243,7 @@ func (h *Handler) decide(ctx context.Context, event *stripe.Event) (economy.Card
 		a.Refusal = "the request carries no pending amount"
 	}
 	if m := auth.MerchantData; m != nil {
-		a.MerchantName, a.MerchantCategory, a.MerchantID = m.Name, m.Category, m.NetworkID
+		a.MerchantName, a.MerchantCategory, a.MerchantMCC, a.MerchantID = m.Name, m.Category, m.CategoryCode, m.NetworkID
 	}
 	return h.Authorize(ctx, a)
 }

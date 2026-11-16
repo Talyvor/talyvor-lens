@@ -2,11 +2,13 @@ package economy
 
 import "testing"
 
-// B55.13 — which changes loosen an agent's rules beyond its limits: payees, hours, time zone, switches.
+// B55.13 — which changes loosen an agent's rules beyond its limits: payees, hours, time zone, switches, and (B61.43) its
+// merchant categories, so loosening them asks for the passkey as the other rules do.
 func TestB5513_WhatLoosensTheRules(t *testing.T) {
 	yes, no := true, false
 	was := AgentRules{AllowedPayees: []string{"agt_a"}, BlockedPayees: []string{"agt_x"}, ActiveFrom: "22:00", ActiveUntil: "06:00",
-		Timezone: "Europe/London", PauseOnUnusualSpend: true, MaySubscribe: &no}
+		Timezone: "Europe/London", PauseOnUnusualSpend: true, MaySubscribe: &no,
+		AllowedMerchantCategories: []string{"software", "hosting"}, BlockedMerchantCategories: []string{"gambling"}}
 	for _, c := range []struct {
 		name   string
 		change func(r *AgentRules)
@@ -22,6 +24,11 @@ func TestB5513_WhatLoosensTheRules(t *testing.T) {
 		{"the time zone changed", func(r *AgentRules) { r.Timezone = "America/New_York" }, true},
 		{"pause on unusual spend turned off", func(r *AgentRules) { r.PauseOnUnusualSpend = false }, true},
 		{"may subscribe turned on", func(r *AgentRules) { r.MaySubscribe = &yes }, true},
+		{"a merchant category taken off the allowed ones", func(r *AgentRules) { r.AllowedMerchantCategories = []string{"software"} }, false},
+		{"a merchant category allowed", func(r *AgentRules) { r.AllowedMerchantCategories = []string{"software", "hosting", "freight"} }, true},
+		{"every merchant category allowed", func(r *AgentRules) { r.AllowedMerchantCategories = []string{} }, true},
+		{"a merchant category blocked", func(r *AgentRules) { r.BlockedMerchantCategories = []string{"gambling", "travel"} }, false},
+		{"a blocked merchant category unblocked", func(r *AgentRules) { r.BlockedMerchantCategories = []string{} }, true},
 		{"a payee allowance added", func(r *AgentRules) { r.PayeeAllowances = map[string]PayeeAllowance{"agt_a": {ULXC: 1, Per: "month"}} }, true},
 	} {
 		now := was

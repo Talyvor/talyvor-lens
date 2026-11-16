@@ -411,8 +411,12 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		WHERE c.partner = $1 AND c.partner_ref = $2 FOR UPDATE OF c`, partner, a.Card).
 		Scan(&c.ID, &ws, &agentID, &c.Merchant, &c.CapMinor, &c.Currency, &c.Status, &c.accountID, &c.holdAccountID, &expires, &funding)
 	var paused error
+	var outside string // B61.43: the agent's merchant categories judge the charge as it is made
 	if err == nil {
 		paused = refuseIfPaused(ctx, tx, agentID)
+		if agentID != "" {
+			outside, err = merchantCategoryRefusal(ctx, tx, agentID, a.Merchant, a.Normal().MCC, time.Now())
+		}
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -433,6 +437,8 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		reason = "the card pays in " + c.Currency
 	case a.Amount.Minor <= 0 || a.Amount.Minor > c.CapMinor:
 		reason = "the charge is more than the card's cap of " + minorString(c.CapMinor, c.Currency)
+	case outside != "":
+		reason = outside
 	default:
 		approved = true
 	}
