@@ -6,5 +6,6 @@
 - Rounding: a charge or fee rounds up. A payout, mint or yield rounds down. Tax (VAT) rounds to the nearest minor unit, half up, and dollars shown beside LXC round to the nearest cent. Idempotency keys carry every identity they protect.
 - Every query is scoped to its workspace. Prove the cross-tenant case is refused.
 - Re-check migration numbers right before merging.
+- Name a new migration by the UTC minute and your builder letter, `migrations/$(date -u +%y%m%d%H%M)<letter>_name.sql` (e.g. `2611151820a_agent_notes.sql`), never the next NNNN number: two open branches cannot collide on it. The NNNN files up to 0398 keep their names.
 - Never forward a caller's credentials to a third party. Never log a secret.
 - Record a merge only with the real squash SHA from GitHub.
