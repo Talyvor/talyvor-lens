@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
@@ -31,6 +32,7 @@ import (
 const (
 	KeyChallengeLife = 5 * time.Minute // a challenge is good for this long, once
 	KeyTicketLife    = 5 * time.Minute // a ticket is good for this long, once
+	KeyRowsKept      = 24 * time.Hour  // a challenge or ticket is deleted this long after its time
 )
 
 var (
@@ -47,7 +49,8 @@ var (
 	ErrKeyRefused = errors.New("phonesignin: that key's answer is not valid")
 	// ErrKeyKept: the key is kept already, or was removed and is never kept again.
 	ErrKeyKept = errors.New("phonesignin: that key is kept already")
-	// ErrKeyProof: adding a key, once the person has a key or a passcode, needs the passcode or a key they have.
+	// ErrKeyProof: adding a key, once the person has a key or a passcode, or removing one, needs the passcode or a key
+	// they have.
 	ErrKeyProof = errors.New("phonesignin: adding a key needs your passcode or a key you already have")
 	// ErrLastWayIn: the key is the person's last way in and they have no passcode.
 	ErrLastWayIn = errors.New("phonesignin: that key is your last way in")
@@ -119,6 +122,9 @@ func (s *Store) newKeyChallenge(ctx context.Context, q execer, purpose, personID
 			return KeyChallenge{}, err
 		}
 		challenge = c
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM person_key_challenges WHERE expires_at < $1`, s.now().Add(-KeyRowsKept)); err != nil {
+		return KeyChallenge{}, fmt.Errorf("phonesignin: old key challenges: %w", err)
 	}
 	expires := s.now().Add(KeyChallengeLife)
 	var person any
@@ -309,6 +315,9 @@ func (s *Store) SignInWithKey(ctx context.Context, a passkey.Assertion, address 
 	if err != nil {
 		return KeySignIn{}, err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM person_key_tickets WHERE expires_at < $1`, now.Add(-KeyRowsKept)); err != nil {
+		return KeySignIn{}, err
+	}
 	expires := now.Add(KeyTicketLife)
 	if _, err := tx.Exec(ctx, `INSERT INTO person_key_tickets (ticket_hash, person_id, key_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)`,
 		hashTicket(ticket), k.personID, k.id, now, expires); err != nil {
@@ -327,13 +336,15 @@ func (s *Store) SignInWithKey(ctx context.Context, a passkey.Assertion, address 
 	return KeySignIn{Person: p, KeyID: k.id, Ticket: ticket, ExpiresAt: expires}, nil
 }
 
-// useKeyTicket spends a ticket personID got from signing in with a key, inside tx.
+// useKeyTicket spends a ticket personID got from signing in with a key, inside tx. It is good only while that key
+// is not removed.
 func useKeyTicket(ctx context.Context, tx pgx.Tx, ticket, personID string, now time.Time) error {
 	if ticket == "" {
 		return ErrKeyProof
 	}
-	tag, err := tx.Exec(ctx, `UPDATE person_key_tickets SET used_at = $3
-		WHERE ticket_hash = $1 AND person_id = $2 AND used_at IS NULL AND expires_at > $3`, hashTicket(ticket), personID, now)
+	tag, err := tx.Exec(ctx, `UPDATE person_key_tickets t SET used_at = $3 FROM person_keys k
+		WHERE t.ticket_hash = $1 AND t.person_id = $2 AND t.used_at IS NULL AND t.expires_at > $3
+			AND k.id = t.key_id AND k.removed_at IS NULL`, hashTicket(ticket), personID, now)
 	if err != nil {
 		return err
 	}
@@ -418,21 +429,8 @@ func (s *Store) AddKey(ctx context.Context, personID string, k NewKey, proof Key
 		return PersonKey{}, err
 	}
 	if live > 0 || hasPasscode {
-		switch {
-		case proof.Ticket != "":
-			if err := useKeyTicket(ctx, tx, proof.Ticket, personID, now); err != nil {
-				return PersonKey{}, s.refuseEvent(ctx, tx, phone, address, "key_refused", "a new key with a ticket that is not the person's, used or old", err)
-			}
-		case proof.Passcode != "" && hasPasscode:
-			if err := s.Passcodes.CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
-				// The wrong try is the passcode's to count; the challenge stays spent.
-				if aerr := audit(ctx, tx, phone, address, "key_refused", "a new key with a passcode that was not right"); aerr != nil {
-					return PersonKey{}, aerr
-				}
-				return PersonKey{}, commitThen(ctx, tx, err)
-			}
-		default:
-			return PersonKey{}, s.refuseEvent(ctx, tx, phone, address, "key_refused", "a new key with no proof", ErrKeyProof)
+		if err := s.useProof(ctx, tx, personID, phone, address, "a new key", proof, hasPasscode, now); err != nil {
+			return PersonKey{}, err
 		}
 	}
 	id, err := randomToken(16)
@@ -442,6 +440,10 @@ func (s *Store) AddKey(ctx context.Context, personID string, k NewKey, proof Key
 	pk, err := scanPersonKey(tx.QueryRow(ctx, `INSERT INTO person_keys (id, person_id, kind, credential_id, platform, name, public_key, sign_count, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+personKeyColumns,
 		"pky_"+id, personID, kind, nullIfEmpty(credID), platform, strings.TrimSpace(k.Name), spki, count, now))
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		// The same key, added at the same instant for another person, was kept first.
+		return PersonKey{}, s.refuseEvent(ctx, tx, phone, address, "key_refused", "a key kept already or removed", ErrKeyKept)
+	}
 	if err != nil {
 		return PersonKey{}, err
 	}
@@ -449,6 +451,28 @@ func (s *Store) AddKey(ctx context.Context, personID string, k NewKey, proof Key
 		return PersonKey{}, err
 	}
 	return pk, tx.Commit(ctx)
+}
+
+// useProof spends proof that it is personID, inside tx, for what (a new key, or removing one): a ticket from signing
+// in with a key they have, or the passcode when one is set. A refusal undoes tx, except a wrong passcode, whose try
+// the passcode counts and tx keeps.
+func (s *Store) useProof(ctx context.Context, tx pgx.Tx, personID, phone, address, what string, proof KeyProof, hasPasscode bool, now time.Time) error {
+	switch {
+	case proof.Ticket != "":
+		if err := useKeyTicket(ctx, tx, proof.Ticket, personID, now); err != nil {
+			return s.refuseEvent(ctx, tx, phone, address, "key_refused", what+" with a ticket that is not the person's, used, old or its key's removed", err)
+		}
+	case proof.Passcode != "" && hasPasscode:
+		if err := s.Passcodes.CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
+			if aerr := audit(ctx, tx, phone, address, "key_refused", what+" with a passcode that was not right"); aerr != nil {
+				return aerr
+			}
+			return commitThen(ctx, tx, err)
+		}
+	default:
+		return s.refuseEvent(ctx, tx, phone, address, "key_refused", what+" with no proof", ErrKeyProof)
+	}
+	return nil
 }
 
 func nullIfEmpty(s string) any {
@@ -466,6 +490,16 @@ func scanPersonKey(row pgx.Row) (PersonKey, error) {
 	return k, err
 }
 
+// PersonIdentity is the identity personID holds, the one POST /v1/provision is given for them.
+func (s *Store) PersonIdentity(ctx context.Context, personID string) (string, error) {
+	var identity string
+	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1`, personID).Scan(&identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNoPerson
+	}
+	return identity, err
+}
+
 // ListKeys is personID's sign-in keys, oldest first; removed ones are gone from it.
 func (s *Store) ListKeys(ctx context.Context, personID string) ([]PersonKey, error) {
 	rows, err := s.DB.Query(ctx, `SELECT `+personKeyColumns+` FROM person_keys WHERE person_id = $1 AND removed_at IS NULL ORDER BY created_at, id`, personID)
@@ -479,9 +513,10 @@ func (s *Store) ListKeys(ctx context.Context, personID string) ([]PersonKey, err
 	return out, err
 }
 
-// RemoveKey removes personID's key keyID: it signs nobody in from now on. The person's last key is never removed
-// while they have no passcode, because it is their last way in.
-func (s *Store) RemoveKey(ctx context.Context, personID, keyID, address string) error {
+// RemoveKey removes personID's key keyID: it signs nobody in from now on. It takes the proof AddKey does: a ticket from
+// signing in with a key the person has (the one going included), or the passcode. The person's last key is never
+// removed while they have no passcode, because it is their last way in.
+func (s *Store) RemoveKey(ctx context.Context, personID, keyID string, proof KeyProof, address string) error {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return err
@@ -510,7 +545,11 @@ func (s *Store) RemoveKey(ctx context.Context, personID, keyID, address string) 
 	if live <= 1 && !hasPasscode {
 		return s.refuseEvent(ctx, tx, phone, address, "key_refused", "the last way in, with no passcode", ErrLastWayIn)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE person_keys SET removed_at = $2 WHERE id = $1`, keyID, s.now()); err != nil {
+	now := s.now()
+	if err := s.useProof(ctx, tx, personID, phone, address, "removing a key", proof, hasPasscode, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE person_keys SET removed_at = $2 WHERE id = $1`, keyID, now); err != nil {
 		return err
 	}
 	if err := audit(ctx, tx, phone, address, "key_removed", kind); err != nil {

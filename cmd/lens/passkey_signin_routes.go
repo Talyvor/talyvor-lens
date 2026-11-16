@@ -13,6 +13,7 @@ import (
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/phonesignin"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // B61.24 — a passkey signs its person in, for the suite BFF alone on the provision secret, beside the phone door. The
@@ -25,7 +26,8 @@ type keySignIn interface {
 	RegisterChallenge(ctx context.Context, personID, challenge string) (phonesignin.KeyChallenge, error)
 	AddKey(ctx context.Context, personID string, k phonesignin.NewKey, proof phonesignin.KeyProof, address string) (phonesignin.PersonKey, error)
 	ListKeys(ctx context.Context, personID string) ([]phonesignin.PersonKey, error)
-	RemoveKey(ctx context.Context, personID, keyID, address string) error
+	RemoveKey(ctx context.Context, personID, keyID string, proof phonesignin.KeyProof, address string) error
+	PersonIdentity(ctx context.Context, personID string) (string, error)
 	PhoneCheckDue(p phonesignin.Person) bool
 }
 
@@ -34,6 +36,11 @@ type keySignIn interface {
 type approvalKeyChallenges interface {
 	PasskeyRegistrationChallenge(ctx context.Context, workspaceID string) (challenge, rpID string, err error)
 	DeviceRegistrationChallenge(ctx context.Context, workspaceID string) (string, error)
+}
+
+// personAccounts says whether an account is one of a person's (workspace.Manager, B61.7).
+type personAccounts interface {
+	PersonOwnsAccount(ctx context.Context, personKey, firstID, accountID string) (bool, error)
 }
 
 type keyChallengeRequest struct {
@@ -89,19 +96,22 @@ type keyRegisterRequest struct {
 type keyRemoveRequest struct {
 	PersonID string `json:"person_id"`
 	KeyID    string `json:"key_id"`
-	Address  string `json:"caller_address"`
+	// KeyTicket and Passcode prove it is the person, as they do for a new key.
+	KeyTicket string `json:"key_ticket"`
+	Passcode  string `json:"passcode"`
+	Address   string `json:"caller_address"`
 }
 
 // mountKeySignInRoutes registers the key routes on the bare router, as mountPhoneSignInRoutes does. Unset secret ⇒
 // not registered.
-func mountKeySignInRoutes(r chi.Router, secret string, s keySignIn, approval approvalKeyChallenges) {
+func mountKeySignInRoutes(r chi.Router, secret string, s keySignIn, approval approvalKeyChallenges, accounts personAccounts) {
 	if secret == "" {
 		return
 	}
 	r.Post("/v1/auth/passkey/challenge", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyChallenge(w, req, s) }))
 	r.Post("/v1/auth/passkey/finish", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyFinish(w, req, s) }))
 	r.Post("/v1/auth/passkey/register/challenge", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) {
-		keyRegisterChallenge(w, req, s, approval)
+		keyRegisterChallenge(w, req, s, approval, accounts)
 	}))
 	r.Post("/v1/auth/passkey/register", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyRegister(w, req, s) }))
 	r.Post("/v1/auth/passkey/keys", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { keyList(w, req, s) }))
@@ -184,14 +194,33 @@ func keyFinish(w http.ResponseWriter, req *http.Request, s keySignIn) {
 		ExpiresAt: out.ExpiresAt.UTC().Format(time.RFC3339), PhoneCheckDue: s.PhoneCheckDue(out.Person)})
 }
 
-func keyRegisterChallenge(w http.ResponseWriter, req *http.Request, s keySignIn, approval approvalKeyChallenges) {
+func keyRegisterChallenge(w http.ResponseWriter, req *http.Request, s keySignIn, approval approvalKeyChallenges, accounts personAccounts) {
 	var in keyRegisterChallengeRequest
 	if !decodeKeyBody(w, req, &in) || !needPerson(w, &in.PersonID) {
 		return
 	}
 	var shared string
 	if ws := strings.TrimSpace(in.WorkspaceID); ws != "" && approval != nil {
-		var err error
+		// Lens writes into an account only for a person who holds it (B61.7): nothing is issued otherwise.
+		identity, err := s.PersonIdentity(req.Context(), in.PersonID)
+		if err != nil {
+			if !writeKeyRefusal(w, err) {
+				writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be started; try again")
+			}
+			return
+		}
+		owned := false
+		if accounts != nil {
+			owned, err = accounts.PersonOwnsAccount(req.Context(), workspace.PersonKey(identity), deriveWorkspaceID(identity), ws)
+			if err != nil {
+				writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be started; try again")
+				return
+			}
+		}
+		if !owned {
+			writePhoneRefusal(w, http.StatusForbidden, "not_your_account", "That account is not one of yours.")
+			return
+		}
 		switch in.Kind {
 		case "", "passkey":
 			shared, _, err = approval.PasskeyRegistrationChallenge(req.Context(), ws)
@@ -277,7 +306,8 @@ func keyRemove(w http.ResponseWriter, req *http.Request, s keySignIn) {
 	if !decodeKeyBody(w, req, &in) || !needPerson(w, &in.PersonID) {
 		return
 	}
-	if err := s.RemoveKey(req.Context(), in.PersonID, strings.TrimSpace(in.KeyID), strings.TrimSpace(in.Address)); err != nil {
+	proof := phonesignin.KeyProof{Ticket: in.KeyTicket, Passcode: in.Passcode}
+	if err := s.RemoveKey(req.Context(), in.PersonID, strings.TrimSpace(in.KeyID), proof, strings.TrimSpace(in.Address)); err != nil {
 		if !writeKeyRefusal(w, err) {
 			writeJSONErr(w, http.StatusServiceUnavailable, "the key could not be removed; try again")
 		}
