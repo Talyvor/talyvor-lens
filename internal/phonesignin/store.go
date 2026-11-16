@@ -21,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // The rules of a check.
@@ -65,8 +67,18 @@ type Store struct {
 	Key []byte
 	// PerAddressHour is the texts one caller's address may ask for in an hour.
 	PerAddressHour int
+	// PasscodeSecret is mixed into every passcode's hash (LENS_PASSCODE_SECRET, B61.23); empty, no passcode is set or
+	// checked, and a person who has one is not signed in.
+	PasscodeSecret []byte
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// RP is who people's sign-in passkeys are for (B61.24), the relying party approvals use; nil, no passkey is kept
+	// or signs in.
+	RP *passkey.RelyingParty
+	// Devices checks a phone app's device key before it is kept for a person; nil, none is.
+	Devices *devicekey.Verifier
+	// Passcodes is the person's passcode as the key rules ask about it (B61.23); nil, nobody has one.
+	Passcodes PasscodeRule
 }
 
 func (s *Store) now() time.Time {
@@ -101,6 +113,8 @@ type Person struct {
 	PhoneSandbox     bool      `json:"phone_sandbox"`
 	PhoneConfirmedAt time.Time `json:"phone_confirmed_at"`
 	CreatedAt        time.Time `json:"created_at"`
+	// HasPasscode is filled by RedeemWithPasscode: the person has set one (B61.23).
+	HasPasscode bool `json:"has_passcode"`
 }
 
 // Counts is what an operator may read: how many, never whose.
@@ -372,9 +386,19 @@ func scanPerson(row pgx.Row) (Person, error) {
 	return p, err
 }
 
-// Redeem uses ticket, once: the person who holds its number, or a new person for it holding identity (a new
-// identity when empty). created says the person is new. A number confirmed by a real text clears its Sandbox mark.
+// Redeem is RedeemWithPasscode with no passcode: it signs in only a person who has not set one.
 func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (Person, bool, error) {
+	return s.RedeemWithPasscode(ctx, ticket, identity, "", address)
+}
+
+// RedeemWithPasscode uses ticket, once: the person who holds its number, or a new person for it holding identity (a
+// new identity when empty). created says the person is new. A number confirmed by a real text clears its Sandbox
+// mark.
+//
+// The passcode (B61.23): a ticket alone signs in nobody who has one — passcode must be theirs, counted against its
+// limits, and a refused passcode leaves the ticket unused. A new person, or one who has not set one, sets passcode
+// with the ticket when it is given.
+func (s *Store) RedeemWithPasscode(ctx context.Context, ticket, identity, passcode, address string) (Person, bool, error) {
 	now := s.now()
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
@@ -385,15 +409,22 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 		phone   string
 		sandbox bool
 	)
-	err = tx.QueryRow(ctx, `UPDATE phone_tickets SET used_at = $2 WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > $2
-		RETURNING phone, sandbox`, hashTicket(ticket), now).Scan(&phone, &sandbox)
+	err = tx.QueryRow(ctx, `SELECT phone, sandbox FROM phone_tickets WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > $2
+		FOR UPDATE`, hashTicket(ticket), now).Scan(&phone, &sandbox)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Person{}, false, s.refuse(ctx, tx, "", address, "a ticket used, old or never given", ErrTicket)
 	}
 	if err != nil {
 		return Person{}, false, err
 	}
+	useTicket := func() error {
+		_, err := tx.Exec(ctx, `UPDATE phone_tickets SET used_at = $2 WHERE ticket_hash = $1`, hashTicket(ticket), now)
+		return err
+	}
 	if sandbox && !s.Sender().Sandbox() {
+		if err := useTicket(); err != nil {
+			return Person{}, false, err
+		}
 		if err := audit(ctx, tx, phone, address, "refused", "a Sandbox confirmation under a real sender"); err != nil {
 			return Person{}, false, err
 		}
@@ -412,6 +443,30 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 		if sandbox && !p.PhoneSandbox {
 			return Person{}, false, s.refuse(ctx, tx, phone, address, "a Sandbox confirmation for a number a real text confirmed", ErrTicket)
 		}
+		has, err := hasPasscode(ctx, tx, p.ID)
+		if err != nil {
+			return Person{}, false, err
+		}
+		switch {
+		case has && passcode == "":
+			return Person{}, false, s.refuse(ctx, tx, phone, address, "a ticket without the person's passcode", ErrPasscodeNeeded)
+		case has:
+			if err := s.checkPasscode(ctx, tx, p.ID, passcode, address, passcodeWithTicket); err != nil {
+				if errors.Is(err, ErrPasscodeUnavailable) {
+					return Person{}, false, err
+				}
+				// The ticket stays unused; the wrong try stays counted.
+				return Person{}, false, commitThen(ctx, tx, err)
+			}
+		case passcode != "":
+			if err := s.setPasscode(ctx, tx, p.ID, phone, passcode, address, "set"); err != nil {
+				return Person{}, false, err
+			}
+			has = true
+		}
+		if err := useTicket(); err != nil {
+			return Person{}, false, err
+		}
 		p, err = scanPerson(tx.QueryRow(ctx, `UPDATE people SET phone_confirmed_at = $2, phone_sandbox = phone_sandbox AND $3
 			WHERE id = $1 RETURNING `+personColumns, p.ID, now, sandbox))
 		if err != nil {
@@ -420,6 +475,7 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 		if err := audit(ctx, tx, phone, address, "signed_in", ""); err != nil {
 			return Person{}, false, err
 		}
+		p.HasPasscode = has
 		return p, false, tx.Commit(ctx)
 	case !errors.Is(err, pgx.ErrNoRows):
 		return Person{}, false, err
@@ -431,6 +487,17 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 	if identity == "" {
 		identity = "person:" + id
 	}
+	if passcode != "" {
+		if len(s.PasscodeSecret) == 0 {
+			return Person{}, false, ErrPasscodeUnavailable
+		}
+		if err := CheckPasscodeShape(passcode, phone); err != nil {
+			return Person{}, false, err
+		}
+	}
+	if err := useTicket(); err != nil {
+		return Person{}, false, err
+	}
 	p, err = scanPerson(tx.QueryRow(ctx, `INSERT INTO people (id, phone, identity, phone_sandbox, phone_confirmed_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $5) RETURNING `+personColumns, "per_"+id, phone, identity, sandbox, now))
 	var pgErr *pgconn.PgError
@@ -439,6 +506,12 @@ func (s *Store) Redeem(ctx context.Context, ticket, identity, address string) (P
 	}
 	if err != nil {
 		return Person{}, false, err
+	}
+	if passcode != "" {
+		if err := s.setPasscode(ctx, tx, p.ID, phone, passcode, address, "set"); err != nil {
+			return Person{}, false, err
+		}
+		p.HasPasscode = true
 	}
 	if err := audit(ctx, tx, phone, address, "joined", ""); err != nil {
 		return Person{}, false, err

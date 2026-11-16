@@ -18,6 +18,7 @@ import (
 	"github.com/talyvor/lens/internal/guardrails"
 	"github.com/talyvor/lens/internal/injection"
 	"github.com/talyvor/lens/internal/pii"
+	"github.com/talyvor/lens/internal/plans"
 )
 
 // authz_routes_test.go proves the WIRING of the Phase-1 fix (#146) route by
@@ -66,12 +67,15 @@ func (f *fakeAuditExporter) Export(_ context.Context, filter audit.ExportFilter,
 	return 0, nil
 }
 
-// businessPlan answers plans.Of for any workspace as a Business subscription, which has audit export (B56.5).
+// businessPlan answers plans.Of for any workspace as a business on Group, which has audit export (B56.5, B61.57):
+// the account's type first, then the plan it chose.
 type businessPlan struct{}
 
 func (businessPlan) QueryRow(context.Context, string, ...any) pgx.Row { return businessPlan{} }
 func (businessPlan) Scan(dest ...any) error {
-	*dest[0].(*string) = "business"
+	*dest[0].(*string) = plans.AccountBusiness
+	group := plans.BusinessGroup
+	*dest[2].(**string) = &group
 	return nil
 }
 

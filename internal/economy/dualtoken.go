@@ -92,7 +92,7 @@ func ChargeULXC(usd float64) int64 {
 // ─── errors ──────────────────────────────────────
 
 var (
-	ErrInsufficientLXC     = errors.New("economy: insufficient LXC balance")
+	ErrInsufficientLXC     = errors.New("economy: insufficient balance")
 	ErrConversionTooSmall  = fmt.Errorf("economy: conversion below minimum of %d µLXC", MinConversionLXC)
 	ErrInsufficientLENSFor = errors.New("economy: insufficient LENS balance for conversion")
 )
@@ -387,6 +387,8 @@ type DualTokenStore struct {
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
 	payeeScreener PayeeScreener
+	// personLookupsPerHour is how many people an account may look up an hour (B61.32); 0, the default.
+	personLookupsPerHour int
 	// unusual is when a payment request item's amount is far above its payee's usual (B41.103); zero, never.
 	unusual unusualAmount
 	// started is when this store was made: RunCoveredPayments tries only what this Lens prepared (B55.21).

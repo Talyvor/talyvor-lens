@@ -289,7 +289,7 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	if err := lockAgent(ctx, tx, op.Workspace, op.Agent); err != nil {
 		return fmt.Errorf("%w: %v", money.ErrLimit, err)
 	}
-	if err := enforceAgentRules(ctx, tx, op.Workspace, op.Agent, value, "money:"+op.Key); err != nil {
+	if err := l.s.enforceAgentRules(ctx, tx, op.Workspace, op.Agent, value, "money:"+op.Key); err != nil {
 		err = l.s.refusedMovement(ctx, tx, err)
 		if errors.Is(err, ErrApprovalRequired) {
 			return fmt.Errorf("%w: %v", money.ErrApprovalNeeded, err)

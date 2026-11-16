@@ -234,8 +234,9 @@ import (
 //
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
-//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?}   rename it, describe it,
-//	                                          change its face (B57.10); returns the agent
+//	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?, "picture"?, "role"?,
+//	                                          "role_word"?}   rename it, describe it, change its face (B57.10), its
+//	                                          picture or what it does (B61.35); returns the agent
 //	POST  /v1/workspaces/{wsID}/agents/{id}/archive   retire it: its whole balance back to the workspace in one
 //	                                                  withdraw entry, its keys revoked, its top-up and schedules
 //	                                                  stopped; it is listed with archived_at from then on
@@ -244,7 +245,7 @@ import (
 // agents and issuing keys take the workspace's owner or an admin; reading takes any of its credentials.
 
 type agentBank interface {
-	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat, colour, face string) (economy.Agent, error)
+	CreateAgentOfKind(ctx context.Context, workspaceID, name, ownerUserID, kind, fiat string, look economy.AgentLook) (economy.Agent, error)
 	AgentWallets(ctx context.Context, workspaceID, agentID string) (economy.AgentWallets, error)
 	SetAgentWalletKind(ctx context.Context, workspaceID, agentID, kind, fiat string) (economy.AgentWallets, error)
 	OwnerWallets(ctx context.Context, workspaceID string) (economy.AgentWallets, error)
@@ -268,7 +269,7 @@ type agentBank interface {
 	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
-	UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description, colour, face *string) (economy.Agent, error)
+	UpdateAgent(ctx context.Context, workspaceID, agentID string, c economy.AgentChange) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
 	AttachAgentKey(ctx context.Context, workspaceID, agentID, scopedKeyID string) error
@@ -297,6 +298,7 @@ type agentBank interface {
 	DecideCardChallenge(ctx context.Context, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (economy.AgentApproval, error)
 	AllowPayee(ctx context.Context, workspaceID, approvalID string, a economy.PayeeAllowance) (economy.AgentRules, error)
 	PayAgent(ctx context.Context, workspaceID, fromAgentID, toAgentID string, amount int64, memo string) (economy.AgentPayment, error)
+	PayAgentMoney(ctx context.Context, workspaceID, fromAgentID string, in economy.AgentMoneyPayment) (economy.AgentMoneyPayment, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 	AgentStatement(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.AgentStatementLine, error)
 	AgentPeriodStatement(ctx context.Context, workspaceID, agentID string, from, to time.Time) (economy.Statement, error)
@@ -385,6 +387,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			// B57.10: its face; Lens picks whichever is left out.
 			Colour string `json:"colour"`
 			Face   string `json:"face"`
+			// B61.35: its picture, which sets its colour, and what it does — one of the six, or other in role_word.
+			Picture  string `json:"picture"`
+			Role     string `json:"role"`
+			RoleWord string `json:"role_word"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.Name == "" {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<agent name>"}`)
@@ -402,7 +408,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				owner = in.Owner
 			}
 		}
-		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency, in.Colour, in.Face)
+		a, err := bank.CreateAgentOfKind(req.Context(), chi.URLParam(req, "wsID"), in.Name, owner, in.WalletKind, in.FiatCurrency,
+			economy.AgentLook{Colour: in.Colour, Face: in.Face, Picture: in.Picture, Role: in.Role, RoleWord: in.RoleWord})
 		if writeMoneyKindRefusal(w, err) { // B59.6: a kind the workspace's kind of money does not allow
 			return
 		}
@@ -445,14 +452,19 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			Description *string `json:"description"`
 			Colour      *string `json:"colour"`
 			Face        *string `json:"face"`
+			Picture     *string `json:"picture"`
+			Role        *string `json:"role"`
+			RoleWord    *string `json:"role_word"`
 		}
 		dec := json.NewDecoder(req.Body)
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil && in.Colour == nil && in.Face == nil) {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>", "colour": "<colour>", "face": "<face>"}, any of them`)
+		if err := dec.Decode(&in); err != nil || (in.Name == nil && in.Description == nil && in.Colour == nil && in.Face == nil &&
+			in.Picture == nil && in.Role == nil && in.RoleWord == nil) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"name": "<new name>", "description": "<what it is for>", "colour": "<colour>", "face": "<face>", "picture": "<picture>", "role": "<what it does>", "role_word": "<its own word, with role other>"}, any of them`)
 			return
 		}
-		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.Name, in.Description, in.Colour, in.Face)
+		a, err := bank.UpdateAgent(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), economy.AgentChange{
+			Name: in.Name, Description: in.Description, Colour: in.Colour, Face: in.Face, Picture: in.Picture, Role: in.Role, RoleWord: in.RoleWord})
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
@@ -1087,8 +1099,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			if !ok {
 				return
 			}
-			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.ULXC <= 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
-				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_ulxc": <above 0>, "per": "day" | "month"}`)
+			if in.AlwaysAllow != nil && (!approve || in.AlwaysAllow.Minor <= 0 && in.AlwaysAllow.ULXC <= 0 || in.AlwaysAllow.Minor < 0 ||
+				in.AlwaysAllow.ULXC < 0 || (in.AlwaysAllow.Per != "day" && in.AlwaysAllow.Per != "month")) {
+				writeJSONErr(w, http.StatusBadRequest, `always_allow goes with approve, as {"amount_minor": <above 0, in the rules' currency>, "per": "day" | "month"}`)
 				return
 			}
 			// B59.22: a 3-D Secure challenge is the owner's signed answer to the card's issuer, decided alone and never a rule.
@@ -1816,15 +1829,51 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			ToAgentID  string `json:"to_agent_id"`
 			AmountULXC int64  `json:"amount_ulxc"`
 			Memo       string `json:"memo"`
+			// B61.18: from the agent's currency account, in its minor units.
+			AmountMinor int64  `json:"amount_minor"`
+			Currency    string `json:"currency"`
+			Funding     string `json:"funding"`
 		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.ToAgentID == "" || in.AmountULXC <= 0 {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id": "<agent>", "amount_ulxc": <positive µLXC>, "memo": "<optional>"}`)
+		inCurrency := false
+		err := json.NewDecoder(req.Body).Decode(&in)
+		if err == nil {
+			inCurrency = in.AmountMinor != 0 || in.Currency != ""
+		}
+		if err != nil || in.ToAgentID == "" || (inCurrency && (in.AmountMinor <= 0 || in.Currency == "" || in.AmountULXC != 0)) || (!inCurrency && in.AmountULXC <= 0) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"to_agent_id": "<agent>", "amount_minor": <positive minor units>, "currency": "GBP|EUR|USD|USDC", "memo": "<optional>"}`)
 			return
 		}
 		// B50.1: a payment retried with the same Idempotency-Key lands once.
 		key := req.Header.Get("Idempotency-Key")
 		if len(key) > 128 {
 			writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+			return
+		}
+		if inCurrency { // B61.18: one transfer between the two agents' accounts in the currency, once under its key
+			pay, err := bank.PayAgentMoney(ctx, wsID, agentID, economy.AgentMoneyPayment{ToAgentID: in.ToAgentID, AmountMinor: in.AmountMinor,
+				Currency: in.Currency, Funding: in.Funding, Memo: in.Memo, IdempotencyKey: key})
+			switch {
+			case writeMoneyKindRefusal(w, err): // B59.42
+			case errors.Is(err, economy.ErrConnectApprovalsWaiting):
+				writeJSONErr(w, http.StatusTooManyRequests, err.Error())
+			case writePendingApproval(w, err):
+			case errors.Is(err, economy.ErrAgentMoneyPayment), errors.Is(err, economy.ErrSameAgent):
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrMoneyAccountNotFound):
+				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, economy.ErrPayeeCurrency), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
+				errors.Is(err, economy.ErrMoneyAccountNotOpen):
+				writeJSONErr(w, http.StatusConflict, err.Error())
+			case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
+				errors.Is(err, workspace.ErrMoneyWall):
+				writeJSONErr(w, http.StatusForbidden, err.Error())
+			case errors.Is(err, economy.ErrAccountNotOpened):
+				writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+			case err != nil:
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			default:
+				writeJSONOK(w, http.StatusOK, pay)
+			}
 			return
 		}
 		pay, err := bank.PayAgent(economy.WithMoveKey(ctx, key), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo)
@@ -2117,23 +2166,23 @@ func agentStatementPDF(st economy.Statement) []byte {
 		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04"))},
 		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 70},
 			{Name: "WITH", Width: 99}, {Name: "AMOUNT", Width: 88, Right: true}, {Name: "BALANCE", Width: 88.28, Right: true}},
-		Footer: "Times are UTC. Amounts are in LXC."}
+		Footer: "Times are UTC. Amounts are in US dollars."}
 	if st.AgentID != "" {
 		t.Lines = append(t.Lines, "Agent "+st.AgentID)
 	}
 	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXC(a.OpeningULXC)})
+		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXCMoney(a.OpeningULXC)})
 	}
 	for _, l := range st.Lines {
 		t.Rows = append(t.Rows, []string{day(l.At), l.Account, cmp.Or(l.Label, l.Kind), cmp.Or(l.Counterparty, l.Memo),
-			economy.LXC(l.AmountULXC), economy.LXC(l.BalanceAfterULXC)})
+			economy.LXCMoney(l.AmountULXC), economy.LXCMoney(l.BalanceAfterULXC)})
 	}
 	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXC(a.ClosingULXC)})
+		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXCMoney(a.ClosingULXC)})
 	}
 	for _, l := range st.MarketplaceBill {
 		t.Rows = append(t.Rows, []string{day(l.At), economy.OnMarketplaceBill, l.Kind, cmp.Or(l.PayeeAgentID, l.ListingID, l.Memo),
-			economy.LXC(l.AmountULXC), ""})
+			economy.LXCMoney(l.AmountULXC), ""})
 	}
 	return t.PDF()
 }

@@ -27,6 +27,10 @@ func openAPIWalletTags() []map[string]any {
 var (
 	agentColour = map[string]any{"type": "string", "enum": []string{"cobalt", "orchid", "sky", "mint", "lemon", "rose", "lime"}}
 	agentFace   = map[string]any{"type": "string", "enum": []string{"circle", "squircle", "hexagon", "flower"}}
+	// B61.35: what it does, and the picture it wears, which sets its colour; B61.101 adds the twenty B61.36 drew.
+	agentRole     = map[string]any{"type": "string", "enum": []string{"research", "sales", "bookkeeping", "ads", "travel", "support", "other"}, "description": "what it does; other names it in role_word"}
+	agentRoleWord = map[string]any{"type": "string", "maxLength": 40, "description": "what it does in its owner's own word, with role other"}
+	agentPicture  = map[string]any{"type": "string", "description": "an id from Lens's gallery: cobalt, orchid, sky, mint, lemon, rose, lime, shopper, grocer, bills, saver, coder, designer, writer, social, recruiter, legal, analyst, events, chef, coach, home, driver, tutor, musician, photographer or gardener. It sets the colour"}
 )
 
 func openAPIWalletSchemas() map[string]any {
@@ -54,6 +58,9 @@ func openAPIWalletSchemas() map[string]any {
 				"archived_at":   map[string]any{"type": "string", "format": "date-time", "nullable": true, "description": "set once the agent is archived: swept to zero, its keys revoked"},
 				"colour":        agentColour,
 				"face":          agentFace,
+				"role":          map[string]any{"type": "string", "description": "what it does: research, sales, bookkeeping, ads, travel, support or other; empty for an agent made before kinds"},
+				"role_word":     agentRoleWord,
+				"picture":       agentPicture,
 			},
 		},
 		"AgentBook": map[string]any{
@@ -84,6 +91,10 @@ func openAPIWalletSchemas() map[string]any {
 					"description": "µLXC it may pay one payee in a day, by the payee's id as the payee lists name it (a company's counts its agents and listings); a payment past it is refused and posts nothing. Absent keeps the stored caps; saved, it replaces them whole"},
 				"payee_monthly_limits_ulxc": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
 					"description": "payee_daily_limits_ulxc over the month, in timezone. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_daily_limits_minor": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
+					"description": "minor units of the rules' currency it may pay one payee in a day, by the payee's id; a payment in that currency is judged on its own amount, one in another at the conversion provider's rate, rounded up. payee_daily_limits_ulxc is what each is worth in LXC. Absent keeps the stored caps; saved, it replaces them whole"},
+				"payee_monthly_limits_minor": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"},
+					"description": "payee_daily_limits_minor over the month, in timezone. Absent keeps the stored caps; saved, it replaces them whole"},
 				"payee_allowances": map[string]any{"type": "object", "additionalProperties": map[string]any{"$ref": "#/components/schemas/PayeeAllowance"},
 					"description": "the owner's \"always allow\": by payee id, what the agent may pay that payee in a day or a month without approval; past it, a payment above approval_above_ulxc waits for approval again. Absent keeps the stored allowances; saved, it replaces them whole"},
 				"requests_per_minute":         map[string]any{"type": "integer", "description": "the requests to models it may make in any sixty seconds; one more is refused 429 and holds nothing. Absent keeps the stored cap"},
@@ -92,6 +103,7 @@ func openAPIWalletSchemas() map[string]any {
 				"allowed_providers":           strs,
 				"allowed_listings":            map[string]any{"type": "array", "items": str, "description": "marketplace listings it may use; empty allows any"},
 				"allowed_currencies":          map[string]any{"type": "array", "items": str, "description": "the currencies it may convert between, the one sold and the one bought, of GBP, EUR, USD and USDC; empty allows any. Absent keeps the stored list"},
+				"fx_daily_limit_minor":        map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, in minor units of the rules' currency: what it sells in that currency on its own amount, in another at the conversion provider's rate, rounded up; 0 is no limit. Absent keeps the stored maximum"},
 				"fx_daily_limit_ulxc":         map[string]any{"type": "integer", "format": "int64", "description": "the most it may convert in a day, in timezone, valued as its payments are; 0 is no limit. Absent keeps the stored maximum"},
 				"allowed_payees":              map[string]any{"type": "array", "items": str, "description": "the ids of the agents, listings, companies (a company names its agents and listings) and card merchants it may pay; once it names any, a payment to another is refused. Absent keeps the stored list"},
 				"blocked_payees":              map[string]any{"type": "array", "items": str, "description": "the ids of the payees it may not pay; a payment to one is refused and posts nothing. Absent keeps the stored list"},
@@ -103,9 +115,10 @@ func openAPIWalletSchemas() map[string]any {
 				"pause_on_unusual_spend":      map[string]any{"type": "boolean"},
 			},
 		},
-		"PayeeAllowance": map[string]any{"type": "object", "required": []string{"amount_ulxc", "per"}, "properties": map[string]any{
-			"amount_ulxc": map[string]any{"type": "integer", "format": "int64", "minimum": 1},
-			"per":         map[string]any{"type": "string", "enum": []string{"day", "month"}},
+		"PayeeAllowance": map[string]any{"type": "object", "required": []string{"per"}, "properties": map[string]any{
+			"amount_minor": map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "minor units of the rules' currency"},
+			"amount_ulxc":  map[string]any{"type": "integer", "format": "int64", "minimum": 1, "description": "what amount_minor is worth in LXC; sent alone, it is moved to dollars at the peg, and refused on rules in another currency"},
+			"per":          map[string]any{"type": "string", "enum": []string{"day", "month"}},
 		}},
 		"RuleTemplate": map[string]any{
 			"type":        "object",
@@ -258,6 +271,17 @@ func openAPIWalletSchemas() map[string]any {
 				"via":               map[string]any{"type": "string", "description": "marketplace: on the company's monthly marketplace bill"},
 			},
 		},
+		"AgentMoneyPayment": map[string]any{
+			"type":        "object",
+			"description": "A payment from an agent's currency account to another agent's account in the same currency (B61.18): one money entry of two postings.",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string", "description": "the money entry"}, "workspace_id": str, "from_agent_id": str, "from_account_id": str,
+				"to_workspace_id": str, "to_agent_id": str, "to_agent_name": str, "to_account_id": str,
+				"amount_minor": map[string]any{"type": "integer", "format": "int64", "description": "in the currency's minor units"},
+				"currency":     map[string]any{"type": "string", "enum": []string{"GBP", "EUR", "USD", "USDC"}}, "funding": str, "memo": str,
+				"idempotency_key": str, "created_at": map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
 		"PendingApproval": map[string]any{
 			"type":        "object",
 			"description": "A request above the agent's approval amount, held for the workspace's owner (B58.2): nothing was paid. Retry it once the owner approves approval_id.",
@@ -362,10 +386,11 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws},
 				map[string]any{"200": ok("the agents and the workspace's totals", ref("AgentBook"))}),
 			"post": withBody(op("Create an agent",
-				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too. Without colour or face, Lens picks them from the agent's id, the next free pair when another live agent of the workspace wears that one.",
+				"Owner or admin. The signed-in person owns the agent; an admin credential names the owner in owner_user_id. With template, the agent starts with exactly that rule template's rules, and the answer carries template and rules too. Without colour or face, Lens picks them from the agent's id, the next free pair when another live agent of the workspace wears that one. A picture sets the colour; role is what it does, and role other names it in role_word.",
 				[]map[string]any{ws},
-				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, no such template, or a colour or face not on its list"}}),
+				map[string]any{"201": ok("the new agent, balance zero", ref("Agent")), "400": map[string]any{"description": "no name, no owner, no such template, or a colour, face, picture or role not on its list"}}),
 				body(obj([]string{"name"}, map[string]any{"name": str, "owner_user_id": str, "colour": agentColour, "face": agentFace,
+					"picture": agentPicture, "role": agentRole, "role_word": agentRoleWord,
 					"template": map[string]any{"type": "string", "example": "support-bot", "description": "the id of a rule template to start from"}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/rule-templates": map[string]any{
@@ -403,10 +428,11 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}": map[string]any{
 			"patch": withBody(op("Rename, describe or change the face of the agent",
-				"Owner or admin. Any of the fields; a name cannot be blank, a description is at most 500 characters, and a colour or face is one on its list.",
+				"Owner or admin. Any of the fields; a name cannot be blank, a description is at most 500 characters, and a colour, face, picture or role is one on its list. A picture sets the colour, and a colour without one takes its colour's picture; role_word comes only with role other.",
 				[]map[string]any{ws, agent},
-				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, a colour or face not on its list, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
-				body(obj(nil, map[string]any{"name": str, "description": str, "colour": agentColour, "face": agentFace}))),
+				map[string]any{"200": ok("the agent", ref("Agent")), "400": map[string]any{"description": "a blank name, a description too long, a colour, face, picture or role not on its list, or an unknown field"}, "404": map[string]any{"description": "no such agent"}}),
+				body(obj(nil, map[string]any{"name": str, "description": str, "colour": agentColour, "face": agentFace,
+					"picture": agentPicture, "role": agentRole, "role_word": agentRoleWord}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/archive": map[string]any{
 			"post": op("Archive the agent",
@@ -633,12 +659,16 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/pay": map[string]any{
 			"post": withBody(op("Pay another agent",
-				"By the agent's own key, a connected assistant, the workspace's owner or an admin. The agent's rules judge it like any other spend. Above the agent's approval amount it is held for the owner: 202, nothing is paid, and the same request goes through once the owner approves.",
+				"By the agent's own key, a connected assistant, the workspace's owner or an admin. With amount_minor and currency it pays from the agent's account in that currency into the other agent's account in the same currency, in this workspace or another, under the Idempotency-Key, which it needs: one entry, on both accounts' statements (AgentMoneyPayment). Nothing is converted: an agent with no account in the currency is refused 409. The agent's rules judge it like any other spend. Above the agent's approval amount it is held for the owner: 202, nothing is paid, and the same request goes through once the owner approves.",
 				[]map[string]any{ws, agent, idempotency},
-				map[string]any{"200": ok("the payment", ref("AgentPayment")), "202": ok("held for the owner's approval", ref("PendingApproval")),
-					"403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "404": map[string]any{"description": "no such agent"},
-					"409": map[string]any{"description": "the agent's balance cannot cover it, or the Idempotency-Key was used for another payment"}}),
-				body(obj([]string{"to_agent_id", "amount_ulxc"}, map[string]any{"to_agent_id": str, "amount_ulxc": ulxc, "memo": str}))),
+				map[string]any{"200": ok("the payment: AgentMoneyPayment in a currency, AgentPayment in credits", map[string]any{"oneOf": []any{ref("AgentMoneyPayment"), ref("AgentPayment")}}), "202": ok("held for the owner's approval", ref("PendingApproval")),
+					"403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "404": map[string]any{"description": "no such agent, or no account in the currency to pay from"},
+					"409": map[string]any{"description": "the agent's balance cannot cover it, the agent paid has no account in the currency, money of a kind a workspace does not hold (code wrong_money_kind), or the Idempotency-Key was used for another payment"}}),
+				body(obj([]string{"to_agent_id"}, map[string]any{"to_agent_id": map[string]any{"type": "string", "description": "an agent id or @handle"},
+					"amount_minor": map[string]any{"type": "integer", "format": "int64", "description": "with currency: the amount in its minor units"},
+					"currency":     map[string]any{"type": "string", "enum": []string{"GBP", "EUR", "USD", "USDC"}},
+					"funding":      map[string]any{"type": "string", "enum": []string{"test", "live"}},
+					"amount_ulxc":  ulxc, "memo": str}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/transfers": map[string]any{
 			"get": op("List what the agent sent and received", "",

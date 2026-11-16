@@ -263,7 +263,7 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 		t.ID = "xfer_" + uuid.NewString()
 	}
 	if judged {
-		if err := enforceAgentRules(ctx, tx, t.FromWorkspaceID, t.FromAgentID, t.AmountULXC, t.ID); err != nil {
+		if err := s.enforceAgentRules(ctx, tx, t.FromWorkspaceID, t.FromAgentID, t.AmountULXC, t.ID); err != nil {
 			return t, err
 		}
 	}

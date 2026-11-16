@@ -545,7 +545,7 @@ func (s *DualTokenStore) runScheduleTick(ctx context.Context, now time.Time) (st
 			entry = uuid.MustParse(t.EntryID)
 		}
 	default:
-		_, perr = payAgentTx(payCtx, sp, workspaceID,
+		_, perr = s.payAgentTx(payCtx, sp, workspaceID,
 			AgentPayment{FromAgentID: sc.FromAgentID, ToAgentID: sc.ToAgentID, AmountULXC: sc.AmountULXC, Memo: sc.Memo}, entry)
 	}
 	switch {
@@ -637,7 +637,7 @@ func (s *DualTokenStore) payListingTx(ctx context.Context, sp pgx.Tx, workspaceI
 	}
 	useID, refusal, err := s.listings.ChargeScheduledListing(ctx, sp, workspaceID, sc.FromAgentID, sc.ToListingID, sc.AmountULXC, sc.NextRunAt,
 		func(price int64) error {
-			return enforceAgentRules(ctx, sp, workspaceID, sc.FromAgentID, price, "schedule:"+sc.ID)
+			return s.enforceAgentRules(ctx, sp, workspaceID, sc.FromAgentID, price, "schedule:"+sc.ID)
 		})
 	if err != nil {
 		return nil, err

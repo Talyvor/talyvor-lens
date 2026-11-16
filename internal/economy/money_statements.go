@@ -74,6 +74,8 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.entry_id, p.line, e.created_at, e.kind, p.amount_minor, p.funding,
 		       COALESCE(NULLIF(e.counterparty, ''),
+		         (SELECT CASE WHEN pp.from_account_id = p.account_id THEN pp.to_shown_name ELSE pp.from_shown_name END
+		            FROM person_payments pp WHERE pp.id = p.entry_id), -- B61.32: each side sees the other by their shown name
 		         (SELECT CASE WHEN o.workspace_id = $2 THEN o.id ELSE 'workspace:' || o.workspace_id END
 		            FROM money_postings op JOIN money_accounts o ON o.id = op.account_id
 		           WHERE op.entry_id = p.entry_id AND op.account_id <> p.account_id ORDER BY op.line LIMIT 1), ''),

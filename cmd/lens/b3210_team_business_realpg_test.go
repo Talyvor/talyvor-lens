@@ -250,8 +250,8 @@ func TestB3210_TeamAndBusinessAreSoldInTestModeAndEveryPlanIsRecorded(t *testing
 	deliver("checkout.session.completed", map[string]any{"id": "cs_test_" + teamWS, "object": "checkout.session", "mode": "subscription",
 		"payment_status": "paid", "status": "complete", "subscription": "sub_" + teamWS, "metadata": map[string]string{"workspace_id": teamWS}})
 	row("team", "price_test_team", false)
-	if got, err := svc.GetSubscription(ctx, teamWS); err != nil || got.Plan != "team" || !got.Subscribed {
-		t.Fatalf("GetSubscription = %+v, %v; want subscribed on team", got, err)
+	if got, err := svc.GetSubscription(ctx, teamWS); err != nil || got.Plan != "business_company" || !got.Subscribed {
+		t.Fatalf("GetSubscription = %+v, %v; want subscribed, on Company (team's successor)", got, err)
 	}
 
 	// A company plan is never moved to a personal one: there is no allowance to prorate.
@@ -292,19 +292,20 @@ func TestB3210_TeamAndBusinessAreSoldInTestModeAndEveryPlanIsRecorded(t *testing
 		t.Fatalf("the old subscription's plan = %q, %v; want pro, from price_test_pro", old, err)
 	}
 
-	// No subscription: free. The operator records an Enterprise contract: enterprise, with its fee, in the trail.
-	if plan, err := billing.PlanOf(ctx, pool, freeWS); err != nil || plan != "free" {
-		t.Fatalf("PlanOf(no subscription) = %q, %v; want free", plan, err)
+	// No subscription: Studio, a business's first plan (B61.57). The operator records a contract: Custom, with its fee,
+	// in the trail.
+	if plan, err := billing.PlanOf(ctx, pool, freeWS); err != nil || plan != "business_studio" {
+		t.Fatalf("PlanOf(no subscription) = %q, %v; want Studio", plan, err)
 	}
-	if w := do(http.MethodPut, "/v1/admin/workspaces/"+freeWS+"/contract", `{"plan":"enterprise","platform_fee_bps":80,"reference":"ACME-2026-01"}`,
+	if w := do(http.MethodPut, "/v1/admin/workspaces/"+freeWS+"/contract", `{"plan":"business_custom","platform_fee_bps":80,"reference":"ACME-2026-01"}`,
 		moderatorOperatorHeader, "nicolai"); w.Code != http.StatusOK {
 		t.Fatalf("the operator's contract = %d %s", w.Code, w.Body.String())
 	}
-	if plan, err := billing.PlanOf(ctx, pool, freeWS); err != nil || plan != "enterprise" {
-		t.Fatalf("PlanOf(on a contract) = %q, %v; want enterprise", plan, err)
+	if plan, err := billing.PlanOf(ctx, pool, freeWS); err != nil || plan != "business_custom" {
+		t.Fatalf("PlanOf(on a contract) = %q, %v; want Custom", plan, err)
 	}
-	if got, err := svc.GetSubscription(ctx, freeWS); err != nil || got.Plan != "enterprise" || got.Subscribed {
-		t.Fatalf("GetSubscription(on a contract) = %+v, %v; want plan enterprise, no Stripe subscription", got, err)
+	if got, err := svc.GetSubscription(ctx, freeWS); err != nil || got.Plan != "business_custom" || got.Subscribed {
+		t.Fatalf("GetSubscription(on a contract) = %+v, %v; want Custom, no Stripe subscription", got, err)
 	}
 	if c, err := billing.ContractOf(ctx, pool, freeWS); err != nil || c == nil || c.PlatformFeeBPS == nil || *c.PlatformFeeBPS != 80 || c.SetBy != "nicolai" {
 		t.Fatalf("the contract = %+v, %v; want a platform fee of 80 bps, set by nicolai", c, err)

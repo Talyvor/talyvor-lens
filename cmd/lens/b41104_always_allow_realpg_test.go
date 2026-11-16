@@ -119,7 +119,7 @@ func TestB41104_ApprovingWithAlwaysAllowLetsTheNextPaymentToThatPayeeThroughWith
 		}
 	}
 	code, body := call(http.MethodPost, base+"approvals/"+held[0].ID+"/approve", `{"always_allow":{"amount_ulxc":10000000,"per":"month"}}`)
-	want := `"payee_allowances":{"` + supplier + `":{"amount_ulxc":10000000,"per":"month"}}`
+	want := `"payee_allowances":{"` + supplier + `":{"amount_ulxc":10000000,"amount_minor":100,"per":"month"}}` // $1.00 at the peg (B61.40)
 	if code != http.StatusOK || !strings.Contains(body, `"status":"approved"`) || !strings.Contains(body, want) {
 		t.Fatalf("approve with always_allow = %d %s, want approved and %s", code, body, want)
 	}

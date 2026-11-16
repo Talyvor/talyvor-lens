@@ -380,7 +380,7 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 // cardRules judges a purchase of d.AmountULXC by the agent's rules in tx: "" when they let it through, else why not,
 // with on d the approval it filed for a purchase above the approval amount.
 func (s *DualTokenStore) cardRules(ctx context.Context, tx pgx.Tx, a CardAuthorization, d *CardDecision) (string, error) {
-	err := enforceAgentRules(ctx, tx, d.WorkspaceID, d.AgentID, d.AmountULXC, a.AuthorizationID)
+	err := s.enforceAgentRules(ctx, tx, d.WorkspaceID, d.AgentID, d.AmountULXC, a.AuthorizationID)
 	if err == nil {
 		return "", nil
 	}

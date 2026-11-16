@@ -1,9 +1,16 @@
 // Package dbmigrate applies the repo's plain-SQL migrations (migrations/*.sql)
 // to a Postgres database, tracking applied versions in a schema_migrations
-// table so re-running is a no-op. The migrations are authored as sequential,
-// forward-only NNNN_name.sql files (no golang-migrate/goose tooling), and
-// several are not individually re-runnable (bare CREATE TABLE/INDEX), so the
-// tracking table — not the SQL — is what makes the runner idempotent.
+// table so re-running is a no-op. The migrations are forward-only plain SQL
+// (no golang-migrate/goose tooling), and several are not individually
+// re-runnable (bare CREATE TABLE/INDEX), so the tracking table — not the SQL —
+// is what makes the runner idempotent.
+//
+// A migration is named YYMMDDHHMMx_name.sql: the UTC minute it was written and
+// the builder's letter, e.g. 2611151820a_agent_notes.sql, so two open branches
+// cannot take the same version (B61.68). The files up to 0398 keep their
+// sequential NNNN_name.sql names. Versions sort as text, and every NNNN starts
+// with 0 while every timestamp starts with 2, so a timestamped migration always
+// applies after every numbered one and the numbered ones keep their order.
 package dbmigrate
 
 import (
@@ -13,6 +20,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -32,7 +40,7 @@ const noTxMarker = "-- lens:no-transaction"
 
 // Migration is one parsed *.sql file.
 type Migration struct {
-	Version string // numeric prefix, e.g. "0001"
+	Version string // the prefix before the first '_', e.g. "0001" or "2611151820a"
 	Name    string // full filename, e.g. "0001_init.sql"
 	SQL     string // file body
 	// NoTx is true when the file body contains noTxMarker.  The runner
@@ -42,8 +50,8 @@ type Migration struct {
 }
 
 // Parse reads every *.sql file at the root of fsys and returns them sorted by
-// numeric version. Non-.sql files are ignored. Errors on a malformed name
-// (no NNNN_ prefix) or a duplicate version (ambiguous ordering).
+// version. Non-.sql files are ignored. Errors on a malformed name (neither an
+// NNNN_ nor a YYMMDDHHMMx_ prefix) or a duplicate version (ambiguous ordering).
 func Parse(fsys fs.FS) ([]Migration, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
@@ -58,7 +66,7 @@ func Parse(fsys fs.FS) ([]Migration, error) {
 		}
 		version, ok := versionPrefix(name)
 		if !ok {
-			return nil, fmt.Errorf("dbmigrate: %q has no NNNN_ version prefix", name)
+			return nil, fmt.Errorf("dbmigrate: %q has no version prefix: name it YYMMDDHHMMx_name.sql, the UTC minute and your builder letter", name)
 		}
 		if prev, dup := seen[version]; dup {
 			return nil, fmt.Errorf("dbmigrate: duplicate version %s (%q and %q)", version, prev, name)
@@ -80,21 +88,34 @@ func Parse(fsys fs.FS) ([]Migration, error) {
 	return out, nil
 }
 
-// versionPrefix extracts the leading run of digits before the first '_'.
-// "0001_init.sql" -> "0001". Returns ok=false when there is no leading digit
-// run terminated by '_'.
+// versionPrefix extracts the version before the first '_': a run of digits
+// ("0001_init.sql" -> "0001") or a timestamp ("2611151820a_notes.sql" ->
+// "2611151820a"). Returns ok=false for anything else.
 func versionPrefix(name string) (string, bool) {
 	i := strings.IndexByte(name, '_')
 	if i <= 0 {
 		return "", false
 	}
 	prefix := name[:i]
+	if isTimestamp(prefix) {
+		return prefix, true
+	}
 	for _, r := range prefix {
 		if r < '0' || r > '9' {
 			return "", false
 		}
 	}
 	return prefix, true
+}
+
+// isTimestamp reports whether v is a UTC minute YYMMDDHHMM followed by one
+// lower-case builder letter, e.g. "2611151820a".
+func isTimestamp(v string) bool {
+	if len(v) != 11 || v[10] < 'a' || v[10] > 'z' {
+		return false
+	}
+	_, err := time.Parse("0601021504", v[:10])
+	return err == nil
 }
 
 // Run applies every not-yet-recorded migration from fsys to the database in

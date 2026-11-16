@@ -209,6 +209,7 @@ var moneyRoutes = map[string]moneySide{
 	// money_accounts_handler.go
 	"/v1/money/accounts":               moneySideEither,
 	"/v1/money/accounts/{}/details":    moneySideEither,
+	"/v1/money/accounts/{}/funding":    moneySideEither, // B61.66: between the company and an agent, in the account's currency
 	"/v1/money/accounts/{}/statement":  moneySideEither,
 	"/v1/money/accounts/{}/test-money": moneySideEither,
 	"/v1/money/overview":               moneySideEither,
@@ -291,6 +292,11 @@ var moneyRoutes = map[string]moneySide{
 	// money_notices_handler.go
 	"/v1/money/notices":          moneySideEither,
 	"/v1/money/notices/settings": moneySideEither,
+
+	// people_handler.go
+	"/v1/money/people/find":          moneySideEither,
+	"/v1/money/people/pay":           moneySideEither,
+	"/v1/money/people/pay/challenge": moneySideEither,
 
 	// money_payees_handler.go
 	"/v1/money/payees":                      moneySideEither,

@@ -26,6 +26,9 @@ import (
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
 //	                          test money into a company account, a payment in from the Test partner
+//	POST /v1/money/accounts/{id}/funding {direction, amount_minor, idempotency_key, funding} — B61.66: the owner or an
+//	                          admin moves money now between the company's account and this agent account in its
+//	                          currency: direction to_agent gives the agent money, to_company takes it back
 //	GET  /v1/money/accounts/{id}/statement?from=&to=&format=json|csv — B56.14: every posting to it in [from, to), with
 //	                          the opening, in, out and closing balances
 //	GET  /v1/money/overview   ?agent_id= — B30.28: the cash view: totals per currency for the company and each agent,
@@ -40,6 +43,7 @@ type moneyAccountBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
+	MoveAgentMoney(ctx context.Context, workspaceID, agentAccountID, direction string, amountMinor int64, funding, key, by string) (economy.AgentFunding, error)
 	AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (economy.MoneyStatement, error)
 	MoneyOverview(ctx context.Context, workspaceID, agentID string, now time.Time) (economy.MoneyOverview, error)
 }
@@ -144,6 +148,35 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writePaymentErr(w, err)
 		default:
 			writeJSONOK(w, http.StatusCreated, e)
+		}
+	})
+	r.Post("/v1/money/accounts/{id}/funding", func(w http.ResponseWriter, req *http.Request) {
+		ws, _ := auth.WorkspaceIdentity(req.Context())
+		by, owner := storedanswers.OwnerOrAdmin(req.Context())
+		if ws == "" || !owner {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may move money between the company and an agent")
+			return
+		}
+		var in struct {
+			Direction      string `json:"direction"`
+			AmountMinor    int64  `json:"amount_minor"`
+			IdempotencyKey string `json:"idempotency_key"`
+			Funding        string `json:"funding"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"direction": "to_agent|to_company", "amount_minor": <positive>, "idempotency_key": "<key>", "funding": "test|live"}`)
+			return
+		}
+		f, err := bank.MoveAgentMoney(req.Context(), ws, chi.URLParam(req, "id"), in.Direction, in.AmountMinor, in.Funding, in.IdempotencyKey, by)
+		switch {
+		case errors.Is(err, economy.ErrAgentFunding):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentFundingShort):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusCreated, f)
 		}
 	})
 	r.Get("/v1/money/accounts/{id}/statement", func(w http.ResponseWriter, req *http.Request) {

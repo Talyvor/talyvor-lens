@@ -158,7 +158,7 @@ func TestNativePush_ApprovalsReachEachPhoneUntilRevoked(t *testing.T) {
 	a := apnsGot[0]
 	alert, _ := a.body["aps"].(map[string]any)["alert"].(map[string]any)
 	if a.path != "/3/device/"+iosToken || a.header.Get("apns-topic") != "com.talyvor.app" || a.header.Get("apns-push-type") != "alert" ||
-		!strings.HasPrefix(a.header.Get("Authorization"), "bearer ey") || alert["body"] != "researcher wants to pay vendor $0.20 (2 LXC)" ||
+		!strings.HasPrefix(a.header.Get("Authorization"), "bearer ey") || alert["body"] != "researcher wants to pay vendor $0.20" ||
 		a.body["approval_id"] != held.ID {
 		t.Errorf("the APNs push = %s %v %v", a.path, a.header, a.body)
 	}
@@ -167,7 +167,7 @@ func TestNativePush_ApprovalsReachEachPhoneUntilRevoked(t *testing.T) {
 	note, _ := msg["notification"].(map[string]any)
 	data, _ := msg["data"].(map[string]any)
 	if f.path != "/v1/projects/talyvor-test/messages:send" || f.header.Get("Authorization") != "Bearer ya29.test" || msg["token"] != fcmToken ||
-		note["body"] != "researcher wants to pay vendor $0.20 (2 LXC)" || data["approval_id"] != held.ID {
+		note["body"] != "researcher wants to pay vendor $0.20" || data["approval_id"] != held.ID {
 		t.Errorf("the FCM push = %s %v %v", f.path, f.header, f.body)
 	}
 
@@ -175,16 +175,14 @@ func TestNativePush_ApprovalsReachEachPhoneUntilRevoked(t *testing.T) {
 	if code, body := call("/v1/money/devices/dev_b4015_iphone/revoke", ""); code != http.StatusOK {
 		t.Fatalf("revoke = %d %s", code, body)
 	}
-	// B55.30: LENS_MONEY_ORDER=lxc_first puts the LXC before its dollars.
-	t.Setenv(economy.MoneyOrderEnv, "lxc_first")
+	// B61.16: the push names the dollars alone.
 	if _, err := store.RequestPaymentApproval(ctx, ws, agent.ID, payee.ID, 3_000_000, "invoice 8", "November hosting"); err != nil {
 		t.Fatal(err)
 	}
 	wait(1, 2)
-	if msg, _ := fcmGot[1].body["message"].(map[string]any); msg["notification"].(map[string]any)["body"] != "researcher wants to pay vendor 3 LXC ($0.30)" {
-		t.Errorf("under lxc_first the push = %v", msg)
+	if msg, _ := fcmGot[1].body["message"].(map[string]any); msg["notification"].(map[string]any)["body"] != "researcher wants to pay vendor $0.30" {
+		t.Errorf("the second push = %v", msg)
 	}
-	t.Setenv(economy.MoneyOrderEnv, "")
 
 	// A request prepared for approval: the payee and the total, never the account number.
 	if _, err := pool.Exec(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number, check_result, checked_by)

@@ -23,7 +23,9 @@ import (
 //	                                                   and every check, newest first; a pending check, or a pass, is
 //	                                                   asked again first
 //	POST /v1/workspaces/{wsID}/verification/contact    {email, phone}                          L1: email and phone confirmed
-//	POST /v1/workspaces/{wsID}/verification/identity   {name, country, date_of_birth}          L2: identity checked
+//	POST /v1/workspaces/{wsID}/verification/identity   {name, country, date_of_birth, address: {lines, town, postcode, country}}
+//	                                                                                           L2: identity checked; the
+//	                                                                                           address is optional, and whole
 //	POST /v1/workspaces/{wsID}/verification/company    {name, country, company_number, directors, people_with_significant_control}
 //	                                                                                           L3: company checked
 //

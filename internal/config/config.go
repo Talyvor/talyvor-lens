@@ -1187,6 +1187,11 @@ type Config struct {
 	// get) until Nicolai sets it.
 	PhoneChecksPerAddressHour int
 
+	// PasscodeSecret is mixed into the slow hash of every person's passcode (B61.23), so the rows alone cannot be
+	// tried offline: six digits are a million guesses. It lives outside the database. Env: LENS_PASSCODE_SECRET, at
+	// least 32 characters (`openssl rand -hex 32`); unset, setting and checking a passcode answer 503.
+	PasscodeSecret string
+
 	// GasBudgetWei is each workspace's budget, on each chain, for the network fees a paymaster pays for its agents,
 	// in wei of the chain's coin, before the owner tops it up (B48.5). Env: LENS_GAS_BUDGET_WEI, default 0 —
 	// Nicolai's to set: until he does, an agent's first sponsored send asks its owner to top the budget up.
@@ -2606,6 +2611,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_STARTER_TEST_MONEY_ULXC must be a non-negative integer (µLXC), got %q", v)
 		}
 		c.StarterTestMoneyULXC = n
+	}
+	c.PasscodeSecret = os.Getenv("LENS_PASSCODE_SECRET")
+	if c.PasscodeSecret != "" && len(c.PasscodeSecret) < 32 {
+		return nil, fmt.Errorf("config: LENS_PASSCODE_SECRET must be at least 32 characters (openssl rand -hex 32), got %d", len(c.PasscodeSecret))
 	}
 	c.PhoneChecksPerAddressHour = 5
 	if v := os.Getenv("LENS_PHONE_CHECKS_PER_ADDRESS_HOUR"); v != "" {

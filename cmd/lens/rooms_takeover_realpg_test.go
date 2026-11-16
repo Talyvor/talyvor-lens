@@ -171,7 +171,7 @@ func TestRooms_InactiveOwnerIsReplacedByAPointsMajorityVote(t *testing.T) {
 	}
 	if code, body := call(bob, http.MethodPost, base+"/owner", `{"workspace_id":"`+alice+`"}`); code != http.StatusPaymentRequired ||
 		!strings.Contains(body, `"setting":"rooms_plan_limits"`) ||
-		!strings.Contains(body, `"error":"The new owner’s plan, Free, allows 3 public rooms."`) {
+		!strings.Contains(body, `"error":"The new owner’s plan, Studio, allows 3 public rooms."`) {
 		t.Fatalf("handing a fourth public room to a free workspace = %d %s, want 402 naming rooms_plan_limits", code, body)
 	}
 	var after rooms.Detail

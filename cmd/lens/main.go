@@ -466,9 +466,6 @@ func run() error {
 	if err := rooms.CheckLimits(); err != nil {
 		return err
 	}
-	if err := economy.CheckMoneyOrder(); err != nil {
-		return err
-	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
 	if err != nil {
 		return err
@@ -1864,6 +1861,10 @@ func run() error {
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
 	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
+	// B61.32: how many people an account may look up an hour, a setting Nicolai fills; unset, the default.
+	if n, err := strconv.Atoi(os.Getenv("LENS_PERSON_LOOKUPS_PER_HOUR")); err == nil {
+		dualToken.SetPersonLookupsPerHour(n)
+	}
 	// B30.5: every agent's Know Your Agent credential, signed with Ed25519.
 	kyaKey, kyaEphemeral, err := kya.ParseKey(cfg.KYASigningKey)
 	if err != nil {
@@ -2027,7 +2028,14 @@ func run() error {
 	// B61.22 — the front door by phone number: codes texted by the registry's text sender (the Sandbox one until a
 	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
 	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
-		PerAddressHour: cfg.PhoneChecksPerAddressHour}
+		PerAddressHour: cfg.PhoneChecksPerAddressHour,
+		PasscodeSecret: []byte(cfg.PasscodeSecret),
+		// B61.24 — a person's sign-in keys are checked as approvals check theirs: the same relying party and origins,
+		// and the same check of a phone's device key.
+		RP:      &passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins},
+		Devices: &devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}}
+	// B61.23 — the key rules ask the door's own passcode.
+	phoneDoor.Passcodes = phoneDoor.PasscodeRule()
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
@@ -2909,6 +2917,10 @@ func run() error {
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
 	// B61.22 — how many people and what the phone door did in a day, never whose.
 	r.Get("/v1/admin/people/counts", requireAdminOrOperatorRead(authManager, newPeopleCountsHandler(phoneDoor)))
+	// B61.30 — the way back in for a person with neither their number nor a key: the operator moves the number, with
+	// the step-up code and an operator_audit row, after the person's identity check passes again. number_move_handler.go.
+	r.Post("/v1/admin/people/move-number", requireAdminStepUp(authManager, stepUp, operatorAudit, "person.move_number",
+		requireAdmin(authManager, newNumberMoveHandler(phoneDoor, wsManager, dualToken, partnerRegistry.Verification))))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
 	// (non-money read of ledger metadata + keel_findings; keeps the U8/U9 ExactlySix replica-reader invariant
 	// unchanged).
@@ -3111,6 +3123,8 @@ func run() error {
 
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
+		// B61.57 — both ladders, each plan's price in every currency and what it allows (plan_gates_handler.go).
+		pub.Get("/v1/public/plans", publicPlansHandler)
 
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
@@ -3217,6 +3231,13 @@ func run() error {
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
+	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
+	// makes the account's approval key, over a challenge the account issues.
+	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken, wsManager)
+	// B61.32 — a person's Talyvor name and how they are found, for the suite BFF on the same secret.
+	mountPeopleFindingRoutes(limited, cfg.ProvisionSecret, dualToken)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
@@ -4224,6 +4245,9 @@ func run() error {
 		// B32.12 — the workspace's plan and what it unlocks, and the seats check the members feature asks before
 		// it adds one (plan_gates_handler.go). {wsID} is bound to the caller's credential like its siblings.
 		authed.Get("/v1/workspaces/{wsID}/plan", newWorkspacePlanHandler(pool))
+		// B61.57 — the owner moves the account along its own ladder; nothing is charged, and while Lens's Stripe key is
+		// live a paid plan is refused.
+		authed.Put("/v1/workspaces/{wsID}/plan", newWorkspacePlanChangeHandler(pool, billing.LiveKey(cfg.StripeSecretKey)))
 		authed.Get("/v1/workspaces/{wsID}/plan/seats", newSeatsCheckHandler(pool))
 
 		// B27.26 — "Your provider keys" (provider_keys_routes.go), only while custody is armed.
@@ -5086,6 +5110,7 @@ func run() error {
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountPersonPaymentRoutes(authed, dualToken)                                     // B61.32
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
 		mountMoneyWalletRoutes(authed, dualToken)                                       // B59.51
 		mountInstantTransferRoutes(authed, dualToken)                                   // B59.14
