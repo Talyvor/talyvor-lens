@@ -109,10 +109,14 @@ type AgentPicture struct {
 }
 
 // AgentPictures is the gallery Lens holds (B61.35): the six helpers' pictures under the ids of the colours the apps
-// draw them for, and lime, today's plain face, so every agent that exists wears the picture its colour had. B61.36 adds
-// more. A picture carries no name.
+// draw them for, and lime, today's plain face, so every agent that exists wears the picture its colour had; then the
+// twenty B61.36 added, each in one of the seven colours (B61.101). A picture carries no name.
 var AgentPictures = []AgentPicture{
 	{"cobalt", "cobalt"}, {"orchid", "orchid"}, {"sky", "sky"}, {"mint", "mint"}, {"lemon", "lemon"}, {"rose", "rose"}, {"lime", "lime"},
+	{"shopper", "lime"}, {"grocer", "mint"}, {"bills", "sky"}, {"saver", "rose"}, {"coder", "cobalt"},
+	{"designer", "orchid"}, {"writer", "lemon"}, {"social", "rose"}, {"recruiter", "sky"}, {"legal", "cobalt"},
+	{"analyst", "mint"}, {"events", "orchid"}, {"chef", "lemon"}, {"coach", "lime"}, {"home", "rose"},
+	{"driver", "sky"}, {"tutor", "cobalt"}, {"musician", "orchid"}, {"photographer", "lemon"}, {"gardener", "lime"},
 }
 
 // AgentLook is how a new agent looks and what it does (B57.10, B61.35); a "" field is none named.

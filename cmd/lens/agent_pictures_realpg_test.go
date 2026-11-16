@@ -113,3 +113,39 @@ func TestAgentRoutes_AnAgentKeepsItsKindAndItsPicture(t *testing.T) {
 		t.Fatalf("after a refused patch the book reads %v, want travel / lemon", a)
 	}
 }
+
+// B61.101 — an agent made with one of the twenty new pictures, whose colour is not its id, reads back as it was made.
+func TestAgentRoutes_AnAgentWearsANewPicture(t *testing.T) {
+	pool := agentRoutesDB(t)
+	const ws = "ws-new-pictures"
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, economy.NewDualTokenStore(nil, pool, nil), tenant.NewStore(pool))
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	call := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	base := "/v1/workspaces/" + ws + "/agents"
+
+	code, chef := call(http.MethodPost, base, `{"name":"Basil","picture":"chef"}`)
+	if code != http.StatusCreated || chef["picture"] != "chef" || chef["colour"] != "lemon" {
+		t.Fatalf("create chef = %d %v, want picture chef, colour lemon", code, chef)
+	}
+	code, out := call(http.MethodGet, base, ``)
+	if code != http.StatusOK || len(out["agents"].([]any)) != 1 {
+		t.Fatalf("GET agents = %d %v, want the one agent", code, out)
+	}
+	if a := out["agents"].([]any)[0].(map[string]any); a["picture"] != "chef" || a["colour"] != "lemon" {
+		t.Fatalf("the book reads %v, want chef / lemon", a)
+	}
+	if code, out := call(http.MethodPost, base, `{"name":"X","picture":"astronaut"}`); code != http.StatusBadRequest ||
+		!strings.Contains(out["error"].(string), `"astronaut" is not an agent picture`) {
+		t.Fatalf("create astronaut = %d %v, want 400 saying it is not an agent picture", code, out)
+	}
+}
