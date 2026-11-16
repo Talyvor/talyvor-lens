@@ -58,9 +58,18 @@ type KYACapability struct {
 	Money string `json:"money"`
 }
 
-// KYALimits summarises the agent's rules in force, boosts included, in µLXC (1 LXC = 1,000,000 µLXC). A limit that
+// KYALimits summarises the agent's rules in force, boosts included: in the currency they are held in, in its minor
+// units, as the owner typed them (B61.42), and in µLXC (1 LXC = 1,000,000 µLXC) for the parked gateway. A limit that
 // is absent is not set.
 type KYALimits struct {
+	Currency           string `json:"currency,omitempty"` // the rules' currency: GBP, EUR, USD or USDC
+	MaxPerPaymentMinor int64  `json:"max_per_payment_minor,omitempty"`
+	HourlyLimitMinor   int64  `json:"hourly_limit_minor,omitempty"`
+	DailyLimitMinor    int64  `json:"daily_limit_minor,omitempty"`
+	WeeklyLimitMinor   int64  `json:"weekly_limit_minor,omitempty"`
+	MonthlyLimitMinor  int64  `json:"monthly_limit_minor,omitempty"`
+	ApprovalAboveMinor int64  `json:"approval_above_minor,omitempty"` // a person approves anything above it
+
 	MaxPerRequestULXC int64  `json:"max_per_request_ulxc,omitempty"`
 	HourlyLimitULXC   int64  `json:"hourly_limit_ulxc,omitempty"`
 	DailyLimitULXC    int64  `json:"daily_limit_ulxc,omitempty"`
@@ -165,7 +174,9 @@ func agentKYAFacts(ctx context.Context, q pgxDB, workspaceID, agentID string) (A
 		return f, err
 	}
 	r.applyBoosts(boosts)
-	f.Limits = KYALimits{MaxPerRequestULXC: r.MaxPerRequestULXC, HourlyLimitULXC: limitOf(r.HourlyLimitULXC),
+	f.Limits = KYALimits{Currency: r.currency(), MaxPerPaymentMinor: r.MaxPerPaymentMinor, HourlyLimitMinor: limitOf(r.HourlyLimitMinor),
+		DailyLimitMinor: r.DailyLimitMinor, WeeklyLimitMinor: limitOf(r.WeeklyLimitMinor), MonthlyLimitMinor: r.MonthlyLimitMinor,
+		ApprovalAboveMinor: r.ApprovalAboveMinor, MaxPerRequestULXC: r.MaxPerRequestULXC, HourlyLimitULXC: limitOf(r.HourlyLimitULXC),
 		DailyLimitULXC: r.DailyLimitULXC, WeeklyLimitULXC: limitOf(r.WeeklyLimitULXC), MonthlyLimitULXC: r.MonthlyLimitULXC,
 		ApprovalAboveULXC: r.ApprovalAboveULXC, MaxCommitmentULXC: limitOf(r.MaxCommitmentULXC),
 		RequestsPerMinute: limitOf(r.RequestsPerMinute), ModelsListed: len(r.AllowedModels) > 0 || len(r.AllowedProviders) > 0,
