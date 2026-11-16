@@ -112,14 +112,15 @@ var (
 )
 
 // VerificationRequest is what a check is asked to confirm: for L1 the email and phone; for L2 the person's name,
-// country and date of birth; for L3 the company's name, country, number, directors and people with significant
-// control. Lens passes the date of birth, email, phone and the people's names to the provider and keeps none of
-// them.
+// country, date of birth and, when given, home address (B61.45); for L3 the company's name, country, number,
+// directors and people with significant control. Lens passes the date of birth, home address, email, phone and the
+// people's names to the provider and keeps none of them.
 type VerificationRequest struct {
 	Level              VerificationLevel `json:"-"`
 	Name               string            `json:"name"`
 	Country            string            `json:"country"`
 	DateOfBirth        string            `json:"date_of_birth"`
+	Address            *HomeAddress      `json:"address,omitempty"` // an identity check's: lines, town, postcode, country
 	Email              string            `json:"email"`
 	Phone              string            `json:"phone"`
 	CompanyNumber      string            `json:"company_number"`
@@ -128,6 +129,9 @@ type VerificationRequest struct {
 	// Session is the sign-in asking (auth.AuthContext.Session): only it may lift a lockdown with this check (B41.116).
 	Session string `json:"-"`
 }
+
+// HomeAddress is a person's home address, as an identity check passes it to the provider.
+type HomeAddress = partners.KYCAddress
 
 // VerificationCheck is one check and where it stands.
 type VerificationCheck struct {
@@ -199,8 +203,9 @@ func checkVerificationRequest(in *VerificationRequest) error {
 			return bad("an identity check needs the date of birth as YYYY-MM-DD, not %q", in.DateOfBirth)
 		}
 		in.DateOfBirth = dob.Format(time.DateOnly)
-		return nil
+		return checkHomeAddress(in.Address)
 	}
+	in.Address = nil
 	tidy := func(names []string) []string {
 		out := []string{}
 		for _, n := range names {
@@ -217,6 +222,39 @@ func checkVerificationRequest(in *VerificationRequest) error {
 	case len(in.Directors) == 0:
 		return bad("a company check names the company's directors")
 	}
+	return nil
+}
+
+// checkHomeAddress refuses a home address without its lines, town, postcode or country, and tidies it: the lines
+// trimmed and the empty ones left out, the postcode in capitals with single spaces, the country as its code.
+func checkHomeAddress(a *HomeAddress) error {
+	if a == nil {
+		return nil
+	}
+	lines := []string{}
+	for _, l := range a.Lines {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	a.Lines, a.Town = lines, strings.Join(strings.Fields(a.Town), " ")
+	a.Postcode = strings.ToUpper(strings.Join(strings.Fields(a.Postcode), " "))
+	bad := func(what string) error {
+		return fmt.Errorf("%w: the home address needs %s", ErrVerificationInvalid, what)
+	}
+	switch {
+	case len(lines) == 0:
+		return bad("its first line")
+	case a.Town == "":
+		return bad("its town")
+	case a.Postcode == "":
+		return bad("its postcode")
+	}
+	countries, err := countryCodes([]string{a.Country})
+	if err != nil {
+		return bad(fmt.Sprintf("its country as an ISO 3166-1 alpha-2 code, like GB, not %q", a.Country))
+	}
+	a.Country = countries[0]
 	return nil
 }
 
@@ -253,7 +291,7 @@ func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partne
 	}
 	kyc := verifiers(subject, in.Country, synthetic)
 	res, err := kyc.StartCheck(ctx, partners.KYCRequest{ID: "kyc_" + uuid.NewString(), Subject: subject, Name: in.Name,
-		Country: in.Country, DateOfBirth: in.DateOfBirth, Email: in.Email, Phone: in.Phone, CompanyNumber: in.CompanyNumber,
+		Country: in.Country, DateOfBirth: in.DateOfBirth, Address: in.Address, Email: in.Email, Phone: in.Phone, CompanyNumber: in.CompanyNumber,
 		Directors: in.Directors, SignificantControl: in.SignificantControl})
 	if errors.Is(err, partners.ErrInvalid) {
 		return VerificationCheck{}, fmt.Errorf("%w: %v", ErrVerificationInvalid, err)
