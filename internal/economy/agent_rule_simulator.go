@@ -121,7 +121,7 @@ func (s *DualTokenStore) SimulateAgentRules(ctx context.Context, workspaceID, ag
 		return out, err
 	}
 	if in.AlwaysAllow != nil { // saved in tx only, which is rolled back
-		if err := allowPayeeTx(ctx, tx, workspaceID, agentID, in.Payee.ID, *in.AlwaysAllow); errors.Is(err, ErrAgentRule) {
+		if err := s.allowPayeeTx(ctx, tx, workspaceID, agentID, in.Payee.ID, *in.AlwaysAllow); errors.Is(err, ErrAgentRule) {
 			return out, fmt.Errorf("%w: %s", ErrBadSimulation, strings.TrimPrefix(err.Error(), ErrAgentRule.Error()+": "))
 		} else if err != nil {
 			return out, err
