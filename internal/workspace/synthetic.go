@@ -30,9 +30,9 @@ func (m *Manager) GetSynthetic(wsID string) bool {
 	return ok && ws.Synthetic
 }
 
-// CreateSynthetic registers a new synthetic workspace. It refuses an id that already exists, so a
-// real workspace can never be turned into a synthetic one.
-func (m *Manager) CreateSynthetic(ctx context.Context, id, name string) error {
+// CreateSynthetic registers a new synthetic workspace of accountType (business or personal; "" is a business). It
+// refuses an id that already exists, so a real workspace can never be turned into a synthetic one.
+func (m *Manager) CreateSynthetic(ctx context.Context, id, name, accountType string) error {
 	if m.pool == nil {
 		return errors.New("workspace: synthetic workspaces need the database")
 	}
@@ -46,7 +46,11 @@ func (m *Manager) CreateSynthetic(ctx context.Context, id, name string) error {
 	if n > 0 {
 		return fmt.Errorf("workspace: %s already exists", id)
 	}
-	if err := m.RegisterWorkspace(ctx, Workspace{ID: id, Name: name, Active: true}, WithCachePoolableChoice(false)); err != nil {
+	opts := []RegisterOption{WithCachePoolableChoice(false)}
+	if accountType != "" {
+		opts = append(opts, WithAccount(accountType, ""))
+	}
+	if err := m.RegisterWorkspace(ctx, Workspace{ID: id, Name: name, Active: true}, opts...); err != nil {
 		return err
 	}
 	if _, err := m.pool.Exec(ctx, markSyntheticSQL, id); err != nil {
