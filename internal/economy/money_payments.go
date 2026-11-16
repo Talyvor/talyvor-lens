@@ -360,9 +360,6 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if err := s.coolingOffTx(ctx, tx, payee, p.Currency, p.AmountMinor); err != nil { // B50.21
 		return OutsidePayment{}, err
 	}
-	if err := s.takePaymentAllowance(ctx, tx, &p); err != nil { // B61.58
-		return OutsidePayment{}, err
-	}
 	if selfHosted {
 		if err := addressProofTx(ctx, tx, p, payee); err != nil {
 			return OutsidePayment{}, err
@@ -381,6 +378,14 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		if err := s.enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
 			return OutsidePayment{}, s.refusedMovement(ctx, tx, err)
 		}
+	}
+	// B61.58: the plan's free payments, under their lock, taken after the rules, which may read beyond the transaction.
+	if err := s.takePaymentAllowance(ctx, tx, &p); err != nil {
+		return OutsidePayment{}, err
+	}
+	if held < p.debit() { // a local payment's fee, now it is known
+		return OutsidePayment{}, fmt.Errorf("%w: the account holds %s of %s money, and this payment is %s with its fee", ErrAgentFunds,
+			minorString(held, p.Currency), p.Funding, minorString(p.debit(), p.Currency))
 	}
 	if p.holdAccountID, err = holdAccount(ctx, tx, workspaceID, p.Currency); err != nil {
 		return OutsidePayment{}, err

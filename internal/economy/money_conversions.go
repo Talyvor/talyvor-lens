@@ -288,9 +288,6 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	if err := s.judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
-	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil { // B61.58
-		return Conversion{}, err
-	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
 	if err != nil {
 		return Conversion{}, err
@@ -313,6 +310,11 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
 			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}, s.screener)
 	if err != nil {
+		return Conversion{}, err
+	}
+	// B61.58: the plan's free part, taken under its lock only now, after the screening that may wait for a connection
+	// of its own, and before the partner is asked.
+	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil {
 		return Conversion{}, err
 	}
 	// shortcut: the partner is asked inside the transaction, so nothing is posted unless it converted; upgrade to a

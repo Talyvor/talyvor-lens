@@ -204,8 +204,16 @@ func TestB6158_SoloConvertsItsFirst1000FreeThenPaysOnThePartAbove(t *testing.T) 
 // Two exchanges racing at the line never both go free: eight agents of one Company account, each with a quote for the
 // last £10.00 of its 15,000 free, convert at once; one converts and the others are told to ask again.
 func TestB6158_ConversionsRacingAtTheLineNeverBothGoFree(t *testing.T) {
-	pool := agentRoutesDB(t)
 	ctx := context.Background()
+	// Each conversion holds its transaction while its screening takes a connection of its own, so eight at once need
+	// sixteen: a pool of its own, so the race is at the allowance's lock and not for the pool (FOUND, B61.58).
+	cfg := agentRoutesDB(t).Config()
+	cfg.MaxConns = 24
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	const ws = "ws-b6158-race"
 	store := allowanceStore(pool)
 	confirmedAccounts(t, pool, ws)
@@ -377,5 +385,74 @@ func TestB6158_CompanySendsFiveInternationalPaymentsFree(t *testing.T) {
 	}
 	if q, err := store.QuoteInternational(ctx, fleet, economy.OutsidePayment{PayeeID: fleetPayee.ID, AccountID: fleetAcct, Currency: "EUR", AmountMinor: 10_00}); err != nil || q.FeeMinor != 4_80 {
 		t.Fatalf("Fleet's international quote = %+v, %v; want €6.00 less 20%%, €4.80", q, err)
+	}
+}
+
+// Local payments are counted across currencies, so payments in pounds, euros and dollars share no account lock: the
+// allowance's own lock alone keeps a Studio account's last free payment to one of three sent at once, round after
+// round.
+func TestB6158_PaymentsRacingAtTheLineNeverBothGoFree(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b6158-payment-race"
+	store := allowanceStore(pool)
+	allowanceWorkspace(t, pool, ws, "business", "business_studio")
+	confirmedAccounts(t, pool, ws)
+	type racer struct{ account, payee, currency string }
+	var racers []racer
+	for _, c := range []struct {
+		currency string
+		payee    economy.OutsidePayee
+	}{
+		{"GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"}},
+		{"EUR", economy.OutsidePayee{Name: "Grace Hopper", Country: "DE", IBAN: "DE89370400440532013000", BIC: "COBADEFFXXX"}},
+		{"USD", economy.OutsidePayee{Name: "Katherine Johnson", Country: "US", RoutingNumber: "021000021", AccountNumber: "000123456789"}},
+	} {
+		acct := allowanceAccount(t, pool, store, ws, "", c.currency, 100_00)
+		payee, err := store.CreateOutsidePayee(ctx, ws, c.payee)
+		if err != nil {
+			t.Fatal(err)
+		}
+		racers = append(racers, racer{acct, payee.ID, c.currency})
+	}
+	for round := range 6 {
+		// Nine of Studio's ten used: one left.
+		if _, err := pool.Exec(ctx, `DELETE FROM plan_allowance_uses WHERE workspace_id = $1`, ws); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO plan_allowance_uses (workspace_id, allowance, ref, currency, amount, month)
+			SELECT $1, 'local', 'test:used:' || n, 'GBP', 1, date_trunc('month', now() AT TIME ZONE 'UTC')::date FROM generate_series(1, 9) n`, ws); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		paid := make([]economy.OutsidePayment, len(racers))
+		errs := make([]error, len(racers))
+		start := make(chan struct{})
+		for i, r := range racers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				key := fmt.Sprintf("race-%d-%s", round, r.currency)
+				paid[i], errs[i] = store.PayOutside(ctx, ws, economy.OutsidePayment{PayeeID: r.payee, AccountID: r.account, Currency: r.currency,
+					AmountMinor: 1_00, Reference: key, IdempotencyKey: key})
+			}()
+		}
+		close(start)
+		wg.Wait()
+		free := 0
+		for i, p := range paid {
+			switch {
+			case errs[i] != nil:
+				t.Fatalf("round %d, %s: %v", round, racers[i].currency, errs[i])
+			case p.FeeMinor == 0:
+				free++
+			case p.FeeMinor != 20 || paymentRevenue(t, pool, ws, p.IdempotencyKey) != 20:
+				t.Fatalf("round %d, %s: fee %d; want 0.20 to revenue", round, racers[i].currency, p.FeeMinor)
+			}
+		}
+		if free != 1 {
+			t.Fatalf("round %d: %d of 3 payments sent at once went free with one free payment left; want exactly one", round, free)
+		}
 	}
 }
