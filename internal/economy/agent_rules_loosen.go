@@ -145,9 +145,8 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 		{"weekly_limit_minor", limitOf(was.WeeklyLimitMinor), limitOf(now.WeeklyLimitMinor)},
 		{"monthly_limit_minor", was.MonthlyLimitMinor, now.MonthlyLimitMinor},
 		{"approval_above_minor", was.ApprovalAboveMinor, now.ApprovalAboveMinor},
-		{"fx_daily_limit_minor", limitOf(was.FXDailyLimitMinor), limitOf(now.FXDailyLimitMinor)}, // B61.40
 	}
-	anySet := false
+	anySet := limitOf(was.FXDailyLimitMinor) > 0
 	for _, l := range inCurrency {
 		anySet = anySet || l.was > 0
 	}
@@ -195,8 +194,21 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 			add(c.rule(key), amount(c.was[key]), amount(c.now[key]), limitLoosened(c.was[key], c.now[key]))
 		}
 	}
-	// B61.40: a payee's caps are judged in the rules' currency, so they are compared in it, like the limits above; one
-	// held in µLXC alone (payeeLimit) is compared in µLXC too, and either raised or cleared loosens.
+	// B61.40: the daily conversion maximum and a payee's caps are judged in the rules' currency, so they are compared in
+	// it, like the limits above; one held in µLXC alone (payeeLimit) is compared in µLXC too, and either raised or
+	// cleared loosens.
+	limitText := func(r AgentRules, minor, ulxc int64) string {
+		switch {
+		case minor > 0:
+			return r.rulesAmount(minor)
+		case ulxc > 0:
+			return LXCMoney(ulxc)
+		}
+		return "none"
+	}
+	wasFX, nowFX, wasFXULXC, nowFXULXC := limitOf(was.FXDailyLimitMinor), limitOf(now.FXDailyLimitMinor), limitOf(was.FXDailyLimitULXC), limitOf(now.FXDailyLimitULXC)
+	add(ruleLabels["fx_daily_limit_minor"], limitText(was, wasFX, wasFXULXC), limitText(now, nowFX, nowFXULXC),
+		limitLoosened(wasFX, nowFX) || limitLoosened(wasFXULXC, nowFXULXC) || was.currency() != now.currency() && wasFX > 0)
 	for _, c := range []struct {
 		rule                       func(string) string
 		was, now, wasULXC, nowULXC map[string]int64
@@ -207,18 +219,9 @@ func rulesChanges(was, now AgentRules) []ruleChange {
 			was.PayeeMonthlyLimitsULXC, now.PayeeMonthlyLimitsULXC},
 	} {
 		for _, key := range slices.Sorted(maps.Keys(mergedKeys(mergedKeys(c.was, c.now), mergedKeys(c.wasULXC, c.nowULXC)))) {
-			text := func(r AgentRules, minor, ulxc int64) string {
-				switch {
-				case minor > 0:
-					return r.rulesAmount(minor)
-				case ulxc > 0:
-					return LXCMoney(ulxc)
-				}
-				return "none"
-			}
 			looser := limitLoosened(c.was[key], c.now[key]) || limitLoosened(c.wasULXC[key], c.nowULXC[key]) ||
 				was.currency() != now.currency() && c.was[key] > 0
-			add(c.rule(key), text(was, c.was[key], c.wasULXC[key]), text(now, c.now[key], c.nowULXC[key]), looser)
+			add(c.rule(key), limitText(was, c.was[key], c.wasULXC[key]), limitText(now, c.now[key], c.nowULXC[key]), looser)
 		}
 	}
 	for _, l := range []struct {
