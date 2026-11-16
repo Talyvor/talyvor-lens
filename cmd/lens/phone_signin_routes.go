@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ type phoneSignIn interface {
 	CheckPasscode(ctx context.Context, personID, passcode, address string) error
 	ChangePasscode(ctx context.Context, personID, old, passcode, address string) error
 	PhoneCheckDue(p phonesignin.Person) bool
+	PasscodesReady() bool
 	Refused(ctx context.Context, phone, address, detail string) error
 }
 
@@ -178,11 +180,37 @@ func phoneSignInHandler(secret string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// phoneSignInHealth is /healthz's phone_signin section (B61.113): unready while passcodes cannot be set. It never
+// says the secret's value or length, and it never changes the overall status, so the deployer does not roll back.
+func phoneSignInHealth(s interface{ PasscodesReady() bool }) func(context.Context) any {
+	return func(context.Context) any {
+		if !s.PasscodesReady() {
+			return map[string]string{"status": "unready", "reason": "passcode secret missing"}
+		}
+		return map[string]string{"status": "healthy"}
+	}
+}
+
+// logPhoneSignInReadiness is the one line at start naming the missing variable, never its value.
+func logPhoneSignInReadiness(logger *slog.Logger, s interface{ PasscodesReady() bool }) {
+	if !s.PasscodesReady() {
+		logger.Warn("phone sign-in: LENS_PASSCODE_SECRET is not set, so POST /v1/auth/phone/start answers 503 passcode_unavailable and sends no code until it is")
+	}
+}
+
 func writePhoneRefusal(w http.ResponseWriter, status int, reason, message string) {
 	writeJSONOK(w, status, map[string]string{"error": message, "reason": reason})
 }
 
+// passcodeUnavailableStart is the door's answer while passcodes cannot be set (B61.113): before a code, so nobody
+// confirms a number only to be sent back at the passcode.
+const passcodeUnavailableStart = "Sign-up by phone isn't ready yet. Try again soon."
+
 func phoneStart(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
+	if !s.PasscodesReady() {
+		writePhoneRefusal(w, http.StatusServiceUnavailable, "passcode_unavailable", passcodeUnavailableStart)
+		return
+	}
 	var in phoneStartRequest
 	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "invalid JSON")
