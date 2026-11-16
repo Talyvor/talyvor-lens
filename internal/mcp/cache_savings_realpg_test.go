@@ -259,3 +259,14 @@ func TestMCPAndRESTAgreeOnTheHitRateDefinition(t *testing.T) {
 			mcpHits, restHits)
 	}
 }
+
+// confirmedAccount records the Test provider's passes at L1, L2 and L3 for ws (B61.52): a test whose first money call
+// opens an account needs it, as savingsTestPool's fixture waits for the first money an account holds.
+func confirmedAccount(t *testing.T, pool *pgxpool.Pool, ws string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref)
+		VALUES ($1, 1, 'contact', 'test', 'completed', $1 || '-1'), ($1, 2, 'person', 'test', 'completed', $1 || '-2'),
+		($1, 3, 'company', 'test', 'completed', $1 || '-3')`, ws); err != nil {
+		t.Fatal(err)
+	}
+}
