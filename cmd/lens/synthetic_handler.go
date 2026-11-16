@@ -33,11 +33,15 @@ import (
 //
 //	POST /v1/synthetic/workspaces        {"count":100} — creates that many synthetic workspaces, each
 //	                                     with test credits and a token the harness uses as that user;
-//	                                     "plan" (any business plan, business_custom included; Studio is
-//	                                     the default) puts each on that plan (B35.1, B61.57); a 5 Oct name
-//	                                     (free, team, business, enterprise) is taken as its successor.
+//	                                     "account_type" ("business", the default, or "personal") makes each
+//	                                     that type of account (B61.92); "plan" (any plan of that type's
+//	                                     ladder, business_custom included; Studio or Solo is the default)
+//	                                     puts each on that plan (B35.1, B61.57), and one of the other
+//	                                     ladder is refused 400; a 5 Oct name (free, team, business,
+//	                                     enterprise) is taken as its successor.
 //	POST /v1/synthetic/workspaces/{wsID}/plan  {"plan":"business_company"} — moves a synthetic workspace to another
-//	                                     plan, to test an upgrade or a downgrade; any other is refused 403.
+//	                                     plan of its own ladder, to test an upgrade or a downgrade; any other
+//	                                     workspace is refused 403.
 //	POST /v1/synthetic/workspaces/reset  — every synthetic workspace, or only those named in
 //	                                     {"workspaces":["s…",…]}: its stored answers deleted, its test
 //	                                     credits restored. Set-based (B26.1): a handful of statements and
@@ -78,7 +82,7 @@ const (
 var syntheticScopes = []string{auth.ScopeProxy, auth.ScopeAnalytics, auth.ScopeKeys}
 
 type syntheticWorkspaces interface {
-	CreateSynthetic(ctx context.Context, id, name string) error
+	CreateSynthetic(ctx context.Context, id, name, accountType string) error
 	ResolveSynthetic(ctx context.Context, named []string) (ids, notSynthetic []string, err error)
 }
 
@@ -197,9 +201,10 @@ type syntheticUser struct {
 
 func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, string) {
 	in := struct {
-		Count int    `json:"count"`
-		Plan  string `json:"plan"`
-	}{Count: 100}
+		Count       int    `json:"count"`
+		AccountType string `json:"account_type"`
+		Plan        string `json:"plan"`
+	}{Count: 100, AccountType: plans.AccountBusiness}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -210,18 +215,33 @@ func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, stri
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("count must be 1 to %d", syntheticMaxCount))
 		return 0, "error: bad count"
 	}
+	if in.AccountType != plans.AccountBusiness && in.AccountType != plans.AccountPersonal {
+		writeJSONErr(w, http.StatusBadRequest, "account_type must be business or personal")
+		return 0, "error: bad account type"
+	}
 	if in.Plan != "" && !syntheticPlan(in.Plan) {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("plan must be one of %s", strings.Join(plans.Order, ", ")))
 		return 0, "error: bad plan"
+	}
+	ladder, named := plans.Ladder(in.AccountType), in.Plan != ""
+	switch {
+	case in.Plan == "":
+		in.Plan = ladder[0]
+	case plans.Step(in.Plan) < 0:
+		in.Plan = plans.Successor(in.AccountType, in.Plan)
+	}
+	if !slices.Contains(ladder, in.Plan) {
+		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("a %s account's plan must be one of %s", in.AccountType, strings.Join(ladder, ", ")))
+		return 0, "error: plan of the other ladder"
 	}
 	users := make([]syntheticUser, 0, in.Count)
 	expires := time.Now().Add(syntheticTokenTTL).UTC().Format(time.RFC3339)
 	for i := 0; i < in.Count; i++ {
 		id, err := syntheticID()
 		if err == nil {
-			err = d.workspaces.CreateSynthetic(r.Context(), id, fmt.Sprintf("Synthetic user %s", id[1:7]))
+			err = d.workspaces.CreateSynthetic(r.Context(), id, fmt.Sprintf("Synthetic user %s", id[1:7]), in.AccountType)
 		}
-		if err == nil && in.Plan != "" {
+		if err == nil && named {
 			err = d.putOnPlan(r.Context(), id, in.Plan)
 		}
 		if err == nil {
@@ -238,14 +258,9 @@ func (d syntheticDeps) create(w http.ResponseWriter, r *http.Request) (int, stri
 		}
 		users = append(users, syntheticUser{WorkspaceID: id, Token: tok, ExpiresAt: expires})
 	}
-	switch {
-	case in.Plan == "":
-		in.Plan = plans.BusinessLadder[0]
-	case plans.Step(in.Plan) < 0:
-		in.Plan = plans.Successor(plans.AccountBusiness, in.Plan)
-	}
-	slog.Info("synthetic: workspaces created", "count", len(users), "plan", in.Plan)
-	writeJSONOK(w, http.StatusCreated, map[string]any{"created": len(users), "plan": in.Plan, "workspaces": users})
+	slog.Info("synthetic: workspaces created", "count", len(users), "account_type", in.AccountType, "plan", in.Plan)
+	writeJSONOK(w, http.StatusCreated, map[string]any{"created": len(users), "account_type": in.AccountType, "plan": in.Plan,
+		"workspaces": users})
 	return len(users), "ok"
 }
 
