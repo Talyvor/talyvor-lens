@@ -126,7 +126,7 @@ func personaStatus(s string) (Status, bool) {
 	return StatusPending, false // needs_review, and any status Persona adds: decided later
 }
 
-// StartCheck creates the inquiry, its fields prefilled with the person's name and date of birth, and answers it
+// StartCheck creates the inquiry, its fields prefilled with the person's name, date of birth and home address, and answers it
 // pending with the link the person completes it at.
 func (p *PersonaKYC) StartCheck(ctx context.Context, req KYCRequest) (Result, error) {
 	if req.Subject != KYCPerson {
@@ -137,6 +137,10 @@ func (p *PersonaKYC) StartCheck(ctx context.Context, req KYCRequest) (Result, er
 	}
 	first, last, _ := strings.Cut(strings.TrimSpace(req.Name), " ")
 	fields := map[string]string{"name-first": first, "name-last": strings.TrimSpace(last), "birthdate": req.DateOfBirth}
+	if a := req.Address; a != nil && len(a.Lines) > 0 {
+		fields["address-street-1"], fields["address-street-2"] = a.Lines[0], strings.Join(a.Lines[1:], ", ")
+		fields["address-city"], fields["address-postal-code"], fields["address-country-code"] = a.Town, a.Postcode, a.Country
+	}
 	body := map[string]any{"data": map[string]any{"attributes": map[string]any{
 		"inquiry-template-id": p.TemplateID, "reference-id": req.ID, "fields": fields}}}
 	var inq personaInquiry
