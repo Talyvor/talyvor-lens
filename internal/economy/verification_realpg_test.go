@@ -197,3 +197,69 @@ func TestVerification_TestPassesLimitsAndAWithdrawnPass(t *testing.T) {
 		t.Fatal("a verification row was rewritten; the record is append-only")
 	}
 }
+
+// recordingKYC is the Test provider, keeping what each check asked it.
+type recordingKYC struct {
+	*partners.TestKYCProvider
+	got []partners.KYCRequest
+}
+
+func (r *recordingKYC) StartCheck(ctx context.Context, req partners.KYCRequest) (partners.Result, error) {
+	r.got = append(r.got, req)
+	return r.TestKYCProvider.StartCheck(ctx, req)
+}
+
+// B61.45 — an identity check takes the person's home address: it reaches the provider, tidied, and Lens keeps none
+// of it, as with the date of birth. An address without its lines, town, postcode or country is refused before any
+// provider is asked.
+func TestVerification_AnIdentityCheckCarriesTheHomeAddressToTheProviderAndKeepsNoneOfIt(t *testing.T) {
+	pool := supplyPool(t)
+	s := screenedStore(pool)
+	const ws = "ws-b6145-address"
+	ctx := verifiedForLiveMoney(t, s, pool, ws)
+	kyc := &recordingKYC{TestKYCProvider: &partners.TestKYCProvider{}}
+	verifiers := partners.OneVerifier(kyc)
+	if _, err := s.StartVerification(ctx, verifiers, ws, "owner", VerificationRequest{Level: LevelContact, Email: "ada@example.com",
+		Phone: "+447700900123"}); err != nil {
+		t.Fatal(err)
+	}
+	identity := VerificationRequest{Level: LevelIdentity, Name: "Ada Lovelace", Country: "GB", DateOfBirth: "1990-12-10",
+		Address: &HomeAddress{Lines: []string{" 12 Marlborough Road ", "", "Flat 3"}, Town: " Twickenham ", Postcode: " tw1 3aa ", Country: "gb"}}
+	c, err := s.StartVerification(ctx, verifiers, ws, "owner", identity)
+	if err != nil || c.Status != "completed" {
+		t.Fatalf("an identity check with a home address = %+v, %v; want it passed", c, err)
+	}
+	want := partners.KYCAddress{Lines: []string{"12 Marlborough Road", "Flat 3"}, Town: "Twickenham", Postcode: "TW1 3AA", Country: "GB"}
+	got := kyc.got[len(kyc.got)-1].Address
+	if got == nil || strings.Join(got.Lines, "|") != strings.Join(want.Lines, "|") || got.Town != want.Town ||
+		got.Postcode != want.Postcode || got.Country != want.Country {
+		t.Fatalf("the provider was asked with the address %+v; want %+v", got, want)
+	}
+	var row string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(to_jsonb(v)::text, ' ') FROM workspace_verifications v WHERE workspace_id = $1`,
+		ws).Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	for _, kept := range []string{"Marlborough", "Flat 3", "Twickenham", "TW1"} {
+		if strings.Contains(strings.ToUpper(row), strings.ToUpper(kept)) {
+			t.Fatalf("the verification record keeps %q of the home address: %s", kept, row)
+		}
+	}
+
+	asked := len(kyc.got)
+	for name, a := range map[string]HomeAddress{
+		"no lines":    {Town: "Twickenham", Postcode: "TW1 3AA", Country: "GB"},
+		"no town":     {Lines: []string{"12 Marlborough Road"}, Postcode: "TW1 3AA", Country: "GB"},
+		"no postcode": {Lines: []string{"12 Marlborough Road"}, Town: "Twickenham", Country: "GB"},
+		"no country":  {Lines: []string{"12 Marlborough Road"}, Town: "Twickenham", Postcode: "TW1 3AA", Country: "Britain"},
+	} {
+		in := identity
+		in.Address = &a
+		if _, err := s.StartVerification(ctx, verifiers, ws, "owner", in); !errors.Is(err, ErrVerificationInvalid) {
+			t.Fatalf("an identity check whose home address has %s = %v; want it refused", name, err)
+		}
+	}
+	if len(kyc.got) != asked {
+		t.Fatalf("the provider was asked %d more times about incomplete addresses; want none", len(kyc.got)-asked)
+	}
+}

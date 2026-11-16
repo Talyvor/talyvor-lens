@@ -3,6 +3,7 @@ package partners
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -28,23 +29,47 @@ const (
 
 // KYCRequest asks for a check on a person's contact details, a person or a company.
 type KYCRequest struct {
-	ID            string `json:"id"` // the caller's id for the check
-	Subject       string `json:"subject"`
-	Name          string `json:"name"`
-	Country       string `json:"country"`                  // ISO 3166-1 alpha-2
-	DateOfBirth   string `json:"date_of_birth,omitempty"`  // a person's, YYYY-MM-DD
-	Email         string `json:"email,omitempty"`          // a contact check's
-	Phone         string `json:"phone,omitempty"`          // a contact check's, E.164
-	CompanyNumber string `json:"company_number,omitempty"` // a company's
+	ID            string      `json:"id"` // the caller's id for the check
+	Subject       string      `json:"subject"`
+	Name          string      `json:"name"`
+	Country       string      `json:"country"`                  // ISO 3166-1 alpha-2
+	DateOfBirth   string      `json:"date_of_birth,omitempty"`  // a person's, YYYY-MM-DD
+	Address       *KYCAddress `json:"address,omitempty"`        // a person's home address, when given
+	Email         string      `json:"email,omitempty"`          // a contact check's
+	Phone         string      `json:"phone,omitempty"`          // a contact check's, E.164
+	CompanyNumber string      `json:"company_number,omitempty"` // a company's
 	// A company's directors and people with significant control, by name.
 	Directors          []string `json:"directors,omitempty"`
 	SignificantControl []string `json:"people_with_significant_control,omitempty"`
 }
 
+// KYCAddress is a person's home address, for an identity check: its lines, town, postcode and country.
+type KYCAddress struct {
+	Lines    []string `json:"lines"`
+	Town     string   `json:"town"`
+	Postcode string   `json:"postcode"`
+	Country  string   `json:"country"` // ISO 3166-1 alpha-2
+}
+
+// lacks says what a home address lacks, or "" when it has its lines, town, postcode and country.
+func (a KYCAddress) lacks() string {
+	switch {
+	case !slices.ContainsFunc(a.Lines, func(l string) bool { return strings.TrimSpace(l) != "" }):
+		return "its first line"
+	case strings.TrimSpace(a.Town) == "":
+		return "its town"
+	case strings.TrimSpace(a.Postcode) == "":
+		return "its postcode"
+	case len(strings.TrimSpace(a.Country)) != 2:
+		return "its country, as an ISO 3166-1 alpha-2 code"
+	}
+	return ""
+}
+
 // TestKYCProvider is test mode for verification: it checks nobody. A check answers by the name (see the package
 // comment) — a contact check by the email, a company check by its name, directors' and controllers' together:
 // TESTFAIL and TESTSANCTION fail, TESTRETURN passes and is later withdrawn, TESTPENDING stays pending, anything
-// else passes.
+// else passes. A home address, once a check sends one, must be whole: its lines, town, postcode and country.
 type TestKYCProvider struct {
 	book testBook
 }
@@ -65,6 +90,10 @@ func (p *TestKYCProvider) StartCheck(_ context.Context, req KYCRequest) (Result,
 		decideBy = req.Email
 	case strings.TrimSpace(req.Name) == "":
 		return Result{}, fmt.Errorf("%w: a check names who it is on", ErrInvalid)
+	case req.Address != nil && req.Subject != KYCPerson:
+		return Result{}, fmt.Errorf("%w: a home address is a person's, for an identity check", ErrInvalid)
+	case req.Address != nil && req.Address.lacks() != "":
+		return Result{}, fmt.Errorf("%w: the home address needs %s", ErrInvalid, req.Address.lacks())
 	case req.Subject == KYCCompany && strings.TrimSpace(req.CompanyNumber) == "":
 		return Result{}, fmt.Errorf("%w: a company check carries the company number", ErrInvalid)
 	case req.Subject == KYCCompany && len(req.Directors) == 0:
