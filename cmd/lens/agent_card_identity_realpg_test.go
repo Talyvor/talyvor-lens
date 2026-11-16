@@ -66,6 +66,7 @@ func verifyCardWithPublishedKey(jwks, card []byte) error {
 // is revoked; Talyvor's own card verifies with its own.
 func TestAgentCard_VerifiesWithThePublishedKeyAndFailsAfterAChangedByteOrRevocation(t *testing.T) {
 	pool := agentRoutesDB(t)
+	unconfirmedAccounts(t, pool) // B61.52: this test's own checks are the account's
 	ctx := context.Background()
 	const ws = "ws-agent-card"
 	store := economy.NewDualTokenStore(nil, pool, nil)

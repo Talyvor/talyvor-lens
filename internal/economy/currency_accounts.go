@@ -90,6 +90,9 @@ func (s *DualTokenStore) OpenCurrencyAccount(ctx context.Context, workspaceID, a
 	if err := refuseUnaccepted(ctx, s.pool, workspaceID, c); err != nil {
 		return CurrencyAccount{}, err
 	}
+	if err := refuseUnconfirmed(ctx, s.pool, workspaceID, c); err != nil { // B61.52
+		return CurrencyAccount{}, err
+	}
 	if funding == FundingLive {
 		refusal, err := capabilityLive(ctx, s.pool, workspaceID, c)
 		if err != nil {

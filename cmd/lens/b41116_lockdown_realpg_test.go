@@ -33,6 +33,7 @@ import (
 // and nothing restarts — no resume, no unfreeze — until an identity check of the same person has passed since.
 func TestB41116_LostPhoneLockdown(t *testing.T) {
 	pool := agentRoutesDB(t)
+	unconfirmedAccounts(t, pool) // B61.52: this test's own checks are the account's
 	ctx := context.Background()
 	const ws = "ws-b41116-lockdown"
 	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, synthetic) VALUES ($1, $1, $1, true)`, ws); err != nil {

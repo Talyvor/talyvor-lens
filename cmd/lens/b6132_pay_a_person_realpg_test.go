@@ -38,6 +38,7 @@ func TestB6132_PayAPersonByTheirNamePhoneNumberOrEmail(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b6132-sender"
+	confirmedAccounts(t, pool, ws) // B61.52
 	b := newB468Payer(t, pool, ws, "EUR", economy.OutsidePayee{Name: "Grace Hopper", Country: "DE", IBAN: "DE89370400440532013000", BIC: "COBADEFFXXX"},
 		func(store *economy.DualTokenStore, r *partners.Registry) *money.Registry {
 			return sandboxMoneyLayer(t, pool, store, r)
@@ -75,6 +76,7 @@ func TestB6132_PayAPersonByTheirNamePhoneNumberOrEmail(t *testing.T) {
 		if fullName != "" {
 			verified(wsID, fullName)
 		}
+		confirmedAccounts(t, pool, wsID) // B61.52
 		a, err := store.OpenCurrencyAccount(ctx, wsID, "", "EUR", "test")
 		if err != nil {
 			t.Fatal(err)

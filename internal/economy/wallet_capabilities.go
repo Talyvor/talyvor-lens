@@ -208,6 +208,7 @@ type CapabilityRefusal struct {
 	Hold       *NumberMoveHold
 	Terms      *TermsNeeded
 	Country    *CountryRefusal
+	Identity   *IdentityNeeded // B61.52: the account has not confirmed who it is
 }
 
 // CountryRefusal is a clearance that does not reach the owner's country: the country the owner is verified in ("" when
@@ -228,6 +229,8 @@ func (r *CountryRefusal) message(c Capability) string {
 
 func (e *CapabilityRefusal) Error() string {
 	switch {
+	case e.Identity != nil:
+		return ConfirmIdentitySentence
 	case e.Freeze != nil:
 		// The workspace is told it is frozen and on which case, never the operator's reason.
 		return fmt.Sprintf("%s is refused: an operator has frozen this workspace's money capabilities on compliance case %s. "+
@@ -251,9 +254,11 @@ func (e *CapabilityRefusal) Error() string {
 }
 
 // Is makes a refusal an ErrCapabilityNotCleared, a verification level's an ErrVerificationNeeded too, a freeze's
-// an ErrWorkspaceFrozen, a number move's hold an ErrNumberMoveHold, and unaccepted terms' an ErrTermsNotAccepted.
+// an ErrWorkspaceFrozen, a number move's hold an ErrNumberMoveHold, unaccepted terms' an ErrTermsNotAccepted, and an
+// unconfirmed account's an ErrIdentityUnconfirmed.
 func (e *CapabilityRefusal) Is(target error) bool {
 	return target == ErrCapabilityNotCleared || (target == ErrVerificationNeeded && e.Level != nil) ||
+		(target == ErrIdentityUnconfirmed && e.Identity != nil) ||
 		(target == ErrWorkspaceFrozen && e.Freeze != nil) || (target == ErrNumberMoveHold && e.Hold != nil) ||
 		(target == ErrTermsNotAccepted && e.Terms != nil)
 }
@@ -559,6 +564,10 @@ func spendForCapability(ctx context.Context, tx pgx.Tx, workspaceID, key string,
 	if err := refuseUnaccepted(ctx, tx, workspaceID, c); err != nil {
 		return 0, err
 	}
+	// B61.52: nor, test money included, an account that has not confirmed who it is.
+	if err := refuseUnconfirmed(ctx, tx, workspaceID, c); err != nil {
+		return 0, err
+	}
 	refusal, err := capabilityLive(ctx, tx, workspaceID, c)
 	if err != nil || refusal == nil {
 		return 0, err
@@ -610,6 +619,10 @@ func (s *DualTokenStore) requireBilledCapability(ctx context.Context, q pgxDB, w
 	}
 	// B30.9: and a capability with terms takes no money until the workspace accepts their latest version.
 	if err := refuseUnaccepted(ctx, q, workspaceID, c); err != nil {
+		return err
+	}
+	// B61.52: nor, test money included, until the account has confirmed who it is.
+	if err := refuseUnconfirmed(ctx, q, workspaceID, c); err != nil {
 		return err
 	}
 	if !s.liveStripe {

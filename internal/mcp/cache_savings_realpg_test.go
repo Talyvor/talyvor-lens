@@ -14,6 +14,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/dbmigrate"
+	"github.com/talyvor/lens/internal/testschema"
 	"github.com/talyvor/lens/migrations"
 )
 
@@ -76,6 +77,11 @@ func savingsTestPool(t *testing.T) *pgxpool.Pool {
 	if _, err := dbmigrate.Run(ctx, mc, migrations.FS); err != nil {
 		_ = mc.Close(ctx)
 		t.Fatalf("migrate %s: %v", name, err)
+	}
+	// B61.52: the accounts these tests move money for have confirmed who they are.
+	if _, err := mc.Exec(ctx, testschema.ConfirmedAccountsSQL); err != nil {
+		_ = mc.Close(ctx)
+		t.Fatal(err)
 	}
 	_ = mc.Close(ctx)
 
@@ -251,5 +257,16 @@ func TestMCPAndRESTAgreeOnTheHitRateDefinition(t *testing.T) {
 			"disagree about what a cache hit IS — which is exactly how this defect survived migration "+
 			"0100: the REST endpoint was moved to serve_source and the MCP one was left on `cached`.",
 			mcpHits, restHits)
+	}
+}
+
+// confirmedAccount records the Test provider's passes at L1, L2 and L3 for ws (B61.52): a test whose first money call
+// opens an account needs it, as savingsTestPool's fixture waits for the first money an account holds.
+func confirmedAccount(t *testing.T, pool *pgxpool.Pool, ws string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref)
+		VALUES ($1, 1, 'contact', 'test', 'completed', $1 || '-1'), ($1, 2, 'person', 'test', 'completed', $1 || '-2'),
+		($1, 3, 'company', 'test', 'completed', $1 || '-3')`, ws); err != nil {
+		t.Fatal(err)
 	}
 }
