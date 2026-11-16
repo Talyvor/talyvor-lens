@@ -687,31 +687,59 @@ func (r AgentRules) periodLimitsULXC(now time.Time, loc *time.Location) []agentP
 	return l.periodLimits(now, loc)
 }
 
-// agentSpentSince is what an agent has spent since `since`, as its period limits count it.
+// agentSpentSince is what an agent has spent since `since`, as its period limits count it, in µLXC.
 func agentSpentSince(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, since time.Time) (int64, error) {
-	var spent int64
+	spent, err := agentSpentIn(ctx, tx, workspaceID, agentID, since, "")
+	return spent.ulxc, err
+}
+
+// agentSpend is what an agent has spent over a period: all of it in µLXC, and of it what the rules recorded in their
+// currency as they let it through (B61.41) and the µLXC of the rest.
+type agentSpend struct{ ulxc, recordedMinor, restULXC int64 }
+
+// agentSpentIn is what an agent has spent since `since`, as its period limits count it, with the movements the
+// rules recorded in currency (agent_rule_spends) at what they were worth in it then; "" records none.
+func agentSpentIn(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, since time.Time, currency string) (agentSpend, error) {
+	var s agentSpend
 	// What it paid other agents counts (B19.3), and its card purchases (B19.12); what they paid it does not raise its limit. What it
 	// used of paid marketplace listings counts too (B20.2), though it is billed to its company. Its questions' platform fees count (B32.11).
 	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
 	// invoices it paid from its currency account (B30.131) and what payees pulled under its mandates (B55.24), recorded
 	// under their entry key as the rules let them through, the charges on its reusable cards (B54.6), and the purchases
-	// its agent card held on its currency account (B30.30).
-	err := tx.QueryRow(ctx, `SELECT (
-		(SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
+	// its agent card held on its currency account (B30.30). Each of the last four is named by the ref the rules judged it
+	// by, so what they recorded of it in currency replaces its µLXC.
+	err := tx.QueryRow(ctx, `WITH moved (ulxc, ref) AS (
+		SELECT (SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
 		   AND (kind IN ('spend', 'hold', 'settle', 'release', 'card', 'platform_fee') OR (kind = 'pay' AND amount_ulxc < 0)))
-		+ (SELECT COALESCE(sum(price_ulxc), 0) FROM market_uses
-		   WHERE buyer_workspace_id = $1 AND agent_id = $4 AND charge = 'billed' AND used_at >= $3)
-		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned'))
-		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_payee_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND (ref LIKE 'invoice_agent:%' OR ref LIKE 'mandate_pull:%') AND created_at >= $3)
-		+ (SELECT COALESCE(sum(value_ulxc), 0) FROM money_card_authorizations
-		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3)
-		+ (SELECT COALESCE(sum(amount_ulxc), 0) FROM agent_card_authorizations
-		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND money_account_id IS NOT NULL AND created_at >= $3))::bigint`,
-		workspaceID, agentAccount(agentID), since, agentID).Scan(&spent)
-	return spent, err
+		 + (SELECT COALESCE(sum(price_ulxc), 0) FROM market_uses
+		   WHERE buyer_workspace_id = $1 AND agent_id = $4 AND charge = 'billed' AND used_at >= $3), NULL::text
+		UNION ALL SELECT value_ulxc, id FROM money_payments
+		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned')
+		UNION ALL SELECT amount_ulxc, ref FROM agent_payee_payments
+		   WHERE workspace_id = $1 AND agent_id = $4 AND (ref LIKE 'invoice_agent:%' OR ref LIKE 'mandate_pull:%') AND created_at >= $3
+		UNION ALL SELECT value_ulxc, 'card_charge:' || partner || ':' || id FROM money_card_authorizations
+		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3
+		UNION ALL SELECT amount_ulxc, authorization_id FROM agent_card_authorizations
+		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND money_account_id IS NOT NULL AND created_at >= $3)
+		SELECT COALESCE(sum(m.ulxc), 0)::bigint, COALESCE(sum(r.amount_minor), 0)::bigint,
+			COALESCE(sum(m.ulxc) FILTER (WHERE r.ref IS NULL), 0)::bigint
+		FROM moved m LEFT JOIN agent_rule_spends r ON r.workspace_id = $1 AND r.agent_id = $4 AND r.ref = m.ref AND r.currency = $5`,
+		workspaceID, agentAccount(agentID), since, agentID, currency).Scan(&s.ulxc, &s.recordedMinor, &s.restULXC)
+	return s, err
+}
+
+// recordRuleSpend records what a movement the rules let through was worth in their currency (B61.41), in its
+// transaction, under the ref they judged it by; one already recorded under that ref keeps what it recorded.
+func recordRuleSpend(ctx context.Context, tx pgx.Tx, workspaceID, agentID, ref string, j judgedLimits) error {
+	if j.recordedIn == "" || j.worth <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_rule_spends (workspace_id, agent_id, ref, currency, amount_minor) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (agent_id, ref) DO NOTHING`, workspaceID, agentID, ref, j.recordedIn, j.worth); err != nil {
+		return fmt.Errorf("economy: record the rules' spend: %w", err)
+	}
+	return nil
 }
 
 // modelDailyLimit is r's daily cap on model (B28.301), 0 for none, and when its day began in loc as of now.
@@ -923,11 +951,12 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		if limit.amount == 0 {
 			continue
 		}
-		spentULXC, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
+		so, err := agentSpentIn(ctx, tx, workspaceID, agentID, limit.since, j.recordedIn)
 		if err != nil {
 			return fmt.Errorf("economy: agent spend so far: %w", err)
 		}
-		spent, err := j.spentIn(spentULXC)
+		spentULXC := so.ulxc
+		spent, err := j.spentIn(so)
 		if err != nil {
 			return err
 		}
@@ -1010,6 +1039,9 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 				return need
 			}
 		}
+	}
+	if err := recordRuleSpend(ctx, tx, workspaceID, agentID, ref, j); err != nil {
+		return err
 	}
 	if err := recordPayeePayment(ctx, tx, workspaceID, agentID, req, ids, amount, ref); err != nil {
 		return err
