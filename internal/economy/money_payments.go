@@ -109,6 +109,48 @@ func (p OutsidePayment) debit() int64 { return p.AmountMinor + p.PartnerCostMino
 
 func (p OutsidePayment) international() bool { return p.ArrivesCurrency != "" }
 
+// allowance is the plan's monthly allowance p goes free under while it lasts (B61.58): international, or local for a
+// payment in the account's own currency; none for USDC to an address.
+func (p OutsidePayment) allowance() string {
+	switch {
+	case p.international():
+		return AllowanceInternational
+	case p.Currency == CurrencyUSDC:
+		return ""
+	}
+	return AllowanceLocal
+}
+
+// takePaymentAllowance prices p's fee under the lock on workspace's payments of its kind (B61.58): free while the
+// plan's allowance this month lasts, and kept as used; else a local payment's fee from its setting. An international
+// payment is made at its quote's fee; a quote that now costs less than the plan asks — the free one it was priced
+// with taken by another payment, or the plan changed — is refused, to be asked again.
+func (s *DualTokenStore) takePaymentAllowance(ctx context.Context, tx pgx.Tx, p *OutsidePayment) error {
+	allowance := p.allowance()
+	if allowance == "" {
+		return nil
+	}
+	if err := lockAllowance(ctx, tx, p.WorkspaceID, allowance); err != nil {
+		return err
+	}
+	now := time.Now()
+	fee, free, err := paymentFee(ctx, tx, p.WorkspaceID, allowance, p.Currency, now)
+	switch {
+	case err != nil:
+		return err
+	case allowance == AllowanceInternational && p.FeeMinor < fee:
+		return fmt.Errorf("%w: quote %s was priced with a fee of %s, and the plan's free international payments this month now make it %s. Ask for a new one",
+			ErrQuote, p.QuoteID, minorString(p.FeeMinor, p.Currency), minorString(fee, p.Currency))
+	case allowance == AllowanceInternational:
+		fee, free = p.FeeMinor, free && p.FeeMinor == 0
+	}
+	p.FeeMinor = fee
+	if !free {
+		return nil
+	}
+	return useAllowance(ctx, tx, p.WorkspaceID, allowance, p.ID, p.Currency, 1, now)
+}
+
 // viaStablecoin is whether p is USDC from the company's account, made at the stablecoin partner (B30.33).
 func (p OutsidePayment) viaStablecoin() bool { return p.Currency == CurrencyUSDC && p.AgentID == "" }
 
@@ -318,6 +360,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	if err := s.coolingOffTx(ctx, tx, payee, p.Currency, p.AmountMinor); err != nil { // B50.21
 		return OutsidePayment{}, err
 	}
+	if err := s.takePaymentAllowance(ctx, tx, &p); err != nil { // B61.58
+		return OutsidePayment{}, err
+	}
 	if selfHosted {
 		if err := addressProofTx(ctx, tx, p, payee); err != nil {
 			return OutsidePayment{}, err
@@ -496,6 +541,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 				{AccountID: p.AccountID, AmountMinor: p.debit()}}); err != nil {
 				return p, err
 			}
+			if err := releaseAllowance(ctx, tx, p.allowance(), p.ID); err != nil { // B61.58: it gives its free use back
+				return p, err
+			}
 			status = PaymentFailed
 		}
 	case partners.StatusCompleted, partners.StatusReturned:
@@ -507,6 +555,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		}
 		if res.Status == partners.StatusReturned && status == PaymentCompleted {
 			if err := post("payment_out_returned", p.key("returned"), true, back); err != nil {
+				return p, err
+			}
+			if err := releaseAllowance(ctx, tx, p.allowance(), p.ID); err != nil { // B61.58
 				return p, err
 			}
 			status = PaymentReturned

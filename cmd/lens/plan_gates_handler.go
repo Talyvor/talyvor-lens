@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/talyvor/lens/internal/billing"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/fees"
 	"github.com/talyvor/lens/internal/plans"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
@@ -127,7 +130,8 @@ func writePlanRefusal(w http.ResponseWriter, err error) bool {
 }
 
 // GET /v1/workspaces/{wsID}/plan → the workspace's plan, its name and price, the ladder it chooses from, the gates it
-// has, and the agents it has now.
+// has, the agents it has now, and (B61.58) each of its allowances this calendar month (UTC): what is free, used and
+// left, and the fee above it.
 func newWorkspacePlanHandler(db plans.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		wsID := chi.URLParam(req, "wsID")
@@ -142,10 +146,23 @@ func newWorkspacePlanHandler(db plans.Querier) http.HandlerFunc {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// B61.58: what is free each month, what of it is used and left, and the fee above it.
+		fxBPS, _, err := billing.FXMarginBPS(req.Context(), db, wsID, fees.Current())
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		now := time.Now().UTC()
+		allowances, err := economy.PlanAllowances(req.Context(), db, wsID, plan.Plan, fxBPS, now)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"plan": plan.Plan, "name": plans.Name(plan.Plan), "account_type": plan.AccountType,
 			"ladder": plans.Ladder(plan.AccountType), "on_contract": plan.OnContract, "price_minor": plans.CurrentPrices()[plan.Plan],
 			"gated_as": plan.GatedAs, "byok_add_on": plan.BYOKAddOn,
-			"gates": plan.Gates, "own_provider_keys_allowed": plan.OwnKeysAllowed(), "agents_used": agents})
+			"gates": plan.Gates, "own_provider_keys_allowed": plan.OwnKeysAllowed(), "agents_used": agents,
+			"allowances_month": now.Format("2006-01"), "allowances": allowances})
 	}
 }
 

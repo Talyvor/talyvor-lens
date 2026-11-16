@@ -380,6 +380,11 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	if err != nil {
 		return InstantTransfer{}, err
 	}
+	if !direct { // B61.58: the conversion takes the plan's free part only if it is still there
+		if err := s.takeFXAllowance(ctx, tx, workspaceID, q.ID, id, q.SendCurrency, q.SendMinor, q.FeeBPS, q.FreeMinor, time.Now()); err != nil {
+			return InstantTransfer{}, err
+		}
+	}
 	var e MoneyEntry
 	var convertEntry, payoutEntry string
 	if direct {
@@ -964,6 +969,9 @@ func (s *DualTokenStore) reverseInstantTransfer(ctx context.Context, id, leg str
 			return t, err
 		}
 		reversals = append(reversals, e.ID)
+	}
+	if err := releaseAllowance(ctx, tx, AllowanceFX, t.ID); err != nil { // B61.58: a reversed transfer gives its free part back
+		return t, err
 	}
 	t, err = scanInstantTransfer(tx.QueryRow(ctx, `UPDATE instant_transfers SET status = $2, failed_leg = $3, failure = $4, reversal_entry_ids = $5,
 		updated_at = now() WHERE id = $1 RETURNING `+instantTransferCols, id, InstantReversed, leg, cause.Error(), reversals))

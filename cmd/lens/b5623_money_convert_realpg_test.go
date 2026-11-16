@@ -38,6 +38,7 @@ func TestB5623_ConvertAtThePlansFXMargin(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type) VALUES ($1, 'Convert', $1, 'personal')`, ws); err != nil {
 		t.Fatal(err)
 	}
+	usedTheMonthsFreeConversions(t, pool, ws) // B61.58: the margin from the first penny, as Solo's 1,000 a month is spent
 	agent, err := store.CreateAgent(ctx, ws, "Converter", "owner")
 	if err != nil {
 		t.Fatal(err)

@@ -64,6 +64,7 @@ type Conversion struct {
 	SellCurrency   string     `json:"sell_currency"`
 	MarginBPS      int64      `json:"margin_bps"`
 	MarginMinor    int64      `json:"margin_minor"` // Talyvor's, in SellCurrency
+	FreeMinor      int64      `json:"free_minor"`   // what of SellMinor converts free under the plan this month (B61.58)
 	BuyMinor       int64      `json:"buy_minor"`    // what reaches ToAccountID
 	BuyCurrency    string     `json:"buy_currency"`
 	ReferenceRate  string     `json:"reference_rate"` // the partner's: BuyCurrency per SellCurrency, in whole units
@@ -83,13 +84,13 @@ type Conversion struct {
 
 const conversionCols = `id, workspace_id, agent_id, from_account_id, to_account_id, sell_minor, sell_currency, margin_bps, margin_minor,
 	buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, status, COALESCE(idempotency_key, ''), entry_id,
-	value_ulxc, expires_at, converted_at, created_at`
+	value_ulxc, expires_at, converted_at, created_at, free_minor`
 
 func scanConversion(row pgx.Row) (Conversion, error) {
 	var c Conversion
 	err := row.Scan(&c.ID, &c.WorkspaceID, &c.AgentID, &c.FromAccountID, &c.ToAccountID, &c.SellMinor, &c.SellCurrency, &c.MarginBPS,
 		&c.MarginMinor, &c.BuyMinor, &c.BuyCurrency, &c.ReferenceRate, &c.Rate, &c.Funding, &c.Partner, &c.partnerRef, &c.Status,
-		&c.IdempotencyKey, &c.EntryID, &c.ValueULXC, &c.ExpiresAt, &c.ConvertedAt, &c.CreatedAt)
+		&c.IdempotencyKey, &c.EntryID, &c.ValueULXC, &c.ExpiresAt, &c.ConvertedAt, &c.CreatedAt, &c.FreeMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrQuote
 	}
@@ -145,16 +146,21 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 // currency sold, and what the conversion partner buys with the rest.
 func (s *DualTokenStore) quoteConversion(ctx context.Context, in Conversion) (Conversion, error) {
 	workspaceID := in.WorkspaceID
-	// B61.57: every plan converts live money once the capability is cleared; the plan sets only the margin.
-	bps, _, err := s.fxMargin(ctx, s.pool, workspaceID)
+	// B61.57: every plan converts live money once the capability is cleared; the plan sets only the margin, and (B61.58)
+	// what converts free each month before it.
+	bps, plan, err := s.fxMargin(ctx, s.pool, workspaceID)
 	switch {
 	case err != nil:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s: %w", workspaceID, err)
 	case bps < 0 || bps > feeDenominator:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s is %d basis points, outside 0 to %d", workspaceID, bps, feeDenominator)
 	}
+	free, margin, err := fxFree(ctx, s.pool, workspaceID, plan, in.SellCurrency, in.SellMinor, bps, time.Now())
+	if err != nil {
+		return Conversion{}, err
+	}
 	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: in.AgentID, FromAccountID: in.FromAccountID, ToAccountID: in.ToAccountID,
-		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: PlatformFee(in.SellMinor, bps),
+		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: margin, FreeMinor: free,
 		BuyCurrency: in.BuyCurrency, Funding: in.Funding, Status: ConversionQuoted}
 	if c.MarginMinor >= c.SellMinor {
 		return Conversion{}, fmt.Errorf("%w: %s leaves nothing to convert after the margin", ErrConversion, Money(c.SellMinor, c.SellCurrency))
@@ -180,10 +186,10 @@ func (s *DualTokenStore) quoteConversion(ctx context.Context, in Conversion) (Co
 	}
 	c.Rate = instantRate(c.SellMinor, c.SellCurrency, c.BuyMinor, c.BuyCurrency) // in whole units: USDC counts millionths
 	c, err = scanConversion(s.pool.QueryRow(ctx, `INSERT INTO money_conversions (id, workspace_id, agent_id, from_account_id, to_account_id,
-		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING `+conversionCols,
+		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at, free_minor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING `+conversionCols,
 		c.ID, workspaceID, c.AgentID, c.FromAccountID, c.ToAccountID, c.SellMinor, c.SellCurrency, c.MarginBPS, c.MarginMinor, c.BuyMinor,
-		c.BuyCurrency, c.ReferenceRate, c.Rate, c.Funding, c.Partner, c.partnerRef, c.ExpiresAt))
+		c.BuyCurrency, c.ReferenceRate, c.Rate, c.Funding, c.Partner, c.partnerRef, c.ExpiresAt, c.FreeMinor))
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion quote: %w", err)
 	}
@@ -281,6 +287,9 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	}
 	if err := s.judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
+	}
+	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil { // B61.58
+		return Conversion{}, err
 	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
 	if err != nil {

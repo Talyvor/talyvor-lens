@@ -281,6 +281,9 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 		return Conversion{}, fmt.Errorf("%w: the account holds %s of %s money, and this conversion sells %s", ErrAgentFunds,
 			Money(balance, c.SellCurrency), c.Funding, Money(c.SellMinor, c.SellCurrency))
 	}
+	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil { // B61.58
+		return Conversion{}, err
+	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
 	if err != nil {
 		return Conversion{}, err
