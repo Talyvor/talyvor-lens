@@ -3233,6 +3233,8 @@ func run() error {
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
 	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.104 — and a person with a session changes their own number, with the new number's code and their passcode.
+	mountNumberChangeRoute(limited, cfg.ProvisionSecret, phoneDoor, wsManager, dualToken)
 	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
 	// makes the account's approval key, over a challenge the account issues.
 	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken, wsManager)
