@@ -65,6 +65,11 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 					writeAuthUnavailable(w)
 					return
 				}
+				if errors.Is(err, ErrPartnerRoute) {
+					// B62.5: a partner key reads the partner's view of agent activity and nothing else.
+					writeAuthError(w, http.StatusForbidden, "a partner key may only read the partner's view of agent activity")
+					return
+				}
 				if errors.Is(err, ErrConnectRoute) {
 					writeAuthError(w, http.StatusForbidden, "a Connect token may only pay from its own agent, inside the agent's rules, or accept a money request made of it")
 					return
@@ -126,7 +131,7 @@ func WithAPIKey(ctx context.Context, ak *APIKey) context.Context {
 }
 
 // couldBeStoredKey reports whether raw has the shape GenerateKey mints: keyPrefix then hex. The
-// other credential prefixes (tlv_sk_, tlv_ws_, tlv_mod_) carry an underscore no hex digit can be.
+// other credential prefixes (tlv_sk_, tlv_ws_, tlv_mod_, tlv_prk_) carry an underscore no hex digit can be.
 func couldBeStoredKey(raw string) bool {
 	rest, ok := strings.CutPrefix(raw, keyPrefix)
 	if !ok || rest == "" {
