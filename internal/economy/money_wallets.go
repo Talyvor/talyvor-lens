@@ -305,6 +305,9 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 	if err != nil {
 		return Conversion{}, err
 	}
+	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil { // B61.58, as in Convert
+		return Conversion{}, err
+	}
 	// As in Convert: the partner is asked inside the transaction, so nothing is posted unless it converted.
 	res, err := conv.Execute(partners.WithWorkspace(ctx, workspaceID), partners.FXExecution{ID: c.ID, QuoteRef: c.partnerRef})
 	switch {

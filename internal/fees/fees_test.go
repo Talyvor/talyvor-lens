@@ -18,8 +18,18 @@ func TestLoad_DefaultsAreNicolaisValuesAndASettingReplacesOne(t *testing.T) {
 			"business_studio": 550, "business_company": 300, "business_group": 100, "business_custom": 100},
 		FXMarginBPS: map[string]int64{"personal_solo": 100, "personal_crew": 50, "personal_fleet": 0,
 			"business_studio": 60, "business_company": 60, "business_group": 60, "business_custom": 15},
+		FXFreeMinor: map[string]int64{"personal_solo": 100_000, "personal_crew": 300_000, "personal_fleet": -1,
+			"business_studio": 100_000, "business_company": 1_500_000, "business_group": 6_000_000, "business_custom": 0},
 		IntlPaymentFeeMinor: map[string]int64{"GBP": 500, "EUR": 600, "USD": 700},
-		MerchantFeeBPS:      75, MerchantA2AFeeBPS: 100,
+		IntlFreePerMonth: map[string]int64{"personal_solo": 0, "personal_crew": 0, "personal_fleet": 0,
+			"business_studio": 0, "business_company": 5, "business_group": 25, "business_custom": 0},
+		IntlDiscountBPS: map[string]int64{"personal_solo": 0, "personal_crew": 0, "personal_fleet": 2000,
+			"business_studio": 0, "business_company": 0, "business_group": 0, "business_custom": 0},
+		LocalPaymentFeeMinor: map[string]int64{"GBP": 20, "EUR": 20, "USD": 20},
+		LocalFreePerMonth: map[string]int64{"personal_solo": -1, "personal_crew": -1, "personal_fleet": -1,
+			"business_studio": 10, "business_company": 100, "business_group": 1000, "business_custom": -1},
+		MerchantFeeBPS: 100, MerchantOtherCardBPS: 280, MerchantA2AFeeBPS: 100,
+		MerchantFixedFeeMinor: map[string]int64{"GBP": 20, "EUR": 20, "USD": 20},
 	}
 	if !reflect.DeepEqual(s, want) {
 		t.Fatalf("defaults = %+v, want %+v", s, want)
@@ -41,6 +51,9 @@ func TestLoad_DefaultsAreNicolaisValuesAndASettingReplacesOne(t *testing.T) {
 		"LENS_PLATFORM_FEE_BPS":       `{"personal_solo":-1}`,
 		"LENS_FX_MARGIN_BPS":          `{"free":0,"team":50,"business":25}`, // three of the 5 Oct plans; all four run on the default (B61.57)
 		"LENS_INTL_PAYMENT_FEE_MINOR": `500`,
+		"LENS_FX_FREE_MINOR":          `{"personal_solo":-2,"personal_crew":0,"personal_fleet":0,"business_studio":0,"business_company":0,"business_group":0,"business_custom":0}`,
+		"LENS_INTL_FREE_PER_MONTH":    `{"personal_solo":-1,"personal_crew":0,"personal_fleet":0,"business_studio":0,"business_company":0,"business_group":0,"business_custom":0}`,
+		"LENS_LOCAL_FREE_PER_MONTH":   `{"business_studio":10}`,
 	} {
 		if _, err := Load(func(n string) string {
 			if n == k {
