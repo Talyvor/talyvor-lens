@@ -118,6 +118,7 @@ import (
 	"github.com/talyvor/lens/internal/partnerkey"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/paypool"
 	"github.com/talyvor/lens/internal/phonesignin"
 	"github.com/talyvor/lens/internal/pii"
 	"github.com/talyvor/lens/internal/plans"
@@ -2482,6 +2483,10 @@ func run() error {
 	}
 	moneyMonitor := monitoring.New(pool, monitorSettings, ecbRates)
 	dualToken.SetMonitor(moneyMonitor)
+	// B63.1: the payments pool, measured only: each settled Sandbox payment out and payment to a person is measured
+	// after it settles, beside the money path; an operator reads it by week at /v1/admin/payments-pool.
+	paymentsPool := paypool.New(pool)
+	dualToken.SetPaymentsPool(paymentsPool)
 	// B41.103: an approval card flags an amount far above the payee's usual by monitoring's own thresholds.
 	dualToken.SetUnusualAmount(monitorSettings.NewPayeeLarge.TimesUsual, monitorSettings.NewPayeeLarge.FromPayments, monitorSettings.HistoryDays)
 	go haComps.leader.Run(ctx, "transaction-monitoring", 30*time.Second, func(lctx context.Context) {
@@ -2874,6 +2879,7 @@ func run() error {
 	r.Post("/v1/admin/screening/cases/{caseID}/refuse", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, false)))
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.
 	r.Get("/v1/admin/compliance/alerts", requireAdminOrOperatorRead(authManager, newMonitoringAlertsHandler(moneyMonitor)))
+	r.Get("/v1/admin/payments-pool", requireAdminOrOperatorRead(authManager, newPaymentsPoolHandler(paymentsPool))) // B63.1
 	r.Get("/v1/admin/scan/models", requireAdminOrOperatorRead(authManager, newScanModelsHandler(scanModels)))
 	r.Get("/v1/admin/scan/reports", requireAdminOrOperatorRead(authManager, newScanReportsHandler(scanWriter)))                     // B52.25
 	r.Post("/v1/admin/scan/reports/{id}/approve", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, true))) // B52.25
