@@ -24,8 +24,8 @@ import (
 //
 // The assistant that picks a product should not be the only one able to show what the owner approved. So the owner's
 // passkey or phone key signs exactly what the approval sheet shows: the challenge of a decision is the SHA-256 of a
-// statement naming each approval, its agent, payee, amount, currency, the rule that asked and the rules version
-// (newStatementChallenge), and an approval keeps the statement, the signature and the key (keepOwnerSignature).
+// statement naming each approval, its agent, payee, amount, currency, the rule that asked, the rules version and the
+// agent's task when there is one (newStatementChallenge), and an approval keeps the statement, the signature and the key (keepOwnerSignature).
 //
 // Before any money moves, the payment about to be sent is compared with what was approved (approvalMatches): another
 // payee, another amount, another currency or another agent stops it in its own transaction, so whatever it held is
@@ -58,6 +58,9 @@ type ProofShown struct {
 	Currency     string `json:"currency"`
 	Rule         string `json:"rule"`
 	RulesVersion *int64 `json:"rules_version"`
+	// Task is the agent's task on the approval, as kept (B62.2): signed with the rest (B62.8), "" for none, and no part
+	// of approvalMatches. Omitted when "", so a statement signed before it carried the task reads it as "".
+	Task string `json:"task,omitempty"`
 }
 
 // DecisionStatement is what an owner's decision signs: its challenge is the SHA-256 of the statement's JSON.
@@ -144,7 +147,7 @@ func latestRulesVersion(ctx context.Context, q pgxDB, agentID string) (*int64, e
 // shownApprovals reads ids of workspaceID as the owner is shown them, in the order of ids.
 func shownApprovals(ctx context.Context, q pgxDB, workspaceID string, ids []string) ([]ProofShown, error) {
 	rows, err := q.Query(ctx, `SELECT a.id, a.agent_id, COALESCE(g.name, ''), a.payee_kind, a.payee_id, a.payee_name,
-		a.paid_from_currency, a.paid_from_amount_minor, a.amount_ulxc, a.rule, a.rules_version::bigint
+		a.paid_from_currency, a.paid_from_amount_minor, a.amount_ulxc, a.rule, a.rules_version::bigint, a.task
 		FROM agent_approvals a LEFT JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = ANY($1) AND a.workspace_id = $2`, ids, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: approval shown: %w", err)
@@ -156,7 +159,7 @@ func shownApprovals(ctx context.Context, q pgxDB, workspaceID string, ids []stri
 		var minor *int64
 		var ulxc int64
 		if err := rows.Scan(&p.ApprovalID, &p.AgentID, &p.AgentName, &p.Payee.Kind, &p.Payee.ID, &p.Payee.Name,
-			&p.Currency, &minor, &ulxc, &p.Rule, &p.RulesVersion); err != nil {
+			&p.Currency, &minor, &ulxc, &p.Rule, &p.RulesVersion, &p.Task); err != nil {
 			return nil, fmt.Errorf("economy: approval shown: %w", err)
 		}
 		if p.Currency == "" || minor == nil { // filed before what pays it was kept (B57.11): its LXC
@@ -323,7 +326,8 @@ func (e *ApprovalChangedError) Error() string {
 // Unwrap makes it a refusal by the agent's rules, answered as one.
 func (e *ApprovalChangedError) Unwrap() error { return ErrAgentRule }
 
-// approvalMatches refuses sent unless it is exactly the payment shown: the same agent, payee, currency and amount.
+// approvalMatches refuses sent unless it is exactly the payment shown: the same agent, payee, currency and amount. The
+// task is not compared: it never decides anything (B62.2).
 func approvalMatches(workspaceID string, shown ProofShown, sent ProofSent) error {
 	if shown.AgentID == sent.AgentID && shown.Payee.Kind == sent.Payee.Kind && shown.Payee.ID == sent.Payee.ID &&
 		shown.Currency == sent.Currency && shown.AmountMinor == sent.AmountMinor {
@@ -454,7 +458,7 @@ func (s *DualTokenStore) VerifyPaymentProof(ctx context.Context, p PaymentProof)
 func sameShown(a, b ProofShown) bool {
 	va, vb := a.RulesVersion, b.RulesVersion
 	return a.ApprovalID == b.ApprovalID && a.AgentID == b.AgentID && a.AgentName == b.AgentName && a.Payee == b.Payee &&
-		a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && a.Rule == b.Rule &&
+		a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && a.Rule == b.Rule && a.Task == b.Task &&
 		(va == nil) == (vb == nil) && (va == nil || *va == *vb)
 }
 
