@@ -218,7 +218,7 @@ func (in *PaymentRequestIn) normalise() (kind string, err error) {
 		it := &in.Items[i]
 		it.PayeeID, it.ListingID, it.Reference = strings.TrimSpace(it.PayeeID), strings.TrimSpace(it.ListingID), strings.TrimSpace(it.Reference)
 		it.BillID = strings.TrimSpace(it.BillID)
-		it.Currency = strings.ToUpper(strings.TrimSpace(it.Currency))
+		it.Currency = strings.TrimSpace(it.Currency)
 		if len(it.Reference) > 140 {
 			return bad("item %d: a reference is up to 140 characters", i+1)
 		}
@@ -244,6 +244,10 @@ func (in *PaymentRequestIn) normalise() (kind string, err error) {
 		case it.AmountMinor <= 0:
 			return bad("item %d: amount_minor must be more than 0", i+1)
 		default:
+			// B50.55: the currency as Lens holds it, never a mis-cased one read as it.
+			if _, ok := MoneyCurrencies[strings.ToUpper(it.Currency)]; ok && it.Currency != strings.ToUpper(it.Currency) {
+				return bad("item %d: write the currency as %q, not %q", i+1, strings.ToUpper(it.Currency), it.Currency)
+			}
 			if _, ok := MoneyCurrencies[it.Currency]; !ok {
 				return bad("item %d: %q is not a currency Talyvor holds", i+1, it.Currency)
 			}
