@@ -660,7 +660,8 @@ func openAPIWalletPaths() map[string]any {
 				"By the agent's own key, the workspace's owner or an admin. The agent's rules judge it like any other spend.",
 				[]map[string]any{ws, agent},
 				map[string]any{"200": ok("the transfer", ref("AgentTransfer")), "403": map[string]any{"description": "not the agent's key, the owner or an admin — or a rule refused it"}, "409": map[string]any{"description": "the agent's balance cannot cover it"}}),
-				body(obj([]string{"to", "amount_ulxc"}, map[string]any{"to": map[string]any{"type": "string", "description": "a wallet id or @handle"}, "amount_ulxc": ulxc, "memo": str}))),
+				body(obj([]string{"to", "amount_ulxc"}, map[string]any{"to": map[string]any{"type": "string", "description": "a wallet id or @handle"}, "amount_ulxc": ulxc, "memo": str,
+					"task": map[string]any{"type": "string", "maxLength": 200, "description": "what the agent is trying to do, in its own words, for its owner (B62.2): one line, kept with the payment and its approval and shown after \"The agent says:\". It changes no rule and no decision; key-shaped strings are cut. Over 200 characters is refused 400."}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/pay": map[string]any{
 			"post": withBody(op("Pay another agent",
@@ -673,7 +674,8 @@ func openAPIWalletPaths() map[string]any {
 					"amount_minor": map[string]any{"type": "integer", "format": "int64", "description": "with currency: the amount in its minor units"},
 					"currency":     map[string]any{"type": "string", "enum": []string{"GBP", "EUR", "USD", "USDC"}},
 					"funding":      map[string]any{"type": "string", "enum": []string{"test", "live"}},
-					"amount_ulxc":  ulxc, "memo": str}))),
+					"amount_ulxc":  ulxc, "memo": str,
+					"task": map[string]any{"type": "string", "maxLength": 200, "description": "what the agent is trying to do, in its own words, for its owner (B62.2): one line, kept with the payment and its approval and shown after \"The agent says:\". It changes no rule and no decision; key-shaped strings are cut. Over 200 characters is refused 400."}}))),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/transfers": map[string]any{
 			"get": op("List what the agent sent and received", "",

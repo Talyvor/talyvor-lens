@@ -204,10 +204,17 @@ func WithPostingMemo(ctx context.Context, memo string) context.Context {
 }
 
 // insertPosting writes one posting: cols and args without the memo, which is added when ctx carries one, so a posting
-// without one is written exactly as it was before postings had memos.
+// without one is written exactly as it was before postings had memos; and so is the paying agent's task (B62.2). Every
+// caller's first four are the entry, the workspace, the account and the amount.
 func insertPosting(ctx context.Context, tx pgx.Tx, cols string, args ...any) error {
 	if memo, _ := ctx.Value(postingMemoKey{}).(string); memo != "" {
 		cols, args = cols+", memo", append(args, memo)
+	}
+	workspaceID, _ := args[1].(string)
+	account, _ := args[2].(string)
+	amount, _ := args[3].(int64)
+	if task := postingTask(ctx, workspaceID, account, amount); task != "" {
+		cols, args = cols+", task", append(args, task)
 	}
 	params := make([]string, len(args))
 	for i := range args {

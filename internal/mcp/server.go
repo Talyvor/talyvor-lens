@@ -424,7 +424,7 @@ func (s *Server) tools() []map[string]any {
 	if s.rooms != nil {
 		all = append(all, roomToolDefinitions()...)
 	}
-	return annotate(all)
+	return annotate(withTaskArgument(all))
 }
 
 func toolDefinitions() []map[string]any {
@@ -521,10 +521,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcOK(id, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true})
 		}
 	}
-	var (
-		result any
-		err    error
-	)
+	ctx, err := withToolTask(ctx, params.Name, params.Arguments) // B62.2
+	if err != nil {
+		return rpcOK(id, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true})
+	}
+	var result any
 	switch params.Name {
 	case "agent_balance", "agent_request_approval", "agent_pay", "agent_receipt":
 		if s.agentBank == nil {

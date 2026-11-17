@@ -37,6 +37,8 @@ type StatementLine struct {
 	Memo string `json:"memo,omitempty"`
 	// Model is the model a question's posting was for, as its caps know it (B28.301). Empty on every other posting.
 	Model string `json:"model,omitempty"`
+	// Task is what the paying agent said the payment is for (B62.2), on its own side of the payment; shown after TaskSays.
+	Task string `json:"task,omitempty"`
 	// Day, Requests and Postings are set on a line of a statement read by day (B57.13): the day it covers in the
 	// statement's time zone, how many questions it is, and how many postings it sums. PostingID, At and
 	// BalanceAfterULXC are then its newest posting's.
@@ -243,7 +245,7 @@ func (s *DualTokenStore) periodStatement(ctx context.Context, workspaceID, accou
 		       COALESCE((SELECT o.account FROM agent_postings o WHERE o.entry_id = p.entry_id AND o.id <> p.id ORDER BY o.id LIMIT 1), ''),
 		       p.ref,
 		       sum(p.amount_ulxc) OVER (PARTITION BY p.account ORDER BY p.created_at, p.id)::bigint, p.fee_bps, COALESCE(p.memo, ''),
-		       COALESCE(p.model, '')
+		       COALESCE(p.model, ''), p.task
 		  FROM agent_postings p
 		 WHERE p.workspace_id = $1 AND ($2 = '' OR p.account = $2) AND p.created_at >= $3 AND p.created_at < $4
 		 ORDER BY p.created_at, p.id`, workspaceID, account, from, to)
@@ -255,7 +257,7 @@ func (s *DualTokenStore) periodStatement(ctx context.Context, workspaceID, accou
 		var l StatementLine
 		var running int64
 		var feeBPS *int64
-		if err := rows.Scan(&l.PostingID, &l.EntryID, &l.At, &l.Account, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &running, &feeBPS, &l.Memo, &l.Model); err != nil {
+		if err := rows.Scan(&l.PostingID, &l.EntryID, &l.At, &l.Account, &l.Kind, &l.AmountULXC, &l.Counterparty, &l.Ref, &running, &feeBPS, &l.Memo, &l.Model, &l.Task); err != nil {
 			return st, err
 		}
 		if l.Kind == LXCTypePlatformFee && feeBPS != nil {

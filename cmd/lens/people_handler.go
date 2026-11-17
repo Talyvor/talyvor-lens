@@ -158,7 +158,7 @@ func mountPersonPaymentRoutes(r chi.Router, bank personPayer) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
 	})
-	r.Post("/v1/money/people/pay", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/money/people/pay", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
 		if !ok {
 			return

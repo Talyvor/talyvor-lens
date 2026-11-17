@@ -110,7 +110,7 @@ func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 	}
 	r.Post("/v1/money/invoices/{id}/send", move(bank.SendInvoice))
 	r.Post("/v1/money/invoices/{id}/void", move(bank.VoidInvoice))
-	r.Post("/v1/pay/{token}/agent", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/pay/{token}/agent", func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			AgentID string `json:"agent_id"`
 			Funding string `json:"funding"`

@@ -51,7 +51,7 @@ func mountAgentEscrowRoutes(r chi.Router, bank agentEscrowBank) {
 		writeJSONErr(w, http.StatusForbidden, "only the paying agent's own key, the workspace's owner or an admin may move its escrow")
 		return false
 	}
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/escrows", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/workspaces/{wsID}/agents/{agentID}/escrows", func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
 		if !payerOrOwner(w, req, agentID) {
 			return
