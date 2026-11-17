@@ -228,7 +228,7 @@ func keepOwnerSignature(ctx context.Context, tx pgx.Tx, workspaceID string, ids 
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE agent_approvals SET owner_statement = $3, owner_signature = $4, owner_key_kind = $5, owner_key_id = $6
-		WHERE id = ANY($1) AND workspace_id = $2`, ids, workspaceID, statement, sig, kind, id); err != nil {
+		WHERE id = ANY($1) AND workspace_id = $2`, ids, workspaceID, statement, string(sig), kind, id); err != nil {
 		return fmt.Errorf("economy: keep signature: %w", err)
 	}
 	return nil
@@ -369,10 +369,21 @@ func recordPaymentProof(ctx context.Context, tx pgx.Tx, workspaceID, agentID, re
 	if _, err := tx.Exec(ctx, `INSERT INTO payment_proofs (id, workspace_id, agent_id, payment_ref, approval_id, rule, rules_version, shown,
 			statement, signature, key_kind, key_id, signed_at, sent)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (agent_id, payment_ref) DO NOTHING`,
-		"prf_"+uuid.NewString(), workspaceID, agentID, ref, approvalID, rule, rulesVersion, sh, statement, signature, keyKind, keyID, signedAt, se); err != nil {
+		"prf_"+uuid.NewString(), workspaceID, agentID, ref, approvalID, rule, rulesVersion, string(sh), statement, jsonText(signature), keyKind, keyID,
+		signedAt, string(se)); err != nil {
 		return fmt.Errorf("economy: payment record: %w", err)
 	}
 	return nil
+}
+
+// jsonText is b as JSON text for a jsonb parameter — nil, SQL null, when empty — so the simple protocol, which would
+// send []byte as bytea, sends it as text too.
+func jsonText(b []byte) *string {
+	if len(b) == 0 {
+		return nil
+	}
+	t := string(b)
+	return &t
 }
 
 const paymentProofColumns = `id, workspace_id, agent_id, payment_ref, approval_id, rule, rules_version::bigint, shown, statement, signature,
