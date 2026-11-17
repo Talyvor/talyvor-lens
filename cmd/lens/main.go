@@ -115,6 +115,7 @@ import (
 	"github.com/talyvor/lens/internal/oracle"
 	"github.com/talyvor/lens/internal/outputverify"
 	"github.com/talyvor/lens/internal/pairverify"
+	"github.com/talyvor/lens/internal/partnerkey"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/paypool"
@@ -999,6 +1000,9 @@ func run() error {
 	// nothing else. Created and revoked with `lens moderator-keys`; see docs/moderator-keys.md.
 	moderatorKeys := moderatorkey.NewStore(pool)
 	authManager = authManager.WithModeratorKeys(moderatorKeys)
+	// B62.5 — the account partner's read key: the partner's view of agent activity and nothing else.
+	partnerKeys := partnerkey.NewStore(pool)
+	authManager = authManager.WithPartnerKeys(partnerKeys)
 
 	// W4.6.1 step 4 — session-scoped keys, the credential a browser chat holds instead of a
 	// workspace key.
@@ -2927,6 +2931,15 @@ func run() error {
 	// B61.6 — the owner never changes a workspace's kind of money; the operator may, for support, with the step-up code,
 	// an operator_audit row per use and the change in the workspace's audit trail. workspace_money_kind_handler.go.
 	r.Put("/v1/admin/workspaces/{wsID}/money-kind", requireAdminStepUp(authManager, stepUp, operatorAudit, "workspace.money_kind", requireAdmin(authManager, newOperatorMoneyKindHandler(dualToken))))
+	// B62.5 — the account partner's risk team reads every agent payment on its own key, and nothing else; an operator
+	// makes and revokes the key with the step-up code, an operator_audit row each. partner_activity_handler.go.
+	r.Get("/v1/partner/agent-activity", requirePartnerRead(authManager, partnerKeys, newPartnerActivityHandler(dualToken)))
+	r.Get("/v1/partner/agent-activity/export", requirePartnerRead(authManager, partnerKeys, newPartnerActivityExportHandler(dualToken)))
+	r.Get("/v1/partner/agent-activity/summary", requirePartnerRead(authManager, partnerKeys, newPartnerActivitySummaryHandler(dualToken)))
+	r.Post("/v1/admin/partner-keys", requireAdminStepUp(authManager, stepUp, operatorAudit, "partner_key.create", requireAdmin(authManager, newPartnerKeyCreateHandler(partnerKeys))))
+	r.Post("/v1/admin/partner-keys/{id}/revoke", requireAdminStepUp(authManager, stepUp, operatorAudit, "partner_key.revoke", requireAdmin(authManager, newPartnerKeyRevokeHandler(partnerKeys))))
+	r.Get("/v1/admin/partner-keys", requireAdmin(authManager, newPartnerKeyListHandler(partnerKeys)))
+	r.Get("/v1/admin/partner-keys/{id}/uses", requireAdmin(authManager, newPartnerKeyUsesHandler(partnerKeys)))
 	// B44.6 — every talyvor.com waitlist signup, oldest first, for the operator.
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
 	// B61.22 — how many people and what the phone door did in a day, never whose.

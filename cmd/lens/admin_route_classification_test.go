@@ -119,6 +119,9 @@ var operatorMustNotReach = map[string]string{
 	"/v1/admin/compliance/cases/{caseID}/unfreeze":               "B30.8: LIFTS A FREEZE, so the workspace's money moves again. A write; requireStepUp.",
 	"/v1/admin/compliance/cases/{caseID}/close":                  "B30.8: closes a monitoring case with a reason. A write; requireStepUp.",
 	"/v1/admin/compliance/cases/{caseID}/export":                 "B30.8: the case file as a report draft for filing, recorded in the audit trail. requireStepUp.",
+	"/v1/admin/partner-keys":                                     "B62.5: MAKES A KEY THAT READS EVERY AGENT PAYMENT (requireAdminStepUp, an operator audit row), and lists the keys. Admin only.",
+	"/v1/admin/partner-keys/{id}/revoke":                         "B62.5: revokes the account partner's read key. requireAdminStepUp, with an operator audit row.",
+	"/v1/admin/partner-keys/{id}/uses":                           "B62.5: every read a partner key made — what the partner looked at. requireAdmin only.",
 	"/v1/admin/platform-reports":                                 "B32.44: WRITES THE PLATFORM-REPORTING EXPORT, the sellers' TINs, dates of birth and account numbers in clear, and records the run. requireAdmin only, its list of runs too.",
 
 	// ⚠ MEASURED, AND THE PROVISIONAL CLASSIFICATION WAS WRONG. The W1.3 groundwork report listed
