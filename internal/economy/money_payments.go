@@ -586,6 +586,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 	if status == PaymentFailed && was != PaymentFailed {
 		s.notifyPaymentFailed(p)
 	}
+	if status == PaymentCompleted && was != PaymentCompleted { // B63.1: measured once it has settled, never in its transaction
+		s.measurePaymentOut(ctx, p)
+	}
 	return p, nil
 }
 
