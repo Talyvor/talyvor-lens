@@ -90,7 +90,7 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 		}
 		writeJSONOK(w, http.StatusOK, a)
 	})
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/send", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/workspaces/{wsID}/agents/{agentID}/send", func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
 		if !agentOrOwner(w, req, agentID) {
 			return

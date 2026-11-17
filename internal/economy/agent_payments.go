@@ -238,8 +238,8 @@ func (s *DualTokenStore) payAgentTx(ctx context.Context, tx pgx.Tx, workspaceID 
 	}
 	for _, l := range []leg{{agentAccount(fromAgentID), -amount}, {agentAccount(toAgentID), amount}} {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref) VALUES ($1, $2, $3, $4, 'pay', $5)`,
-			entry, workspaceID, l.account, l.amount, memo); err != nil {
+			`INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref, task) VALUES ($1, $2, $3, $4, 'pay', $5, $6)`,
+			entry, workspaceID, l.account, l.amount, memo, postingTask(ctx, workspaceID, l.account, l.amount)); err != nil {
 			return pay, fmt.Errorf("economy: post payment: %w", err)
 		}
 	}

@@ -1395,14 +1395,14 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
 				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc,
-				rules_currency, asks_above_minor, budget_left_after_minor, rule, rules_version)
+				rules_currency, asks_above_minor, budget_left_after_minor, rule, rules_version, task)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23, $24)
+				$20, $21, $22, $23, $24, $25)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
 			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
 			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft,
-			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft, need.rule, version).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft, need.rule, version, taskIn(ctx, need.workspaceID)).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
@@ -1513,6 +1513,9 @@ type AgentApproval struct {
 	Kind string `json:"kind,omitempty"`
 	// ConnectClientID is the assistant whose payment filed it (B52.41), so an approval screen can name it; empty otherwise.
 	ConnectClientID string `json:"connect_client_id,omitempty"`
+	// Task is what the agent said the payment is for (B62.2), in its own words: shown after TaskSays, never as a fact.
+	// "" when it gave none.
+	Task string `json:"task"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1526,7 +1529,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
-	budget_left_after_minor`
+	budget_left_after_minor, task`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1537,7 +1540,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task)
 	if p.Kind != "" {
 		a.Payee = &p
 	}

@@ -327,8 +327,8 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 		ws, account string
 		amount      int64
 	}{{t.FromWorkspaceID, agentAccount(t.FromAgentID), -t.AmountULXC}, {t.ToWorkspaceID, agentAccount(t.ToAgentID), t.AmountULXC}} {
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref) VALUES ($1, $2, $3, $4, 'transfer', $5)`,
-			entry, p.ws, p.account, p.amount, t.ID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref, task) VALUES ($1, $2, $3, $4, 'transfer', $5, $6)`,
+			entry, p.ws, p.account, p.amount, t.ID, postingTask(ctx, p.ws, p.account, p.amount)); err != nil {
 			return t, fmt.Errorf("economy: post transfer: %w", err)
 		}
 	}

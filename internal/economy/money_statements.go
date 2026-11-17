@@ -33,6 +33,8 @@ type MoneyStatementLine struct {
 	Memo              string    `json:"memo,omitempty"`
 	PartnerRef        string    `json:"partner_ref,omitempty"`
 	BalanceAfterMinor int64     `json:"balance_after_minor"`
+	// Task is what the paying agent said the payment is for (B62.2), on money out only; shown after TaskSays.
+	Task string `json:"task,omitempty"`
 }
 
 // MoneyStatement is one currency account over [From, To): Opening + In − Out = Closing, in its currency's minor units.
@@ -80,7 +82,8 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 		            FROM money_postings op JOIN money_accounts o ON o.id = op.account_id
 		           WHERE op.entry_id = p.entry_id AND op.account_id <> p.account_id ORDER BY op.line LIMIT 1), ''),
 		       e.memo, e.partner_ref,
-		       sum(p.amount_minor) OVER (ORDER BY e.created_at, e.id, p.line)::bigint
+		       sum(p.amount_minor) OVER (ORDER BY e.created_at, e.id, p.line)::bigint,
+		       CASE WHEN p.amount_minor < 0 THEN e.task ELSE '' END
 		  FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
 		 WHERE p.account_id = $1 AND e.created_at >= $3 AND e.created_at < $4
 		 ORDER BY e.created_at, e.id, p.line`, accountID, workspaceID, from, to)
@@ -91,7 +94,7 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 	for rows.Next() {
 		var l MoneyStatementLine
 		var running int64
-		if err := rows.Scan(&l.EntryID, &l.Line, &l.At, &l.Kind, &l.AmountMinor, &l.Funding, &l.Counterparty, &l.Memo, &l.PartnerRef, &running); err != nil {
+		if err := rows.Scan(&l.EntryID, &l.Line, &l.At, &l.Kind, &l.AmountMinor, &l.Funding, &l.Counterparty, &l.Memo, &l.PartnerRef, &running, &l.Task); err != nil {
 			return MoneyStatement{}, fmt.Errorf("economy: account statement lines: %w", err)
 		}
 		l.At = l.At.UTC()

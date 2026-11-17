@@ -72,7 +72,7 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 	caller := func(w http.ResponseWriter, req *http.Request) (ws, agentID string, ok bool) {
 		return moneyCaller(w, req, bank.AgentOfKey)
 	}
-	r.Post("/v1/money/payments", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/money/payments", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
 		if !ok {
 			return

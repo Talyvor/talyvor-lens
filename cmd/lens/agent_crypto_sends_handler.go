@@ -83,7 +83,7 @@ func mountAgentCryptoSendRoutes(r chi.Router, bank agentCryptoSendBank) {
 		}
 		writeJSONOK(w, http.StatusOK, q)
 	})
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/crypto-sends", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/workspaces/{wsID}/agents/{agentID}/crypto-sends", func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
 		by, owner, ok := caller(w, req, agentID)
 		if !ok {

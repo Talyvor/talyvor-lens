@@ -328,9 +328,10 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 		e.Card, card = &d, [4]*string{&d.MCC, &d.Country, &d.Channel, &d.Wallet}
 	}
 	err := tx.QueryRow(ctx, `INSERT INTO money_entries (id, workspace_id, capability, kind, idempotency_key, memo, counterparty, partner_ref,
-		card_mcc, card_country, card_channel, card_wallet)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
-		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef, card[0], card[1], card[2], card[3]).Scan(&e.CreatedAt)
+		card_mcc, card_country, card_channel, card_wallet, task)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
+		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef, card[0], card[1], card[2], card[3],
+		taskIn(ctx, e.WorkspaceID)).Scan(&e.CreatedAt) // B62.2: the paying agent's task, in its own workspace
 	if errors.Is(err, pgx.ErrNoRows) {
 		return replayedMoneyEntry(ctx, tx, e, postings)
 	}

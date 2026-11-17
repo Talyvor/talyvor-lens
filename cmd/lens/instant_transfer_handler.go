@@ -72,7 +72,7 @@ func mountInstantTransferRoutes(r chi.Router, bank instantTransferBank) {
 			writePaymentErr(w, err)
 		}
 	})
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/money/instant-transfers", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/workspaces/{wsID}/agents/{agentID}/money/instant-transfers", func(w http.ResponseWriter, req *http.Request) {
 		agentID := chi.URLParam(req, "agentID")
 		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
 			actx := auth.GetAuthContext(req.Context())

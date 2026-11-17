@@ -209,8 +209,8 @@ type escrowLeg struct {
 func postEscrowEntry(ctx context.Context, tx pgx.Tx, escrowID string, legs ...escrowLeg) (string, error) {
 	entry := uuid.New()
 	for _, l := range legs {
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref) VALUES ($1, $2, $3, $4, 'escrow', $5)`,
-			entry, l.ws, l.account, l.amount, escrowID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref, task) VALUES ($1, $2, $3, $4, 'escrow', $5, $6)`,
+			entry, l.ws, l.account, l.amount, escrowID, postingTask(ctx, l.ws, l.account, l.amount)); err != nil {
 			return "", fmt.Errorf("economy: post escrow: %w", err)
 		}
 	}

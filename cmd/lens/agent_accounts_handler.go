@@ -1806,7 +1806,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": agentID, "owner_user_id": user})
 		}
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pay", func(w http.ResponseWriter, req *http.Request) {
+	r.With(withTask).Post("/v1/workspaces/{wsID}/agents/{agentID}/pay", func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		ctx := req.Context()
 		connect := auth.GetAuthContext(ctx)
@@ -2140,19 +2140,20 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 	cw := csv.NewWriter(w)
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-	_ = cw.Write([]string{"posting_id", "entry_id", "at", "account", "kind", "amount_ulxc", "counterparty", "ref", "balance_after_ulxc"})
+	_ = cw.Write([]string{"posting_id", "entry_id", "at", "account", "kind", "amount_ulxc", "counterparty", "ref", "balance_after_ulxc", "task"})
 	for _, a := range st.Accounts {
-		_ = cw.Write([]string{"", "", at(st.From), a.Account, "opening", "", "", "", i64(a.OpeningULXC)})
+		_ = cw.Write([]string{"", "", at(st.From), a.Account, "opening", "", "", "", i64(a.OpeningULXC), ""})
 	}
 	for _, l := range st.Lines {
-		_ = cw.Write([]string{i64(l.PostingID), l.EntryID, at(l.At), l.Account, l.Kind, i64(l.AmountULXC), l.Counterparty, csvText(l.Ref), i64(l.BalanceAfterULXC)})
+		_ = cw.Write([]string{i64(l.PostingID), l.EntryID, at(l.At), l.Account, l.Kind, i64(l.AmountULXC), l.Counterparty, csvText(l.Ref), i64(l.BalanceAfterULXC),
+			csvText(economy.TaskShown(l.Task))}) // B62.2: what the agent said, never as a fact
 	}
 	for _, a := range st.Accounts {
-		_ = cw.Write([]string{"", "", at(st.To), a.Account, "closing", "", "", "", i64(a.ClosingULXC)})
+		_ = cw.Write([]string{"", "", at(st.To), a.Account, "closing", "", "", "", i64(a.ClosingULXC), ""})
 	}
 	// B56.14: what the agent put on the company's marketplace bill, which moves no balance here.
 	for _, l := range st.MarketplaceBill {
-		_ = cw.Write([]string{"", l.UseID, at(l.At), economy.OnMarketplaceBill, l.Kind, i64(l.AmountULXC), cmp.Or(l.PayeeAgentID, l.ListingID), csvText(l.Memo), ""})
+		_ = cw.Write([]string{"", l.UseID, at(l.At), economy.OnMarketplaceBill, l.Kind, i64(l.AmountULXC), cmp.Or(l.PayeeAgentID, l.ListingID), csvText(l.Memo), "", ""})
 	}
 	cw.Flush()
 }
