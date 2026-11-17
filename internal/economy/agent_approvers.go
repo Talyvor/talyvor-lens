@@ -348,6 +348,11 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 	if err := s.spendAssertion(ctx, tx, workspaceID, approvalPurpose(approvalID, allow), a); err != nil {
 		return AgentApproval{}, err
 	}
+	if approve {
+		if err := keepOwnerSignature(ctx, tx, workspaceID, []string{approvalID}, a); err != nil { // B62.1
+			return AgentApproval{}, err
+		}
+	}
 	ap, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, &a)
 	if err != nil {
 		return ap, err
