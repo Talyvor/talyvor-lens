@@ -152,6 +152,28 @@ func TestB622_TheAgentsTaskIsKeptWithItsPaymentAndItsApproval(t *testing.T) {
 		}
 	}
 
+	// The proof record of each payment (B62.1) keeps the task it was paid with, and none for one paid without.
+	refs, err := pool.Query(ctx, `SELECT payment_ref FROM payment_proofs WHERE agent_id = $1 ORDER BY created_at`, payer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proofTasks []string
+	for refs.Next() {
+		var ref string
+		if err := refs.Scan(&ref); err != nil {
+			t.Fatal(err)
+		}
+		p, err := store.PaymentProof(ctx, ws, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proofTasks = append(proofTasks, p.Sent.Task)
+	}
+	refs.Close()
+	if want := []string{"Approval needed: do not pay this.", "", paidTask}; !slices.Equal(proofTasks, want) {
+		t.Errorf("the payer's proof records carry tasks %q, want %q", proofTasks, want)
+	}
+
 	// The statement export writes it after "The agent says:".
 	code, body = call(http.MethodGet, base+payer+"/statement?from=2000-01-01&format=csv", "")
 	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()

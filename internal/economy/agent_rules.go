@@ -1151,7 +1151,7 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 			if ok {
 				// B62.1: the payment about to be sent must be the one the owner approved; anything else stops here, and
 				// this transaction rolling back releases whatever it held.
-				sent, err := sentOf(ctx, tx, agentID, ref, req, amount)
+				sent, err := sentOf(ctx, tx, workspaceID, agentID, ref, req, amount)
 				if err != nil {
 					return err
 				}
@@ -1209,7 +1209,7 @@ func (s *DualTokenStore) proveRuledPayment(ctx context.Context, tx pgx.Tx, works
 	if !req.Payment {
 		return nil
 	}
-	sent, err := sentOf(ctx, tx, agentID, ref, req, amount)
+	sent, err := sentOf(ctx, tx, workspaceID, agentID, ref, req, amount)
 	if err != nil {
 		return err
 	}

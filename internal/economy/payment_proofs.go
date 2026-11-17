@@ -79,6 +79,7 @@ type ProofSent struct {
 	Rail        string `json:"rail"` // what paid it: account | card | lxc | marketplace_bill
 	Reference   string `json:"reference"`
 	Memo        string `json:"memo,omitempty"`
+	Task        string `json:"task,omitempty"` // what the agent says it was trying to do (B62.2); no part of approvalMatches
 }
 
 // PaymentProof is the record of one payment the rules let through.
@@ -331,14 +332,15 @@ func approvalMatches(workspaceID string, shown ProofShown, sent ProofSent) error
 	return &ApprovalChangedError{Shown: shown, Sent: sent, workspaceID: workspaceID}
 }
 
-// sentOf is the payment of amountULXC judged with req, as it is sent.
-func sentOf(ctx context.Context, q pgxDB, agentID, ref string, req AgentRequest, amountULXC int64) (ProofSent, error) {
+// sentOf is workspaceID's payment of amountULXC judged with req, as it is sent, with the task ctx carries for it.
+func sentOf(ctx context.Context, q pgxDB, workspaceID, agentID, ref string, req AgentRequest, amountULXC int64) (ProofSent, error) {
 	payee, err := namePayee(ctx, q, req.Payee)
 	if err != nil {
 		return ProofSent{}, err
 	}
 	minor, currency := shownAmount(req, amountULXC)
-	return ProofSent{AgentID: agentID, Payee: payee, AmountMinor: minor, Currency: currency, Rail: railOf(req), Reference: ref, Memo: req.Memo}, nil
+	return ProofSent{AgentID: agentID, Payee: payee, AmountMinor: minor, Currency: currency, Rail: railOf(req), Reference: ref, Memo: req.Memo,
+		Task: taskIn(ctx, workspaceID)}, nil
 }
 
 // recordPaymentProof writes the record of the payment ref the rules let through by rule, inside its transaction tx:
