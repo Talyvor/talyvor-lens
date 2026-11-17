@@ -125,6 +125,7 @@ var Manifest = map[string]Entry{
 	"agent_card_authorizations": {Retain, "B19.12: audit-guarded (0156, append-only): every agent card authorisation, approved or declined, and the LXC it debited; financial-record retention"},
 	"agent_payee_payments":      {Retain, "B28.304: audit-guarded (0191, append-only): every payment an agent's rules let through and whom it paid, which its per-payee daily caps count; financial-record retention"},
 	"agent_rule_spends":         {Retain, "B61.41: audit-guarded (2611160734b, append-only): what each movement rules in pounds or euros let through was worth in their currency then, which their period limits count; financial-record retention"},
+	"payment_proofs":            {Retain, "B62.1: audit-guarded (2611162348b, append-only): for each payment an agent's rules let through, what the owner was shown and signed, the rule and rules version, and what was sent; financial-record retention"},
 	"agent_card_settlements":    {Retain, "B19.25: audit-guarded (0157, append-only): each capture, release and refund that settled an agent card authorisation, and the LXC it moved; financial-record retention"},
 	"agent_transfers":           {Retain, "B22.3: keys `from_workspace_id`+`to_workspace_id`; audit-guarded (0159, append-only): each transfer of credits between two agents and its postings; financial-record retention"},
 	"agent_tool_calls":          {Retain, "B19.9: audit-guarded (0145, append-only): every call an agent made to its wallet tools; the record of what it asked and was refused"},

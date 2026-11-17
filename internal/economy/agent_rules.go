@@ -295,6 +295,7 @@ type ApprovalNeededError struct {
 	asksAbove   int64  // the approval amount it is above (B57.11)
 	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
 	inRules     rulesSheet
+	rule        string // the rule that asks the owner (B62.1): ProofRuleApprovalAbove or ProofRulePrepared
 }
 
 // rulesSheet is what an approval's sheet says of the rules, in their currency (B61.42): the amount they ask above and
@@ -969,6 +970,9 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		if err := recordPayeePayment(ctx, tx, workspaceID, agentID, req, nil, amount, ref); err != nil {
 			return err
 		}
+		if err := s.proveRuledPayment(ctx, tx, workspaceID, agentID, ref, ProofRuleNoRules, req, amount, nil); err != nil {
+			return err
+		}
 		return watchAgentSpend(ctx, tx, workspaceID, agentID, amount, req.At, false)
 	}
 	if err != nil {
@@ -1124,28 +1128,48 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 			}
 		}
 	}
+	rule := ProofRuleWithinRules // B62.1: the rule that passes it, named on its record
+	if req.Approved {
+		rule = ProofRuleMandate
+	}
+	var used *usedApproval
 	if prepared || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
-			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft,
+			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft, rule: ProofRuleApprovalAbove,
 			inRules: rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor, monthLeft: monthLeftMinor}}
+		if prepared {
+			need.rule = ProofRulePrepared
+		}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
 		// (B41.104) needs none.
-		var used int64
 		if req.Fingerprint != "" {
-			tag, err := tx.Exec(ctx, `UPDATE agent_approvals SET status = 'used', used_ref = $3
-				WHERE agent_id = $1 AND fingerprint = $2 AND status = 'approved' AND expires_at > now()`, agentID, req.Fingerprint, ref)
+			u, ok, err := useApproval(ctx, tx, workspaceID, agentID, req.Fingerprint, ref)
 			if err != nil {
-				return fmt.Errorf("economy: use approval: %w", err)
+				return err
 			}
-			used = tag.RowsAffected()
+			if ok {
+				// B62.1: the payment about to be sent must be the one the owner approved; anything else stops here, and
+				// this transaction rolling back releases whatever it held.
+				sent, err := sentOf(ctx, tx, agentID, ref, req, amount)
+				if err != nil {
+					return err
+				}
+				if err := approvalMatches(workspaceID, u.shown, sent); err != nil {
+					return err
+				}
+				used = &u
+			}
 		}
-		if used == 0 {
+		if used == nil {
 			allowed := false // a prepared payment is never "always allowed"
 			if !prepared {
 				if allowed, err = s.withinPayeeAllowance(ctx, tx, workspaceID, agentID, r, j, ids, amount, day, month); err != nil {
 					return err
 				}
+			}
+			if allowed {
+				rule = ProofRuleAlwaysAllow
 			}
 			switch {
 			case allowed && req.Fingerprint != "":
@@ -1172,7 +1196,33 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	if err := recordPayeePayment(ctx, tx, workspaceID, agentID, req, ids, amount, ref); err != nil {
 		return err
 	}
+	if err := s.proveRuledPayment(ctx, tx, workspaceID, agentID, ref, rule, req, amount, used); err != nil {
+		return err
+	}
 	return watchAgentSpend(ctx, tx, workspaceID, agentID, amount, req.At, r.PauseOnUnusualSpend)
+}
+
+// proveRuledPayment writes the record of a payment the rules let through by rule (B62.1); a request to a model is no
+// payment and has none.
+func (s *DualTokenStore) proveRuledPayment(ctx context.Context, tx pgx.Tx, workspaceID, agentID, ref, rule string, req AgentRequest,
+	amount int64, used *usedApproval) error {
+	if !req.Payment {
+		return nil
+	}
+	sent, err := sentOf(ctx, tx, agentID, ref, req, amount)
+	if err != nil {
+		return err
+	}
+	var version *int64
+	if used == nil {
+		if version, err = latestRulesVersion(ctx, tx, agentID); err != nil {
+			return err
+		}
+		if rule == ProofRuleNoRules {
+			version = nil
+		}
+	}
+	return recordPaymentProof(ctx, tx, workspaceID, agentID, ref, rule, version, sent, used)
 }
 
 // withinPayeeAllowance is whether a payment of amount µLXC, judged by r as j (B61.40), to the payee ids name fits one
@@ -1314,6 +1364,10 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 	if err != nil {
 		return err
 	}
+	version, err := latestRulesVersion(ctx, s.pool, need.agentID)
+	if err != nil {
+		return err
+	}
 	client, _ := ctx.Value(connectClientKey{}).(string)
 	var filed string
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -1341,14 +1395,14 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
 				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc,
-				rules_currency, asks_above_minor, budget_left_after_minor)
+				rules_currency, asks_above_minor, budget_left_after_minor, rule, rules_version)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22)
+				$20, $21, $22, $23, $24)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
 			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
 			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft,
-			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft, need.rule, version).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
@@ -1378,10 +1432,11 @@ func (s *DualTokenStore) paidFrom(ctx context.Context, need *ApprovalNeededError
 		}
 	case p.Kind != "":
 	case need.req.Listing != "":
-		// The bill is kept in micro-dollars and collected in cents (B32): the cents the use adds to it.
-		p = PaidFrom{Kind: "marketplace_bill", AccountID: need.workspaceID, Currency: "USD", AmountMinor: need.AmountULXC / ULXCPerUSDMicro / 10_000}
+		p = PaidFrom{Kind: "marketplace_bill", AccountID: need.workspaceID}
+		p.AmountMinor, p.Currency = shownAmount(need.req, need.AmountULXC)
 	default:
-		p = PaidFrom{Kind: "lxc", AccountID: need.agentID, Currency: "LXC", AmountMinor: need.AmountULXC}
+		p = PaidFrom{Kind: "lxc", AccountID: need.agentID}
+		p.AmountMinor, p.Currency = shownAmount(need.req, need.AmountULXC)
 	}
 	return p, nil
 }
@@ -1410,6 +1465,12 @@ func declined(ctx context.Context, tx pgx.Tx, agentID, fingerprint string) error
 // refusedMovement is what a hold or debit returns when agentMovement refused it: a request that needs
 // approval files it (after rolling back, so nothing of the refused movement is kept); anything else as is.
 func (s *DualTokenStore) refusedMovement(ctx context.Context, tx pgx.Tx, err error) error {
+	var changed *ApprovalChangedError
+	if errors.As(err, &changed) { // B62.1: rolled back, so what it held is released; the owner is told
+		_ = tx.Rollback(ctx)
+		s.tellApprovalChanged(changed)
+		return err
+	}
 	var need *ApprovalNeededError
 	if !errors.As(err, &need) {
 		return err
