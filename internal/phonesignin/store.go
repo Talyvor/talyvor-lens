@@ -24,6 +24,7 @@ import (
 	"github.com/talyvor/lens/internal/devicekey"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // The rules of a check.
@@ -383,6 +384,7 @@ const personColumns = `id, phone, identity, phone_sandbox, phone_confirmed_at, c
 func scanPerson(row pgx.Row) (Person, error) {
 	var p Person
 	err := row.Scan(&p.ID, &p.Phone, &p.Identity, &p.PhoneSandbox, &p.PhoneConfirmedAt, &p.CreatedAt)
+	p.Identity = workspace.IdentityFromStored(p.Identity)
 	return p, err
 }
 
@@ -499,7 +501,7 @@ func (s *Store) RedeemWithPasscode(ctx context.Context, ticket, identity, passco
 		return Person{}, false, err
 	}
 	p, err = scanPerson(tx.QueryRow(ctx, `INSERT INTO people (id, phone, identity, phone_sandbox, phone_confirmed_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $5) RETURNING `+personColumns, "per_"+id, phone, identity, sandbox, now))
+		VALUES ($1, $2, $3, $4, $5, $5) RETURNING `+personColumns, "per_"+id, phone, workspace.StoredIdentity(identity), sandbox, now))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Person{}, false, s.refuse(ctx, tx, phone, address, "the identity is another number's", ErrHeld)

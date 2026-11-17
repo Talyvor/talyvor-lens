@@ -228,6 +228,7 @@ func (s *DualTokenStore) SetPersonFinding(ctx context.Context, personID string, 
 	} else if err != nil {
 		return PersonFinding{}, fmt.Errorf("economy: being found: %w", err)
 	}
+	identity = workspace.IdentityFromStored(identity)
 	personKey, firstID := workspace.PersonKey(identity), workspace.FirstAccountID(identity)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

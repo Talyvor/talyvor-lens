@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // B61.30 — the way back in for a person who has neither their number nor a key: lost phone, new number, or a
@@ -149,6 +150,9 @@ func (s *Store) ClaimNumberMoveNotices(ctx context.Context, limit int) ([]Number
 	out, err := pgx.CollectRows(rows, pgx.RowToStructByPos[NumberMoveNotice])
 	if out == nil {
 		out = []NumberMoveNotice{}
+	}
+	for i := range out {
+		out[i].Identity = workspace.IdentityFromStored(out[i].Identity)
 	}
 	return out, err
 }
