@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -367,6 +368,10 @@ type DualTokenStore struct {
 	// monitor runs transaction monitoring on each payment in or out through a partner once it has moved (B30.7);
 	// nil, the nightly run is the only one.
 	monitor MoneyMonitor
+	// paymentsPool is told of each settled Sandbox payment out and payment to a person, after it settles (B63.1);
+	// nil, nothing is measured. poolMeasures is the measures still being written.
+	paymentsPool PaymentsPool
+	poolMeasures *sync.WaitGroup
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
 	// bankInfo is the open-banking partner for a workspace, by whether it is a tester's (B53.13); nil, none connects.

@@ -343,6 +343,8 @@ func (s *DualTokenStore) PayPerson(ctx context.Context, workspaceID string, in P
 		return PersonPayment{}, fmt.Errorf("economy: pay a person: %w", err)
 	}
 	p.ID = e.ID
+	s.measurePayment(ctx, p.Funding, SettledPayment{Kind: PoolPersonPayment, ID: e.ID, WorkspaceID: workspaceID, // B63.1
+		PayeeHash: PersonPayeeHash(to.personID), Inside: true, Currency: p.Currency}, nil)
 	return p, nil
 }
 

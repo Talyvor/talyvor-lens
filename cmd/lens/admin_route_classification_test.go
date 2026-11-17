@@ -49,6 +49,7 @@ var operatorReadable = map[string]string{
 	"/v1/admin/tax-profiles/flagged":      "B32.38: buyer tax profiles whose Stripe evidence contradicts the declared country, with the reason — for an operator to see to. taxprofile.Store.Flagged is Query-only.",
 	"/v1/admin/screening":                 "B30.6: each sanctions list — entries, when it was loaded, a failed download's reason — and the compliance cases screening opened, for an operator to see to. screening.Store.Lists and Screener.Cases are Query-only.",
 	"/v1/admin/compliance/alerts":         "B30.7: each alert transaction monitoring raised on a compliance case — the rule, the payments, why — for an operator to see to. monitoring.Monitor.Alerts is Query-only.",
+	"/v1/admin/payments-pool":             "B63.1: the payments pool's measures by week — counts and assumed sums only, nothing of one payment, for the v7 chat to bring Nick the numbers. paypool.Pool.Weeks is Query-only.",
 	"/v1/admin/scan/reports":              "B52.25: Scan's review queue — each drafted report, the check's verdicts and who approved it. scan.Writer.Queue is Query-only.",
 	"/v1/admin/scan/models":               "B52.24: every Scan model's latest backtest and, when it passed, the latest point against its normal — for an operator to check a model before it feeds a report. scan.Models.Reports is Query-only.",
 	"/v1/admin/reconciliation":            "B30.11: each day's reconciliation of the ledger against the partner's statements, with every break. DualTokenStore.ReconciliationRuns is Query-only.",
