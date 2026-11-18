@@ -320,7 +320,7 @@ func (s *DualTokenStore) PayPerson(ctx context.Context, workspaceID string, in P
 	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "person_payment",
 		IdempotencyKey: p.entryKey(), Funding: p.Funding, Memo: p.Note, payeeWorkspaceID: toWorkspaceID, Postings: []MoneyPosting{
 			{AccountID: p.FromAccountID, AmountMinor: -p.AmountMinor, Currency: p.Currency},
-			{AccountID: toAccountID, AmountMinor: p.AmountMinor, Currency: p.Currency}}}, s.screener)
+			{AccountID: toAccountID, AmountMinor: p.AmountMinor, Currency: p.Currency}}}, noPartnerPostings)
 	var refusal *CapabilityRefusal
 	if errors.As(err, &refusal) && refusal.Freeze != nil && refusal.Freeze.WorkspaceID == toWorkspaceID {
 		return PersonPayment{}, ErrPersonCannotBePaid // the sender reads nothing of the person's case
