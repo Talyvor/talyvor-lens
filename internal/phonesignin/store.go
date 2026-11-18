@@ -534,6 +534,42 @@ func (s *Store) PersonByPhone(ctx context.Context, phone string) (Person, bool, 
 	return p, err == nil, err
 }
 
+// Holder is the person who holds an identity as the BFF may read it at a Google sign-in (B61.100): never their number.
+type Holder struct {
+	PersonID    string `json:"person_id"`
+	HasPasscode bool   `json:"has_passcode"`
+}
+
+// PersonByIdentity is the person who holds identity, false when nobody does. Either answer is a row in the door's audit
+// trail.
+func (s *Store) PersonByIdentity(ctx context.Context, identity, address string) (Holder, bool, error) {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return Holder{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var h Holder
+	var phone string
+	err = tx.QueryRow(ctx, `SELECT id, phone FROM people WHERE identity = $1 AND $1 <> ''`, workspace.StoredIdentity(identity)).
+		Scan(&h.PersonID, &phone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := audit(ctx, tx, "", address, "identity_looked_up", "no person holds it"); err != nil {
+			return Holder{}, false, err
+		}
+		return Holder{}, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return Holder{}, false, err
+	}
+	if h.HasPasscode, err = s.passcodeSet(ctx, tx, h.PersonID); err != nil {
+		return Holder{}, false, err
+	}
+	if err := audit(ctx, tx, phone, address, "identity_looked_up", "a person holds it"); err != nil {
+		return Holder{}, false, err
+	}
+	return h, true, tx.Commit(ctx)
+}
+
 // Counts is how many people there are and what the door did in the last day.
 func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	var c Counts
