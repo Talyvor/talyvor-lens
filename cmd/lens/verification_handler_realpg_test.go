@@ -118,7 +118,7 @@ func TestVerificationRoutes_PersonaAndCompaniesHouseCheckTheOwner(t *testing.T) 
 	code, out := call(http.MethodPost, "/identity", `{"name": "Ada Lovelace", "country": "GB", "date_of_birth": "1990-12-10"}`)
 	check, _ := out["check"].(map[string]any)
 	if code != http.StatusCreated || check["method"] != "persona_sandbox" || check["status"] != "pending" || check["evidence_ref"] != "inq_ada" ||
-		check["link"] != "https://withpersona.com/verify?code=ada" {
+		check["link"] != "https://withpersona.com/verify?code=ada&redirect-uri=https%3A%2F%2Fapp.talyvor.com%2Fsettings%2Fverification" {
 		t.Fatalf("the identity check = %d %v; want 201, a pending Persona inquiry with its link", code, out)
 	}
 	if code, out = call(http.MethodGet, "", ""); code != http.StatusOK || out["level"] != "L1" || first(out)["link"] == nil {

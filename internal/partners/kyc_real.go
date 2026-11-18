@@ -126,6 +126,50 @@ func personaStatus(s string) (Status, bool) {
 	return StatusPending, false // needs_review, and any status Persona adds: decided later
 }
 
+// personaWords is what an inquiry in Persona's status s says to the person, in plain words (B65.1): Persona's own
+// words never reach them, and a check that cannot pass any more says it can be started again.
+func personaWords(s string) string {
+	switch s {
+	case "created", "pending":
+		return "Your ID check is waiting for you. Open the link to finish it."
+	case "approved", "completed":
+		return "Your ID is checked."
+	case "declined":
+		return "Your ID check did not pass. Start it again."
+	case "failed":
+		return "Your ID check was not finished. Start it again."
+	case "expired":
+		return "Your ID check expired. Start it again."
+	}
+	return "Your ID check is being reviewed."
+}
+
+// PersonaDetail is a check's detail recorded before B65.1 ("Persona: expired", "Persona: created — the person
+// completes it at the link") in plain words, and Persona's status in it; any other detail is as it is.
+func PersonaDetail(detail string) (words, personaStatus string) {
+	rest, ok := strings.CutPrefix(detail, "Persona: ")
+	if !ok {
+		return detail, ""
+	}
+	personaStatus, _, _ = strings.Cut(rest, " ")
+	return personaWords(personaStatus), personaStatus
+}
+
+// ReturnLink is link, the page a person completes a check at, sending them back to returnTo when they finish it:
+// Persona's hosted flow takes the address as its redirect-uri parameter and, once the inquiry is completed or
+// failed, sends the person there with the inquiry's id and status (docs.withpersona.com/hosted-flow-redirecting-on-complete).
+// The address must be one of the template's Allowed Domains, or a custom scheme. A link that is not a URL is as it is.
+func ReturnLink(link, returnTo string) string {
+	u, err := url.Parse(link)
+	if link == "" || returnTo == "" || err != nil || u.Host == "" {
+		return link
+	}
+	q := u.Query()
+	q.Set("redirect-uri", returnTo)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // StartCheck creates the inquiry, its fields prefilled with the person's name, date of birth and home address, and answers it
 // pending with the link the person completes it at.
 func (p *PersonaKYC) StartCheck(ctx context.Context, req KYCRequest) (Result, error) {
@@ -165,7 +209,7 @@ func (p *PersonaKYC) CheckResult(ctx context.Context, ref string) (Result, error
 // answer is inq as a check: with a one-time link while the person has still to act.
 func (p *PersonaKYC) answer(ctx context.Context, inq personaInquiry) (Result, error) {
 	st, waiting := personaStatus(inq.Data.Attributes.Status)
-	r := Result{Ref: inq.Data.ID, Status: st, Detail: "Persona: " + inq.Data.Attributes.Status}
+	r := Result{Ref: inq.Data.ID, Status: st, Detail: personaWords(inq.Data.Attributes.Status), PartnerStatus: inq.Data.Attributes.Status}
 	if !waiting {
 		return r, nil
 	}
@@ -174,7 +218,6 @@ func (p *PersonaKYC) answer(ctx context.Context, inq personaInquiry) (Result, er
 		return Result{}, err
 	}
 	r.Link = link.Meta.OneTimeLink
-	r.Detail += " — the person completes it at the link"
 	return r, nil
 }
 
