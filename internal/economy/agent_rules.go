@@ -1602,6 +1602,7 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	if err != nil {
 		return a, fmt.Errorf("economy: decide approval: %w", err)
 	}
+	s.endDecidedApprovals(workspaceID, a) // B41.136
 	return a, nil
 }
 

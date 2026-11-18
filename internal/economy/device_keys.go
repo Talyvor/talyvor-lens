@@ -296,5 +296,6 @@ func (s *DualTokenStore) notifyPaymentRequest(workspaceID string, r PaymentReque
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		s.pushDevices(ctx, workspaceID, m)
+		s.startLiveActivity(ctx, workspaceID, "pr:"+r.ID) // B41.136: on the lock screen with the app closed
 	}()
 }
