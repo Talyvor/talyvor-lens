@@ -105,15 +105,22 @@ type cardPayment struct {
 
 // lockCardPayment reads and locks partner's approved payment id — in workspaceID, or any when it is "".
 func lockCardPayment(ctx context.Context, tx pgx.Tx, partner, id, workspaceID string) (cardPayment, error) {
-	return readCardPayment(ctx, tx, partner, id, workspaceID, " FOR UPDATE")
+	return readCardPayment(ctx, tx, partner, id, workspaceID, true)
 }
 
-// readCardPayment reads partner's approved payment id on q — in workspaceID, or any when it is "" — locked by lock.
-func readCardPayment(ctx context.Context, q pgxDB, partner, id, workspaceID, lock string) (cardPayment, error) {
+const cardPaymentSQL = `SELECT workspace_id, card_id, merchant, amount_minor, currency FROM money_card_authorizations
+	WHERE partner = $1 AND id = $2 AND approved AND ($3 = '' OR workspace_id = $3)`
+
+// readCardPayment reads partner's approved payment id on q — in workspaceID, or any when it is "" — locked when lock.
+func readCardPayment(ctx context.Context, q pgxDB, partner, id, workspaceID string, lock bool) (cardPayment, error) {
 	p := cardPayment{partner: partner, id: id}
-	err := q.QueryRow(ctx, `SELECT workspace_id, card_id, merchant, amount_minor, currency FROM money_card_authorizations
-		WHERE partner = $1 AND id = $2 AND approved AND ($3 = '' OR workspace_id = $3)`+lock, partner, id, workspaceID).
-		Scan(&p.workspaceID, &p.cardID, &p.merchant, &p.amountMinor, &p.currency)
+	var row pgx.Row
+	if lock {
+		row = q.QueryRow(ctx, cardPaymentSQL+` FOR UPDATE`, partner, id, workspaceID)
+	} else {
+		row = q.QueryRow(ctx, cardPaymentSQL, partner, id, workspaceID)
+	}
+	err := row.Scan(&p.workspaceID, &p.cardID, &p.merchant, &p.amountMinor, &p.currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, fmt.Errorf("%w: no card payment %q", ErrCardDispute, id)
 	}
@@ -167,7 +174,7 @@ func (s *DualTokenStore) creditCardPayment(ctx context.Context, tx pgx.Tx, p car
 // payment id under key, up to want, read without a lock (B50.56). A credit that changes before its transaction reads
 // it is refused as not screened.
 func (s *DualTokenStore) screenCardCredit(ctx context.Context, partner, id string, want int64, key string) (PaymentScreener, error) {
-	p, err := readCardPayment(ctx, s.pool, partner, id, "", "")
+	p, err := readCardPayment(ctx, s.pool, partner, id, "", false)
 	if err != nil {
 		return nil, err
 	}
