@@ -105,9 +105,14 @@ type cardPayment struct {
 
 // lockCardPayment reads and locks partner's approved payment id — in workspaceID, or any when it is "".
 func lockCardPayment(ctx context.Context, tx pgx.Tx, partner, id, workspaceID string) (cardPayment, error) {
+	return readCardPayment(ctx, tx, partner, id, workspaceID, " FOR UPDATE")
+}
+
+// readCardPayment reads partner's approved payment id on q — in workspaceID, or any when it is "" — locked by lock.
+func readCardPayment(ctx context.Context, q pgxDB, partner, id, workspaceID, lock string) (cardPayment, error) {
 	p := cardPayment{partner: partner, id: id}
-	err := tx.QueryRow(ctx, `SELECT workspace_id, card_id, merchant, amount_minor, currency FROM money_card_authorizations
-		WHERE partner = $1 AND id = $2 AND approved AND ($3 = '' OR workspace_id = $3) FOR UPDATE`, partner, id, workspaceID).
+	err := q.QueryRow(ctx, `SELECT workspace_id, card_id, merchant, amount_minor, currency FROM money_card_authorizations
+		WHERE partner = $1 AND id = $2 AND approved AND ($3 = '' OR workspace_id = $3)`+lock, partner, id, workspaceID).
 		Scan(&p.workspaceID, &p.cardID, &p.merchant, &p.amountMinor, &p.currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, fmt.Errorf("%w: no card payment %q", ErrCardDispute, id)
@@ -115,7 +120,7 @@ func lockCardPayment(ctx context.Context, tx pgx.Tx, partner, id, workspaceID st
 	if err != nil {
 		return p, fmt.Errorf("economy: card payment: %w", err)
 	}
-	err = tx.QueryRow(ctx, `SELECT account_id, agent_id FROM money_cards WHERE id = $1 AND workspace_id = $2
+	err = q.QueryRow(ctx, `SELECT account_id, agent_id FROM money_cards WHERE id = $1 AND workspace_id = $2
 		UNION ALL SELECT account_id, agent_id FROM money_reusable_cards WHERE id = $1 AND workspace_id = $2 LIMIT 1`, p.cardID, p.workspaceID).
 		Scan(&p.accountID, &p.agentID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -143,37 +148,62 @@ func (s *DualTokenStore) paymentPartner(ctx context.Context, workspaceID, id str
 
 // creditCardPayment credits p's card account with up to want of p, in tx with p locked, as one money entry of kind under
 // key: never more than is left of p after its refunds and its won dispute. It answers what it credited and the entry.
-func (s *DualTokenStore) creditCardPayment(ctx context.Context, tx pgx.Tx, p cardPayment, want int64, kind, key string) (int64, string, error) {
-	var back int64
-	if err := tx.QueryRow(ctx, `SELECT
-		COALESCE((SELECT sum(credited_minor) FROM money_card_refunds WHERE partner = $1 AND payment_id = $2), 0)::bigint
-		+ COALESCE((SELECT sum(credited_minor) FROM money_card_disputes WHERE partner = $1 AND payment_id = $2 AND status = $3), 0)::bigint`,
-		p.partner, p.id, CardDisputeWon).Scan(&back); err != nil {
-		return 0, "", fmt.Errorf("economy: card payment: %w", err)
-	}
-	credit := min(want, p.amountMinor-back)
-	if credit <= 0 {
-		return 0, "", nil
-	}
-	// From the partner account the payment went to, in its funding.
-	var partnerAccount, funding string
-	err := tx.QueryRow(ctx, `SELECT p.account_id, p.funding FROM money_entries e JOIN money_postings p ON p.entry_id = e.id
-		JOIN money_accounts a ON a.id = p.account_id
-		WHERE e.workspace_id = $1 AND e.kind = 'card_charge' AND e.partner_ref = $2 AND a.purpose = $3 AND p.amount_minor > 0
-		ORDER BY e.created_at LIMIT 1`, p.workspaceID, p.id, MoneyPartner).Scan(&partnerAccount, &funding)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, "", fmt.Errorf("%w: card payment %q has no charge on the ledger", ErrCardDispute, p.id)
-	}
-	if err != nil {
-		return 0, "", fmt.Errorf("economy: card payment: %w", err)
+// The money back from the merchant posts with screened, screened before tx began (screenCardCredit, B50.56).
+func (s *DualTokenStore) creditCardPayment(ctx context.Context, tx pgx.Tx, p cardPayment, want int64, kind, key string, screened PaymentScreener) (int64, string, error) {
+	credit, partnerAccount, funding, _, err := cardCredit(ctx, tx, p, want)
+	if err != nil || credit <= 0 {
+		return 0, "", err
 	}
 	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: p.workspaceID, Capability: CapabilityPaymentsOut, Kind: kind, IdempotencyKey: key,
 		Funding: funding, Memo: p.merchant, Counterparty: p.merchant, PartnerRef: p.id, Postings: []MoneyPosting{
-			{AccountID: partnerAccount, AmountMinor: -credit}, {AccountID: p.accountID, AmountMinor: credit}}}, s.screener)
+			{AccountID: partnerAccount, AmountMinor: -credit}, {AccountID: p.accountID, AmountMinor: credit}}}, screened)
 	if err != nil {
 		return 0, "", err
 	}
 	return credit, e.ID, nil
+}
+
+// screenCardCredit screens before its transaction begins the money creditCardPayment would credit of partner's
+// payment id under key, up to want, read without a lock (B50.56). A credit that changes before its transaction reads
+// it is refused as not screened.
+func (s *DualTokenStore) screenCardCredit(ctx context.Context, partner, id string, want int64, key string) (PaymentScreener, error) {
+	p, err := readCardPayment(ctx, s.pool, partner, id, "", "")
+	if err != nil {
+		return nil, err
+	}
+	credit, _, funding, currency, err := cardCredit(ctx, s.pool, p, want)
+	if err != nil || credit <= 0 {
+		return noPartnerPostings, err
+	}
+	return s.screenBefore(ctx, firstScreening{MoneyEntry{WorkspaceID: p.workspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: key,
+		Funding: funding, Counterparty: p.merchant}, []MoneyPosting{{AmountMinor: -credit, Currency: currency}}}), nil
+}
+
+// cardCredit is what is left to credit of p, up to want, read on q, and the partner account, funding and currency it
+// comes back from.
+func cardCredit(ctx context.Context, q pgxDB, p cardPayment, want int64) (credit int64, partnerAccount, funding, currency string, err error) {
+	var back int64
+	if err := q.QueryRow(ctx, `SELECT
+		COALESCE((SELECT sum(credited_minor) FROM money_card_refunds WHERE partner = $1 AND payment_id = $2), 0)::bigint
+		+ COALESCE((SELECT sum(credited_minor) FROM money_card_disputes WHERE partner = $1 AND payment_id = $2 AND status = $3), 0)::bigint`,
+		p.partner, p.id, CardDisputeWon).Scan(&back); err != nil {
+		return 0, "", "", "", fmt.Errorf("economy: card payment: %w", err)
+	}
+	if credit = min(want, p.amountMinor-back); credit <= 0 {
+		return 0, "", "", "", nil
+	}
+	// From the partner account the payment went to, in its funding.
+	err = q.QueryRow(ctx, `SELECT p.account_id, p.funding, p.currency FROM money_entries e JOIN money_postings p ON p.entry_id = e.id
+		JOIN money_accounts a ON a.id = p.account_id
+		WHERE e.workspace_id = $1 AND e.kind = 'card_charge' AND e.partner_ref = $2 AND a.purpose = $3 AND p.amount_minor > 0
+		ORDER BY e.created_at LIMIT 1`, p.workspaceID, p.id, MoneyPartner).Scan(&partnerAccount, &funding, &currency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", "", "", fmt.Errorf("%w: card payment %q has no charge on the ledger", ErrCardDispute, p.id)
+	}
+	if err != nil {
+		return 0, "", "", "", fmt.Errorf("economy: card payment: %w", err)
+	}
+	return credit, partnerAccount, funding, currency, nil
 }
 
 // SetSandboxDisputes sets the Sandbox's card disputes, which send their outcomes and refunds here; the Sandbox routes ask it.
@@ -264,6 +294,11 @@ func (s *DualTokenStore) sendCardDispute(ctx context.Context, d CardDispute) (Ca
 // what is left of it, once; lost, nothing moves. The same outcome again answers the dispute as it is; the other,
 // ErrCardDisputeDecided.
 func (s *DualTokenStore) ReceiveCardDisputeOutcome(ctx context.Context, partner string, o money.DisputeOutcome) (CardDispute, error) {
+	// B50.56: a won dispute's money back from the merchant is screened before the transaction, on a connection of its own.
+	screened, err := s.screenWonDispute(ctx, partner, o)
+	if err != nil {
+		return CardDispute{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return CardDispute{}, fmt.Errorf("economy: card dispute: %w", err)
@@ -300,7 +335,7 @@ func (s *DualTokenStore) ReceiveCardDisputeOutcome(ctx context.Context, partner 
 	var credited int64
 	var entry string
 	if o.Won {
-		if credited, entry, err = s.creditCardPayment(ctx, tx, p, d.AmountMinor, "card_dispute_won", "card_dispute_won:"+d.ID); err != nil {
+		if credited, entry, err = s.creditCardPayment(ctx, tx, p, d.AmountMinor, "card_dispute_won", "card_dispute_won:"+d.ID, screened); err != nil {
 			return CardDispute{}, err
 		}
 	}
@@ -314,11 +349,47 @@ func (s *DualTokenStore) ReceiveCardDisputeOutcome(ctx context.Context, partner 
 	return d, nil
 }
 
+// screenWonDispute screens what partner's outcome o would credit, read without a lock, when it wins a dispute not yet
+// decided (B50.56).
+func (s *DualTokenStore) screenWonDispute(ctx context.Context, partner string, o money.DisputeOutcome) (PaymentScreener, error) {
+	if !o.Won {
+		return noPartnerPostings, nil
+	}
+	var id, paymentID, status string
+	var amount int64
+	err := s.pool.QueryRow(ctx, `SELECT id, payment_id, amount_minor, status FROM money_card_disputes WHERE partner = $1 AND partner_ref = $2
+		AND partner_ref <> ''`, partner, o.Ref).Scan(&id, &paymentID, &amount, &status)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return noPartnerPostings, nil
+	case err != nil:
+		return nil, fmt.Errorf("economy: card dispute: %w", err)
+	case status == CardDisputeWon || status == CardDisputeLost:
+		return noPartnerPostings, nil
+	}
+	return s.screenCardCredit(ctx, partner, paymentID, amount, "card_dispute_won:"+id)
+}
+
 // ReceiveCardRefund takes partner's merchant refund r: the payment's card account is credited r, up to what is left of
 // the payment, once. Sent again under the same id, the same refund is answered and nothing more moves.
 func (s *DualTokenStore) ReceiveCardRefund(ctx context.Context, partner string, r money.CardRefund) (CardPaymentRefund, error) {
 	if err := r.Valid(); err != nil {
 		return CardPaymentRefund{}, fmt.Errorf("%w: %w", ErrCardDispute, err)
+	}
+	// B50.56: the money back from the merchant is screened before the transaction, on a connection of its own; a refund
+	// already taken moves nothing again.
+	key := "card_refund:" + partner + ":" + r.ID
+	var taken bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM money_card_refunds WHERE partner = $1 AND id = $2)`, partner, r.ID).
+		Scan(&taken); err != nil {
+		return CardPaymentRefund{}, fmt.Errorf("economy: card refund: %w", err)
+	}
+	screened := noPartnerPostings
+	if !taken {
+		var err error
+		if screened, err = s.screenCardCredit(ctx, partner, r.Payment, r.Amount.Minor, key); err != nil {
+			return CardPaymentRefund{}, err
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -343,7 +414,7 @@ func (s *DualTokenStore) ReceiveCardRefund(ctx context.Context, partner string, 
 	if !strings.EqualFold(r.Amount.Asset, p.currency) {
 		return CardPaymentRefund{}, fmt.Errorf("%w: the payment was in %s, not %s", ErrCardDispute, p.currency, r.Amount.Asset)
 	}
-	credited, entry, err := s.creditCardPayment(ctx, tx, p, r.Amount.Minor, "card_refund", "card_refund:"+partner+":"+r.ID)
+	credited, entry, err := s.creditCardPayment(ctx, tx, p, r.Amount.Minor, "card_refund", key, screened)
 	if err != nil {
 		return CardPaymentRefund{}, err
 	}
