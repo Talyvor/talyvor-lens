@@ -23,6 +23,9 @@ import (
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/approve  {test_amount_minor?} — a send to a new address
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/decline
 //
+// `to` is a 0x address, or a person on Talyvor's @name, email or phone number, which answers only the wallet they
+// chose to receive into on that network (B48.32) and, for anyone else, the one answer for nobody found.
+//
 // Quoting, sending and reading take the agent's own key or the workspace's owner; only the owner, signed in, says yes
 // or no to a send to a new address, and only their own send there goes without asking. Mounted in the authed group.
 
@@ -61,7 +64,7 @@ func mountAgentCryptoSendRoutes(r chi.Router, bank agentCryptoSendBank) {
 	body := func(w http.ResponseWriter, req *http.Request) (economy.CryptoSendRequest, bool) {
 		var in economy.CryptoSendRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<10)).Decode(&in); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"to": "0x…", "network": "<network>", "token": "USDC", "amount_minor": <positive>}`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"to": "0x…, @name or email", "network": "<network>", "token": "USDC", "amount_minor": <positive>}`)
 			return in, false
 		}
 		return in, true
@@ -168,6 +171,12 @@ func writeCryptoSend(w http.ResponseWriter, c economy.CryptoSend) {
 
 func writeCryptoSendErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, economy.ErrPersonNotFound): // B48.32: nobody, and a person who has not said yes, answer the same
+		writePhoneRefusal(w, http.StatusNotFound, "not_found", economy.PersonNotFoundWords)
+	case errors.Is(err, economy.ErrPersonLookupLimit):
+		writeJSONErr(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, economy.ErrPersonPhoneSandbox):
+		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrCryptoSendsOff), errors.Is(err, economy.ErrSmartAccountsOff):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, economy.ErrCryptoSendNotFound), errors.Is(err, economy.ErrSmartAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
