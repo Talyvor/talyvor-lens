@@ -489,10 +489,10 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 	if err != nil || c.Status != "sending" {
 		return c, err
 	}
-	if spender, sps, err := onChainNow(ctx, s.pool, workspaceID, c.AgentID); err != nil {
+	if held, err := onChainNow(ctx, s.pool, workspaceID, c.AgentID); err != nil {
 		return c, err
-	} else if spender != "" && s.spendChain() != nil {
-		return s.spendAndSend(ctx, workspaceID, n, c, spender, sps)
+	} else if held.spender != "" && s.spendChain() != nil {
+		return s.spendAndSend(ctx, workspaceID, n, c, held.spender, held.last)
 	}
 	a, err := s.madeAccount(ctx, workspaceID, c.AgentID)
 	if err != nil {

@@ -315,8 +315,8 @@ func TestB4837_TheOwnersSpendPermissionOnChainThroughTheApp(t *testing.T) {
 		frozen.RevokeAsSpenderError != "" || !strings.HasPrefix(frozen.KeyRevokeCall, "0xb61d27f6") {
 		t.Fatalf("freeze = %d %+v", code, frozen)
 	}
-	if got := fns(batchCalls(t, frozen.RevokeCall)); strings.Join(got, ",") != selRevoke {
-		t.Fatalf("the person's revoke call = %v, want revoke of the permission on chain", got)
+	if got := fns(batchCalls(t, frozen.RevokeCall)); strings.Join(got, ",") != selRevoke+","+selRevoke {
+		t.Fatalf("the person's revoke call = %v, want every permission ever approved on chain revoked", got)
 	}
 	if asked != 2 || len(manager.revoked) != 2 {
 		t.Fatalf("after the freeze the chain holds %d permissions revoked, after %d asks; want both, the second as its spender", len(manager.revoked), asked)

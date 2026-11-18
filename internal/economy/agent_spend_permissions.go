@@ -266,28 +266,25 @@ func (s *DualTokenStore) SetSpendPermission(ctx context.Context, workspaceID, ag
 
 // grantOnChain is t as the SpendPermissionManager holds it, one spend permission per token for the agent's own account
 // spender, and the call the person's passkey signs to put it there (smartaccount.Chain.GrantCall): the first one hands
-// the agent's key over to the manager, and each later one revokes what the last one on chain approved. The provider's
-// policy for the agent's key is set to match before t is kept, so a permission is never kept that the provider does
-// not hold too.
+// the agent's key over to the manager, and each later one revokes every one approved before — not only the last, as
+// one the person never put on chain leaves the one before it live there; the manager takes a revoke of one it never
+// approved, or revoked already, without reverting. The provider's policy for the agent's key is set to match before t
+// is kept, so a permission is never kept that the provider does not hold too.
+//
+// shortcut: the hand-over is in the first grant only, as Lens does not read the chain's owners: a later grant that
+// lands while the first never did leaves the agent's key an owner and the manager not one, so the agent's own account
+// can spend nothing and the gate alone holds the key, as before B48.24. Upgrade by reading the account's owners on
+// chain before answering a grant.
 func (s *DualTokenStore) grantOnChain(ctx context.Context, tx pgx.Tx, ch smartaccount.Chain, agentID string, acct spendAccount, signer, spender string,
 	t SpendPermissionTerms) (*string, string, error) {
 	if !strings.EqualFold(acct.agentSigner, signer) {
 		return nil, "", fmt.Errorf("%w: the agent's key changed while it was signed: prepare it again", ErrSpendPermission)
 	}
-	var revoke []smartaccount.SpendPermission
-	var last string
-	err := tx.QueryRow(ctx, `SELECT on_chain FROM agent_spend_permissions WHERE agent_id = $1 AND on_chain IS NOT NULL ORDER BY number DESC LIMIT 1`,
-		agentID).Scan(&last)
-	handedOver := err == nil
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		return nil, "", fmt.Errorf("economy: spend permission: %w", err)
-	default:
-		if err := json.Unmarshal([]byte(last), &revoke); err != nil {
-			return nil, "", fmt.Errorf("economy: spend permission: %w", err)
-		}
+	held, err := onChainNow(ctx, tx, t.WorkspaceID, agentID)
+	if err != nil {
+		return nil, "", err
 	}
+	handedOver, revoke := held.spender != "", held.ever
 	approve, err := t.Permission.OnChain(acct.address, spender, t.Number, time.Now())
 	if err != nil {
 		return nil, "", err
@@ -312,25 +309,45 @@ func (s *DualTokenStore) grantOnChain(ctx context.Context, tx pgx.Tx, ch smartac
 	return &onChain, grant, nil
 }
 
-// onChainNow is what the SpendPermissionManager holds for agentID now, as Lens put it there (grantOnChain): the agent's
-// own account and the spend permissions the last permission on chain approved; "" when none is held on chain.
+// onChain is what Lens put in the SpendPermissionManager for an agent (grantOnChain).
+type onChain struct {
+	spender string                         // the agent's own account under the last permission on chain; "" for none
+	last    []smartaccount.SpendPermission // the spend permissions the last one approved
+	ever    []smartaccount.SpendPermission // every one any permission approved, each once
+}
+
+// onChainNow is what Lens put in the SpendPermissionManager for agentID.
 func onChainNow(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, workspaceID, agentID string) (string, []smartaccount.SpendPermission, error) {
-	var spender, raw string
-	err := q.QueryRow(ctx, `SELECT spender, on_chain FROM agent_spend_permissions WHERE agent_id = $1 AND workspace_id = $2 AND on_chain IS NOT NULL
-		ORDER BY number DESC LIMIT 1`, agentID, workspaceID).Scan(&spender, &raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, nil
-	}
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, workspaceID, agentID string) (onChain, error) {
+	var out onChain
+	rows, err := q.Query(ctx, `SELECT spender, on_chain FROM agent_spend_permissions WHERE agent_id = $1 AND workspace_id = $2 AND on_chain IS NOT NULL
+		ORDER BY number`, agentID, workspaceID)
 	if err != nil {
-		return "", nil, fmt.Errorf("economy: spend permission: %w", err)
+		return out, fmt.Errorf("economy: spend permission: %w", err)
 	}
-	var sps []smartaccount.SpendPermission
-	if err := json.Unmarshal([]byte(raw), &sps); err != nil {
-		return "", nil, fmt.Errorf("economy: spend permission: %w", err)
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&out.spender, &raw); err != nil {
+			return out, fmt.Errorf("economy: spend permission: %w", err)
+		}
+		out.last = nil
+		if err := json.Unmarshal([]byte(raw), &out.last); err != nil {
+			return out, fmt.Errorf("economy: spend permission: %w", err)
+		}
+		for _, sp := range out.last {
+			if k := fmt.Sprint(sp.Account, sp.Spender, sp.Token, sp.Salt); !seen[k] {
+				seen[k] = true
+				out.ever = append(out.ever, sp)
+			}
+		}
 	}
-	return spender, sps, nil
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("economy: spend permission: %w", err)
+	}
+	return out, nil
 }
 
 // ErrNoSpendPermission: the owner has signed no permission for this agent yet.
@@ -739,29 +756,36 @@ func (s *DualTokenStore) FreezeAgent(ctx context.Context, workspaceID, agentID, 
 	return f, nil
 }
 
-// revokeOnChain fills f's calls for the owner's spend permission held on chain (B48.37), and has the agent's own account
-// revoke its spend permissions as their spender, through the provider: the freeze reaches the chain with no tap.
+// revokeOnChain fills f's calls for the owner's spend permissions held on chain (B48.37) — the person's passkey revokes
+// every one ever approved — and has the agent's own account revoke those it is the spender of, through the provider:
+// the freeze reaches the chain with no tap.
 func (s *DualTokenStore) revokeOnChain(ctx context.Context, workspaceID, agentID string, acct spendAccount, f *AgentFreeze) error {
 	ch := s.spendChain()
 	if ch == nil {
 		return nil
 	}
-	spender, sps, err := onChainNow(ctx, s.pool, workspaceID, agentID)
-	if err != nil || spender == "" || len(sps) == 0 {
+	held, err := onChainNow(ctx, s.pool, workspaceID, agentID)
+	if err != nil || len(held.ever) == 0 {
 		return err
 	}
-	call, err := ch.GrantCall(smartaccount.Account{Address: acct.address}, false, sps, nil)
+	call, err := ch.GrantCall(smartaccount.Account{Address: acct.address}, false, held.ever, nil)
 	if err != nil {
 		return err
 	}
 	f.KeyRevokeCall, f.RevokeCall = f.RevokeCall, fmt.Sprintf("0x%x", call)
-	calls, err := ch.RevokeAsSpenderCalls(sps)
-	if err != nil {
+	var mine []smartaccount.SpendPermission // revokeAsSpender reverts for another spender's, and with it the whole operation
+	for _, sp := range held.ever {
+		if strings.EqualFold(sp.Spender, held.spender) {
+			mine = append(mine, sp)
+		}
+	}
+	calls, err := ch.RevokeAsSpenderCalls(mine)
+	if err != nil || len(calls) == 0 {
 		return err
 	}
-	// Under one key per permission, so freezing again answers the same operation.
-	r, err := s.smartAccounts.spenders.SendCalls(partners.WithWorkspace(ctx, workspaceID), fmt.Sprintf("revoke_as_spender:%s:%s", agentID, sps[0].Salt),
-		spender, calls)
+	// Under one key per set of permissions, so freezing again answers the same operation.
+	r, err := s.smartAccounts.spenders.SendCalls(partners.WithWorkspace(ctx, workspaceID), fmt.Sprintf("revoke_as_spender:%s:%d:%s", agentID, len(mine), mine[len(mine)-1].Salt),
+		held.spender, calls)
 	if err != nil {
 		return err
 	}
