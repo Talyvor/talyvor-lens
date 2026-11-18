@@ -27,6 +27,7 @@ import (
 //	POST /v1/workspaces/{wsID}/money-requests/{id}/decline
 //	POST /v1/workspaces/{wsID}/transfers/{id}/refund        give a transfer one of its agents received back
 //	GET  /v1/workspaces/{wsID}/agents/{agentID}/transfers   what the agent sent and received
+//	                                                        (?format=csv: the same list as a CSV, B28.332)
 //
 // Sending and asking take the agent's own key, the workspace's owner or an admin; answering, giving back and
 // the handle take the owner or an admin. A recurring transfer is a schedule (POST …/agents/{id}/schedules)
@@ -191,6 +192,10 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 		list, err := bank.ListAgentTransfers(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if wantsCSV(req) {
+			writeListCSV(w, "transfers", list)
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"transfers": list})
