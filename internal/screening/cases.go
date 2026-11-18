@@ -38,9 +38,9 @@ var (
 	// ErrBlocked: an exact match on a sanctions list.
 	ErrBlocked = errors.New("screening: refused: the name is on a sanctions list")
 	// ErrHeld: a close match, waiting for an operator.
-	ErrHeld = errors.New("screening: held: the name is close to one on a sanctions list, and waits for an operator to release it")
+	ErrHeld = errors.New("screening: held: the name is close to one on a sanctions list, and is held until an operator releases it")
 	// ErrListsStale: a payment held because the sanctions lists were stale, waiting for an operator.
-	ErrListsStale = errors.New("screening: held: the sanctions lists are out of date, and the payment waits for an operator to release it")
+	ErrListsStale = errors.New("screening: held: the sanctions lists are out of date, and the payment is held until an operator releases it")
 	// ErrRefused: a close match an operator refused.
 	ErrRefused = errors.New("screening: refused: an operator found the name is the one on the sanctions list")
 	// ErrNotWhatWasReleased: a payment retried under a released case's id, but not the payment the operator released.
