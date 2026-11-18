@@ -772,8 +772,10 @@ func agentSpentIn(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, s
 	// So do its payments out of Talyvor (B30.17) at what they were worth in LXC, unless they failed or came back, and the
 	// invoices it paid from its currency account (B30.131) and what payees pulled under its mandates (B55.24), recorded
 	// under their entry key as the rules let them through, the charges on its reusable cards (B54.6), and the purchases
-	// its agent card held on its currency account (B30.30). Each of the last four is named by the ref the rules judged it
-	// by, so what they recorded of it in currency replaces its µLXC.
+	// its agent card held on its currency account (B30.30). So do (B50.53) its Instant transfers unless they were
+	// reversed, its payments to people and its currency payments to other agents, and its card spends unless the issuer
+	// refused the card, as the rules recorded them under their ref. Each of the last four sources is named by the ref the
+	// rules judged it by, so what they recorded of it in currency replaces its µLXC.
 	err := tx.QueryRow(ctx, `WITH moved (ulxc, ref) AS (
 		SELECT (SELECT COALESCE(-sum(amount_ulxc), 0) FROM agent_postings
 		 WHERE workspace_id = $1 AND account = $2 AND created_at >= $3
@@ -782,8 +784,12 @@ func agentSpentIn(ctx context.Context, tx pgx.Tx, workspaceID, agentID string, s
 		   WHERE buyer_workspace_id = $1 AND agent_id = $4 AND charge = 'billed' AND used_at >= $3), NULL::text
 		UNION ALL SELECT value_ulxc, id FROM money_payments
 		   WHERE workspace_id = $1 AND agent_id = $4 AND created_at >= $3 AND status NOT IN ('failed', 'returned')
-		UNION ALL SELECT amount_ulxc, ref FROM agent_payee_payments
-		   WHERE workspace_id = $1 AND agent_id = $4 AND (ref LIKE 'invoice_agent:%' OR ref LIKE 'mandate_pull:%') AND created_at >= $3
+		UNION ALL SELECT p.amount_ulxc, p.ref FROM agent_payee_payments p
+		   WHERE p.workspace_id = $1 AND p.agent_id = $4 AND p.created_at >= $3
+		     AND (p.ref LIKE 'invoice_agent:%' OR p.ref LIKE 'mandate_pull:%' OR p.ref LIKE 'person_pay:%' OR p.ref LIKE 'agent_money_pay:%'
+		       OR (p.ref LIKE 'itr\_%' AND NOT EXISTS (SELECT 1 FROM instant_transfers t WHERE t.id = p.ref AND t.status = 'reversed'))
+		       OR (p.ref LIKE 'card_spend:%' AND NOT EXISTS (SELECT 1 FROM money_card_spends c
+		         WHERE c.id = substr(p.ref, length('card_spend:') + 1) AND c.status = 'failed')))
 		UNION ALL SELECT value_ulxc, 'card_charge:' || partner || ':' || id FROM money_card_authorizations
 		   WHERE workspace_id = $1 AND agent_id = $4 AND approved AND created_at >= $3
 		UNION ALL SELECT amount_ulxc, authorization_id FROM agent_card_authorizations
