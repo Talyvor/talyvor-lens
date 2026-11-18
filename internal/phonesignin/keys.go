@@ -109,11 +109,17 @@ type KeyProof struct {
 	Passcode string
 }
 
-func (s *Store) passcodeSet(ctx context.Context, tx pgx.Tx, personID string) (bool, error) {
-	if s.Passcodes == nil {
-		return false, nil
+// passcodes is the passcode rule the key rules ask: Store.Passcodes, or the door's own when none is wired (B50.52),
+// so a person with a passcode is never read as having none.
+func (s *Store) passcodes() PasscodeRule {
+	if s.Passcodes != nil {
+		return s.Passcodes
 	}
-	return s.Passcodes.HasPasscode(ctx, tx, personID)
+	return s.PasscodeRule()
+}
+
+func (s *Store) passcodeSet(ctx context.Context, tx pgx.Tx, personID string) (bool, error) {
+	return s.passcodes().HasPasscode(ctx, tx, personID)
 }
 
 func (s *Store) newKeyChallenge(ctx context.Context, q execer, purpose, personID, origin, challenge string) (KeyChallenge, error) {
@@ -464,7 +470,7 @@ func (s *Store) useProof(ctx context.Context, tx pgx.Tx, personID, phone, addres
 			return s.refuseEvent(ctx, tx, phone, address, "key_refused", what+" with a ticket that is not the person's, used, old or its key's removed", err)
 		}
 	case proof.Passcode != "" && hasPasscode:
-		if err := s.Passcodes.CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
+		if err := s.passcodes().CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
 			if aerr := audit(ctx, tx, phone, address, "key_refused", what+" with a passcode that was not right"); aerr != nil {
 				return aerr
 			}

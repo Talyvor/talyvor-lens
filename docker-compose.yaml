@@ -70,7 +70,7 @@ services:
       # LENS_DB_MAX_CONNS is raised — connections are cheap against PgBouncer.
       # B39.6: with LENS_APP_DB_PASSWORD set in .env, Lens logs in as lens_app, which cannot UPDATE,
       # DELETE or TRUNCATE the ledgers nor switch their triggers off; unset, it logs in as lens, as before.
-      - LENS_DATABASE_URL=postgres://lens${LENS_APP_DB_PASSWORD:+_app}:${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}@pgbouncer:6432/talyvor_lens?sslmode=disable
+      - LENS_DATABASE_URL=postgres://lens${LENS_APP_DB_PASSWORD:+_app}:${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}@pgbouncer:6432/talyvor_lens?sslmode=disable  # compose-secret-ok: the fallback is POSTGRES_PASSWORD, itself required with :? — nothing committed is supplied
       - LENS_DB_PGBOUNCER=true
       - LENS_DB_MAX_CONNS=100
       - LENS_REDIS_URL=redis://redis:6379
@@ -249,7 +249,7 @@ services:
       # The browser chat's credential (B10.7). ON by default (Nicolai: every capability on): without it
       # /v1/auth/session-keys is never registered and the chat's mint gets a 404. Every chat request is
       # charged (B9.8). TTL empty ⇒ config's DefaultSessionKeyTTL.
-      - LENS_SESSION_KEYS_ENABLED=${LENS_SESSION_KEYS_ENABLED:-true}
+      - LENS_SESSION_KEYS_ENABLED=${LENS_SESSION_KEYS_ENABLED:-true}  # compose-secret-ok: an on/off flag, not a credential
       - LENS_SESSION_KEY_TTL=${LENS_SESSION_KEY_TTL:-}
       # Provider-secret envelope KEK (W6.10). Comma-separated base64 32-byte keys, PRIMARY FIRST
       # (`openssl rand -base64 32`). Empty ⇒ Lens boots with provider-secret custody DISABLED and no
@@ -353,7 +353,7 @@ services:
       - DB_NAME=talyvor_lens
       # Lens's own login (B39.6): lens_app once LENS_APP_DB_PASSWORD is set, else lens.
       - DB_USER=lens${LENS_APP_DB_PASSWORD:+_app}
-      - DB_PASSWORD=${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}
+      - DB_PASSWORD=${LENS_APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}}  # compose-secret-ok: the fallback is POSTGRES_PASSWORD, itself required with :? — nothing committed is supplied
       - LISTEN_PORT=6432
       - AUTH_TYPE=scram-sha-256
       - POOL_MODE=transaction
