@@ -510,7 +510,7 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		}
 	}
 	e.Postings = []MoneyPosting{{AccountID: m.AccountID, AmountMinor: -amountMinor}, {AccountID: to, AmountMinor: amountMinor}}
-	if pull.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if pull.Entry, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return MandatePull{}, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO money_mandate_pulls (mandate_id, idempotency_key, entry_id, amount_minor) VALUES ($1, $2, $3, $4)`,

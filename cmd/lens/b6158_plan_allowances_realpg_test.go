@@ -205,8 +205,8 @@ func TestB6158_SoloConvertsItsFirst1000FreeThenPaysOnThePartAbove(t *testing.T) 
 // last £10.00 of its 15,000 free, convert at once; one converts and the others are told to ask again.
 func TestB6158_ConversionsRacingAtTheLineNeverBothGoFree(t *testing.T) {
 	ctx := context.Background()
-	// Each conversion holds its transaction while its screening takes a connection of its own, so eight at once need
-	// sixteen: a pool of its own, so the race is at the allowance's lock and not for the pool (FOUND, B61.58).
+	// A pool of its own, so the race is at the allowance's lock and not for the pool (FOUND, B61.58; B50.54 screens
+	// before the transaction, so eight at once no longer need sixteen).
 	cfg := agentRoutesDB(t).Config()
 	cfg.MaxConns = 24
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

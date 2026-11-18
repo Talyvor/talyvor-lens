@@ -250,6 +250,11 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 		return Conversion{}, fmt.Errorf("economy: conversion: %w", err)
 	}
 
+	// B50.54: screened before the transaction, on a connection of its own.
+	screened, err := s.screenFirst(ctx, c.entry(workspaceID, "", "", ""), c.partnerPostings()...)
+	if err != nil {
+		return Conversion{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion: %w", err)
@@ -294,14 +299,7 @@ func (s *DualTokenStore) ConvertSides(ctx context.Context, workspaceID, quoteID,
 		return Conversion{}, err
 	}
 	// Posted before the partner is asked: a live conversion fx is not cleared for, or one the ledger refuses, never reaches it.
-	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "fx_conversion",
-		IdempotencyKey: "fx_convert:" + c.ID, Funding: c.Funding, Counterparty: c.Partner, PartnerRef: c.partnerRef,
-		Memo: Money(c.SellMinor, c.SellCurrency) + " to " + Money(c.BuyMinor, c.BuyCurrency) + " at " + c.Rate, Postings: []MoneyPosting{
-			{AccountID: c.FromAccountID, AmountMinor: -c.SellMinor},
-			{AccountID: revenue, AmountMinor: c.MarginMinor},
-			{AccountID: sold, AmountMinor: c.SellMinor - c.MarginMinor},
-			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
-			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}, s.screener)
+	e, err := postMoneyTx(ctx, tx, c.entry(workspaceID, revenue, sold, bought), screened)
 	if err != nil {
 		return Conversion{}, err
 	}

@@ -334,7 +334,7 @@ func (s *DualTokenStore) holdCardBatch(ctx context.Context, b CardBatch, by stri
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: b.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_hold",
 		IdempotencyKey: "card_hold:" + b.ID, Funding: b.Funding, Memo: b.Purpose, Postings: []MoneyPosting{
-			{AccountID: from.id, AmountMinor: -b.TotalMinor}, {AccountID: hold, AmountMinor: b.TotalMinor}}}, s.screener); err != nil {
+			{AccountID: from.id, AmountMinor: -b.TotalMinor}, {AccountID: hold, AmountMinor: b.TotalMinor}}}, noPartnerPostings); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE money_cards SET status = $2, hold_account_id = $3, updated_at = now() WHERE batch_id = $1 AND status = $4`,
@@ -361,7 +361,7 @@ func (s *DualTokenStore) releaseCard(ctx context.Context, b CardBatch, c MoneyCa
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: b.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_release",
 		IdempotencyKey: "card_release:" + c.ID, Funding: b.Funding, Memo: c.Merchant, Postings: []MoneyPosting{
-			{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: c.accountID, AmountMinor: c.CapMinor}}}, s.screener); err != nil {
+			{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: c.accountID, AmountMinor: c.CapMinor}}}, noPartnerPostings); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
