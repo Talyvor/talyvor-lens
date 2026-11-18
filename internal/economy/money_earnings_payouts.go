@@ -388,7 +388,7 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		}
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "earnings_payout_hold",
 			IdempotencyKey: "earnings_payout:" + p.ID + ":hold", Funding: p.Funding, Memo: p.memo(), Postings: []MoneyPosting{
-				{AccountID: from.id, AmountMinor: -p.AmountMinor}, {AccountID: hold, AmountMinor: p.AmountMinor}}}, s.screener); err != nil {
+				{AccountID: from.id, AmountMinor: -p.AmountMinor}, {AccountID: hold, AmountMinor: p.AmountMinor}}}, noPartnerPostings); err != nil {
 			return nil, err
 		}
 		out[i] = p
