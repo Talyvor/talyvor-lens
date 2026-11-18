@@ -121,11 +121,15 @@ func (s *DualTokenStore) ReceiveCardChallenge(ctx context.Context, partner strin
 	}
 	fp := sha256.Sum256([]byte("card_challenge\x00" + partner + "\x00" + c.ID))
 	ch.ApprovalID = "apr_" + uuid.NewString()
+	mode, err := s.paymentMode(ctx, tx, ch.WorkspaceID, "card", Payee{Kind: "merchant", ID: "merchant:" + ch.Merchant, Name: ch.Merchant}, "") // B62.7
+	if err != nil {
+		return CardChallenge{}, err
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, kind, payee_kind, payee_id, payee_name, memo,
-			expires_at, paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor)
-		VALUES ($1, $2, $3, $4, $5, $6, 'merchant', $7, $8, $9, $10, 'card', $11, $12, $13)`,
+			expires_at, paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, mode)
+		VALUES ($1, $2, $3, $4, $5, $6, 'merchant', $7, $8, $9, $10, 'card', $11, $12, $13, $14)`,
 		ch.ApprovalID, ch.WorkspaceID, ch.AgentID, hex.EncodeToString(fp[:]), value, ApprovalCardChallenge, "merchant:"+ch.Merchant, ch.Merchant,
-		"Confirm "+minorString(ch.AmountMinor, ch.Currency)+" by card at "+ch.Merchant, ch.ExpiresAt, ch.CardID, ch.Currency, ch.AmountMinor); err != nil {
+		"Confirm "+minorString(ch.AmountMinor, ch.Currency)+" by card at "+ch.Merchant, ch.ExpiresAt, ch.CardID, ch.Currency, ch.AmountMinor, mode); err != nil {
 		return CardChallenge{}, fmt.Errorf("economy: card challenge: %w", err)
 	}
 	if err := tx.QueryRow(ctx, `INSERT INTO money_card_challenges (partner, id, workspace_id, agent_id, card_id, merchant, amount_minor, currency,

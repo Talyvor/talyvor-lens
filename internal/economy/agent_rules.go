@@ -1228,7 +1228,11 @@ func (s *DualTokenStore) proveRuledPayment(ctx context.Context, tx pgx.Tx, works
 			version = nil
 		}
 	}
-	return recordPaymentProof(ctx, tx, workspaceID, agentID, ref, rule, version, sent, used)
+	mode, err := s.paymentMode(ctx, tx, workspaceID, sent.Rail, sent.Payee, req.PaidFrom.funding) // B62.7
+	if err != nil {
+		return err
+	}
+	return recordPaymentProof(ctx, tx, workspaceID, agentID, ref, rule, mode, version, sent, used)
 }
 
 // withinPayeeAllowance is whether a payment of amount µLXC, judged by r as j (B61.40), to the payee ids name fits one
@@ -1398,17 +1402,21 @@ func (s *DualTokenStore) fileApproval(ctx context.Context, need *ApprovalNeededE
 		if err := declined(ctx, tx, need.agentID, need.req.Fingerprint); err != nil { // B55.18
 			return err
 		}
+		mode, err := s.paymentMode(ctx, tx, need.workspaceID, cmp.Or(from.Kind, railOf(need.req)), payee, from.funding) // B62.7
+		if err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, model, payee_kind, payee_id, payee_name, memo, expires_at, connect_client_id,
 				paid_from_kind, paid_from_account_id, paid_from_currency, paid_from_amount_minor, paid_from_funding, asks_above_ulxc, budget_left_after_ulxc,
-				rules_currency, asks_above_minor, budget_left_after_minor, rule, rules_version, task)
+				rules_currency, asks_above_minor, budget_left_after_minor, rule, rules_version, task, mode)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + $11 * interval '1 microsecond', $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23, $24, $25)
+				$20, $21, $22, $23, $24, $25, $26)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING RETURNING id`,
 			"apr_"+uuid.NewString(), need.workspaceID, need.agentID, need.req.Fingerprint, need.AmountULXC, need.req.Model,
 			payee.Kind, payee.ID, payee.Name, need.req.Memo, s.approvalLife().Microseconds(), client,
 			from.Kind, from.AccountID, from.Currency, from.AmountMinor, from.funding, need.asksAbove, need.monthLeft,
-			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft, need.rule, version, taskIn(ctx, need.workspaceID)).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			need.inRules.currency, need.inRules.asksAboveOrNil(), need.inRules.monthLeft, need.rule, version, taskIn(ctx, need.workspaceID), mode).Scan(&filed); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("economy: file approval: %w", err)
 		}
 		return nil
