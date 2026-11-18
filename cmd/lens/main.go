@@ -3260,6 +3260,8 @@ func run() error {
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.107 — and a forgotten passcode is set again with the number's code and one of the person's keys.
+	mountPasscodeReplaceRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
 	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.104 — and a person with a session changes their own number, with the new number's code and their passcode.
