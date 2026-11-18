@@ -406,7 +406,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "payment_out_hold",
 		IdempotencyKey: p.key("hold"), Funding: p.Funding, Memo: p.Reference, Postings: []MoneyPosting{
-			{AccountID: p.AccountID, AmountMinor: -p.debit()}, {AccountID: p.holdAccountID, AmountMinor: p.debit()}}}, s.screener); err != nil {
+			{AccountID: p.AccountID, AmountMinor: -p.debit()}, {AccountID: p.holdAccountID, AmountMinor: p.debit()}}}, noPartnerPostings); err != nil {
 		return OutsidePayment{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

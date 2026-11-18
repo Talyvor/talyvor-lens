@@ -203,7 +203,7 @@ func (s *DualTokenStore) PayAgentMoney(ctx context.Context, workspaceID, fromAge
 	if p.ToWorkspaceID != workspaceID {
 		e.payeeWorkspaceID = p.ToWorkspaceID // the payee's agent account, credited from this workspace's entry
 	}
-	if e, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if e, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return AgentMoneyPayment{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

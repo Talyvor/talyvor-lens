@@ -430,7 +430,7 @@ func (s *DualTokenStore) holdCardOnAccount(ctx context.Context, tx pgx.Tx, a Car
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: d.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_hold",
 		IdempotencyKey: "agent_card_hold:" + a.EventID, Funding: FundingTest, Memo: a.MerchantName, Postings: []MoneyPosting{
-			{AccountID: from.id, AmountMinor: -a.AmountMinor}, {AccountID: hold, AmountMinor: a.AmountMinor}}}, s.screener); err != nil {
+			{AccountID: from.id, AmountMinor: -a.AmountMinor}, {AccountID: hold, AmountMinor: a.AmountMinor}}}, noPartnerPostings); err != nil {
 		return d, err
 	}
 	d.Approved, d.Reason, d.account = true, cardApprovedReason, from.id

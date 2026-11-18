@@ -295,7 +295,7 @@ func (s *DualTokenStore) payMoneyAllowance(ctx context.Context, tx pgx.Tx, a Mon
 		if left > 0 {
 			e, err := postMoneyTx(ctx, sp, MoneyEntry{WorkspaceID: a.WorkspaceID, Capability: CapabilityCurrencyAccounts, Kind: "allowance_sweep",
 				IdempotencyKey: key + ":sweep", Funding: a.Funding, Memo: "Unspent allowance back to the company, " + run.Period,
-				Postings: []MoneyPosting{{AccountID: agent, AmountMinor: -left}, {AccountID: company, AmountMinor: left}}}, s.screener)
+				Postings: []MoneyPosting{{AccountID: agent, AmountMinor: -left}, {AccountID: company, AmountMinor: left}}}, noPartnerPostings)
 			if err != nil {
 				return refuse(err.Error())
 			}
@@ -317,7 +317,7 @@ func (s *DualTokenStore) payMoneyAllowance(ctx context.Context, tx pgx.Tx, a Mon
 	}
 	e, err := postMoneyTx(ctx, sp, MoneyEntry{WorkspaceID: a.WorkspaceID, Capability: CapabilityCurrencyAccounts, Kind: "allowance",
 		IdempotencyKey: key + ":fund", Funding: a.Funding, Memo: "Monthly allowance, " + run.Period,
-		Postings: []MoneyPosting{{AccountID: company, AmountMinor: -a.AmountMinor}, {AccountID: agent, AmountMinor: a.AmountMinor}}}, s.screener)
+		Postings: []MoneyPosting{{AccountID: company, AmountMinor: -a.AmountMinor}, {AccountID: agent, AmountMinor: a.AmountMinor}}}, noPartnerPostings)
 	if err != nil {
 		return refuse(err.Error())
 	}
