@@ -103,16 +103,15 @@ func mountConnectorPublicRoutes(r chi.Router, grants connectorGrants, bank agent
 			writeJSONErr(w, status, err.Error())
 			return
 		}
+		// B67.1: an error is answered here, never by a redirect. Anyone may register a client (/oauth/register), so
+		// "the client registered this redirect_uri" does not make it safe to send a browser there before the owner has
+		// read and approved the client on the connect page (RFC 9700 §4.11.2): that made Lens an open redirect.
 		back := func(code, desc string) {
-			u, _ := url.Parse(redirectURI)
-			v := u.Query()
-			v.Set("error", code)
-			v.Set("error_description", desc)
-			if s := q.Get("state"); s != "" {
-				v.Set("state", s)
+			status := http.StatusBadRequest
+			if code == "server_error" {
+				status = http.StatusInternalServerError
 			}
-			u.RawQuery = v.Encode()
-			http.Redirect(w, req, u.String(), http.StatusFound)
+			oauthErr(w, status, code, desc)
 		}
 		res := q.Get("resource")
 		listingID, isListing := strings.CutPrefix(res, publicURL+listingResourcePrefix)

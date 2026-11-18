@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# B67.1: least privilege; the job only reads the repository and uploads an artifact.
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
