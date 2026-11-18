@@ -204,6 +204,12 @@ func openAPIWalletSchemas() map[string]any {
 				"rules_currency":          map[string]any{"type": "string", "description": "the currency the agent's rules were held in when it was filed: GBP, EUR, USD or USDC; empty on one filed before it was kept"},
 				"asks_above_minor":        map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the amount its rules ask above, in rules_currency's minor units, when it was filed"},
 				"budget_left_after_minor": map[string]any{"type": "integer", "format": "int64", "nullable": true, "description": "the monthly limit less the month's spend and this amount, in rules_currency's minor units, when it was filed; null with no monthly limit"},
+				"stopped": map[string]any{"type": "object", "nullable": true,
+					"description": "the newest payment it stopped because it was not the one approved (B62.9); null when none did, or once the payment approved was sent",
+					"properties": map[string]any{
+						"changed": map[string]any{"type": "string", "enum": []string{"payee", "amount", "currency", "agent"}, "description": "the first that differed, in that order"},
+						"at":      at,
+					}},
 			},
 		},
 		"AgentSummary": map[string]any{
