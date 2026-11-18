@@ -29,6 +29,7 @@ type phoneSignIn interface {
 	RedeemWithPasscode(ctx context.Context, ticket, identity, passcode, address string) (phonesignin.Person, bool, error)
 	CheckPasscode(ctx context.Context, personID, passcode, address string) error
 	ChangePasscode(ctx context.Context, personID, old, passcode, address string) error
+	PersonByIdentity(ctx context.Context, identity, address string) (phonesignin.Holder, bool, error)
 	PhoneCheckDue(p phonesignin.Person) bool
 	PasscodesReady() bool
 	Refused(ctx context.Context, phone, address, detail string) error
@@ -96,6 +97,8 @@ func mountPhoneSignInRoutes(r chi.Router, secret string, s phoneSignIn) {
 	// B61.23 — the passcode, for a session of the person the BFF holds.
 	r.Post("/v1/auth/passcode/check", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { passcodeCheck(w, req, s) }))
 	r.Post("/v1/auth/passcode/change", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { passcodeChange(w, req, s) }))
+	// B61.100 — at a Google sign-in, whether that identity has moved to a person.
+	r.Post("/v1/auth/person/by-identity", phoneSignInHandler(secret, func(w http.ResponseWriter, req *http.Request) { personByIdentity(w, req, s) }))
 }
 
 // writePasscodeRefusal answers a passcode refused; false when err is none of the passcode's own. A wrong try's
@@ -302,6 +305,33 @@ func phonePerson(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
 		return
 	}
 	writeJSONOK(w, http.StatusOK, phonePersonResponse{Person: p, Created: created, PhoneCheckDue: s.PhoneCheckDue(p)})
+}
+
+// personByIdentity is POST /v1/auth/person/by-identity {"identity", "caller_address"}: {person_id, has_passcode} for
+// the person who holds identity, 404 no_person with none. Never their number.
+func personByIdentity(w http.ResponseWriter, req *http.Request, s phoneSignIn) {
+	var in struct {
+		Identity string `json:"identity"`
+		Address  string `json:"caller_address"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if in.Identity = strings.TrimSpace(in.Identity); in.Identity == "" {
+		writeJSONErr(w, http.StatusBadRequest, "identity required")
+		return
+	}
+	h, ok, err := s.PersonByIdentity(req.Context(), in.Identity, strings.TrimSpace(in.Address))
+	switch {
+	case err != nil:
+		slog.Warn("phone door: the person could not be looked up by identity", "cause", errorCause(err))
+		writeJSONErr(w, http.StatusServiceUnavailable, "the person could not be found; try again")
+	case !ok:
+		writePhoneRefusal(w, http.StatusNotFound, "no_person", "No person holds that identity.")
+	default:
+		writeJSONOK(w, http.StatusOK, h)
+	}
 }
 
 // newPeopleCountsHandler is GET /v1/admin/people/counts: how many people and what the door did in a day, never whose.
