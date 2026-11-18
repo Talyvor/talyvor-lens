@@ -13,6 +13,10 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# B67.1: least privilege. No job writes to the repository; one that needs more names it in its own block.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
