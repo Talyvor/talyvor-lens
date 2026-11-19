@@ -107,7 +107,9 @@ func TestB2872_EveryMoneyRouteSentTwiceWithOneKeyWritesOneRowAndOnePosting(t *te
 	t.Run("standing order", func(t *testing.T) {
 		const ws = "ws-b2872-standing"
 		b := newB468Payer(t, pool, ws, "GBP", economy.OutsidePayee{Name: "Ada Lovelace", Country: "GB", SortCode: "200000", AccountNumber: "55779911"},
-			func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry { return sandboxMoneyLayer(t, pool, store, reg) })
+			func(store *economy.DualTokenStore, reg *partners.Registry) *money.Registry {
+				return sandboxMoneyLayer(t, pool, store, reg)
+			})
 		r := chi.NewRouter()
 		mountAgentAccountRoutes(r, b.store, tenant.NewStore(pool))
 		path := "/v1/workspaces/" + ws + "/agents/" + b.acct.AgentID + "/schedules"
