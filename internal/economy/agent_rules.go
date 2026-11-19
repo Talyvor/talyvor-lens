@@ -1522,6 +1522,11 @@ type AgentApproval struct {
 	// Task is what the agent said the payment is for (B62.2), in its own words: shown after TaskSays, never as a fact.
 	// "" when it gave none.
 	Task string `json:"task"`
+	// FirstApprovedBy is who gave the first of the two approvals a payment over the second-approver line needs (B28.315),
+	// and SecondApprovedBy who gave the second; WaitingForSecondApprover is true while it is pending after the first.
+	FirstApprovedBy          string `json:"first_approved_by,omitempty"`
+	SecondApprovedBy         string `json:"second_approved_by,omitempty"`
+	WaitingForSecondApprover bool   `json:"waiting_for_second_approver"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1535,7 +1540,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
-	budget_left_after_minor, task`
+	budget_left_after_minor, task, first_approved_by, second_approved_by`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1546,7 +1551,9 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task,
+		&a.FirstApprovedBy, &a.SecondApprovedBy)
+	a.WaitingForSecondApprover = a.Status == "pending" && a.FirstApprovedBy != ""
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1589,26 +1596,24 @@ func (s *DualTokenStore) ListAgentApprovals(ctx context.Context, workspaceID str
 	return out, rows.Err()
 }
 
-// DecideAgentApproval approves or denies a pending approval still within its life.
+// DecideAgentApproval approves or denies a pending approval still within its life. Over the second-approver line
+// (B28.315) the first approval leaves it pending, waiting for a second person's.
 func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (AgentApproval, error) {
-	status := "denied"
 	if approve {
-		status = "approved"
 		if err := approvalsLiveKeyFirst(ctx, s.pool, workspaceID, []string{approvalID}); err != nil { // B58.7
 			return AgentApproval{}, err
 		}
 	}
-	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
-		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns,
-		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return a, ErrApprovalNotFound
-	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return a, fmt.Errorf("economy: decide approval: %w", err)
+		return AgentApproval{}, err
 	}
-	return a, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	a, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, nil)
+	if err != nil {
+		return a, err
+	}
+	return a, tx.Commit(ctx)
 }
 
 // defaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and
