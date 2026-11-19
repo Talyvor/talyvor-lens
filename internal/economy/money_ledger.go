@@ -280,7 +280,7 @@ func (screenedBeforeLocks) ScreenPayment(context.Context, screening.Payment) err
 // out of a partner account, whose accounts may not be opened yet. Screening takes a connection of its own, and one taken
 // inside the transaction, with as many moves at once as the pool has connections, leaves none (B50.54). It answers
 // the screener to post e with inside the transaction: it clears the payments screened here, and only those.
-func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through ...MoneyPosting) (PaymentScreener, error) {
+func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through ...MoneyPosting) (screenedFirst, error) {
 	postings := make([]MoneyPosting, 0, len(through))
 	for _, p := range through {
 		if p.AmountMinor != 0 {
@@ -297,8 +297,37 @@ func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through 
 	if err := screenOutside(ctx, e, postings, func(string) bool { return true }, screener); err != nil {
 		return nil, err
 	}
-	return screenedFirst(rec.cleared), nil
+	return rec.cleared, nil
 }
+
+// firstScreening is an entry a move may post through a partner, with its postings through the partner, to be screened
+// before the move's transaction begins.
+type firstScreening struct {
+	entry   MoneyEntry
+	through []MoneyPosting
+}
+
+// screenBefore screens each of entries before a move's transaction begins, as screenFirst does, for a move that learns
+// only inside its transaction whether it posts them: a card charge the card's controls may decline, a payment the
+// partner has already settled. It answers the screener to post with inside the transaction. A refusal waits for it:
+// each payment through a partner is then refused as the screening was, and a move that posts none is not (B50.56).
+func (s *DualTokenStore) screenBefore(ctx context.Context, entries ...firstScreening) PaymentScreener {
+	var cleared screenedFirst
+	for _, f := range entries {
+		got, err := s.screenFirst(ctx, f.entry, f.through...)
+		if err != nil {
+			return refusedFirst{err}
+		}
+		cleared = append(cleared, got...)
+	}
+	return cleared
+}
+
+// refusedFirst is the screener inside a transaction whose screening before it began refused: it takes no connection,
+// and refuses every payment through a partner with that refusal.
+type refusedFirst struct{ err error }
+
+func (r refusedFirst) ScreenPayment(context.Context, screening.Payment) error { return r.err }
 
 // screenRecorder screens through next for screenFirst, recording each payment next clears.
 type screenRecorder struct {
