@@ -42,10 +42,12 @@ const PaymentProofVersion = "talyvor.payment_proof.v1"
 const (
 	ProofRuleApprovalAbove = "approval_above" // above the amount the rules ask the owner for
 	ProofRulePrepared      = "prepared"       // an assistant's payment, always prepared for the owner (B52.41)
-	ProofRuleWithinRules   = "within_rules"   // inside every rule: no approval needed
-	ProofRuleAlwaysAllow   = "always_allow"   // inside an "always allow" of its payee (B41.104)
-	ProofRuleMandate       = "mandate"        // within a mandate the owner signed in advance (B55.24)
-	ProofRuleNoRules       = "no_rules"       // the agent has no rules
+	// ProofRuleSecondApprover: a Business's payment over its second-approver line, approved by two people (B28.315).
+	ProofRuleSecondApprover = "second_approver"
+	ProofRuleWithinRules    = "within_rules" // inside every rule: no approval needed
+	ProofRuleAlwaysAllow    = "always_allow" // inside an "always allow" of its payee (B41.104)
+	ProofRuleMandate        = "mandate"      // within a mandate the owner signed in advance (B55.24)
+	ProofRuleNoRules        = "no_rules"     // the agent has no rules
 )
 
 // ProofShown is one approval as the owner was shown it and signed it.

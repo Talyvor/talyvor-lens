@@ -295,7 +295,7 @@ type ApprovalNeededError struct {
 	asksAbove   int64  // the approval amount it is above (B57.11)
 	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
 	inRules     rulesSheet
-	rule        string // the rule that asks the owner (B62.1): ProofRuleApprovalAbove or ProofRulePrepared
+	rule        string // the rule that asks the owner (B62.1): ProofRuleApprovalAbove, ProofRulePrepared or ProofRuleSecondApprover
 }
 
 // rulesSheet is what an approval's sheet says of the rules, in their currency (B61.42): the amount they ask above and
@@ -964,9 +964,14 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		return err
 	}
 	req := agentRequestFrom(ctx)
-	prepared := req.Payment && prepareOnly(ctx)           // B52.41: it waits for the owner's approval, whatever the rules allow
+	prepared := req.Payment && prepareOnly(ctx) // B52.41: it waits for the owner's approval, whatever the rules allow
+	// B28.315: a Business's payment over its second-approver line waits for two approvers, whatever the rules allow.
+	overLine, err := s.paymentOverSecondLine(ctx, tx, workspaceID, req, amount)
+	if err != nil {
+		return err
+	}
 	r, err := agentRulesInForce(ctx, tx, agentID, req.At) // with its boosts in force then (B28.308)
-	if errors.Is(err, pgx.ErrNoRows) && prepared {
+	if errors.Is(err, pgx.ErrNoRows) && (prepared || overLine) {
 		r, err = AgentRules{}, nil // judged by no rules, as below, then held for the approval
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1138,13 +1143,19 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	if req.Approved {
 		rule = ProofRuleMandate
 	}
+	if overLine && req.Approved {
+		return ruleRefusal("this pull is over the second approver line, so it needs two approvers, and the mandate was signed by one")
+	}
 	var used *usedApproval
-	if prepared || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
+	if prepared || overLine || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
 			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft, rule: ProofRuleApprovalAbove,
 			inRules: rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor, monthLeft: monthLeftMinor}}
 		if prepared {
 			need.rule = ProofRulePrepared
+		}
+		if overLine {
+			need.rule = ProofRuleSecondApprover
 		}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
@@ -1168,8 +1179,8 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 			}
 		}
 		if used == nil {
-			allowed := false // a prepared payment is never "always allowed"
-			if !prepared {
+			allowed := false // a prepared payment, or one over the second-approver line, is never "always allowed"
+			if !prepared && !overLine {
 				if allowed, err = s.withinPayeeAllowance(ctx, tx, workspaceID, agentID, r, j, ids, amount, day, month); err != nil {
 					return err
 				}
@@ -1522,6 +1533,13 @@ type AgentApproval struct {
 	// Task is what the agent said the payment is for (B62.2), in its own words: shown after TaskSays, never as a fact.
 	// "" when it gave none.
 	Task string `json:"task"`
+	// FirstApprovedBy is who gave the first of the two approvals a payment over the second-approver line needs (B28.315),
+	// and SecondApprovedBy who gave the second; WaitingForSecondApprover is true while it is pending after the first.
+	FirstApprovedBy          string `json:"first_approved_by,omitempty"`
+	SecondApprovedBy         string `json:"second_approved_by,omitempty"`
+	WaitingForSecondApprover bool   `json:"waiting_for_second_approver"`
+	// OverSecondApproverLine is true when it asks for being over the second-approver line: "Over the second approver line".
+	OverSecondApproverLine bool `json:"over_second_approver_line"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1535,7 +1553,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
-	budget_left_after_minor, task`
+	budget_left_after_minor, task, first_approved_by, second_approved_by, rule = 'second_approver'`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1546,7 +1564,9 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task,
+		&a.FirstApprovedBy, &a.SecondApprovedBy, &a.OverSecondApproverLine)
+	a.WaitingForSecondApprover = a.Status == "pending" && a.FirstApprovedBy != ""
 	if p.Kind != "" {
 		a.Payee = &p
 	}
@@ -1589,26 +1609,24 @@ func (s *DualTokenStore) ListAgentApprovals(ctx context.Context, workspaceID str
 	return out, rows.Err()
 }
 
-// DecideAgentApproval approves or denies a pending approval still within its life.
+// DecideAgentApproval approves or denies a pending approval still within its life. Over the second-approver line
+// (B28.315) the first approval leaves it pending, waiting for a second person's.
 func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, approvalID string, approve bool) (AgentApproval, error) {
-	status := "denied"
 	if approve {
-		status = "approved"
 		if err := approvalsLiveKeyFirst(ctx, s.pool, workspaceID, []string{approvalID}); err != nil { // B58.7
 			return AgentApproval{}, err
 		}
 	}
-	a, err := scanAgentApproval(s.pool.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
-		deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END
-		WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND expires_at > now() AND kind = '' RETURNING `+agentApprovalColumns,
-		approvalID, workspaceID, status, s.approvalLife().Microseconds(), denyReasonFrom(ctx)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return a, ErrApprovalNotFound
-	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return a, fmt.Errorf("economy: decide approval: %w", err)
+		return AgentApproval{}, err
 	}
-	return a, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	a, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, nil)
+	if err != nil {
+		return a, err
+	}
+	return a, tx.Commit(ctx)
 }
 
 // defaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and
