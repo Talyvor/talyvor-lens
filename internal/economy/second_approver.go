@@ -19,8 +19,10 @@ import (
 // of them the second approver: the first approval leaves it pending ("Approved by you. Waiting for a second approver."),
 // so a retry still waits and moves nothing; the second, by the other person, approves it, and the retry goes through
 // once, as any approved request does. The same person approving twice is refused, and so is a pair in which neither is
-// the second approver. An approver agent (B45.28) never approves above the line. An approval is valued in the line's
-// currency rounded up; one whose value cannot be found counts as above it. A Personal workspace has none (ErrNotBusiness).
+// the second approver; only a signed-in person's approval counts. The line is a reason to ask in itself: a payment over
+// it waits for approval whatever the agent's own rules say, "always allow" included. An approver agent (B45.28) never
+// approves over it. A payment is valued in the line's currency rounded up; one whose value cannot be found counts as over
+// it. A Personal workspace has none (ErrNotBusiness).
 
 // SecondApprover is a Business workspace's second-approver line: who, and the amount above which a payment needs them.
 type SecondApprover struct {
@@ -46,13 +48,13 @@ var (
 
 type approverKey struct{}
 
-// WithApprover carries who decides an approval to the decisions: the signed-in person's user id, or else how they
-// signed in, as storedanswers.OwnerOrAdmin names it. Two approvals of one payment count only from two of them.
-func WithApprover(ctx context.Context, userID, who string) context.Context {
-	if userID != "" {
-		who = "user:" + userID
+// WithApprover carries the signed-in person deciding an approval, by user id, to the decisions. Over the line only a
+// person's approval counts, never a key's or the operator's, so two keys of one owner are never two approvers.
+func WithApprover(ctx context.Context, userID string) context.Context {
+	if userID == "" {
+		return ctx
 	}
-	return context.WithValue(ctx, approverKey{}, who)
+	return context.WithValue(ctx, approverKey{}, "user:"+userID)
 }
 
 func approverFrom(ctx context.Context) string {
@@ -158,26 +160,58 @@ func (s *DualTokenStore) SetSecondApprover(ctx context.Context, workspaceID, by 
 	return out, tx.Commit(ctx)
 }
 
-// overSecondLine is whether approval ap, of workspaceID, needs two approvers under the line in force, read in q, and
-// the line.
-func (s *DualTokenStore) overSecondLine(ctx context.Context, q pgxDB, workspaceID string, ap AgentApproval) (bool, SecondApprover, error) {
+// secondLine is the second-approver line in force for workspaceID, read in q: ok false for a Personal workspace, one
+// with none set, or none at all.
+func secondLine(ctx context.Context, q pgxDB, workspaceID string) (SecondApprover, bool, error) {
 	kind, line, err := scanSecondApprover(q.QueryRow(ctx, `SELECT `+secondApproverColumns+` FROM workspaces WHERE id = $1`, workspaceID))
 	if errors.Is(err, ErrWorkspaceNotFound) {
-		return false, line, nil
+		return line, false, nil
 	}
-	if err != nil || kind != AccountTypeBusiness || !line.set() {
+	return line, err == nil && kind == AccountTypeBusiness && line.set(), err
+}
+
+// overLine is whether a payment of minor units of currency — or, for one in LXC, of ulxc µLXC — is worth more than line,
+// valued in its currency rounded up. One that cannot be valued counts as over it.
+func (s *DualTokenStore) overLine(ctx context.Context, workspaceID string, line SecondApprover, minor int64, currency string, ulxc int64) bool {
+	var value int64
+	var err error
+	if _, ok := MoneyCurrencies[currency]; ok && minor > 0 {
+		value, err = s.convertMinor(ctx, workspaceID, minor, currency, line.Currency, true)
+	} else {
+		value, err = s.ulxcIn(ctx, workspaceID, ulxc, line.Currency, true)
+	}
+	return err != nil || value > line.AboveMinor
+}
+
+// paymentOverSecondLine is whether the payment req of amount µLXC, judged in tx, asks for two approvers: it is over
+// its workspace's line, whatever the agent's own rules ask. A payment under a mandate the owner signed in advance, and a
+// request that is not a payment, never asks.
+func (s *DualTokenStore) paymentOverSecondLine(ctx context.Context, tx pgx.Tx, workspaceID string, req AgentRequest, amount int64) (bool, error) {
+	if !req.Payment || req.Approved {
+		return false, nil
+	}
+	line, ok, err := secondLine(ctx, tx, workspaceID)
+	if err != nil || !ok {
+		return false, err
+	}
+	own, _ := ownMoney(req)
+	return s.overLine(ctx, workspaceID, line, own.Minor, own.Currency, amount), nil
+}
+
+// overSecondLine is whether approval ap, of workspaceID, needs two approvers under the line in force, read in q, and
+// the line: it was filed for being over the line, or is worth more than it now.
+func (s *DualTokenStore) overSecondLine(ctx context.Context, q pgxDB, workspaceID string, ap AgentApproval) (bool, SecondApprover, error) {
+	line, ok, err := secondLine(ctx, q, workspaceID)
+	if err != nil || !ok {
 		return false, line, err
 	}
-	var value int64
-	if p := ap.PaidFrom; p != nil && MoneyCurrencies[p.Currency] > 0 {
-		value, err = s.convertMinor(ctx, workspaceID, p.AmountMinor, p.Currency, line.Currency, true)
-	} else {
-		value, err = s.ulxcIn(ctx, workspaceID, ap.AmountULXC, line.Currency, true)
+	if ap.OverSecondApproverLine {
+		return true, line, nil
 	}
-	if err != nil {
-		return true, line, nil // a payment that cannot be valued in the line's currency counts as over it
+	if p := ap.PaidFrom; p != nil {
+		return s.overLine(ctx, workspaceID, line, p.AmountMinor, p.Currency, ap.AmountULXC), line, nil
 	}
-	return value > line.AboveMinor, line, nil
+	return s.overLine(ctx, workspaceID, line, 0, "", ap.AmountULXC), line, nil
 }
 
 // secondApproval runs inside tx before approvalID, pending, is approved by the person in ctx. Over the line, it records

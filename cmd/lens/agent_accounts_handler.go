@@ -1936,13 +1936,10 @@ func declineReason(w http.ResponseWriter, req *http.Request, reason string, appr
 		return nil, false
 	}
 	// B28.315: and who decides, so a payment over the second-approver line counts two different people's approvals.
+	// Only a person signed in on their own session counts.
 	ctx := economy.WithDenyReason(req.Context(), reason)
-	if who, ok := storedanswers.OwnerOrAdmin(ctx); ok {
-		var userID string
-		if actx := auth.GetAuthContext(ctx); actx != nil {
-			userID = actx.UserID
-		}
-		ctx = economy.WithApprover(ctx, userID, who)
+	if actx := auth.GetAuthContext(ctx); actx != nil && actx.AuthMethod == auth.MethodJWT && !actx.IsAdmin {
+		ctx = economy.WithApprover(ctx, actx.UserID)
 	}
 	return ctx, true
 }
