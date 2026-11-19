@@ -346,6 +346,8 @@ var Manifest = map[string]Entry{
 	"bank_connections":             {Delete, "B53.13: the owner's accounts at other banks Lens may read — bank, account name, consent, balance"},
 	"bank_transactions":            {Delete, "B53.13: the transactions read from those accounts — amount, merchant, date"},
 	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
+	"balance_thresholds":           {Delete, "B28.334: the owner's low-balance threshold for an agent's balance in a currency"},
+	"low_balance_alerts":           {Delete, "B28.334: each hour an agent's balance was below its threshold, with the balance and the threshold"},
 	"spend_notice_settings":        {Delete, "B53.7: the owner's quiet hours, time zone and the kinds of notice switched off"},
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
 	"alert_channels":               {Delete, "B28.338: where the owner sends alerts — push, a webhook's url and signing secret, or a Slack incoming webhook"},
