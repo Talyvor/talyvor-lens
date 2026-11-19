@@ -1083,6 +1083,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if wantsCSV(req) {
+			writeListCSV(w, "approvals", list)
+			return
+		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 	})
 	decide := func(approve bool) http.HandlerFunc {
@@ -1467,6 +1471,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		list, err := bank.ListAgentSchedules(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if wantsCSV(req) {
+			writeListCSV(w, "schedules", list)
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"schedules": list})
