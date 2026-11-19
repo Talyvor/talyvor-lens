@@ -296,7 +296,7 @@ type ApprovalNeededError struct {
 	asksAbove   int64  // the approval amount it is above (B57.11)
 	monthLeft   *int64 // the monthly limit less the month's spend and this amount; nil with no monthly limit
 	inRules     rulesSheet
-	rule        string // the rule that asks the owner (B62.1): ProofRuleApprovalAbove or ProofRulePrepared
+	rule        string // the rule that asks the owner (B62.1): ProofRuleApprovalAbove, ProofRulePrepared or ProofRuleSecondApprover
 }
 
 // rulesSheet is what an approval's sheet says of the rules, in their currency (B61.42): the amount they ask above and
@@ -965,9 +965,14 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		return err
 	}
 	req := agentRequestFrom(ctx)
-	prepared := req.Payment && prepareOnly(ctx)           // B52.41: it waits for the owner's approval, whatever the rules allow
+	prepared := req.Payment && prepareOnly(ctx) // B52.41: it waits for the owner's approval, whatever the rules allow
+	// B28.315: a Business's payment over its second-approver line waits for two approvers, whatever the rules allow.
+	overLine, err := s.paymentOverSecondLine(ctx, tx, workspaceID, req, amount)
+	if err != nil {
+		return err
+	}
 	r, err := agentRulesInForce(ctx, tx, agentID, req.At) // with its boosts in force then (B28.308)
-	if errors.Is(err, pgx.ErrNoRows) && prepared {
+	if errors.Is(err, pgx.ErrNoRows) && (prepared || overLine) {
 		r, err = AgentRules{}, nil // judged by no rules, as below, then held for the approval
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1140,12 +1145,15 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 		rule = ProofRuleMandate
 	}
 	var used *usedApproval
-	if prepared || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
+	if prepared || overLine || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
 			asksAbove: r.ApprovalAboveULXC, monthLeft: monthLeft, rule: ProofRuleApprovalAbove,
 			inRules: rulesSheet{currency: r.currency(), asksAbove: r.ApprovalAboveMinor, monthLeft: monthLeftMinor}}
 		if prepared {
 			need.rule = ProofRulePrepared
+		}
+		if overLine {
+			need.rule = ProofRuleSecondApprover
 		}
 		// An approved request goes through once: the approval is used up in this transaction, so a
 		// refusal later in it (the workspace's balance, say) leaves it approved. One the owner always allows
@@ -1169,8 +1177,8 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 			}
 		}
 		if used == nil {
-			allowed := false // a prepared payment is never "always allowed"
-			if !prepared {
+			allowed := false // a prepared payment, or one over the second-approver line, is never "always allowed"
+			if !prepared && !overLine {
 				if allowed, err = s.withinPayeeAllowance(ctx, tx, workspaceID, agentID, r, j, ids, amount, day, month); err != nil {
 					return err
 				}
@@ -1541,6 +1549,8 @@ type AgentApproval struct {
 	FirstApprovedBy          string `json:"first_approved_by,omitempty"`
 	SecondApprovedBy         string `json:"second_approved_by,omitempty"`
 	WaitingForSecondApprover bool   `json:"waiting_for_second_approver"`
+	// OverSecondApproverLine is true when it asks for being over the second-approver line: "Over the second approver line".
+	OverSecondApproverLine bool `json:"over_second_approver_line"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1555,7 +1565,7 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
 	budget_left_after_minor, task,
-	payment_request_id, currency, amount_minor, trust, first_approved_by, second_approved_by,
+	payment_request_id, currency, amount_minor, trust, first_approved_by, second_approved_by, rule = 'second_approver',
 	(SELECT changed[1] FROM stopped_payments WHERE approval_id = agent_approvals.id AND workspace_id = agent_approvals.workspace_id
 		AND agent_approvals.status <> 'used' ORDER BY created_at DESC, id DESC LIMIT 1) AS stopped_changed,
 	(SELECT created_at FROM stopped_payments WHERE approval_id = agent_approvals.id AND workspace_id = agent_approvals.workspace_id
@@ -1573,7 +1583,8 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
 		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task,
-		&a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust, &a.FirstApprovedBy, &a.SecondApprovedBy, &stoppedChanged, &stoppedAt)
+		&a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust, &a.FirstApprovedBy, &a.SecondApprovedBy, &a.OverSecondApproverLine,
+		&stoppedChanged, &stoppedAt)
 	if stoppedChanged != nil && stoppedAt != nil {
 		a.Stopped = &ApprovalStopped{Changed: *stoppedChanged, At: *stoppedAt}
 	}

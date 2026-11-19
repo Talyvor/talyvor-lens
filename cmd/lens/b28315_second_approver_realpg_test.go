@@ -162,5 +162,26 @@ func TestB28315_OverTheSecondApproverLineAPaymentNeedsTwoApprovers(t *testing.T)
 	if code, n := pay(10_000_000, "pair"); code != http.StatusAccepted || n != 2 {
 		t.Errorf("the retry = %d with %d pay postings, want 202 and no more", code, n)
 	}
+
+	// An API key is never one of the two, admin scope or not.
+	key := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "key-1", Scopes: []string{auth.ScopeAdmin}}
+	if code, _, body := approve(key, pair); code != http.StatusForbidden || !strings.Contains(body, `"code":"approver_unknown"`) {
+		t.Errorf("a workspace key approving second = %d %s, want 403 approver_unknown", code, body)
+	}
+
+	// The line asks in itself: an agent whose own rules ask nothing still waits over it, and says why.
+	if code, body := call(owner, http.MethodPut, base+payer+"/rules", `{"approval_above_ulxc":0}`); code != http.StatusOK {
+		t.Fatalf("PUT rules = %d %s", code, body)
+	}
+	if code, n := pay(3_000_000, "no ask, under"); code != http.StatusOK || n != 3 {
+		t.Fatalf("under the line with no approval amount = %d with %d pay postings, want 200 and one more", code, n)
+	}
+	if code, n := pay(10_000_000, "no ask, over"); code != http.StatusAccepted || n != 3 {
+		t.Fatalf("over the line with no approval amount = %d with %d pay postings, want 202 and no more", code, n)
+	}
+	code, a, body = approve(owner, pendingID("no ask, over"))
+	if code != http.StatusOK || !a.OverSecondApproverLine || !a.WaitingForSecondApprover {
+		t.Errorf("the owner's approval of it = %d %s, want over the second approver line and waiting", code, body)
+	}
 	b501ZeroSum(t, pool)
 }
