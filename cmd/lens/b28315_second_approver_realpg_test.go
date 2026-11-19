@@ -3,16 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/tenant"
 )
 
@@ -182,6 +186,72 @@ func TestB28315_OverTheSecondApproverLineAPaymentNeedsTwoApprovers(t *testing.T)
 	code, a, body = approve(owner, pendingID("no ask, over"))
 	if code != http.StatusOK || !a.OverSecondApproverLine || !a.WaitingForSecondApprover {
 		t.Errorf("the owner's approval of it = %d %s, want over the second approver line and waiting", code, body)
+	}
+	b501ZeroSum(t, pool)
+}
+
+// A mandate is signed by one person, so a pull under it over the second-approver line is refused and moves nothing; one
+// under the line is paid as before.
+func TestB28315_AMandatePullOverTheSecondApproverLineIsRefused(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws, payee = "ws-b28315-mandate", "ws-b28315-mandate-payee"
+	confirmedAccounts(t, pool, ws, payee)
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, account_type) VALUES ($1, $1, $1, 'business')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	registry := partners.NewRegistry(nil)
+	store.SetAccountPartners(registry)
+	store.SetScreener(screening.NewScreener(pool, registry))
+	agent, err := store.CreateAgent(ctx, ws, "payer", "user-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	company, err := store.OpenCurrencyAccount(ctx, ws, "", "GBP", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gbp, err := store.OpenCurrencyAccount(ctx, ws, agent.ID, "GBP", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenCurrencyAccount(ctx, payee, "", "GBP", "test"); err != nil {
+		t.Fatal(err)
+	}
+	details, err := store.CurrencyAccountDetails(ctx, ws, "", gbp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReceivePayment(ctx, economy.InboundPayment{PartnerAccountRef: company.PartnerAccountRef, PartnerRef: "test_in_b28315",
+		Payer: "Owner Ltd", Reference: details.PaymentReference, AmountMinor: 10000, Currency: "GBP"}); err != nil {
+		t.Fatal(err)
+	}
+	mandate, err := store.GrantMandate(ctx, ws, "", economy.MandateGrant{AccountID: gbp.ID, PayeeWorkspaceID: payee,
+		MaxPerPullMinor: 1000, MaxPerMonthMinor: 5000, ExpiresAt: time.Now().Add(24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSecondApprover(ctx, ws, "owner", economy.SecondApprover{UserID: "finance", AboveMinor: 600, Currency: "GBP"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	pull := func(minor int64, key string) error {
+		_, err := store.PullMandate(ctx, mandate.ID, economy.MandatePayee{WorkspaceID: payee}, minor, "", key, "")
+		return err
+	}
+	held := func() int64 {
+		t.Helper()
+		b, err := store.Balance(ctx, ws, gbp.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b.TestMinor
+	}
+	if err := pull(500, "under"); err != nil || held() != 9500 {
+		t.Fatalf("a £5 pull under the £6 line: %v, the payer holds %d; want paid, 9500", err, held())
+	}
+	if err := pull(800, "over"); !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "second approver line") || held() != 9500 {
+		t.Errorf("an £8 pull over the line: %v, the payer holds %d; want refused for the second approver line, still 9500", err, held())
 	}
 	b501ZeroSum(t, pool)
 }

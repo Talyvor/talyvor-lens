@@ -184,10 +184,10 @@ func (s *DualTokenStore) overLine(ctx context.Context, workspaceID string, line 
 }
 
 // paymentOverSecondLine is whether the payment req of amount µLXC, judged in tx, asks for two approvers: it is over
-// its workspace's line, whatever the agent's own rules ask. A payment under a mandate the owner signed in advance, and a
-// request that is not a payment, never asks.
+// its workspace's line, whatever the agent's own rules ask. A pull under a mandate is over it too, and refused, as one
+// person signed the mandate. A request that is not a payment never asks.
 func (s *DualTokenStore) paymentOverSecondLine(ctx context.Context, tx pgx.Tx, workspaceID string, req AgentRequest, amount int64) (bool, error) {
-	if !req.Payment || req.Approved {
+	if !req.Payment {
 		return false, nil
 	}
 	line, ok, err := secondLine(ctx, tx, workspaceID)

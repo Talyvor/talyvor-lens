@@ -1144,6 +1144,9 @@ func (s *DualTokenStore) enforceAgentRules(ctx context.Context, tx pgx.Tx, works
 	if req.Approved {
 		rule = ProofRuleMandate
 	}
+	if overLine && req.Approved {
+		return ruleRefusal("this pull is over the second approver line, so it needs two approvers, and the mandate was signed by one")
+	}
 	var used *usedApproval
 	if prepared || overLine || (j.approvalAbove > 0 && j.amount > j.approvalAbove && !req.Approved) {
 		need := &ApprovalNeededError{AmountULXC: amount, workspaceID: workspaceID, agentID: agentID, req: req,
