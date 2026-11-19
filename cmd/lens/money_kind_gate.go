@@ -236,6 +236,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/budgets/alerts": moneySideEither,
 	"/v1/money/budgets/{}":     moneySideEither,
 
+	// money_low_balance_handler.go
+	"/v1/money/low-balance":        moneySideEither,
+	"/v1/money/low-balance/alerts": moneySideEither,
+	"/v1/money/low-balance/{}":     moneySideEither,
+
 	// money_cards_handler.go
 	"/v1/money/cards":            moneySideEither,
 	"/v1/money/cards/{}":         moneySideEither,

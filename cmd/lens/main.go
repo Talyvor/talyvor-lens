@@ -5126,6 +5126,7 @@ func run() error {
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
+		mountMoneyLowBalanceRoutes(authed, dualToken)                                   // B28.334
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
@@ -5212,6 +5213,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B28.334: one replica raises the low-balance alerts; the unique key holds them to one an hour on any number.
+		go haComps.leader.Run(ctx, "low-balance-alerts", 30*time.Second, func(lctx context.Context) {
+			sweepLowBalanceAlerts(lctx, dualToken)
 		})
 		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
 		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
