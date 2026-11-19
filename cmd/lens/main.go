@@ -2925,6 +2925,12 @@ func run() error {
 	// (naming the operator), operators read it back filtered or as CSV. Append-only in the database (0182).
 	// operator_audit_handler.go.
 	operatorAudit := operatoraudit.NewStore(pool)
+	// B28.461 — the wrong code that begins step-up's wait is an operator_audit row: who was named, and where.
+	stepUp.OnLock(func(ctx context.Context, operator, target string) error {
+		_, err := operatorAudit.Record(ctx, operatoraudit.Entry{Actor: operator, Action: "step_up.locked", Target: target,
+			Detail: fmt.Sprintf("%d wrong step-up codes inside %s; every step-up action waits %s", stepup.MaxWrong, stepup.GuessWindow, stepup.LockFor)})
+		return err
+	})
 	r.Post("/v1/admin/operator-audit/record", requireAdminOrModerator(authManager, moderatorKeys, newOperatorAuditRecordHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit", requireAdminOrOperatorRead(authManager, newOperatorAuditListHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit/export", requireAdminOrOperatorRead(authManager, newOperatorAuditExportHandler(operatorAudit)))
