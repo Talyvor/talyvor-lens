@@ -1443,16 +1443,22 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			first = *in.FirstRunAt
 		}
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
+		ctx, ok := keyedMove(w, req) // B28.72: a schedule to an agent or a payee is made once per Idempotency-Key
+		if !ok {
+			return
+		}
 		var sc economy.AgentSchedule
 		switch {
 		case in.ToPayeeID != "":
-			sc, err = bank.CreateStandingOrder(req.Context(), wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
+			sc, err = bank.CreateStandingOrder(ctx, wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
 		case in.ToListingID != "":
 			sc, err = bank.CreateAgentListingSchedule(req.Context(), wsID, agentID, in.ToListingID, in.AmountULXC, in.Memo, in.Every, first)
 		default:
-			sc, err = bank.CreateAgentSchedule(req.Context(), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
+			sc, err = bank.CreateAgentSchedule(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
 		}
 		switch {
+		case errors.Is(err, economy.ErrIdempotencyKeyReused):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrPayeeNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrSameAgent), errors.Is(err, economy.ErrListingPayee):

@@ -540,6 +540,17 @@ func WithMoveKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, moveKeyKey{}, key)
 }
 
+// keyedID is the id of a row made under an Idempotency-Key (WithMoveKey, B28.72): the same key from the same agent of
+// the same workspace names the same row, so a retry finds the one it first made. Without a key it is a fresh id, and
+// keyed is false.
+func keyedID(ctx context.Context, prefix, what, workspaceID, agentID string) (id string, keyed bool) {
+	key, _ := ctx.Value(moveKeyKey{}).(string)
+	if key == "" {
+		return prefix + uuid.NewString(), false
+	}
+	return prefix + uuid.NewSHA1(uuid.NameSpaceOID, []byte(what+"\x00"+workspaceID+"\x00"+agentID+"\x00"+key)).String(), true
+}
+
 func (s *DualTokenStore) moveAgentFunds(ctx context.Context, workspaceID, agentID string, amount int64, kind string) (int64, error) {
 	if amount <= 0 {
 		return 0, errors.New("economy: the amount must be positive")
