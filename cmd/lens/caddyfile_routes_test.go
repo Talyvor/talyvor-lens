@@ -88,3 +88,19 @@ func TestCaddyfile_WaitsForARestartingUpstreamInsteadOf502(t *testing.T) {
 		}
 	}
 }
+
+// B64.10 — talyvor.com's redirect keeps the query, so an outreach link's utm_ tags reach the marketing
+// page. Caddy's {?query} is "?" plus the query, or nothing when there is none.
+func TestCaddyfile_ApexRedirectKeepsTheQuery(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/caddy/Caddyfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := caddySite(string(raw), "talyvor.com")
+	if !ok {
+		t.Fatal("no talyvor.com site block")
+	}
+	if !strings.Contains(body, "redir https://app.talyvor.com/marketing{?query} 301") {
+		t.Errorf("talyvor.com must redir to https://app.talyvor.com/marketing{?query} 301 so utm_ tags survive; got:\n%s", body)
+	}
+}
