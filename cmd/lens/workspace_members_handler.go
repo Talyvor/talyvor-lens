@@ -17,7 +17,8 @@ import (
 //
 // The owner manages the workspace's invite links and members on its own signed-in session (keyOwnerOnly: no key, an
 // admin-scoped one included, lets anyone in); the suite BFF accepts an invite and lists a person's workspaces on
-// LENS_PROVISION_SECRET, for the identity of the session it holds; and POST /v1/provision with a workspace_id mints a member's read-only token (provision_handler.go).
+// LENS_PROVISION_SECRET, for the identity of the session it holds, and reads what an invite is to before
+// accepting it (B52.45); and POST /v1/provision with a workspace_id mints a member's read-only token (provision_handler.go).
 
 // writeMembersErr answers a members.Store error.
 func writeMembersErr(w http.ResponseWriter, err error) {
@@ -120,6 +121,22 @@ func mountMemberProvisionRoutes(r chi.Router, secret string, store *members.Stor
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"member": m, "created": created})
+	})
+	// B52.45: what the invite is to, before the person joins; it adds nobody and uses nothing.
+	r.Post("/v1/provision/invites/preview", func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Identity string `json:"identity"`
+			Token    string `json:"token"`
+		}
+		if !decode(w, req, &in, &in.Identity) {
+			return
+		}
+		ws, name, err := store.Preview(req.Context(), in.Identity, deriveWorkspaceID(in.Identity), in.Token)
+		if err != nil {
+			writeMembersErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]string{"workspace_id": ws, "name": name})
 	})
 	r.Post("/v1/provision/workspaces", func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
