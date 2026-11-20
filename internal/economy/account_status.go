@@ -218,7 +218,7 @@ func (s *DualTokenStore) CloseCurrencyAccount(ctx context.Context, workspaceID, 
 		}
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "account_close",
 			IdempotencyKey: "account_close:" + accountID + ":" + funding, Funding: funding, Memo: "Account closed", Postings: []MoneyPosting{
-				{AccountID: accountID, AmountMinor: -minor}, {AccountID: a.ParentAccountID, AmountMinor: minor}}}, s.screener); err != nil {
+				{AccountID: accountID, AmountMinor: -minor}, {AccountID: a.ParentAccountID, AmountMinor: minor}}}, noPartnerPostings); err != nil { // between Talyvor's own accounts: nothing to screen, no second connection (B50.54)
 			return a, err
 		}
 	}
