@@ -228,15 +228,17 @@ func (s *Store) LiveMember(ctx context.Context, ws, memberID string) (bool, erro
 	return ok, nil
 }
 
-// Workspaces is every workspace identity is in: ownWS first when it exists, then those it is a member of, oldest
-// membership first.
-func (s *Store) Workspaces(ctx context.Context, identity, ownWS string) ([]Workspace, error) {
+// Workspaces is every workspace identity is in: ownWS first when it exists, then the person's other accounts (B61.7),
+// then those it is a member of, oldest first.
+func (s *Store) Workspaces(ctx context.Context, identity, personKey, ownWS string) ([]Workspace, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, name, role FROM (
-			SELECT id, name, 'owner' AS role, 0 AS ord, NULL::timestamptz AS added_at, '' AS mid FROM workspaces WHERE id = $1
+			SELECT id, name, 'owner' AS role, CASE WHEN id = $1 THEN 0 ELSE 1 END AS ord, created_at AS added_at, id AS mid
+				FROM workspaces WHERE id = $1 OR id IN (SELECT workspace_id FROM person_accounts WHERE person_key = $4)
 			UNION ALL
-			SELECT w.id, w.name, 'member', 1, m.added_at, m.id FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
+			SELECT w.id, w.name, 'member', 2, m.added_at, m.id FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
 				WHERE m.identity = $2 AND m.removed_at IS NULL
-		) x ORDER BY ord, added_at, mid LIMIT $3`, ownWS, identity, listLimit)
+					AND m.workspace_id NOT IN (SELECT workspace_id FROM person_accounts WHERE person_key = $4)
+		) x ORDER BY ord, added_at, mid LIMIT $3`, ownWS, identity, listLimit, personKey)
 	if err != nil {
 		return nil, fmt.Errorf("members: workspaces: %w", err)
 	}

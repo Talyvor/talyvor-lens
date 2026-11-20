@@ -10,13 +10,14 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/members"
+	"github.com/talyvor/lens/internal/workspace"
 )
 
 // B52.35 — a person joins another workspace by invite, lists their workspaces, and gets a token for one.
 //
-// The owner manages the workspace's invite links and members on its own session token (ownerOnly); the suite BFF
-// accepts an invite and lists a person's workspaces on LENS_PROVISION_SECRET, for the identity of the session it
-// holds; and POST /v1/provision with a workspace_id mints a member's read-only token (provision_handler.go).
+// The owner manages the workspace's invite links and members on its own signed-in session (keyOwnerOnly: no key, an
+// admin-scoped one included, lets anyone in); the suite BFF accepts an invite and lists a person's workspaces on
+// LENS_PROVISION_SECRET, for the identity of the session it holds; and POST /v1/provision with a workspace_id mints a member's read-only token (provision_handler.go).
 
 // writeMembersErr answers a members.Store error.
 func writeMembersErr(w http.ResponseWriter, err error) {
@@ -34,7 +35,7 @@ func writeMembersErr(w http.ResponseWriter, err error) {
 
 // mountWorkspaceMemberRoutes registers the owner's routes inside the authed group, behind workspaceIsolationMiddleware.
 func mountWorkspaceMemberRoutes(r chi.Router, store *members.Store) {
-	r.Post("/v1/workspaces/{wsID}/member-invites", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/member-invites", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			MaxUses   int        `json:"max_uses"`
 			ExpiresAt *time.Time `json:"expires_at"`
@@ -50,7 +51,7 @@ func mountWorkspaceMemberRoutes(r chi.Router, store *members.Store) {
 		}
 		writeJSONOK(w, http.StatusCreated, inv)
 	}))
-	r.Get("/v1/workspaces/{wsID}/member-invites", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/v1/workspaces/{wsID}/member-invites", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		invites, err := store.Invites(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeMembersErr(w, err)
@@ -58,7 +59,7 @@ func mountWorkspaceMemberRoutes(r chi.Router, store *members.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"invites": invites})
 	}))
-	r.Delete("/v1/workspaces/{wsID}/member-invites/{inviteID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Delete("/v1/workspaces/{wsID}/member-invites/{inviteID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		inv, err := store.RevokeInvite(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "inviteID"))
 		if err != nil {
 			writeMembersErr(w, err)
@@ -66,7 +67,7 @@ func mountWorkspaceMemberRoutes(r chi.Router, store *members.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, inv)
 	}))
-	r.Get("/v1/workspaces/{wsID}/members", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/v1/workspaces/{wsID}/members", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		list, err := store.Members(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeMembersErr(w, err)
@@ -74,7 +75,7 @@ func mountWorkspaceMemberRoutes(r chi.Router, store *members.Store) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"members": list})
 	}))
-	r.Delete("/v1/workspaces/{wsID}/members/{memberID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Delete("/v1/workspaces/{wsID}/members/{memberID}", keyOwnerOnly(func(w http.ResponseWriter, req *http.Request) {
 		if err := store.RemoveMember(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "memberID")); err != nil {
 			writeMembersErr(w, err)
 			return
@@ -127,7 +128,7 @@ func mountMemberProvisionRoutes(r chi.Router, secret string, store *members.Stor
 		if !decode(w, req, &in, &in.Identity) {
 			return
 		}
-		list, err := store.Workspaces(req.Context(), in.Identity, deriveWorkspaceID(in.Identity))
+		list, err := store.Workspaces(req.Context(), in.Identity, workspace.PersonKey(in.Identity), deriveWorkspaceID(in.Identity))
 		if err != nil {
 			writeMembersErr(w, err)
 			return

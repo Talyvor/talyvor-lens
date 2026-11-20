@@ -97,12 +97,26 @@ func TestB5235_JoinByInviteListAndTokenForAWorkspace(t *testing.T) {
 		t.Fatalf("B accepts again = %d %s with %d member rows, want 404 and still one", w.Code, w.Body.String(), memberRows())
 	}
 
+	// B's second account (B61.7) is B's own too: listed beside the first, and its token is the owner's.
+	w, second := doProvision(t, r, provisionSecret, `{"identity":"`+idB+`","mode":"open","display_name":"B two","account_type":"personal","country":"GB"}`)
+	if w.Code != http.StatusOK || second.WorkspaceID == "" || second.WorkspaceID == wsB {
+		t.Fatalf("B opens a second account = %d %s", w.Code, w.Body.String())
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM person_accounts WHERE workspace_id = $1`, second.WorkspaceID)
+	})
 	w = call(http.MethodPost, "/v1/provision/workspaces", "", `{"identity":"`+idB+`"}`)
 	var list struct{ Workspaces []members.Workspace }
-	if err := json.Unmarshal(w.Body.Bytes(), &list); w.Code != http.StatusOK || err != nil || len(list.Workspaces) != 2 ||
+	if err := json.Unmarshal(w.Body.Bytes(), &list); w.Code != http.StatusOK || err != nil || len(list.Workspaces) != 3 ||
 		list.Workspaces[0] != (members.Workspace{ID: wsB, Name: wsB, Role: "owner"}) ||
-		list.Workspaces[1] != (members.Workspace{ID: wsA, Name: wsA, Role: "member"}) {
-		t.Fatalf("B's workspaces = %d %s, want B's own then A's", w.Code, w.Body.String())
+		list.Workspaces[1] != (members.Workspace{ID: second.WorkspaceID, Name: "B two", Role: "owner"}) ||
+		list.Workspaces[2] != (members.Workspace{ID: wsA, Name: wsA, Role: "member"}) {
+		t.Fatalf("B's workspaces = %d %s, want B's two own then A's", w.Code, w.Body.String())
+	}
+	if w, out := provision(idB, second.WorkspaceID); w.Code != http.StatusOK || out.WorkspaceID != second.WorkspaceID {
+		t.Fatalf("provision B for B's second account = %d %s, want B's own token", w.Code, w.Body.String())
+	} else if w := call(http.MethodGet, "/v1/workspaces/"+second.WorkspaceID+"/members", out.Token, ""); w.Code != http.StatusOK {
+		t.Fatalf("B's token for B's second account lists its members = %d %s, want 200: it is the owner's", w.Code, w.Body.String())
 	}
 
 	w, out := provision(idB, wsA)
@@ -149,5 +163,41 @@ func TestB5235_JoinByInviteListAndTokenForAWorkspace(t *testing.T) {
 	}
 	if w := call(http.MethodPost, "/v1/provision/invites/accept", "", `{"identity":"`+idB+`","token":"`+old.Token+`"}`); w.Code != http.StatusNotFound || memberRows() != 0 {
 		t.Fatalf("B rejoins on a link older than the removal = %d %s, want 404 and no member", w.Code, w.Body.String())
+	}
+}
+
+// An invite lets an outside identity into the workspace, so it is the owner's signed-in session's to make, as a key is
+// (B50.33): no workspace key, an admin-scoped one included, makes, lists or revokes invites or removes members.
+func TestB5235_NoKeyLetsAnyoneIn(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b5235-keys"
+	if _, err := pool.Exec(ctx, `DELETE FROM workspace_member_invites WHERE workspace_id = $1`, ws); err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	mountWorkspaceMemberRoutes(r, members.New(pool))
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, who := range []*auth.AuthContext{
+		{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "k-admin", Scopes: []string{auth.ScopeAdmin}},
+		{WorkspaceID: ws, AuthMethod: auth.MethodWorkspaceKey, APIKeyID: "k-forged", Scopes: []string{auth.ScopeKeys}},
+	} {
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodPost, "/v1/workspaces/" + ws + "/member-invites", `{"max_uses":1,"expires_at":"` + exp + `"}`},
+			{http.MethodGet, "/v1/workspaces/" + ws + "/member-invites", ""},
+			{http.MethodGet, "/v1/workspaces/" + ws + "/members", ""},
+		} {
+			req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+			req = req.WithContext(auth.WithAuthContext(req.Context(), who))
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("key %s: %s %s = %d %s, want 403", who.APIKeyID, c.method, c.path, w.Code, w.Body.String())
+			}
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_member_invites WHERE workspace_id = $1`, ws).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("invites a key made = %d (%v), want 0", n, err)
 	}
 }
