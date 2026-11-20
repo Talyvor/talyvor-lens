@@ -34,8 +34,8 @@ services:
       # Deterministic mock upstream on the compose network (no real provider spend).
       - LENS_VLLM_BASE_URL=http://mockvllm:8000
       # config.Load() presence-checks these; the trial routes only to vLLM/mock.
-      - LENS_OPENAI_API_KEY=dummy-openai-unused
-      - LENS_ANTHROPIC_API_KEY=dummy-anthropic-unused
+      - LENS_OPENAI_API_KEY=dummy-openai-unused  # compose-secret-ok: placeholder that config.Load() presence-checks; the trial routes only to the mock
+      - LENS_ANTHROPIC_API_KEY=dummy-anthropic-unused  # compose-secret-ok: placeholder that config.Load() presence-checks; the trial routes only to the mock
       # PR 2a — semantic-isolation scenarios (k/l/m). Points the embedder at the
       # mock's /v1/embeddings (PR 1 #164 made this configurable). NOTE: this
       # ACTIVATES the semantic cache (with the dummy OpenAI key it was inert —

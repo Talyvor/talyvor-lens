@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,7 +26,20 @@ type provisioner interface {
 	GetWorkspace(id string) (*workspace.Workspace, bool)
 	RegisterWorkspace(ctx context.Context, ws workspace.Workspace, opts ...workspace.RegisterOption) error
 	CachePoolableConsent(wsID string) (poolable bool, known bool)
+	// B61.7: the accounts one person holds.
+	PersonAccounts(ctx context.Context, personKey, firstID string) ([]workspace.PersonAccount, error)
+	PersonOwnsAccount(ctx context.Context, personKey, firstID, accountID string) (bool, error)
+	ReservePersonAccount(ctx context.Context, personKey, firstID, accountID string) error
+	ReleasePersonAccount(ctx context.Context, personKey, accountID string) error
 }
+
+// Provision's modes (B61.7). Without one, the call answers the identity's first account, making it on first sight, as
+// it always has.
+const (
+	provisionModeList    = "list"    // the accounts the identity holds
+	provisionModeOpen    = "open"    // open another account for the identity, with sign-up's answers
+	provisionModeSession = "session" // a session token for one named account of the identity
+)
 
 // workspaceStarter gives a new workspace its test money and first agent (B45.7): started is false, and
 // nothing changes, when it already has an agent.
@@ -60,7 +72,10 @@ type tokenMinter func(workspaceID, userID string, scopes []string, ttl time.Dura
 var provisionScopes = []string{auth.ScopeAnalytics, auth.ScopeKeys}
 
 type provisionRequest struct {
-	Identity      string `json:"identity"`
+	Identity string `json:"identity"`
+	// Mode is "", list, open or session (B61.7); AccountID names the account a session is for.
+	Mode          string `json:"mode"`
+	AccountID     string `json:"account_id"`
 	DisplayName   string `json:"display_name"`
 	CachePoolable *bool  `json:"cache_poolable"`
 	TTLHours      int    `json:"ttl_hours"`
@@ -86,10 +101,15 @@ type provisionResponse struct {
 }
 
 // deriveWorkspaceID turns an opaque identity into this deployment's workspace id.
-func deriveWorkspaceID(identity string) string {
-	sum := sha256.Sum256([]byte(identity))
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
-	return "u" + strings.ToLower(enc)[:26]
+func deriveWorkspaceID(identity string) string { return workspace.FirstAccountID(identity) }
+
+// newAccountID is the id of an account a person opens after their first.
+var newAccountID = func() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return workspace.NewAccountID(b), nil
 }
 
 func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter) {
@@ -114,6 +134,38 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, "identity required")
 			return
 		}
+		firstID := deriveWorkspaceID(in.Identity)
+		person := workspace.PersonKey(in.Identity)
+		switch in.Mode {
+		case "", provisionModeOpen:
+		case provisionModeList:
+			accounts, err := p.PersonAccounts(req.Context(), person, firstID)
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSONOK(w, http.StatusOK, map[string]any{"accounts": accounts})
+			return
+		case provisionModeSession:
+			if in.AccountID == "" {
+				writeJSONErr(w, http.StatusBadRequest, "account_id required")
+				return
+			}
+			owned, err := p.PersonOwnsAccount(req.Context(), person, firstID, in.AccountID)
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if !owned {
+				writeJSONErr(w, http.StatusNotFound, "no such account")
+				return
+			}
+			writeProvisioned(w, p, mint, in.AccountID, in.TTLHours, false, nil)
+			return
+		default:
+			writeJSONErr(w, http.StatusBadRequest, "mode must be list, open or session")
+			return
+		}
 		if in.AccountType == "" {
 			in.AccountType = economy.AccountTypeBusiness
 		}
@@ -133,8 +185,35 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// B61.53: an account is opened only in a country Talyvor serves. A sign-in to an account that exists makes
+		// nothing, so the country it names is not checked and the account keeps the one it has.
+		_, existed := p.GetWorkspace(firstID)
+		if in.Mode == provisionModeOpen || !existed {
+			if err := economy.CheckServedCountry(country); err != nil {
+				writeCountryNotServed(w)
+				return
+			}
+		}
 
-		wsID := deriveWorkspaceID(in.Identity)
+		// Open another account (B61.7): a new workspace beside the first, sharing nothing with it but its owner. A person
+		// with no account yet opens their first, the one a call without a mode would have made.
+		wsID := firstID
+		if in.Mode == provisionModeOpen && existed {
+			id, err := newAccountID()
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if err := p.ReservePersonAccount(req.Context(), person, firstID, id); err != nil {
+				if errors.Is(err, workspace.ErrPersonAccountLimit) {
+					writeJSONErr(w, http.StatusConflict, err.Error())
+					return
+				}
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			wsID, existed = id, false
+		}
 		name := in.DisplayName
 		if name == "" {
 			name = wsID
@@ -152,8 +231,8 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 		//
 		// So: register ONLY on first sight. Afterwards, mint and return created:false.
 		// TestProvision_SecondCallPreservesNonConsentSettings is the lock, and it fails
-		// against the natural always-register implementation.
-		_, existed := p.GetWorkspace(wsID)
+		// against the natural always-register implementation. existed is the first account's,
+		// looked up above; an account opened after it is new by construction.
 		if !existed {
 			// Pass a pooling choice ONLY when the caller made one, so silence reaches the
 			// manager as silence and the new-workspace default applies. On an existing
@@ -165,6 +244,9 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 				opts = append(opts, workspace.WithCachePoolableChoice(*in.CachePoolable))
 			}
 			if err := p.RegisterWorkspace(req.Context(), workspace.Workspace{ID: wsID, Name: name}, opts...); err != nil {
+				if wsID != firstID {
+					_ = p.ReleasePersonAccount(req.Context(), person, wsID)
+				}
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -184,20 +266,25 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			}
 		}
 
-		poolable, _ := p.CachePoolableConsent(wsID)
-		ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
-		tok, err := mint(wsID, wsID, provisionScopes, ttl)
-		if err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSONOK(w, http.StatusOK, provisionResponse{
-			WorkspaceID:   wsID,
-			Created:       !existed,
-			CachePoolable: poolable,
-			Token:         tok,
-			ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
-			FirstAgent:    first,
-		})
+		writeProvisioned(w, p, mint, wsID, in.TTLHours, !existed, first)
 	}
+}
+
+// writeProvisioned answers a session token for wsID, and for no other workspace.
+func writeProvisioned(w http.ResponseWriter, p provisioner, mint tokenMinter, wsID string, ttlHours int, created bool, first *economy.WorkspaceStart) {
+	poolable, _ := p.CachePoolableConsent(wsID)
+	ttl := auth.ClampTTL(time.Duration(ttlHours) * time.Hour)
+	tok, err := mint(wsID, wsID, provisionScopes, ttl)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSONOK(w, http.StatusOK, provisionResponse{
+		WorkspaceID:   wsID,
+		Created:       created,
+		CachePoolable: poolable,
+		Token:         tok,
+		ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
+		FirstAgent:    first,
+	})
 }

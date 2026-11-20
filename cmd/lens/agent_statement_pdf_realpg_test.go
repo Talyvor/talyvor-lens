@@ -85,7 +85,7 @@ func TestAgentStatementRoutes_PDFForAnyPeriod(t *testing.T) {
 	agentAccount := false
 	for i, acc := range st.Accounts {
 		agentAccount = agentAccount || acc.Account == "agent:"+a.ID && acc.OpeningULXC == 15_500_001 && acc.ClosingULXC == 17_098_767
-		if balances["opening"][i] != economy.LXC(acc.OpeningULXC) || balances["closing"][i] != economy.LXC(acc.ClosingULXC) {
+		if balances["opening"][i] != economy.LXCMoney(acc.OpeningULXC) || balances["closing"][i] != economy.LXCMoney(acc.ClosingULXC) {
 			t.Fatalf("the PDF's balances %v are not the JSON statement's %+v", balances, acc)
 		}
 	}

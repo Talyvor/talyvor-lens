@@ -23,6 +23,7 @@ func TestB30Capabilities_TestMoneyOnlyUntilClearedForTheCountry(t *testing.T) {
 		if _, err := pool.Exec(gb, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, id); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, id) // B61.52: it moves money, so it has confirmed who it is
 		if _, err := s.CreditLXC(gb, id, 100*lxc, "stripe top-up", map[string]interface{}{"funding": funding}); err != nil {
 			t.Fatal(err)
 		}

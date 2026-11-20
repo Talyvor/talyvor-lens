@@ -35,6 +35,11 @@ type chainIndexConfig struct {
 		ChainID        int64  `json:"chain_id"`
 		RPCURL         string `json:"rpc_url"`
 		WebhookNetwork string `json:"webhook_network"` // the provider's name for it in webhooks, such as base-mainnet
+		// B48.9: agents send on a network with a bundler, their network fees paid by its paymaster when one is named.
+		BundlerURL   string `json:"bundler_url"`
+		PaymasterURL string `json:"paymaster_url"`
+		ExplorerURL  string `json:"explorer_url"`  // such as https://basescan.org
+		BlockSeconds int64  `json:"block_seconds"` // a block's time there, for when a send is final; 0 when not known
 	} `json:"networks"`
 }
 
@@ -55,12 +60,18 @@ func newChainIndex(store *economy.DualTokenStore, raw string) (*chainIndex, erro
 		return nil, fmt.Errorf("LENS_CHAIN_INDEX: %w", err)
 	}
 	nets := make([]economy.ChainNetwork, 0, len(cfg.Networks))
+	var sends []economy.CryptoSendNetwork
 	byWebhook := map[string]string{}
 	for _, n := range cfg.Networks {
 		n.Chain = smartaccount.Chain{ID: n.ChainID, RPCURL: n.RPCURL}
 		nets = append(nets, n.ChainNetwork)
 		if n.WebhookNetwork != "" {
 			byWebhook[n.WebhookNetwork] = n.Name
+		}
+		if n.BundlerURL != "" {
+			sends = append(sends, economy.CryptoSendNetwork{Name: n.Name, USDC: n.USDC, Funding: n.Funding, Explorer: n.ExplorerURL,
+				ArrivalSeconds: n.BlockSeconds * n.Confirmations,
+				Chain:          smartaccount.Chain{ID: n.ChainID, RPCURL: n.RPCURL, BundlerURL: n.BundlerURL, PaymasterURL: n.PaymasterURL}})
 		}
 	}
 	x, err := store.NewChainIndexer(nets)
@@ -70,6 +81,12 @@ func newChainIndex(store *economy.DualTokenStore, raw string) (*chainIndex, erro
 	// B48.28: each movement valued as it confirms. shortcut: a live movement stays unpriced (the export lists it so)
 	// until a market price adapter is wired here.
 	x.SetPrices(holdings.TestPrices{}, nil)
+	store.SetCryptoSendNetworks(sends)
+	for _, n := range sends {
+		if n.Chain.PaymasterURL != "" { // so each sponsored send is charged to its workspace's budget from its receipt
+			store.ServeGas(n.Chain.ID, n.Chain.RPCURL, n.Chain.BundlerURL)
+		}
+	}
 	return &chainIndex{x: x, webhookSecret: cfg.WebhookSecret, byWebhook: byWebhook}, nil
 }
 

@@ -36,10 +36,10 @@ func planRefusal(err error, plan, allows string) bool {
 		strings.Contains(err.Error(), plans.Name(plan)) && strings.Contains(err.Error(), plans.Name(allows))
 }
 
-// B32.12 — with Nicolai's values: a Free workspace's fourth agent and second member are refused naming the plan;
-// a Team workspace's 26th agent is refused and its first 25 are not; saving a provider key on Team is refused
-// without the BYOK add-on and allowed with it; a Business workspace creates 100 agents; on Free a capability B30
-// registers takes test money only even with a live clearance.
+// B32.12, B61.57 — with Nicolai's values: a Studio workspace's fourth agent and second member are refused naming the
+// plan; a Company workspace's 26th agent is refused and its first 25 are not; saving a provider key on Company is
+// refused without the BYOK add-on and allowed with it; a Group workspace creates 100 agents; on Studio a cleared
+// capability B30 registers takes live money, as on every plan: the plan no longer keeps it out.
 func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	pool := supplyPool(t)
 	ctx := context.Background()
@@ -61,13 +61,13 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		return n
 	}
 
-	// Free: three agents, then the fourth is refused naming the plan and Team; one member, then the second.
+	// Studio: three agents, then the fourth is refused naming the plan and Company; one member, then the second.
 	if err := agents("ws-b3212-free", 3); err != nil {
 		t.Fatalf("free's first three agents: %v", err)
 	}
-	if _, err := s.CreateAgent(ctx, "ws-b3212-free", "agent 4", "user_owner"); !planRefusal(err, "free", "team") ||
-		err.Error() != "Free allows 3 agents, and all 3 are in use. Team allows 25." {
-		t.Fatalf("free's fourth agent = %v, want refused in words naming the free plan and the team plan", err)
+	if _, err := s.CreateAgent(ctx, "ws-b3212-free", "agent 4", "user_owner"); !planRefusal(err, plans.BusinessStudio, plans.BusinessCompany) ||
+		err.Error() != "Studio allows 3 agents, and all 3 are in use. Company allows 25." {
+		t.Fatalf("Studio's fourth agent = %v, want refused in words naming Studio and Company", err)
 	}
 	if n := count("ws-b3212-free"); n != 3 {
 		t.Fatalf("free has %d agents after the refusal, want 3", n)
@@ -79,24 +79,24 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 	if err := free.CheckSeats(1); err != nil {
 		t.Fatalf("free's first member = %v, want allowed", err)
 	}
-	if err := free.CheckSeats(2); !planRefusal(err, "free", "team") || err.Error() != "Free allows 1 seat, and it is taken. Team allows 5." {
-		t.Fatalf("free's second member = %v, want refused in words naming the free plan and the team plan", err)
+	if err := free.CheckSeats(2); !planRefusal(err, plans.BusinessStudio, plans.BusinessCompany) || err.Error() != "Studio allows 1 seat, and it is taken. Company allows 5." {
+		t.Fatalf("Studio's second member = %v, want refused in words naming Studio and Company", err)
 	}
 
-	// Team: 25 agents, then the 26th is refused naming Business.
+	// Company (a Team subscription's successor): 25 agents, then the 26th is refused naming Group.
 	planGatesOnPlan(t, pool, "ws-b3212-team", "team", false)
 	if err := agents("ws-b3212-team", 25); err != nil {
 		t.Fatalf("team's first 25 agents: %v", err)
 	}
-	if _, err := s.CreateAgent(ctx, "ws-b3212-team", "agent 26", "user_owner"); !planRefusal(err, "team", "business") ||
-		err.Error() != "Team allows 25 agents, and all 25 are in use. Business allows unlimited agents." {
-		t.Fatalf("team's 26th agent = %v, want refused in words naming the team plan and the business plan", err)
+	if _, err := s.CreateAgent(ctx, "ws-b3212-team", "agent 26", "user_owner"); !planRefusal(err, plans.BusinessCompany, plans.BusinessGroup) ||
+		err.Error() != "Company allows 25 agents, and all 25 are in use. Group allows unlimited agents." {
+		t.Fatalf("Company's 26th agent = %v, want refused in words naming Company and Group", err)
 	}
 	if n := count("ws-b3212-team"); n != 25 {
 		t.Fatalf("team has %d agents after the refusal, want 25", n)
 	}
 
-	// Business: 100 agents.
+	// Group (a Business subscription's successor): 100 agents.
 	planGatesOnPlan(t, pool, "ws-b3212-business", "business", true)
 	if err := agents("ws-b3212-business", 100); err != nil {
 		t.Fatalf("business's 100 agents: %v", err)
@@ -105,14 +105,14 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		t.Fatalf("business has %d agents, want 100", n)
 	}
 
-	// Own provider keys on Team: refused without the BYOK add-on, allowed with it.
+	// Own provider keys on Company: refused without the BYOK add-on, allowed with it.
 	ring, err := envelope.NewKeyring(bytes.Repeat([]byte{7}, envelope.KEKLen))
 	if err != nil {
 		t.Fatal(err)
 	}
 	keys := byok.New(pool, ring)
-	if _, err := keys.Put(ctx, "ws-b3212-team", "openai", "sk-team-key-0001"); !planRefusal(err, "team", "business") ||
-		err.Error() != "Team has your own provider keys only with the BYOK add-on. Business includes them." {
+	if _, err := keys.Put(ctx, "ws-b3212-team", "openai", "sk-team-key-0001"); !planRefusal(err, plans.BusinessCompany, plans.BusinessGroup) ||
+		err.Error() != "Company has your own provider keys only with the BYOK add-on. Group includes them." {
 		t.Fatalf("a provider key on team without the BYOK add-on = %v, want refused naming the add-on and the business plan", err)
 	}
 	planGatesOnPlan(t, pool, "ws-b3212-team-byok", "team", true)
@@ -123,8 +123,8 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		t.Fatalf("team with the add-on is served on %v, %v, want its own key", own, err)
 	}
 
-	// On Free a capability B30 registers takes test money only even with a live clearance; on Team the same
-	// clearance takes live money.
+	// On Studio, as on Company, a cleared capability B30 registers takes live money once the owner is verified: no plan
+	// keeps it out (B61.57).
 	gb := WithUseCountry(ctx, "GB")
 	if _, err := s.ClearCapability(gb, CapabilityFX, "nicolai", ClearanceTerms{Reference: "partner agreement PA-12",
 		Licence: "EMI-900123", Partner: "Test FX Ltd", Countries: []string{"GB"}, ExpiresAt: time.Now().Add(24 * time.Hour)}); err != nil {
@@ -135,6 +135,7 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1) ON CONFLICT DO NOTHING`, ws); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 		if _, err := s.CreditLXC(gb, ws, 100_000_000, "stripe top-up", map[string]interface{}{"funding": funding}); err != nil {
 			t.Fatal(err)
 		}
@@ -149,17 +150,15 @@ func TestB3212_WhatEachPlanUnlocks(t *testing.T) {
 		}
 		return testFunded, tx.Commit(gb)
 	}
-	var refusal *CapabilityRefusal
-	if _, err := spend("ws-b3212-free", FundingLive); !planRefusal(err, "free", "team") || !errors.As(err, &refusal) ||
-		!errors.Is(err, ErrCapabilityNotCleared) || !strings.HasPrefix(err.Error(), "On Free, ") ||
-		!strings.HasSuffix(err.Error(), " takes no real money. On Team it does, once it is cleared.") {
-		t.Fatalf("live money for a cleared B30 capability on free = %v, want refused in words naming the free plan and the team plan", err)
+	liveVerified(t, pool, "ws-b3212-free")
+	if took, err := spend("ws-b3212-free", FundingLive); err != nil || took != 0 {
+		t.Fatalf("live money for a cleared B30 capability on Studio took %d test-funded µLXC, %v; want live money, none test-funded", took, err)
 	}
 	if took, err := spend("ws-b3212-free-test", FundingTest); err != nil || took != 10_000_000 {
-		t.Fatalf("test money for a cleared B30 capability on free took %d test-funded µLXC, %v; want all 10 LXC of it", took, err)
+		t.Fatalf("test money for a cleared B30 capability on Studio took %d test-funded µLXC, %v; want all 10 LXC of it", took, err)
 	}
 	liveVerified(t, pool, "ws-b3212-team") // B30.4: FX needs L2 for live money
 	if took, err := spend("ws-b3212-team", FundingLive); err != nil || took != 0 {
-		t.Fatalf("live money for a cleared B30 capability on team took %d test-funded µLXC, %v; want live money, none test-funded", took, err)
+		t.Fatalf("live money for a cleared B30 capability on Company took %d test-funded µLXC, %v; want live money, none test-funded", took, err)
 	}
 }

@@ -70,6 +70,7 @@ func TestOfficialTypeScriptSDKClient_RecurringPayments(t *testing.T) {
 	pool := savingsTestPool(t)
 	ctx := context.Background()
 	const ws, rpID, origin = "ws-b4513-recurring", "app.talyvor.com", "https://app.talyvor.com"
+	confirmedAccount(t, pool, ws) // B61.52: the person has confirmed who they are
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

@@ -43,6 +43,9 @@ type adjudicateRequest struct {
 func newAdjudicateHandler(am adjudicateAuthenticator, adj adjudicator) http.HandlerFunc {
 	return func(rw http.ResponseWriter, req *http.Request) {
 		actx, err := am.Authenticate(req)
+		if refuseAuthUnavailable(rw, err) {
+			return
+		}
 		if err != nil || actx == nil || !actx.IsAdmin {
 			writeJSONErr(rw, http.StatusForbidden, "admin credentials required")
 			return

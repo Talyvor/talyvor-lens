@@ -15,7 +15,7 @@ services:
     environment:
       POSTGRES_DB: talyvor_lens
       POSTGRES_USER: lens
-      POSTGRES_PASSWORD: localdev
+      POSTGRES_PASSWORD: localdev  # compose-secret-ok: local-dev Postgres bound to 127.0.0.1 only; never run on a public host
     ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data

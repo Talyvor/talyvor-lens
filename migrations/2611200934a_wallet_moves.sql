@@ -1,4 +1,4 @@
--- 0320_wallet_moves.sql — B48.8: topping up and cashing out an agent's wallet.
+-- 2611200934a_wallet_moves.sql — B48.8: topping up and cashing out an agent's wallet.
 --
 -- Each top-up or cash-out is quoted first — what it sells, the partner's fee, the rate and what it buys — and then
 -- confirmed once: the confirmation posts the money_entries row named here, and a retry finds it posted. route is how

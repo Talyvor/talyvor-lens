@@ -42,6 +42,8 @@ type HealthHandler struct {
 type healthSection struct {
 	name string
 	read func(ctx context.Context) any
+	// public: everyone sees it, not only the operator (B61.113's phone_signin).
+	public bool
 }
 
 func NewHealthHandler(version string, checkers map[string]HealthChecker) *HealthHandler {
@@ -54,7 +56,13 @@ func NewHealthHandler(version string, checkers map[string]HealthChecker) *Health
 
 // AddSection adds a top-level field, read on every request, to the response. Wire it before serving.
 func (h *HealthHandler) AddSection(name string, read func(ctx context.Context) any) *HealthHandler {
-	h.sections = append(h.sections, healthSection{name, read})
+	h.sections = append(h.sections, healthSection{name: name, read: read})
+	return h
+}
+
+// AddPublicSection adds a top-level field everyone sees, for state that tells no attacker anything (B61.113).
+func (h *HealthHandler) AddPublicSection(name string, read func(ctx context.Context) any) *HealthHandler {
+	h.sections = append(h.sections, healthSection{name, read, true})
 	return h
 }
 
@@ -137,8 +145,8 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"uptime_seconds": int64(time.Since(h.started).Seconds()),
 		"checks":         checks,
 	}
-	if operator {
-		for _, s := range h.sections {
+	for _, s := range h.sections {
+		if operator || s.public {
 			body[s.name] = s.read(r.Context())
 		}
 	}

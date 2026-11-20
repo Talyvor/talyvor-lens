@@ -37,6 +37,7 @@ func TestB5042_AgentMandateRequestIsNamedByItsPayeeNotTheAgent(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws, payeeWS = "ws-b5042-payer", "ws-b5042-payee"
+	confirmedAccounts(t, pool, ws, payeeWS) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

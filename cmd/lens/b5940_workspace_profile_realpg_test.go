@@ -83,11 +83,11 @@ func TestB5940_PersonalWorkspaceAndRefusedProfiles(t *testing.T) {
 		}
 	}
 
-	rec, out := doProvision(t, r, provisionSecret, `{"identity":"b5940-me-`+stamp+`","display_name":"Ana Pop","account_type":"personal","country":"MD"}`)
+	rec, out := doProvision(t, r, provisionSecret, `{"identity":"b5940-me-`+stamp+`","display_name":"Ana Pop","account_type":"personal","country":"RO"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("provision personal: %d %s", rec.Code, rec.Body.String())
 	}
-	want := economy.WorkspaceAccount{WorkspaceID: out.WorkspaceID, AccountType: "personal", MoneyKind: "hybrid", Country: "MD"}
+	want := economy.WorkspaceAccount{WorkspaceID: out.WorkspaceID, AccountType: "personal", MoneyKind: "hybrid", Country: "RO"}
 	if got, err := bank.WorkspaceAccount(ctx, out.WorkspaceID); err != nil || got != want {
 		t.Fatalf("a new personal workspace reads %+v (%v), want %+v", got, err, want)
 	}

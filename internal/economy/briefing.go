@@ -252,9 +252,26 @@ func briefingLine(b Briefing) string {
 		}
 	}
 	if len(b.SpentYesterday) > 0 {
+		// The parked credit is written as the dollars it is worth (LXCMoney), so it and the dollars are one figure,
+		// in ten-millionths of a dollar, where the first of them stands — never "$0.30 and $5.00" (B61.117).
 		var spent []string
+		dollars, at := int64(0), -1
 		for _, t := range b.SpentYesterday {
-			spent = append(spent, Money(t.Amount, t.Currency))
+			switch t.Currency {
+			case "LXC":
+				dollars += t.Amount * usdTenMillionthsPerULXC
+			case CurrencyUSD:
+				dollars += t.Amount * 100_000
+			default:
+				spent = append(spent, Money(t.Amount, t.Currency))
+				continue
+			}
+			if at < 0 {
+				at, spent = len(spent), append(spent, "")
+			}
+		}
+		if at >= 0 {
+			spent[at] = "$" + grouped(dollars, 7, 2)
 		}
 		parts = append(parts, "spent yesterday "+strings.Join(spent, " and "))
 	}

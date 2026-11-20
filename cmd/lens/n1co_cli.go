@@ -78,6 +78,7 @@ func n1coCommand(ctx context.Context, pool *pgxpool.Pool, bank *economy.DualToke
 	}
 	start, started, err := newWorkspaceStarterNamed(bank, N1COAgentName, func(r *economy.AgentRules) {
 		r.MonthlyLimitULXC = int64(math.Round(*budget * 1e6))
+		r.MonthlyLimitMinor = max(r.MonthlyLimitULXC/(10_000*economy.ULXCPerUSDMicro), 1) // B61.12: held in dollars at the peg
 	}, money)(ctx, wsID, wsID)
 	if err != nil {
 		return fmt.Errorf("n1co: %w", err)

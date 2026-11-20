@@ -8,8 +8,8 @@ services:
       - LENS_API_KEY=${LENS_API_KEY:?}
       - LENS_VLLM_BASE_URL=http://mockvllm:8000
       # config.Load() presence-checks these; the test routes only to the mock.
-      - LENS_OPENAI_API_KEY=dummy-openai-unused
-      - LENS_ANTHROPIC_API_KEY=dummy-anthropic-unused
+      - LENS_OPENAI_API_KEY=dummy-openai-unused  # compose-secret-ok: placeholder that config.Load() presence-checks; the test routes only to the mock
+      - LENS_ANTHROPIC_API_KEY=dummy-anthropic-unused  # compose-secret-ok: placeholder that config.Load() presence-checks; the test routes only to the mock
       # Funds the test workspace (POST /v1/admin/lxc/grant) so the LXC gate does not refuse it.
       - LENS_ADMIN_LXC_GRANT_ENABLED=true
     depends_on:

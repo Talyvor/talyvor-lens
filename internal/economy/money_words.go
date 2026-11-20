@@ -3,30 +3,17 @@ package economy
 import (
 	"fmt"
 	"math"
-	"os"
 	"time"
 )
 
 // B55.30 — amounts written for a person: pushes, the briefing, approval memos and refusals. API fields, CSV
-// statements and logs keep µLXC and FormatMinor.
-
-// MoneyOrderEnv names which comes first beside an LXC amount: usd_first (the default) or lxc_first.
-const MoneyOrderEnv = "LENS_MONEY_ORDER"
-
-// CheckMoneyOrder reports a LENS_MONEY_ORDER Lens does not know; Lens will not start with one.
-func CheckMoneyOrder() error {
-	switch v := os.Getenv(MoneyOrderEnv); v {
-	case "", "usd_first", "lxc_first":
-		return nil
-	default:
-		return fmt.Errorf("%s=%q: want usd_first or lxc_first", MoneyOrderEnv, v)
-	}
-}
+// statements and logs keep µLXC and FormatMinor; a sentence never says LXC (B61.16).
 
 var moneySigns = map[string]string{CurrencyUSD: "$", CurrencyGBP: "£", CurrencyEUR: "€"}
 
-// ulxcPerCent is how many µLXC one US cent buys at the peg (100,000 at $0.10).
-var ulxcPerCent = int64(math.Round(1e4 / LXCUSDValue))
+// usdTenMillionthsPerULXC is what one µLXC is worth at the peg, in ten-millionths of a dollar (1 at $0.10), so
+// an amount is written to its last µLXC.
+var usdTenMillionthsPerULXC = int64(math.Round(LXCUSDValue * 10))
 
 // Money writes minor units for a person: "$1,240.00", "£120.50", "-$4.00", "1.50 USDC"; µLXC as LXCMoney does.
 func Money(minor int64, currency string) string {
@@ -47,28 +34,14 @@ func Money(minor int64, currency string) string {
 	return sign + grouped(minor, places, 2) + " " + currency
 }
 
-// LXCMoney writes µLXC as its dollars at the peg beside the LXC: "$340.00 (3,400 LXC)", or "3,400 LXC ($340.00)"
-// under LENS_MONEY_ORDER=lxc_first.
+// LXCMoney writes µLXC as the dollars it is worth at the peg, and nothing else (B61.16): "$340.00", and to the
+// last µLXC below a cent, "$0.0000001", so a refusal never reads a limit as $0.00.
 func LXCMoney(ulxc int64) string {
 	sign := ""
 	if ulxc < 0 {
 		sign, ulxc = "-", -ulxc
 	}
-	usd := sign + "$" + grouped((ulxc+ulxcPerCent/2)/ulxcPerCent, 2, 2)
-	lxc := sign + LXC(ulxc)
-	if os.Getenv(MoneyOrderEnv) == "lxc_first" {
-		return lxc + " (" + usd + ")"
-	}
-	return usd + " (" + lxc + ")"
-}
-
-// LXC writes µLXC as LXC alone, every digit kept: "3,400 LXC", "-0.001234 LXC" — for a column with no room for
-// LXCMoney.
-func LXC(ulxc int64) string {
-	if ulxc < 0 {
-		return "-" + LXC(-ulxc)
-	}
-	return grouped(ulxc, 6, 0) + " LXC"
+	return sign + "$" + grouped(ulxc*usdTenMillionthsPerULXC, 7, 2)
 }
 
 // When writes a moment for a person: "Oct 31, 2026 at 09:00 UTC".

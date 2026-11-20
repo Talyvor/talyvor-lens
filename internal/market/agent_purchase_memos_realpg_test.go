@@ -55,7 +55,7 @@ func TestAgentPurchaseMemos_ALicencePrizeAndRenewalReadInWords(t *testing.T) {
 		t.Fatalf("a rent above the approval amount = %v; want an approval filed", err)
 	}
 	approve(filed(fmt.Sprintf("licence:%s:%s:%s:10000000", agent.ID, listing, offer[OfferRent]),
-		"Rent Adder, commercial licence, $1.00 (10 LXC) on your monthly marketplace bill"))
+		"Rent Adder, commercial licence, $1.00 on your monthly marketplace bill"))
 	if lic, _, err := s.License(ctx, deps, buyer, agent.ID, listing, "rent", rent); err != nil || lic.Charge != ChargeBilled {
 		t.Fatalf("the approved rent = %+v, %v; want it billed", lic, err)
 	}
@@ -69,7 +69,7 @@ func TestAgentPurchaseMemos_ALicencePrizeAndRenewalReadInWords(t *testing.T) {
 		t.Fatalf("a prize above the approval amount = %v; want an approval filed", err)
 	}
 	approve(filed(fmt.Sprintf("prize:%s:%s:1:20000000", agent.ID, listing),
-		"A prize for Adder, $2.00 (20 LXC) on your monthly marketplace bill"))
+		"A prize for Adder, $2.00 on your monthly marketplace bill"))
 	if lic, err := s.AwardPrize(ctx, deps, buyer, agent.ID, award, nil); err != nil || lic.Charge != ChargeBilled {
 		t.Fatalf("the approved prize = %+v, %v; want it billed", lic, err)
 	}
@@ -92,5 +92,5 @@ func TestAgentPurchaseMemos_ALicencePrizeAndRenewalReadInWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	filed(fmt.Sprintf("renewal:%s:%s:4000000", sub.ID, sub.EndsAt.UTC().Format(time.RFC3339)),
-		"Adder renews: $0.40 (4 LXC) on your monthly marketplace bill")
+		"Adder renews: $0.40 on your monthly marketplace bill")
 }

@@ -190,6 +190,9 @@ func (s *DualTokenStore) OfferLoan(ctx context.Context, workspaceID, lenderAgent
 		if err := refuseFrozen(ctx, tx, workspaceID, c); err != nil {
 			return Loan{}, err
 		}
+		if err := refuseUnconfirmed(ctx, tx, workspaceID, c); err != nil { // B61.52
+			return Loan{}, err
+		}
 		refusal, err := capabilityLive(ctx, tx, workspaceID, c)
 		if err != nil {
 			return Loan{}, err

@@ -424,6 +424,7 @@ var testMerchants = map[string]CardDetails{
 	"aws":               {MCC: "7372", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
 	"bet365":            {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},
 	"netflix":           {MCC: "4899", Country: "US", Channel: ChannelOnline, Wallet: WalletNone},
+	"dhl freight":       {MCC: "4214", Country: "DE", Channel: ChannelOnline, Wallet: WalletNone}, // a freight carrier (B61.43)
 	"william hill":      {MCC: "7995", Country: "GB", Channel: ChannelOnline, Wallet: WalletNone}, // gambling (B53.2)
 	"unlabelled casino": {Country: "GB", Channel: ChannelOnline, Wallet: WalletNone},              // no category reported (B53.2)
 }

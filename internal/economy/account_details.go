@@ -70,6 +70,9 @@ func (s *DualTokenStore) CurrencyAccountDetails(ctx context.Context, workspaceID
 	if err := refuseUnaccepted(ctx, s.pool, workspaceID, c); err != nil {
 		return CurrencyAccountDetails{}, err
 	}
+	if err := refuseUnconfirmed(ctx, s.pool, workspaceID, c); err != nil { // B61.52
+		return CurrencyAccountDetails{}, err
+	}
 	if s.accountPartners == nil {
 		return CurrencyAccountDetails{}, fmt.Errorf("%w: no account partner is set", ErrNoAccountDetails)
 	}

@@ -52,6 +52,9 @@ type AgentSummaryMonth struct {
 	RunsOutAt        *time.Time `json:"runs_out_at"`
 	RunsOutOn        *string    `json:"runs_out_on"`
 	MonthlyLimitULXC int64      `json:"monthly_limit_ulxc"`
+	// Currency is the currency its rules are held in and MonthlyLimitMinor its monthly limit in its minor units (B61.42).
+	Currency          string `json:"currency"`
+	MonthlyLimitMinor int64  `json:"monthly_limit_minor"`
 }
 
 // AgentSummaryRules is the version of an agent's rules in force.
@@ -165,7 +168,8 @@ func (s *DualTokenStore) AgentSummary(ctx context.Context, workspaceID, agentID 
 	if err != nil {
 		return out, err
 	}
-	out.Month = AgentSummaryMonth{Start: forecast.MonthStart, End: forecast.MonthEnd, MonthlyLimitULXC: rules.MonthlyLimitULXC}
+	out.Month = AgentSummaryMonth{Start: forecast.MonthStart, End: forecast.MonthEnd, MonthlyLimitULXC: rules.MonthlyLimitULXC,
+		Currency: rules.currency(), MonthlyLimitMinor: rules.MonthlyLimitMinor}
 	for _, a := range forecast.Agents {
 		if a.AgentID == agentID {
 			out.Month.SpentULXC, out.Month.ForecastULXC, out.Month.RunsOutAt, out.Month.RunsOutOn = a.SpentULXC, a.ForecastULXC, a.RunsOutAt, a.RunsOutOn

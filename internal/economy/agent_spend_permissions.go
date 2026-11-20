@@ -339,6 +339,23 @@ func tokenFee(pay smartaccount.Payment) (fee *int64, paymaster *string) {
 // bundler answers: an operation the bundler refuses could still reach the chain, so it counts until its account uses its
 // nonce for another. op must be exactly the payment the gate allowed, on c, out of the agent's own account.
 func (s *DualTokenStore) SendAgentCryptoPayment(ctx context.Context, c smartaccount.Chain, workspaceID, agentID string, use int64, op smartaccount.UserOp) (string, error) {
+	hash, err := s.keepAgentCryptoOp(ctx, c, workspaceID, agentID, use, op)
+	if err != nil {
+		return "", err
+	}
+	sent, err := c.Send(ctx, op)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(sent, hash) {
+		return "", fmt.Errorf("smartaccount: the bundler hashes the operation %s, Lens %s", sent, hash)
+	}
+	return hash, nil
+}
+
+// keepAgentCryptoOp keeps op with use, agentID's payment the gate allowed, before any bundler sees it, and answers its
+// hash: from then on the use is settled from the chain. Keeping the same operation again changes nothing.
+func (s *DualTokenStore) keepAgentCryptoOp(ctx context.Context, c smartaccount.Chain, workspaceID, agentID string, use int64, op smartaccount.UserOp) (string, error) {
 	pay, err := smartaccount.PaymentOf(op.CallData)
 	if err != nil {
 		return "", err
@@ -357,24 +374,18 @@ func (s *DualTokenStore) SendAgentCryptoPayment(ctx context.Context, c smartacco
 		return "", err
 	}
 	fee, paymaster := tokenFee(pay)
+	// op as text: under the simple protocol a []byte is sent as bytea, which is not JSON.
 	tag, err := s.pool.Exec(ctx, `UPDATE agent_spend_permission_uses SET op = $4, op_hash = $5, sent_block = COALESCE(sent_block, $6)
 		WHERE id = $1 AND agent_id = $2 AND workspace_id = $3 AND chain_id = $7 AND token = $8 AND counterparty = $9 AND amount = $10
 		AND fee IS NOT DISTINCT FROM $11 AND paymaster IS NOT DISTINCT FROM $12 AND outcome IS NULL AND (op_hash IS NULL OR op_hash = $5)
 		AND EXISTS (SELECT 1 FROM agent_smart_accounts a WHERE a.agent_id = $2 AND a.workspace_id = $3 AND lower(a.address) = lower($13))`,
-		use, agentID, workspaceID, raw, hash, head, c.ID, smartaccount.Checksum(pay.Token), smartaccount.Checksum(pay.To),
+		use, agentID, workspaceID, string(raw), hash, head, c.ID, smartaccount.Checksum(pay.Token), smartaccount.Checksum(pay.To),
 		pay.Total().Int64(), fee, paymaster, op.Sender)
 	if err != nil {
 		return "", fmt.Errorf("economy: spend permission: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return "", fmt.Errorf("%w: the operation is not the agent's payment %d on chain %d, still to be sent", smartaccount.ErrInvalid, use, c.ID)
-	}
-	sent, err := c.Send(ctx, op)
-	if err != nil {
-		return "", err
-	}
-	if !strings.EqualFold(sent, hash) {
-		return "", fmt.Errorf("smartaccount: the bundler hashes the operation %s, Lens %s", sent, hash)
 	}
 	return hash, nil
 }

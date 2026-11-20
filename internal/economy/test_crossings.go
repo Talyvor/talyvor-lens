@@ -263,7 +263,7 @@ func reverseCrossingTx(ctx context.Context, tx pgx.Tx, c TestCrossing, paidWS, p
 		return "", err
 	}
 	if held < c.AmountULXC {
-		return "", fmt.Errorf("%w: agent %s, which received it, holds %d µLXC of the %d to take back", ErrAgentFunds, paidAgent, held, c.AmountULXC)
+		return "", fmt.Errorf("%w: agent %s, which received it, holds %s of the %s to take back", ErrAgentFunds, paidAgent, LXCMoney(held), LXCMoney(c.AmountULXC))
 	}
 	wss := []string{paidWS, payerWS}
 	if wss[1] < wss[0] {
@@ -287,7 +287,7 @@ func reverseCrossingTx(ctx context.Context, tx pgx.Tx, c TestCrossing, paidWS, p
 			return "", err
 		}
 		if bal+m.delta < 0 {
-			return "", fmt.Errorf("%w: workspace %s holds %d µLXC", ErrInsufficientLXC, m.ws, bal)
+			return "", fmt.Errorf("%w: workspace %s holds %s", ErrInsufficientLXC, m.ws, LXCMoney(bal))
 		}
 		// The test-funded part goes back where it came from: off the paid side before its balance falls (which
 		// would otherwise clamp it a second time), onto the payer's after its balance rises.

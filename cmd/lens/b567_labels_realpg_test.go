@@ -46,7 +46,7 @@ func TestB567_LabelsFollowTheFacts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO workspace_contracts (workspace_id, plan, set_by) VALUES ($1, 'enterprise', 'op-b567')`, enterprise); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_contracts (workspace_id, plan, set_by) VALUES ($1, 'business_custom', 'op-b567')`, enterprise); err != nil {
 		t.Fatal(err)
 	}
 	store := economy.NewDualTokenStore(nil, pool, nil)
@@ -127,9 +127,10 @@ func TestB567_LabelsFollowTheFacts(t *testing.T) {
 		t.Fatalf("fx cleared on a live rail = %v; want live", l)
 	}
 
-	// For a workspace: fx is a B30 capability, Live only on a plan with live money; a synthetic workspace is all Sandbox.
+	// For a workspace: fx is a B30 capability, Live on every plan since B61.57, Studio included; a synthetic workspace
+	// is all Sandbox.
 	for _, tc := range []struct{ ws, spend, fx string }{
-		{free, economy.LabelLive, economy.LabelSandbox},
+		{free, economy.LabelLive, economy.LabelLive},
 		{enterprise, economy.LabelLive, economy.LabelLive},
 		{synthetic, economy.LabelSandbox, economy.LabelSandbox},
 	} {

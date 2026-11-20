@@ -517,7 +517,7 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 		return PaidInvoice{}, fmt.Errorf("%w: it holds %s of %s money, and %s is due", ErrInvoiceShort, FormatMinor(held, inv.Currency), funding,
 			FormatMinor(inv.DueMinor, inv.Currency))
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, value, key); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, value, key); err != nil {
 		return PaidInvoice{}, s.refusedMovement(ctx, tx, err)
 	}
 	e := MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityCurrencyAccounts, Kind: "invoice_payment", IdempotencyKey: key,
@@ -527,7 +527,7 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 		e.payeeWorkspaceID = inv.WorkspaceID
 	}
 	out := PaidInvoice{}
-	if out.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if out.Entry, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return PaidInvoice{}, err
 	}
 	if err := acceptInvoicePayment(ctx, tx, inv, out.Entry.ID, "agent", funding, "", inv.DueMinor, 0); err != nil {

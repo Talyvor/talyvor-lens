@@ -15,7 +15,8 @@ import (
 //
 // Every money route is fiat, on-chain or either, named in moneyRoutes. A fiat workspace calling an on-chain route, and
 // a stablecoin workspace calling a fiat one, is refused 409 with code wrong_money_kind, field money_route and the
-// workspace's money_kind (B59.6). A hybrid workspace reaches every money route. A route of either side serves both
+// workspace's money_kind (B59.6). A route that moves money across both sides at once (B59.14: Instant transfer) is
+// refused to every workspace that is not hybrid, the same way. A hybrid workspace reaches every money route. A route of either side serves both
 // kinds; which side its money is on is the currency or the payee it names, not the route.
 //
 // The gate runs in the authed group after auth and the tenant check, where the route is matched and {wsID} is the
@@ -29,6 +30,7 @@ const (
 	moneySideFiat    moneySide = "fiat"     // other banks, cash-outs to a bank: refused to a stablecoin workspace
 	moneySideOnChain moneySide = "on_chain" // smart accounts, keys and sweeps on chain, gas: refused to a fiat workspace
 	moneySideEither  moneySide = "either"   // serves both kinds: every kind gets cards (launch pack 3.3)
+	moneySideBoth    moneySide = "both"     // moves money across the two sides at once: hybrid only (B59.14)
 )
 
 // moneyRoutes is every money route's side, by its chi pattern with every parameter written {}, grouped by the file
@@ -43,6 +45,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/approvals/decide":             moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/{}/approve":         moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/{}/challenge":       moneySideEither,
+	"/v1/workspaces/{}/agents/payment-proofs/{}":            moneySideEither, // B62.1
 	"/v1/workspaces/{}/agents/approvals/{}/deny":            moneySideEither,
 	"/v1/workspaces/{}/agents/briefing":                     moneySideEither,
 	"/v1/workspaces/{}/agents/forecast":                     moneySideEither,
@@ -126,10 +129,18 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/card":          moneySideEither,
 	"/v1/workspaces/{}/agents/{}/card/freeze":   moneySideEither, // a control that stops money is never refused
 	"/v1/workspaces/{}/agents/{}/card/unfreeze": moneySideEither,
+	"/v1/workspaces/{}/agents/{}/card/draws-on": moneySideEither, // B30.30: the account in the card's currency
 
 	// agent_cash_outs_handler.go
 	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
 	"/v1/workspaces/{}/cash-outs":           moneySideFiat,
+
+	// agent_crypto_sends_handler.go
+	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/quote":      moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}":         moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/approve": moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/decline": moneySideOnChain,
 
 	// agent_escrows_handler.go
 	"/v1/workspaces/{}/agents/{}/escrows":  moneySideEither,
@@ -187,7 +198,8 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/keys/enrolments/{}/decline":   moneySideEither,
 
 	// kya_handler.go
-	"/v1/workspaces/{}/agents/{}/credential": moneySideEither,
+	"/v1/workspaces/{}/agents/{}/credential":     moneySideEither,
+	"/v1/workspaces/{}/agents/{}/credential/tap": moneySideEither, // B62.6
 
 	// lockdown_handler.go
 	"/v1/money/lockdown":      moneySideEither,
@@ -203,6 +215,7 @@ var moneyRoutes = map[string]moneySide{
 	// money_accounts_handler.go
 	"/v1/money/accounts":               moneySideEither,
 	"/v1/money/accounts/{}/details":    moneySideEither,
+	"/v1/money/accounts/{}/funding":    moneySideEither, // B61.66: between the company and an agent, in the account's currency
 	"/v1/money/accounts/{}/statement":  moneySideEither,
 	"/v1/money/accounts/{}/test-money": moneySideEither,
 	"/v1/money/overview":               moneySideEither,
@@ -228,6 +241,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/budgets/alerts": moneySideEither,
 	"/v1/money/budgets/{}":     moneySideEither,
 
+	// money_low_balance_handler.go
+	"/v1/money/low-balance":        moneySideEither,
+	"/v1/money/low-balance/alerts": moneySideEither,
+	"/v1/money/low-balance/{}":     moneySideEither,
+
 	// money_cards_handler.go
 	"/v1/money/cards":            moneySideEither,
 	"/v1/money/cards/{}":         moneySideEither,
@@ -249,6 +267,13 @@ var moneyRoutes = map[string]moneySide{
 	// money_coach_handler.go
 	"/v1/money/coach":     moneySideEither,
 	"/v1/money/coach/ask": moneySideEither,
+
+	// instant_transfer_handler.go
+	"/v1/workspaces/{}/money/instant-transfers/quote": moneySideBoth,
+
+	// instant_transfer_handler.go, B59.15: the send and its receipt
+	"/v1/workspaces/{}/agents/{}/money/instant-transfers": moneySideBoth,
+	"/v1/workspaces/{}/money/instant-transfers/{}":        moneySideBoth,
 
 	// money_convert_handler.go
 	"/v1/workspaces/{}/agents/{}/money/convert":       moneySideEither,
@@ -278,6 +303,11 @@ var moneyRoutes = map[string]moneySide{
 	// money_notices_handler.go
 	"/v1/money/notices":          moneySideEither,
 	"/v1/money/notices/settings": moneySideEither,
+
+	// people_handler.go
+	"/v1/money/people/find":          moneySideEither,
+	"/v1/money/people/pay":           moneySideEither,
+	"/v1/money/people/pay/challenge": moneySideEither,
 
 	// money_payees_handler.go
 	"/v1/money/payees":                      moneySideEither,
@@ -326,6 +356,13 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/spending/subscriptions": moneySideEither,
 	"/v1/money/spending/unusual":       moneySideEither,
 
+	// money_wallets_handler.go
+	"/v1/money/accounts/{}/withdraw":           moneySideFiat,
+	"/v1/money/accounts/{}/withdraw/challenge": moneySideFiat,
+	"/v1/money/convert":                        moneySideBoth,
+	"/v1/money/convert/challenge":              moneySideBoth,
+	"/v1/money/convert/quote":                  moneySideBoth,
+
 	// payment_requests_handler.go
 	"/v1/money/assistant-limits":             moneySideEither,
 	"/v1/money/payment-requests":             moneySideEither,
@@ -362,8 +399,14 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/wallet/tax":                 moneySideEither,
 
 	// workspace_money_kind_handler.go
-	"/v1/workspaces/{}/account":            moneySideEither,
-	"/v1/workspaces/{}/account/money-kind": moneySideEither,
+	"/v1/workspaces/{}/account":                      moneySideEither,
+	"/v1/workspaces/{}/account/money-kind":           moneySideEither,
+	"/v1/workspaces/{}/account/money-kind/challenge": moneySideEither,
+
+	// agent_accounts_handler.go, B52.41: a raise filed for the owner's passkey
+	"/v1/workspaces/{}/agents/{}/rules/proposals":              moneySideEither,
+	"/v1/workspaces/{}/agents/{}/rules/proposals/{}/approve":   moneySideEither,
+	"/v1/workspaces/{}/agents/{}/rules/proposals/{}/challenge": moneySideEither,
 }
 
 // moneyKindReader is what moneyKindGate asks; *economy.DualTokenStore answers it.
@@ -376,7 +419,7 @@ func moneyKindGate(kinds moneyKindReader) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			side := moneyRoutes[blankRouteParams(chi.RouteContext(req.Context()).RoutePattern())]
-			if side != moneySideFiat && side != moneySideOnChain {
+			if side != moneySideFiat && side != moneySideOnChain && side != moneySideBoth {
 				next.ServeHTTP(w, req)
 				return
 			}
@@ -393,7 +436,8 @@ func moneyKindGate(kinds moneyKindReader) func(http.Handler) http.Handler {
 				writeJSONErr(w, http.StatusInternalServerError, "could not read the workspace's kind of money")
 				return
 			}
-			if (side == moneySideFiat && kind == economy.MoneyKindStablecoin) || (side == moneySideOnChain && kind == economy.MoneyKindFiat) {
+			if (side == moneySideFiat && kind == economy.MoneyKindStablecoin) || (side == moneySideOnChain && kind == economy.MoneyKindFiat) ||
+				(side == moneySideBoth && kind != economy.MoneyKindHybrid) {
 				writeMoneyKindRefusal(w, &economy.MoneyKindRefusal{Field: "money_route", MoneyKind: kind})
 				return
 			}

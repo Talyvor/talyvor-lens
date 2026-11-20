@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,7 +22,7 @@ import (
 //
 // A conversion is quoted first (QuoteConversion): selling an amount from one of the agent's accounts in pounds, euros
 // or dollars for another of its currencies, at the conversion partner's reference rate less the plan's FX margin —
-// LENS_FX_MARGIN_BPS by plan, or an Enterprise contract's own (billing.FXMarginBPS, wired in cmd/lens). The margin is
+// LENS_FX_MARGIN_BPS by plan, or a Custom contract's own (billing.FXMarginBPS, wired in cmd/lens). The margin is
 // taken in the currency sold, rounded up to its minor unit as the platform fee is, and the partner converts the rest.
 // The quote is kept, and converts once (Convert), within its life, under one idempotency key: the same key again
 // answers the conversion it made.
@@ -34,7 +33,7 @@ import (
 // rest to the partner's conversion account; in the currency bought, what it buys comes from the partner's conversion
 // account into the agent's. Each currency sums to zero, and both legs are lines on the agent's account statements.
 //
-// B30.29: a quote is good for 30 seconds at most, and the free plan converts test money only. Two of the agent's rules
+// B30.29: a quote is good for 30 seconds at most. Every plan converts live money once fx is cleared (B61.57). Two of the agent's rules
 // bound its conversions on top of its spending rules: the currencies it may convert between (the one sold and the one
 // bought), and its daily conversion maximum, on what it converted since the start of its day, in its time zone.
 
@@ -45,8 +44,7 @@ var ErrConversion = errors.New("economy: invalid conversion")
 // conversionQuoteLife is the longest a quote is good for (B30.29), however long the partner holds its own.
 const conversionQuoteLife = 30 * time.Second
 
-// FXMarginResolver answers a workspace's FX margin in basis points, and the plan it is on (B30.29: free converts test
-// money only).
+// FXMarginResolver answers a workspace's FX margin in basis points, and the plan it is on.
 type FXMarginResolver func(ctx context.Context, q FeeQuerier, workspaceID string) (bps int64, plan string, err error)
 
 // The states of a conversion.
@@ -66,6 +64,7 @@ type Conversion struct {
 	SellCurrency   string     `json:"sell_currency"`
 	MarginBPS      int64      `json:"margin_bps"`
 	MarginMinor    int64      `json:"margin_minor"` // Talyvor's, in SellCurrency
+	FreeMinor      int64      `json:"free_minor"`   // what of SellMinor converts free under the plan this month (B61.58)
 	BuyMinor       int64      `json:"buy_minor"`    // what reaches ToAccountID
 	BuyCurrency    string     `json:"buy_currency"`
 	ReferenceRate  string     `json:"reference_rate"` // the partner's: BuyCurrency per SellCurrency, in whole units
@@ -85,13 +84,13 @@ type Conversion struct {
 
 const conversionCols = `id, workspace_id, agent_id, from_account_id, to_account_id, sell_minor, sell_currency, margin_bps, margin_minor,
 	buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, status, COALESCE(idempotency_key, ''), entry_id,
-	value_ulxc, expires_at, converted_at, created_at`
+	value_ulxc, expires_at, converted_at, created_at, free_minor`
 
 func scanConversion(row pgx.Row) (Conversion, error) {
 	var c Conversion
 	err := row.Scan(&c.ID, &c.WorkspaceID, &c.AgentID, &c.FromAccountID, &c.ToAccountID, &c.SellMinor, &c.SellCurrency, &c.MarginBPS,
 		&c.MarginMinor, &c.BuyMinor, &c.BuyCurrency, &c.ReferenceRate, &c.Rate, &c.Funding, &c.Partner, &c.partnerRef, &c.Status,
-		&c.IdempotencyKey, &c.EntryID, &c.ValueULXC, &c.ExpiresAt, &c.ConvertedAt, &c.CreatedAt)
+		&c.IdempotencyKey, &c.EntryID, &c.ValueULXC, &c.ExpiresAt, &c.ConvertedAt, &c.CreatedAt, &c.FreeMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrQuote
 	}
@@ -109,6 +108,14 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	in.SellCurrency, in.BuyCurrency = strings.ToUpper(strings.TrimSpace(in.SellCurrency)), strings.ToUpper(strings.TrimSpace(in.BuyCurrency))
 	if in.Funding == "" {
 		in.Funding = FundingTest
+	}
+	for _, c := range []string{in.SellCurrency, in.BuyCurrency} { // B59.42: a single kind converts on its own side only
+		if MoneyCurrencies[c] == 0 {
+			continue
+		}
+		if err := checkMoneySide(ctx, s.pool, workspaceID, "currency", moneyKindOf(c)); err != nil {
+			return Conversion{}, err
+		}
 	}
 	held := func(c string) bool { return c == CurrencyGBP || c == CurrencyEUR || c == CurrencyUSD }
 	switch {
@@ -131,17 +138,29 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	if err != nil {
 		return Conversion{}, err
 	}
+	in.WorkspaceID, in.AgentID, in.FromAccountID, in.ToAccountID = workspaceID, agentID, from, to
+	return s.quoteConversion(ctx, in)
+}
+
+// quoteConversion prices and keeps in, a conversion between its two accounts: the plan's margin, taken in the
+// currency sold, and what the conversion partner buys with the rest.
+func (s *DualTokenStore) quoteConversion(ctx context.Context, in Conversion) (Conversion, error) {
+	workspaceID := in.WorkspaceID
+	// B61.57: every plan converts live money once the capability is cleared; the plan sets only the margin, and (B61.58)
+	// what converts free each month before it.
 	bps, plan, err := s.fxMargin(ctx, s.pool, workspaceID)
 	switch {
 	case err != nil:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s: %w", workspaceID, err)
 	case bps < 0 || bps > feeDenominator:
 		return Conversion{}, fmt.Errorf("economy: the FX margin of %s is %d basis points, outside 0 to %d", workspaceID, bps, feeDenominator)
-	case in.Funding == FundingLive && (plan == "" || plan == "free"):
-		return Conversion{}, fmt.Errorf("%w: live conversions come with the Team, Business and Enterprise plans", ErrConversion)
 	}
-	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: agentID, FromAccountID: from, ToAccountID: to,
-		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: PlatformFee(in.SellMinor, bps),
+	free, margin, err := fxFree(ctx, s.pool, workspaceID, plan, in.SellCurrency, in.SellMinor, bps, time.Now())
+	if err != nil {
+		return Conversion{}, err
+	}
+	c := Conversion{ID: "mfx_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: in.AgentID, FromAccountID: in.FromAccountID, ToAccountID: in.ToAccountID,
+		SellMinor: in.SellMinor, SellCurrency: in.SellCurrency, MarginBPS: bps, MarginMinor: margin, FreeMinor: free,
 		BuyCurrency: in.BuyCurrency, Funding: in.Funding, Status: ConversionQuoted}
 	if c.MarginMinor >= c.SellMinor {
 		return Conversion{}, fmt.Errorf("%w: %s leaves nothing to convert after the margin", ErrConversion, Money(c.SellMinor, c.SellCurrency))
@@ -161,17 +180,16 @@ func (s *DualTokenStore) QuoteConversion(ctx context.Context, workspaceID, agent
 	case pq.Sell != sell || pq.Buy.Currency != c.BuyCurrency || pq.Buy.Minor <= 0:
 		return Conversion{}, fmt.Errorf("economy: conversion quote: the partner priced %s as selling %s for %s", sell, pq.Sell, pq.Buy)
 	}
-	// GBP, EUR and USD all count hundredths, so minor units divide as whole units do.
 	c.BuyMinor, c.ReferenceRate, c.partnerRef, c.ExpiresAt = pq.Buy.Minor, pq.Rate, pq.Ref, pq.ExpiresAt
 	if latest := time.Now().Add(conversionQuoteLife); c.ExpiresAt.After(latest) {
 		c.ExpiresAt = latest
 	}
-	c.Rate = big.NewRat(c.BuyMinor, c.SellMinor).FloatString(8)
+	c.Rate = instantRate(c.SellMinor, c.SellCurrency, c.BuyMinor, c.BuyCurrency) // in whole units: USDC counts millionths
 	c, err = scanConversion(s.pool.QueryRow(ctx, `INSERT INTO money_conversions (id, workspace_id, agent_id, from_account_id, to_account_id,
-		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING `+conversionCols,
-		c.ID, workspaceID, agentID, c.FromAccountID, c.ToAccountID, c.SellMinor, c.SellCurrency, c.MarginBPS, c.MarginMinor, c.BuyMinor,
-		c.BuyCurrency, c.ReferenceRate, c.Rate, c.Funding, c.Partner, c.partnerRef, c.ExpiresAt))
+		sell_minor, sell_currency, margin_bps, margin_minor, buy_minor, buy_currency, reference_rate, rate, funding, partner, partner_ref, expires_at, free_minor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING `+conversionCols,
+		c.ID, workspaceID, c.AgentID, c.FromAccountID, c.ToAccountID, c.SellMinor, c.SellCurrency, c.MarginBPS, c.MarginMinor, c.BuyMinor,
+		c.BuyCurrency, c.ReferenceRate, c.Rate, c.Funding, c.Partner, c.partnerRef, c.ExpiresAt, c.FreeMinor))
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion quote: %w", err)
 	}
@@ -230,10 +248,15 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 	// An approval is for the conversion, not the quote: asked again after it, a new quote finds it.
 	fp := sha256.Sum256([]byte("fx\x00" + agentID + "\x00" + c.FromAccountID + "\x00" + c.ToAccountID + "\x00" +
 		strconv.FormatInt(c.SellMinor, 10) + "\x00" + c.Funding))
-	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]),
+	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: hex.EncodeToString(fp[:]), Own: partners.Money{Minor: c.SellMinor, Currency: c.SellCurrency},
 		Payee: Payee{Kind: "agent", ID: agentID, Name: "its own " + c.BuyCurrency + " account"},
 		Memo:  Money(c.SellMinor, c.SellCurrency) + " converted to " + c.BuyCurrency + " (" + c.Funding + " money)"})
 
+	// B50.54: screened before the transaction, on a connection of its own.
+	screened, err := s.screenFirst(ctx, c.entry(workspaceID, "", "", ""), c.partnerPostings()...)
+	if err != nil {
+		return Conversion{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion: %w", err)
@@ -264,10 +287,10 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 		return Conversion{}, fmt.Errorf("%w: the account holds %s of %s money, and this conversion sells %s", ErrAgentFunds,
 			Money(balance, c.SellCurrency), c.Funding, Money(c.SellMinor, c.SellCurrency))
 	}
-	if err := enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
+	if err := s.enforceAgentRules(ctx, tx, workspaceID, agentID, value, c.ID); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
-	if err := judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
+	if err := s.judgeConversion(ctx, tx, c, value, time.Now()); err != nil {
 		return Conversion{}, s.refusedMovement(ctx, tx, err)
 	}
 	revenue, err := routeAccount(ctx, tx, workspaceID, c.SellCurrency, MoneyRevenue, "", "Talyvor fees")
@@ -283,15 +306,13 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 		return Conversion{}, err
 	}
 	// Posted before the partner is asked: a live conversion fx is not cleared for, or one the ledger refuses, never reaches it.
-	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "fx_conversion",
-		IdempotencyKey: "fx_convert:" + c.ID, Funding: c.Funding, Counterparty: c.Partner, PartnerRef: c.partnerRef,
-		Memo: Money(c.SellMinor, c.SellCurrency) + " to " + Money(c.BuyMinor, c.BuyCurrency) + " at " + c.Rate, Postings: []MoneyPosting{
-			{AccountID: c.FromAccountID, AmountMinor: -c.SellMinor},
-			{AccountID: revenue, AmountMinor: c.MarginMinor},
-			{AccountID: sold, AmountMinor: c.SellMinor - c.MarginMinor},
-			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
-			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}, s.screener)
+	e, err := postMoneyTx(ctx, tx, c.entry(workspaceID, revenue, sold, bought), screened)
 	if err != nil {
+		return Conversion{}, err
+	}
+	// B61.58: the plan's free part, taken under its lock only now, after the screening that may wait for a connection
+	// of its own, and before the partner is asked.
+	if err := s.takeFXAllowance(ctx, tx, workspaceID, c.ID, c.ID, c.SellCurrency, c.SellMinor, c.MarginBPS, c.FreeMinor, time.Now()); err != nil {
 		return Conversion{}, err
 	}
 	// shortcut: the partner is asked inside the transaction, so nothing is posted unless it converted; upgrade to a
@@ -334,8 +355,9 @@ func (c Conversion) usable() error {
 
 // judgeConversion refuses c, worth value µLXC, when its agent's rules do not allow it (B30.29): a currency it may not
 // convert between, or what it converted since the start of its day, in its time zone, and c together over its daily
-// conversion maximum.
-func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, now time.Time) error {
+// conversion maximum — in the rules' currency (B61.40): what it sold in that currency on its own amount, and in another
+// at the conversion provider's rate, rounded up, so rounding never lets a conversion through.
+func (s *DualTokenStore) judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, now time.Time) error {
 	r, err := getAgentRules(ctx, tx, c.WorkspaceID, c.AgentID)
 	if err != nil {
 		return err
@@ -346,7 +368,7 @@ func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, 
 		}
 	}
 	limit := limitOf(r.FXDailyLimitULXC)
-	if limit == 0 {
+	if limit == 0 && limitOf(r.FXDailyLimitMinor) == 0 {
 		return nil
 	}
 	loc, err := r.location()
@@ -354,14 +376,57 @@ func judgeConversion(ctx context.Context, tx pgx.Tx, c Conversion, value int64, 
 		return ruleRefusal("the agent's timezone %q cannot be read", r.Timezone)
 	}
 	t := now.In(loc)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	if limit := limitOf(r.FXDailyLimitMinor); limit > 0 {
+		rows, err := tx.Query(ctx, `SELECT COALESCE(sum(sell_minor), 0)::bigint, sell_currency FROM money_conversions WHERE agent_id = $1
+			AND status = 'converted' AND converted_at >= $2 GROUP BY sell_currency`, c.AgentID, day)
+		if err != nil {
+			return fmt.Errorf("economy: agent conversions: %w", err)
+		}
+		sold, err := pgx.CollectRows(rows, pgx.RowToStructByPos[partners.Money])
+		if err != nil {
+			return fmt.Errorf("economy: agent conversions: %w", err)
+		}
+		var done int64
+		for _, m := range append(sold, partners.Money{Currency: c.SellCurrency, Minor: c.SellMinor}) {
+			v, err := s.convertMinor(ctx, c.WorkspaceID, m.Minor, m.Currency, r.currency(), true)
+			if err != nil {
+				return err
+			}
+			done += v
+		}
+		if done > limit {
+			return ruleRefusal("converting %s would take today's conversions to %s, over this agent's daily conversion maximum of %s",
+				Money(c.SellMinor, c.SellCurrency), r.rulesAmount(done), r.rulesAmount(limit))
+		}
+		return nil
+	}
 	var done int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(value_ulxc), 0)::bigint FROM money_conversions WHERE agent_id = $1
-		AND status = 'converted' AND converted_at >= $2`, c.AgentID, time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)).Scan(&done); err != nil {
+		AND status = 'converted' AND converted_at >= $2`, c.AgentID, day).Scan(&done); err != nil {
 		return fmt.Errorf("economy: agent conversions: %w", err)
 	}
 	if done+value > limit {
-		return ruleRefusal("converting %s would take today's conversions to %s LXC, over this agent's daily conversion maximum of %s LXC",
-			Money(c.SellMinor, c.SellCurrency), lxcString(done+value), lxcString(limit))
+		return ruleRefusal("converting %s would take today's conversions to %s, over this agent's daily conversion maximum of %s",
+			Money(c.SellMinor, c.SellCurrency), LXCMoney(done+value), LXCMoney(limit))
 	}
 	return nil
+}
+
+// entry is c's movement on the ledger: the sold currency to the partner, less Talyvor's margin, and the bought one
+// from it.
+func (c Conversion) entry(workspaceID, revenue, sold, bought string) MoneyEntry {
+	return MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "fx_conversion",
+		IdempotencyKey: "fx_convert:" + c.ID, Funding: c.Funding, Counterparty: c.Partner, PartnerRef: c.partnerRef,
+		Memo: Money(c.SellMinor, c.SellCurrency) + " to " + Money(c.BuyMinor, c.BuyCurrency) + " at " + c.Rate, Postings: []MoneyPosting{
+			{AccountID: c.FromAccountID, AmountMinor: -c.SellMinor},
+			{AccountID: revenue, AmountMinor: c.MarginMinor},
+			{AccountID: sold, AmountMinor: c.SellMinor - c.MarginMinor},
+			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
+			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}
+}
+
+// partnerPostings are the postings of c's entry through its partner, screened before its transaction (B50.54).
+func (c Conversion) partnerPostings() []MoneyPosting {
+	return []MoneyPosting{{AmountMinor: c.SellMinor - c.MarginMinor, Currency: c.SellCurrency}, {AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency}}
 }

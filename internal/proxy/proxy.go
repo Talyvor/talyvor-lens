@@ -213,6 +213,12 @@ type Proxy struct {
 	royaltyMinter     royaltySink
 	poolDiscount      float64 // r — consumer discount on CROSS-TENANT pooled hits; 0 = charge list
 
+	// B28.250: the recent live-call latencies a pooled serve waits out, the pool lookups each workspace made this
+	// minute, and how many it may make before its saving headers are withheld (0 = never).
+	liveLatency    upstreamLatencies
+	poolProbes     poolProbeCounter
+	poolProbeLimit int
+
 	// synthetic reports a B17.1 synthetic workspace (workspace.Manager.GetSynthetic); nil = none are.
 	synthetic func(wsID string) bool
 
@@ -1343,6 +1349,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// served hit (e.g. SSE replay failure falling through to the live
 		// LLM) therefore reports nothing and mints nothing.
 		var pooledHit *poolroyalty.ServedHit
+		poolProbing := false // B28.250: this workspace is looking in the pool at a probing rate
 		// B23.1: which stored answer served this request — the rows (hitIDs) and the keys its copies
 		// are stored under (hitHashes) — remembered at the serve points so a thumbs-down removes it.
 		var hitIDs, hitHashes []string
@@ -1364,6 +1371,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				hitIDs = []string{id}
 				span.AddEvent("cache.hit.semantic")
 			} else if p.poolGate.Participant(wsID) {
+				poolProbing = p.poolProbes.note(wsID, p.poolProbeLimit, time.Now())
 				// Private miss + this workspace opted into pooling: a poolable
 				// requester may be served an entry CONTRIBUTED by another poolable
 				// workspace, found under the un-prefixed pooled key. The serve
@@ -1458,9 +1466,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 				chargedHit = nil
 			}
 			price := p.pricePooledServe(chargedHit, prompt, answered, holdMaxOut)
-			price.setSavingHeaders(w)
+			// B28.250: a workspace probing the pool is not told by any header that its answer came from it — only a
+			// pool lookup sets poolProbing, so this answer is another workspace's.
+			if !poolProbing {
+				price.setSavingHeaders(w)
+			}
+			// B28.250: and another workspace's answer is served no faster than a live call, so the clock cannot
+			// tell a tenant that someone else asked this.
+			if pooledHit != nil {
+				p.holdLikeALiveCall(ctx, cfg.ProviderName(), model, streaming, len(answered))
+			}
 			// B17.207 — a replay is free: a charged pooled serve marked one is a spend row its caller books as nothing.
-			if price.ChargedULXC == 0 {
+			if price.ChargedULXC == 0 && !poolProbing {
 				w.Header().Set("X-Talyvor-Cache-Replay", "true")
 				// B28.95 — and what it saved: the answer's list price, priced exactly as a pooled serve's.
 				listed := p.pricePooledServe(&poolroyalty.ServedHit{Provider: cfg.ProviderName(), Model: servedModel}, prompt, answered, holdMaxOut)
@@ -1908,15 +1925,19 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 	// caching / scoring / spend code operates on one schema regardless of
 	// which provider actually answered.
 	span.AddEvent("llm.forward.start")
+	forwardStart := time.Now()
 	upstreamBody, statusCode, fbResult, err := p.forwardWithFallback(
 		ctx, r, cfg.ProviderName(), upstreamModel, wsID, upstreamBodyOut, w, own,
 	)
+	if err == nil && statusCode == http.StatusOK {
+		p.liveLatency.record(latencyKey(false, cfg.ProviderName(), model), len(upstreamBody), time.Since(forwardStart)) // B28.250
+	}
 	attempts := fbResult.Attempts
 	if err != nil {
 		metrics.RequestsTotal.WithLabelValues(cfg.ProviderName(), "error").Inc()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		writeError(w, http.StatusBadGateway, "upstream LLM error: "+err.Error())
+		writeError(w, http.StatusBadGateway, "upstream LLM error: "+inference.ClientError(err)) // B28.250
 		p.releaseReservation(ctx, "upstream error")
 		return
 	}

@@ -15,6 +15,7 @@ func TestB28303_AScheduledPaymentToABlockedPayeePostsNothing(t *testing.T) {
 	ctx := context.Background()
 	s := NewDualTokenStore(nil, pool, nil)
 	const ws = "ws-payee-schedule"
+	sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, ws); err != nil {
 		t.Fatal(err)
 	}

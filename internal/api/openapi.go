@@ -486,7 +486,7 @@ func openAPIPaths() map[string]any {
 		"/v1/public/fees": map[string]any{
 			"get": map[string]any{
 				"summary":     "Get every fee Talyvor charges",
-				"description": "No key needed. Basis points (100 = 1%) unless named minor units: market_take_bps (listing sales; the seller keeps the rest), services_take_bps, compute_take_bps, lending_fee_bps, merchant_fee_bps, merchant_a2a_fee_bps, and by plan platform_fee_bps and fx_margin_bps; intl_payment_fee_minor by currency; scan_alert_ulxc, the µLXC of credits a Scan agent pays for each alert its watch sends. charged says, by the same names, whether Lens charges each fee today.",
+				"description": "No key needed. Basis points (100 = 1%) unless named minor units: market_take_bps (listing sales; the seller keeps the rest), services_take_bps, compute_take_bps, lending_fee_bps, merchant_fee_bps, merchant_a2a_fee_bps, merchant_other_card_fee_bps, merchant_fixed_fee_minor by currency, and by plan platform_fee_bps and fx_margin_bps; by plan the monthly free allowances fx_free_minor (minor units of the currency sold), local_free_per_month and intl_free_per_month (payments; -1 is no limit) and intl_discount_bps; intl_payment_fee_minor and local_payment_fee_minor by currency; scan_alert_ulxc, the µLXC of credits a Scan agent pays for each alert its watch sends. charged says, by the same names, whether Lens charges each fee today.",
 				"security":    []map[string]any{},
 				"responses":   map[string]any{"200": map[string]any{"description": "every fee setting"}},
 			},
@@ -534,7 +534,8 @@ func openAPIPaths() map[string]any {
 				"parameters": []map[string]any{
 					{"name": "wsID", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
 				},
-				"responses": map[string]any{"200": map[string]any{"description": "plan, gated_as, byok_add_on, gates, own_provider_keys_allowed, agents_used"}},
+				"description": "allowances is, for this calendar month in UTC (allowances_month), each of the plan's free allowances: fx per currency sold (free, used and left in minor units, fee_bps the margin above it), local and international payments (free, used and left in payments, fee_minor by currency above them). -1 is no limit.",
+				"responses":   map[string]any{"200": map[string]any{"description": "plan, gated_as, byok_add_on, gates, own_provider_keys_allowed, agents_used, allowances_month, allowances"}},
 			},
 		},
 		"/v1/workspaces/{wsID}/plan/seats": map[string]any{

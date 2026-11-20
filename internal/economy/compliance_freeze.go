@@ -56,7 +56,7 @@ func frozenRefusal(ctx context.Context, q pgxDB, workspaceID string, c Capabilit
 	return freezeRefusal(ctx, q, workspaceID, c)
 }
 
-// freezeRefusal refuses c for workspaceID while it is frozen, whatever c's class. In a transaction it holds the
+// freezeRefusal refuses c for workspaceID while it is frozen, or held after a number move (B61.30), whatever c's class. In a transaction it holds the
 // freeze lock shared until the transaction ends (FreezeLockSQL).
 func freezeRefusal(ctx context.Context, q pgxDB, workspaceID string, c Capability) (*CapabilityRefusal, error) {
 	if _, ok := q.(pgx.Tx); ok {
@@ -65,10 +65,18 @@ func freezeRefusal(ctx context.Context, q pgxDB, workspaceID string, c Capabilit
 		}
 	}
 	f, err := WorkspaceFreeze(ctx, q, workspaceID)
-	if err != nil || f == nil {
+	if err != nil {
 		return nil, err
 	}
-	return &CapabilityRefusal{Capability: c, Freeze: f}, nil
+	if f != nil {
+		return &CapabilityRefusal{Capability: c, Freeze: f}, nil
+	}
+	// B61.30: for a day after the person's number was moved, the account cannot move money either.
+	h, err := numberMoveHold(ctx, q, workspaceID)
+	if err != nil || h == nil {
+		return nil, err
+	}
+	return &CapabilityRefusal{Capability: c, Hold: h}, nil
 }
 
 // refuseFrozen is frozenRefusal as an error: nil when c may move workspaceID's money.
