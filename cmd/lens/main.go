@@ -1866,6 +1866,7 @@ func run() error {
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
 	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
+	authManager.WithRoles(wsManager)         // B28.342: a role session holds the role its owner gives it now
 	// B61.32: how many people an account may look up an hour, a setting Nicolai fills; unset, the default.
 	if n, err := strconv.Atoi(os.Getenv("LENS_PERSON_LOOKUPS_PER_HOUR")); err == nil {
 		dualToken.SetPersonLookupsPerHour(n)
@@ -3263,6 +3264,11 @@ func run() error {
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
+		})
+	// B28.342 — a person signs in to a workspace they hold a role in, with a session that does what the role may.
+	mountRoleSessionRoute(limited, cfg.ProvisionSecret, wsManager,
+		func(workspaceID, personKey, role string, ttl time.Duration) (string, error) {
+			return auth.GenerateRoleToken(workspaceID, personKey, role, authManager.PrivateKey(), ttl)
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
@@ -5108,6 +5114,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountWorkspaceRoleRoutes(authed, wsManager)                                     // B28.342: the owner gives people a role in the workspace
 		mountWorkspaceMoneyKindRoutes(authed, dualToken)                                // B59.6
 		mountBusinessDetailsRoutes(authed, dualToken)                                   // B59.30
 		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27

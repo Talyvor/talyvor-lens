@@ -58,6 +58,10 @@ func OwnerOrAdmin(ctx context.Context) (who string, ok bool) {
 		return "operator", true
 	case actx.AuthMethod == auth.MethodSessionKey:
 		return "", false
+	case actx.AuthMethod == auth.MethodJWT && actx.Role != "":
+		// B28.342: a role session reaches only what its role may do — Authenticate refused it everything else — so
+		// here it stands where its role lets it stand in for the owner.
+		return auth.MethodJWT + ":user:" + actx.UserID + ":role:" + actx.Role, true
 	case actx.HasScope(auth.ScopeKeys) || actx.HasScope(auth.ScopeAdmin):
 		who := actx.AuthMethod
 		if actx.UserID != "" {
