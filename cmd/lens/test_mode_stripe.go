@@ -209,6 +209,24 @@ func (k stripeByKind) IssueCard(ctx context.Context, workspaceID, agentID, agent
 	return c.IssueCard(ctx, workspaceID, agentID, agentName, holder)
 }
 
+// ReplaceCard issues old's replacement with its workspace's Issuing client: agentcard.Issuer (B28.321).
+func (k stripeByKind) ReplaceCard(ctx context.Context, workspaceID, agentName string, old economy.AgentCard) (economy.AgentCard, error) {
+	c := k.side(workspaceID).cards
+	if c == nil {
+		return economy.AgentCard{}, fmt.Errorf("%w: set %s for its agents' cards", errNoTestMode, k.cardsUnset)
+	}
+	return c.ReplaceCard(ctx, workspaceID, agentName, old)
+}
+
+// CancelCard cancels a card with its workspace's Issuing client: agentcard.Issuer (B28.321).
+func (k stripeByKind) CancelCard(ctx context.Context, workspaceID, cardID string) error {
+	c := k.side(workspaceID).cards
+	if c == nil {
+		return fmt.Errorf("%w: set %s for its agents' cards", errNoTestMode, k.cardsUnset)
+	}
+	return c.CancelCard(ctx, workspaceID, cardID)
+}
+
 // payOut is one payout run: test sellers with the test-mode key, real sellers with the main key — or, without one, those
 // paid on the money layer only (B46.22). Off payday it only retries the transfers not yet taken (B32.42).
 func (k stripeByKind) payOut(ctx context.Context, store *market.Store, now time.Time, payday bool) (int, error) {

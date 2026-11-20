@@ -64,6 +64,12 @@ func (b2612Bank) ListAgentCardAuthorizations(context.Context, string, string, in
 func (b2612Bank) SetAgentCardFrozen(context.Context, string, string, bool) (economy.AgentCard, error) {
 	return economy.AgentCard{}, economy.ErrNoAgentCard
 }
+func (b2612Bank) CancelAgentCard(context.Context, string, string) (economy.AgentCard, error) {
+	return economy.AgentCard{}, economy.ErrNoAgentCard
+}
+func (b2612Bank) ReplaceAgentCard(context.Context, string, string, string, economy.AgentCard) (economy.AgentCard, error) {
+	return economy.AgentCard{}, economy.ErrNoAgentCard
+}
 func (b2612Bank) SetAgentCardDrawsOn(context.Context, string, string, string) (economy.AgentCard, error) {
 	return economy.AgentCard{}, economy.ErrNoAgentCard
 }
