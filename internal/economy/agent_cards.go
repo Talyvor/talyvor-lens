@@ -250,10 +250,16 @@ func (s *DualTokenStore) SetAgentCardMerchantLock(ctx context.Context, workspace
 	return s.GetAgentCard(ctx, workspaceID, agentID)
 }
 
-// cardMerchantLocked is why a purchase at merchantID is declined on a card locked to lockedID (B30.31), "" when it
-// is not: a card not locked yet, or locked to this merchant.
-func cardMerchantLocked(lockedID, merchantID string) string {
-	if lockedID == "" || lockedID == merchantID {
+// cardMerchantLocked is why a purchase at merchantID is declined on a card whose merchant lock is lock, locked to
+// lockedID (B30.31); "" when it is not. A lock is judged by the merchant's network id, so on a locked card a request
+// without one is declined, even before the card has the merchant of its first purchase.
+func cardMerchantLocked(lock, lockedID, merchantID string) string {
+	switch {
+	case lock == CardMerchantLockOff, lock == "":
+		return ""
+	case merchantID == "":
+		return "the card is locked to one merchant, and this request does not say which merchant it is from"
+	case lockedID == "" || lockedID == merchantID:
 		return ""
 	}
 	return "the card is locked to one merchant (network id " + lockedID + "), so a purchase from any other is declined"
@@ -370,9 +376,9 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 		return d, err
 	}
 	var frozen bool
-	var drawsNow, lockedID string
-	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, COALESCE(locked_merchant_id, '') FROM agent_cards WHERE id = $1`, a.CardID).
-		Scan(&frozen, &drawsNow, &lockedID); err != nil {
+	var drawsNow, lock, lockedID string
+	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, merchant_lock, COALESCE(locked_merchant_id, '') FROM agent_cards WHERE id = $1`,
+		a.CardID).Scan(&frozen, &drawsNow, &lock, &lockedID); err != nil {
 		return d, err
 	}
 	// An increment is held where its purchase is, so each authorisation settles wholly on credits or on one account.
@@ -389,9 +395,9 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	case frozen:
 		_ = tx.Rollback(ctx)
 		return s.declineCard(ctx, a, d, ErrAgentCardFrozen.Error())
-	case cardMerchantLocked(lockedID, a.MerchantID) != "":
+	case cardMerchantLocked(lock, lockedID, a.MerchantID) != "":
 		_ = tx.Rollback(ctx)
-		return s.declineCard(ctx, a, d, cardMerchantLocked(lockedID, a.MerchantID))
+		return s.declineCard(ctx, a, d, cardMerchantLocked(lock, lockedID, a.MerchantID))
 	case drawsNow != drawsOn:
 		_ = tx.Rollback(ctx)
 		return s.declineCard(ctx, a, d, "what the card draws on changed while this purchase was decided: try it again")

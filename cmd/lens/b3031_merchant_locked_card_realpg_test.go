@@ -64,6 +64,9 @@ func TestB3031_ALockedCardDeclinesASecondMerchantNamingTheLock(t *testing.T) {
 	if card := lock(`{"lock":"first"}`); card.MerchantLock != economy.CardMerchantLockFirst || card.LockedMerchantID != "" {
 		t.Fatalf("locked to its first merchant = %+v, want lock first with no merchant yet", card)
 	}
+	if d := buy("evt_b3031_nobody", "", "Unknown"); d.Approved || !strings.Contains(d.Reason, "locked to one merchant") {
+		t.Fatalf("a purchase with no merchant id on a card locking to its first merchant = %+v, want declined", d)
+	}
 	if d := buy("evt_b3031_paper", "m-paper", "Paper Co"); !d.Approved {
 		t.Fatalf("the first purchase, at Paper Co = %+v, want approved", d)
 	}
@@ -78,7 +81,7 @@ func TestB3031_ALockedCardDeclinesASecondMerchantNamingTheLock(t *testing.T) {
 		t.Fatalf("the declined purchase posted: %q, want only the first purchase's hold %q", got, want)
 	}
 	auths, err := b.store.ListAgentCardAuthorizations(ctx, ws, agentID, 10)
-	if err != nil || len(auths) != 2 || auths[0].MerchantName != "Ink Ltd" || auths[0].Approved || auths[0].Reason != d.Reason {
+	if err != nil || len(auths) != 3 || auths[0].MerchantName != "Ink Ltd" || auths[0].Approved || auths[0].Reason != d.Reason {
 		t.Fatalf("the card's statement = %+v %v, want Ink Ltd's purchase declined with %q", auths, err, d.Reason)
 	}
 	if d := buy("evt_b3031_paper2", "m-paper", "Paper Co"); !d.Approved {
