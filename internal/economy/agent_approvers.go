@@ -267,6 +267,9 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	if err != nil {
 		return a, fmt.Errorf("economy: approval: %w", err)
 	}
+	if a.PaymentRequestID != "" { // B48.10: its amount is not in LXC, so no approver's limit measures it
+		return a, fmt.Errorf("%w: another agent's request to be paid", ErrAboveApproverLimits)
+	}
 	var mandateID, mandate string
 	var limit int64
 	err = tx.QueryRow(ctx, `SELECT id, mandate, limit_ulxc FROM agent_approvers WHERE agent_id = $1 AND approver_agent_id = $2

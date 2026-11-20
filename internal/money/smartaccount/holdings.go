@@ -97,3 +97,21 @@ func abiText(b []byte) string {
 	}
 	return strings.ToValidUTF8(string(s), "")
 }
+
+// TokenDomain is the EIP-712 domain name and version token signs its transfer authorisations under (EIP-3009, which
+// x402 pays with): what its name() and version() answer, which differ from chain to chain.
+func (c Chain) TokenDomain(ctx context.Context, token string) (name, version string, err error) {
+	for _, f := range []struct {
+		fn  string
+		out *string
+	}{{"name()", &name}, {"version()", &version}} {
+		b, err := c.ethCallData(ctx, token, selector(f.fn))
+		if err != nil {
+			return "", "", err
+		}
+		if *f.out = abiText(b); *f.out == "" {
+			return "", "", fmt.Errorf("%w: %s answers no %s", ErrInvalid, token, f.fn)
+		}
+	}
+	return name, version, nil
+}
