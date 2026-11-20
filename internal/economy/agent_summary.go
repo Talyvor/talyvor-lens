@@ -218,7 +218,7 @@ func (s *DualTokenStore) AgentSummary(ctx context.Context, workspaceID, agentID 
 
 	out.Card = AgentSummaryCard{Status: "none"}
 	var frozen bool
-	err = tx.QueryRow(ctx, `SELECT currency, last4, frozen FROM agent_cards WHERE agent_id = $1`, agentID).
+	err = tx.QueryRow(ctx, `SELECT currency, last4, frozen FROM agent_cards WHERE agent_id = $1 AND cancelled_at IS NULL`, agentID).
 		Scan(&out.Card.Currency, &out.Card.Last4, &frozen)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
