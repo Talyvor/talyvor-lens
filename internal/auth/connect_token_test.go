@@ -31,7 +31,17 @@ func TestConnectToken_AuthenticatesOnlyOnItsAgentsPayRoute(t *testing.T) {
 		actx.WorkspaceID != "ws1" || !actx.HasScope(ScopePaymentsSend) || actx.IsAdmin {
 		t.Fatalf("the token on its own pay route = %+v, %v", actx, err)
 	}
+	// B52.41: and on a money request's accept route in its workspace; the handler checks the request is its agent's.
+	if actx, err := try(http.MethodPost, "/v1/workspaces/ws1/money-requests/mreq_1/accept"); err != nil || actx.ConnectAgentID != "agt_1" {
+		t.Fatalf("the token on a money request's accept route = %+v, %v", actx, err)
+	}
 	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/workspaces/ws1/money-requests/mreq_1/decline"},
+		{http.MethodPost, "/v1/workspaces/ws2/money-requests/mreq_1/accept"},
+		{http.MethodPost, "/v1/workspaces/ws1/money-requests//accept"},
+		{http.MethodPost, "/v1/workspaces/ws1/money-requests/x/y/accept"},
+		{http.MethodPost, "/v1/workspaces/ws1/money-requests/mreq_1%2Faccept"},
+		{http.MethodGet, "/v1/workspaces/ws1/money-requests/mreq_1/accept"},
 		{http.MethodPost, "/v1/auth/refresh"},
 		{http.MethodGet, "/v1/auth/me"},
 		{http.MethodPost, "/v1/workspaces/ws1/api-keys"},

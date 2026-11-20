@@ -125,6 +125,7 @@ func newB504World(t *testing.T, model market.Runner) *b504World {
 	w.srv.SetRecurringPayments(bank)
 	w.srv.SetMarket(mkt, deps)
 	w.srv.SetRooms(rs, deps)
+	w.srv.SetInstantTransfers(bank)
 	if len(w.srv.tools()) != len(toolAnnotations) {
 		t.Fatalf("the server offers %d of %d tools", len(w.srv.tools()), len(toolAnnotations))
 	}

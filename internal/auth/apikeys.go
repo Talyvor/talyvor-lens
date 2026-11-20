@@ -79,6 +79,9 @@ type ValidationResult struct {
 	Valid  bool
 	APIKey *APIKey
 	Reason string
+	// Unavailable is B28.243's "the lookup itself failed": the key could not be checked, which is
+	// not "the key is wrong". The middleware answers it 503, never 401.
+	Unavailable bool
 }
 
 func New(pool *pgxpool.Pool) *KeyStore {
@@ -175,7 +178,7 @@ func (k *KeyStore) Validate(ctx context.Context, raw string) ValidationResult {
 	}
 	if err != nil {
 		slog.Warn("auth: validate query failed", slog.String("err", err.Error()))
-		return ValidationResult{Reason: "invalid API key"}
+		return ValidationResult{Reason: "invalid API key", Unavailable: true}
 	}
 
 	k.mu.Lock()

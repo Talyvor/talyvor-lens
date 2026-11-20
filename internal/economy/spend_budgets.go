@@ -76,7 +76,7 @@ type SpendAlert struct {
 	Percent     int       `json:"percent"`
 	SpentMinor  int64     `json:"spent_minor"`
 	LimitMinor  int64     `json:"limit_minor"`
-	Currency    string    `json:"currency"` // LXC for an agent's limit, counted in µLXC
+	Currency    string    `json:"currency"` // an agent's limit in its rules' currency (B61.42); LXC on one raised before, in µLXC
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -262,10 +262,11 @@ func (s *DualTokenStore) CheckSpendAlerts(ctx context.Context, workspaceID strin
 }
 
 // agentLimitProgress is, for each of workspaceID's agents' hourly, daily, weekly and monthly limits, what it has spent
-// in that limit's period as of now, as its rules count it.
+// in that limit's period as of now, as its rules count it: in the rules' currency, as they judge it (B61.42) — what
+// they recorded each movement was worth in it (B61.41), and the rest valued in it, rounded up.
 func (s *DualTokenStore) agentLimitProgress(ctx context.Context, workspaceID string, now time.Time) ([]SpendAlert, error) {
-	rows, err := s.pool.Query(ctx, `SELECT agent_id FROM agent_rules WHERE workspace_id = $1 AND (daily_limit_ulxc > 0 OR monthly_limit_ulxc > 0
-		OR hourly_limit_ulxc > 0 OR weekly_limit_ulxc > 0) ORDER BY agent_id`, workspaceID)
+	rows, err := s.pool.Query(ctx, `SELECT agent_id FROM agent_rules WHERE workspace_id = $1 AND (daily_limit_minor > 0 OR monthly_limit_minor > 0
+		OR hourly_limit_minor > 0 OR weekly_limit_minor > 0) ORDER BY agent_id`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: agent limit alerts: %w", err)
 	}
@@ -285,15 +286,19 @@ func (s *DualTokenStore) agentLimitProgress(ctx context.Context, workspaceID str
 		}
 		err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 			for _, limit := range r.periodLimits(now.In(loc), loc) {
-				if limit.ulxc <= 0 {
+				if limit.amount <= 0 {
 					continue
 				}
-				spent, err := agentSpentSince(ctx, tx, workspaceID, agentID, limit.since)
+				so, err := agentSpentIn(ctx, tx, workspaceID, agentID, limit.since, r.spendRecordedIn())
+				if err != nil {
+					return err
+				}
+				spent, err := s.spentInRules(ctx, workspaceID, r, so, 0)
 				if err != nil {
 					return err
 				}
 				out = append(out, SpendAlert{Kind: SpendAlertAgentLimit, Subject: agentID, AgentID: agentID, Period: limit.name,
-					PeriodStart: limit.since, SpentMinor: spent, LimitMinor: limit.ulxc, Currency: "LXC"})
+					PeriodStart: limit.since, SpentMinor: spent, LimitMinor: limit.amount, Currency: r.currency()})
 			}
 			return nil
 		})
@@ -329,7 +334,8 @@ func (s *DualTokenStore) SpendAlerts(ctx context.Context, workspaceID string) ([
 func (s *DualTokenStore) SweepSpendAlerts(ctx context.Context, now time.Time) (int, error) {
 	rows, err := s.pool.Query(ctx, `SELECT workspace_id FROM spend_budgets
 		UNION SELECT workspace_id FROM money_cards WHERE spent_minor > 0 AND updated_at >= $1
-		UNION SELECT workspace_id FROM agent_rules WHERE daily_limit_ulxc > 0 OR monthly_limit_ulxc > 0 OR hourly_limit_ulxc > 0 OR weekly_limit_ulxc > 0`,
+		UNION SELECT workspace_id FROM agent_rules WHERE daily_limit_minor > 0 OR monthly_limit_minor > 0 OR hourly_limit_minor > 0
+			OR weekly_limit_minor > 0`,
 		now.AddDate(0, 0, -40))
 	if err != nil {
 		return 0, fmt.Errorf("economy: sweep spend alerts: %w", err)

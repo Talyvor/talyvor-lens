@@ -130,7 +130,7 @@ func TestB5429_AlwaysAllowIsSignedAndAFailedBoostKeepsItsSignature(t *testing.T)
 	// Signed over exactly 10 a month, the approval and the allowance are both saved.
 	ten := signed(challenge, jsonOf(map[string]any{"always_allow": tenMonth}))
 	code, out = call(http.MethodPost, approve, jsonOf(map[string]any{"assertion": ten, "always_allow": tenMonth}))
-	if status, allow := state(); code != http.StatusOK || status != "approved" || allow != (economy.PayeeAllowance{ULXC: 10_000_000, Per: "month"}) {
+	if status, allow := state(); code != http.StatusOK || status != "approved" || allow != (economy.PayeeAllowance{ULXC: 10_000_000, Minor: 100, Per: "month"}) {
 		t.Fatalf("signed always_allow = %d %v, approval %s, allowance %+v; want 200, approved, 10 LXC a month", code, out, status, allow)
 	}
 

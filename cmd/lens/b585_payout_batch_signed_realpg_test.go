@@ -31,6 +31,7 @@ func TestPayoutBatchApproval_PaysOnlyWithTheKeySignatureOverThatBatch(t *testing
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b585-payout-signed"
+	confirmedAccounts(t, pool, ws) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

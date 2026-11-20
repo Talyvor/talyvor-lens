@@ -360,7 +360,7 @@ func (s *DualTokenStore) PayPaymentRequest(ctx context.Context, workspaceID, age
 		if payStatus == "" {
 			key := paymentRequestItemKey(id, it.Position)
 			out := OutsidePayment{AgentID: r.AgentID, PayeeID: it.PayeeID, AmountMinor: it.AmountMinor,
-				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key}
+				Currency: it.Currency, Funding: FundingTest, Reference: it.Reference, IdempotencyKey: key, lensKey: true}
 			p, err := s.PayOutside(ctx, workspaceID, out)
 			if errors.Is(err, ErrMoneyAccountNotFound) && r.AgentTrust != nil && r.AgentID != "" && authority == "approval" {
 				// B54.10: an outside agent's request the owner signed pays from the agent's own account in the currency,

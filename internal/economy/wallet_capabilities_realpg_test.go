@@ -29,6 +29,7 @@ func TestWalletClasses_AmberAndRedTakeTestMoneyUntilCleared(t *testing.T) {
 	pool := supplyPool(t)
 	ctx := WithUseCountry(context.Background(), "GB") // B30.1: a clearance reaches only the countries it lists
 	const ws, other = "ws-b221", "ws-b221-other"
+	sandboxConfirmed(t, pool, ws, other) // B61.52: they move money, so they have confirmed who they are
 	for _, id := range []string{ws, other} {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, id); err != nil {
 			t.Fatal(err)

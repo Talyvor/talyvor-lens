@@ -87,12 +87,69 @@ type OutsidePayment struct {
 	at            time.Time          // when the agent's rules judge it (B30.18: a standing order's run); zero means now
 	signed        bool               // B54.33: a person's payment, made only with the signature its workspace needs
 	assertion     *passkey.Assertion // that signature
+	lensKey       bool               // B50.48: Lens pays it under a key of its own (lensPaymentKeyPrefixes)
+}
+
+// lensPaymentKeyPrefixes start the keys Lens pays its own payments under — a request's item, a standing order's tick, a
+// payout batch's row, a mandate's pull — and its other money's. A caller's key may not start with one (B50.48): a
+// payment under a request's key would leave the owner's approved payment refused as ErrIdempotencyKeyReused.
+var lensPaymentKeyPrefixes = []string{"preq:", "schedule:", "payout:", "mandate_pull:", "payment_in:", "fx:", "card_", "money:"}
+
+func lensPaymentKey(key string) bool {
+	for _, prefix := range lensPaymentKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // debit is what leaves the account: the amount, and an international payment's partner cost and fee.
 func (p OutsidePayment) debit() int64 { return p.AmountMinor + p.PartnerCostMinor + p.FeeMinor }
 
 func (p OutsidePayment) international() bool { return p.ArrivesCurrency != "" }
+
+// allowance is the plan's monthly allowance p goes free under while it lasts (B61.58): international, or local for a
+// payment in the account's own currency; none for USDC to an address.
+func (p OutsidePayment) allowance() string {
+	switch {
+	case p.international():
+		return AllowanceInternational
+	case p.Currency == CurrencyUSDC:
+		return ""
+	}
+	return AllowanceLocal
+}
+
+// takePaymentAllowance prices p's fee under the lock on workspace's payments of its kind (B61.58): free while the
+// plan's allowance this month lasts, and kept as used; else a local payment's fee from its setting. An international
+// payment is made at its quote's fee; a quote that now costs less than the plan asks — the free one it was priced
+// with taken by another payment, or the plan changed — is refused, to be asked again.
+func (s *DualTokenStore) takePaymentAllowance(ctx context.Context, tx pgx.Tx, p *OutsidePayment) error {
+	allowance := p.allowance()
+	if allowance == "" {
+		return nil
+	}
+	if err := lockAllowance(ctx, tx, p.WorkspaceID, allowance); err != nil {
+		return err
+	}
+	now := time.Now()
+	fee, free, err := paymentFee(ctx, tx, p.WorkspaceID, allowance, p.Currency, now)
+	switch {
+	case err != nil:
+		return err
+	case allowance == AllowanceInternational && p.FeeMinor < fee:
+		return fmt.Errorf("%w: quote %s was priced with a fee of %s, and the plan's free international payments this month now make it %s. Ask for a new one",
+			ErrQuote, p.QuoteID, minorString(p.FeeMinor, p.Currency), minorString(fee, p.Currency))
+	case allowance == AllowanceInternational:
+		fee, free = p.FeeMinor, free && p.FeeMinor == 0
+	}
+	p.FeeMinor = fee
+	if !free {
+		return nil
+	}
+	return useAllowance(ctx, tx, p.WorkspaceID, allowance, p.ID, p.Currency, 1, now)
+}
 
 // viaStablecoin is whether p is USDC from the company's account, made at the stablecoin partner (B30.33).
 func (p OutsidePayment) viaStablecoin() bool { return p.Currency == CurrencyUSDC && p.AgentID == "" }
@@ -118,6 +175,8 @@ func (in *OutsidePayment) normalise(withKey bool) error {
 		return bad(fmt.Sprintf("funding is test or live, not %q", in.Funding))
 	case withKey && (in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200):
 		return bad("a payment carries an idempotency key (the Idempotency-Key header, or idempotency_key), up to 200 characters")
+	case withKey && !in.lensKey && lensPaymentKey(in.IdempotencyKey):
+		return bad(fmt.Sprintf("an idempotency key may not start with %q: Lens pays its own payments under those", lensPaymentKeyPrefixes))
 	case len(in.Reference) > 140:
 		return bad("a payment's reference is up to 140 characters")
 	}
@@ -195,6 +254,12 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	payee, err := s.PayableOutsidePayee(ctx, workspaceID, in.PayeeID)
 	if err != nil {
+		return OutsidePayment{}, err
+	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "payee", payeeMoneyKind(payee)); err != nil { // B59.42
+		return OutsidePayment{}, err
+	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "currency", moneyKindOf(in.Currency)); err != nil {
 		return OutsidePayment{}, err
 	}
 	if err := coolingOff(payee, in.Currency, in.AmountMinor); err != nil { // B41.111
@@ -278,7 +343,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if in.signed { // B54.33: the challenge is spent only with the payment it pays
-		if err := s.authorizeSignedTx(ctx, tx, workspaceID, paymentPurpose(in), in.assertion, ErrPaymentUnsigned); err != nil {
+		if err := s.authorizePaymentTx(ctx, tx, workspaceID, in); err != nil {
 			return OutsidePayment{}, err
 		}
 	}
@@ -310,9 +375,17 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 			minorString(held, p.Currency), p.Funding, minorString(p.debit(), p.Currency))
 	}
 	if p.AgentID != "" {
-		if err := enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
+		if err := s.enforceAgentRules(ctx, tx, workspaceID, p.AgentID, p.ValueULXC, p.ID); err != nil {
 			return OutsidePayment{}, s.refusedMovement(ctx, tx, err)
 		}
+	}
+	// B61.58: the plan's free payments, under their lock, taken after the rules, which may read beyond the transaction.
+	if err := s.takePaymentAllowance(ctx, tx, &p); err != nil {
+		return OutsidePayment{}, err
+	}
+	if held < p.debit() { // a local payment's fee, now it is known
+		return OutsidePayment{}, fmt.Errorf("%w: the account holds %s of %s money, and this payment is %s with its fee", ErrAgentFunds,
+			minorString(held, p.Currency), p.Funding, minorString(p.debit(), p.Currency))
 	}
 	if p.holdAccountID, err = holdAccount(ctx, tx, workspaceID, p.Currency); err != nil {
 		return OutsidePayment{}, err
@@ -333,7 +406,7 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "payment_out_hold",
 		IdempotencyKey: p.key("hold"), Funding: p.Funding, Memo: p.Reference, Postings: []MoneyPosting{
-			{AccountID: p.AccountID, AmountMinor: -p.debit()}, {AccountID: p.holdAccountID, AmountMinor: p.debit()}}}, s.screener); err != nil {
+			{AccountID: p.AccountID, AmountMinor: -p.debit()}, {AccountID: p.holdAccountID, AmountMinor: p.debit()}}}, noPartnerPostings); err != nil {
 		return OutsidePayment{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -357,9 +430,15 @@ func (p OutsidePayment) sendRequest(from payingAccount, payee OutsidePayee) part
 // payingAccount finds the account in pays from, which must be open in in.Currency: in.AccountID, which is in.AgentID's
 // when that is set; else in.AgentID's account; else the company's.
 func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, in OutsidePayment) (payingAccount, error) {
+	return payingAccountOn(ctx, s.pool, workspaceID, in)
+}
+
+// payingAccountOn is payingAccount read on q: a move that holds a transaction reads it there, never on a second
+// connection (B50.56).
+func payingAccountOn(ctx context.Context, q pgxDB, workspaceID string, in OutsidePayment) (payingAccount, error) {
 	var a payingAccount
 	var purpose, currency, status, companyStatus string
-	err := s.pool.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.status, c.id, c.partner_account_ref,
+	err := q.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.status, c.id, c.partner_account_ref,
 			COALESCE((SELECT p.id FROM money_accounts p WHERE p.workspace_id = c.workspace_id AND p.purpose = 'partner'
 				AND p.partner_account_ref = c.partner_account_ref AND c.partner_account_ref <> '' LIMIT 1), '')
 		FROM money_accounts a JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
@@ -435,6 +514,11 @@ func holdAccount(ctx context.Context, tx pgx.Tx, workspaceID, currency string) (
 // moves nothing; completed moves the held money out (movements); failed gives it back; returned moves it out and back.
 // A state already reached moves nothing again.
 func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePayment, partnerAccountID string, res partners.Result) (OutsidePayment, error) {
+	// B50.56: what res moves through the partner is screened before the transaction, on a connection of its own.
+	screened, err := s.screenPartnerResult(ctx, p.ID, res)
+	if err != nil {
+		return p, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return p, fmt.Errorf("economy: payment: %w", err)
@@ -457,7 +541,7 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		if outside {
 			e.Counterparty, e.PartnerRef = p.PayeeName, p.PartnerRef
 		}
-		e, err := postMoneyTx(ctx, tx, e, s.screener)
+		e, err := postMoneyTx(ctx, tx, e, screened)
 		if outside && err == nil {
 			moved = append(moved, e)
 		}
@@ -475,6 +559,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 				{AccountID: p.AccountID, AmountMinor: p.debit()}}); err != nil {
 				return p, err
 			}
+			if err := releaseAllowance(ctx, tx, p.allowance(), p.ID); err != nil { // B61.58: it gives its free use back
+				return p, err
+			}
 			status = PaymentFailed
 		}
 	case partners.StatusCompleted, partners.StatusReturned:
@@ -486,6 +573,9 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		}
 		if res.Status == partners.StatusReturned && status == PaymentCompleted {
 			if err := post("payment_out_returned", p.key("returned"), true, back); err != nil {
+				return p, err
+			}
+			if err := releaseAllowance(ctx, tx, p.allowance(), p.ID); err != nil { // B61.58
 				return p, err
 			}
 			status = PaymentReturned
@@ -509,7 +599,36 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 	if status == PaymentFailed && was != PaymentFailed {
 		s.notifyPaymentFailed(p)
 	}
+	if status == PaymentCompleted && was != PaymentCompleted { // B63.1: measured once it has settled, never in its transaction
+		s.measurePaymentOut(ctx, p)
+	}
 	return p, nil
+}
+
+// screenPartnerResult screens what applyPartnerResult would move through the partner for payment id, read without a
+// lock, when res completes or returns it (B50.56). A payment that moves on before its transaction reads it is refused
+// as not screened.
+func (s *DualTokenStore) screenPartnerResult(ctx context.Context, id string, res partners.Result) (PaymentScreener, error) {
+	if res.Status != partners.StatusCompleted && res.Status != partners.StatusReturned {
+		return noPartnerPostings, nil
+	}
+	p, err := scanOutsidePayment(s.pool.QueryRow(ctx, `SELECT `+outsidePaymentCols+` FROM money_payments WHERE id = $1`, id))
+	if err != nil {
+		return nil, err
+	}
+	entry := func(key string, back bool) firstScreening {
+		return firstScreening{MoneyEntry{WorkspaceID: p.WorkspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: key, Funding: p.Funding,
+			Counterparty: p.PayeeName}, p.partnerPostings(back)}
+	}
+	var entries []firstScreening
+	open := p.Status == PaymentPending || p.Status == PaymentSent
+	if open {
+		entries = append(entries, entry(p.screenKey(), false))
+	}
+	if res.Status == partners.StatusReturned && (open || p.Status == PaymentCompleted) {
+		entries = append(entries, entry(p.key("returned"), true))
+	}
+	return s.screenBefore(ctx, entries...), nil
 }
 
 // RefreshOutsidePayment reads workspaceID's payment id — with agentID set, only that agent's — and first asks the

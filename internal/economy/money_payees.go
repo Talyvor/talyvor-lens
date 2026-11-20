@@ -86,6 +86,8 @@ type OutsidePayee struct {
 	Notice           string     `json:"notice,omitempty"`
 	// Screening is set when the name waits for the operator (B30.6); it is answered on save only.
 	Screening string `json:"screening,omitempty"`
+	// Own is a bank account of the owner's own: Wallets withdraws a company account only to one (B59.51).
+	Own bool `json:"own"`
 }
 
 // PayeeAddress is the check of a payee at a USDC address: no bank can say whose it is, so the owner approves it with a
@@ -126,6 +128,8 @@ func payeeDetails(p OutsidePayee) (OutsidePayee, error) {
 		switch {
 		case p.SortCode != "" || p.AccountNumber != "" || p.IBAN != "" || p.BIC != "" || p.RoutingNumber != "":
 			return bad("give one set of account details: bank details or a USDC address, not both")
+		case p.Own:
+			return bad("your own bank is a bank account, not a USDC address")
 		case p.Network == "":
 			p.Network = PayeeNetwork
 		}
@@ -188,6 +192,9 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 	if err != nil {
 		return p, err
 	}
+	if err := checkMoneySide(ctx, s.pool, workspaceID, "payee", payeeMoneyKind(p)); err != nil { // B59.42
+		return OutsidePayee{}, err
+	}
 	switch {
 	case s.accountPartners == nil:
 		return OutsidePayee{}, fmt.Errorf("%w: no account partner is set", ErrPayeeCheckUnavailable)
@@ -215,10 +222,10 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 		return OutsidePayee{}, held
 	}
 	saved, err := scanOutsidePayee(s.pool.QueryRow(ctx, `INSERT INTO money_payees (id, workspace_id, name, country, sort_code, account_number,
-		iban, bic, routing_number, check_result, suggested_name, checked_by, network, address)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		iban, bic, routing_number, check_result, suggested_name, checked_by, network, address, own)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING `+payeeCols, p.ID, workspaceID, p.Name, p.Country, p.SortCode, p.AccountNumber, p.IBAN, p.BIC, p.RoutingNumber,
-		p.Check, p.SuggestedName, p.CheckedBy, p.Network, p.Address))
+		p.Check, p.SuggestedName, p.CheckedBy, p.Network, p.Address, p.Own))
 	if err != nil {
 		return OutsidePayee{}, fmt.Errorf("economy: save payee: %w", err)
 	}
@@ -229,12 +236,12 @@ func (s *DualTokenStore) CreateOutsidePayee(ctx context.Context, workspaceID str
 }
 
 const payeeCols = `details_changed_at, id, workspace_id, name, country, sort_code, account_number, iban, bic, routing_number, check_result, suggested_name,
-	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by`
+	checked_by, checked_at, confirmed_at, confirmed_by, created_at, network, address, called_at, called_by, own`
 
 func scanOutsidePayee(row pgx.Row) (OutsidePayee, error) {
 	var p OutsidePayee
 	err := row.Scan(&p.DetailsChangedAt, &p.ID, &p.WorkspaceID, &p.Name, &p.Country, &p.SortCode, &p.AccountNumber, &p.IBAN, &p.BIC, &p.RoutingNumber,
-		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy)
+		&p.Check, &p.SuggestedName, &p.CheckedBy, &p.CheckedAt, &p.ConfirmedAt, &p.ConfirmedBy, &p.CreatedAt, &p.Network, &p.Address, &p.CalledAt, &p.CalledBy, &p.Own)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPayeeNotFound
 	}

@@ -62,7 +62,8 @@ func TestB546_AnAgentsReusableCardFollowsTheAgentsRules(t *testing.T) {
 	charge(1000, true, "")
 	charge(1000, false, "the agent has spent") // the card's own daily limit of GBP 400.00 is far off: the agent's is the stricter
 
-	// The approved charges count toward the agent's spend: its daily limit's progress shows them.
+	// The approved charges count toward the agent's spend: its daily limit's progress shows them, in its rules' dollars
+	// (B61.42): two of $12.50.
 	alerts, err := b.store.CheckSpendAlerts(ctx, ws, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -73,8 +74,8 @@ func TestB546_AnAgentsReusableCardFollowsTheAgentsRules(t *testing.T) {
 			spent = a.SpentMinor
 		}
 	}
-	if spent != 2*v {
-		t.Fatalf("the agent's daily spend = %d (alerts %+v), want %d: its two approved card charges", spent, alerts, 2*v)
+	if spent != 2*1250 {
+		t.Fatalf("the agent's daily spend = %d (alerts %+v), want %d: its two approved card charges", spent, alerts, 2*1250)
 	}
 
 	if _, err := b.store.SetAgentRules(ctx, ws, agent, economy.AgentRules{ApprovalAboveULXC: v / 2, Timezone: "UTC"}); err != nil {

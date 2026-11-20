@@ -28,6 +28,7 @@ var b597Scope = []string{
 	"/v1/workspaces/{}/agents", "/v1/workspaces/{}/wallet", "/v1/workspaces/{}/transfers",
 	"/v1/workspaces/{}/money-requests", "/v1/workspaces/{}/lxc", "/v1/workspaces/{}/escrows",
 	"/v1/workspaces/{}/cash-outs", "/v1/workspaces/{}/credit-line", "/v1/workspaces/{}/account",
+	"/v1/workspaces/{}/money/", // B59.14: Instant transfer
 }
 
 // b597Registration is a route registration in cmd/lens's source: the method and the path literal. A path built with
@@ -140,8 +141,8 @@ func b597Router(t *testing.T, routes []b597Route, kind string) http.Handler {
 var b597Param = regexp.MustCompile(`\{[^}]*\}`)
 
 // A fiat workspace is refused every on-chain route and a stablecoin workspace every fiat one, with code wrong_money_kind
-// and the workspace's kind; a hybrid workspace reaches every money route, and each kind every route of its own side and
-// every route of either.
+// and the workspace's kind, and each of them a route across both sides (B59.14); a hybrid workspace reaches every money
+// route, and each kind every route of its own side and every route of either.
 func TestB597_AMoneyRouteOfTheWrongKindIsRefused(t *testing.T) {
 	routes := b597MoneyRoutes(t)
 	refusedTo := map[moneySide]string{moneySideFiat: economy.MoneyKindStablecoin, moneySideOnChain: economy.MoneyKindFiat}
@@ -156,7 +157,7 @@ func TestB597_AMoneyRouteOfTheWrongKindIsRefused(t *testing.T) {
 			t.Run(kind+" "+rt.method+" "+rt.pattern, func(t *testing.T) {
 				rec := httptest.NewRecorder()
 				h.ServeHTTP(rec, httptest.NewRequest(rt.method, b597Param.ReplaceAllString(rt.pattern, "ws-b597"), nil))
-				if refusedTo[side] != kind {
+				if refused := refusedTo[side] == kind || (side == moneySideBoth && kind != economy.MoneyKindHybrid); !refused {
 					if rec.Code != http.StatusOK {
 						t.Fatalf("a %s workspace calling a %s route = %d %s, want it reached", kind, side, rec.Code, rec.Body.String())
 					}

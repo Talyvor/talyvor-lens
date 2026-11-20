@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/talyvor/lens/internal/moderatorkey"
+	"github.com/talyvor/lens/internal/partnerkey"
 	"github.com/talyvor/lens/internal/sessionkey"
 	"github.com/talyvor/lens/internal/tenant"
 )
@@ -75,6 +77,11 @@ const (
 	ScopeMint = "mint"
 	ScopeKeys = "keys"
 
+	// ScopeMember marks a token for another person's workspace (B52.35): its UserID is the membership's id, and
+	// Authenticate refuses it on any request but GET or HEAD, and once the membership has ended. It is not in
+	// tenant.ValidScopes: only POST /v1/provision mints one.
+	ScopeMember = "member"
+
 	// ScopeOperatorRead authorises ONE thing: GET on the cross-tenant admin READS the operator
 	// screen is built from. It is the read-side sibling of ScopeMint and exists for the same
 	// reason — a consumer that needed one capability was obliged to hold every capability.
@@ -100,6 +107,11 @@ const (
 	// queue — read it, approve a listing, take one down — and nothing else. Like operator_read it is
 	// NOT in tenant.ValidScopes: only the operator command `lens moderator-keys` creates one.
 	ScopeMarketModeration = "market_moderation"
+
+	// ScopePartnerRead is B62.5's partner key (internal/partnerkey): the account partner's risk team reads every
+	// agent payment (GET /v1/partner/agent-activity, its CSV and its summary) and nothing else. Like operator_read
+	// it is NOT in tenant.ValidScopes: only an operator, with the step-up code, makes one.
+	ScopePartnerRead = "partner_read"
 )
 
 // AuthMethod values shipped on AuthContext.AuthMethod.
@@ -126,6 +138,9 @@ const (
 	// MethodModeratorKey is the marketplace moderator credential (B20.13). Every admin gate and the
 	// tenant middleware refuse it 403 by this method; only requireAdminOrModerator admits it.
 	MethodModeratorKey = "moderator_key"
+	// MethodPartnerKey is the account partner's read credential (B62.5). Authenticate refuses it, with
+	// ErrPartnerRoute, on every route but the partner's view, so no handler can widen it.
+	MethodPartnerKey = "partner_key"
 )
 
 // ─── errors ──────────────────────────────────────
@@ -144,6 +159,9 @@ var ErrMissingCredentials = errors.New("auth: missing credentials")
 // hiccup — so the middleware answers 503 with Retry-After instead of 401, and the browser Chat
 // retries rather than telling a signed-in person they are signed out. It reveals nothing about
 // the key: an unknown, expired or revoked key is still ErrInvalidAuth.
+// ErrMemberReadOnly is a member's token (ScopeMember) on a request that is not a read. Answered 403.
+var ErrMemberReadOnly = errors.New("auth: a member's token only reads the workspace")
+
 var ErrAuthUnavailable = errors.New("auth: credential store unavailable")
 
 // AuthUnavailableRetryAfter is the Retry-After, in seconds, sent with an ErrAuthUnavailable 503.
@@ -189,6 +207,8 @@ type AuthContext struct {
 	// ModeratorKeyID is the moderator key's ID (B20.13); ZERO for every other method. Every use of
 	// the key is recorded against it.
 	ModeratorKeyID int64 `json:"moderator_key_id,omitempty"`
+	// PartnerKeyID is the partner key's ID (B62.5); ZERO for every other method. Every read is recorded against it.
+	PartnerKeyID int64 `json:"partner_key_id,omitempty"`
 	// ConnectAgentID and ConnectClientID are the agent a Connect token pays from and the assistant it was minted
 	// for (B52.4); EMPTY for every other method.
 	ConnectAgentID  string `json:"connect_agent_id,omitempty"`
@@ -313,7 +333,9 @@ type Manager struct {
 	tenantStore     *tenant.Store
 	sessionKeys     sessionKeyValidator
 	moderatorKeys   moderatorKeyValidator
+	partnerKeys     partnerKeyValidator
 	sessionCutoff   sessionCutoff
+	liveMember      func(ctx context.Context, workspaceID, memberID string) (bool, error)
 
 	mu       sync.RWMutex
 	jwtCache map[string]*jwtCacheEntry
@@ -338,6 +360,13 @@ func (m *Manager) WithConnectMintKey(k string) *Manager { m.connectMintKey = k; 
 // global key, and a deployment that never sets it is byte-for-byte unchanged by this feature.
 func (m *Manager) WithOperatorReadKey(k string) *Manager { m.operatorReadKey = k; return m }
 
+// WithMemberCheck attaches the live-membership lookup member tokens are checked against on every request (B52.35).
+// Unset ⇒ every member token is refused.
+func (m *Manager) WithMemberCheck(live func(ctx context.Context, workspaceID, memberID string) (bool, error)) *Manager {
+	m.liveMember = live
+	return m
+}
+
 // sessionKeyValidator is the narrow slice of *sessionkey.Store this package needs. An interface
 // rather than the concrete type so auth does not force every consumer of Manager to construct a
 // session-key store, and so the nil case ("this deployment mints no session keys") is expressible.
@@ -358,6 +387,14 @@ type moderatorKeyValidator interface {
 // WithModeratorKeys attaches the marketplace moderator key store (B20.13). Unset ⇒ every tlv_mod_
 // bearer is refused.
 func (m *Manager) WithModeratorKeys(v moderatorKeyValidator) *Manager { m.moderatorKeys = v; return m }
+
+// partnerKeyValidator is the slice of *partnerkey.Store this package needs.
+type partnerKeyValidator interface {
+	Validate(ctx context.Context, raw string) (*partnerkey.Key, error)
+}
+
+// WithPartnerKeys attaches the account partner's key store (B62.5). Unset ⇒ every tlv_prk_ bearer is refused.
+func (m *Manager) WithPartnerKeys(v partnerKeyValidator) *Manager { m.partnerKeys = v; return m }
 
 // sessionCutoff says whether a workspace's lockdown (B41.116) ended the session a JWT issued at issuedAt belongs to.
 type sessionCutoff interface {
@@ -461,6 +498,22 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 				return nil, ErrInvalidAuth
 			}
 		}
+		if slices.Contains(claims.Scopes, ScopeMember) {
+			// Checked on every request, never cached: removing the member ends the token at once.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				return nil, ErrMemberReadOnly
+			}
+			if m.liveMember == nil {
+				return nil, ErrInvalidAuth
+			}
+			live, err := m.liveMember(r.Context(), claims.WorkspaceID, claims.UserID)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+			}
+			if !live {
+				return nil, ErrInvalidAuth
+			}
+		}
 		return actx, nil
 	}
 
@@ -506,8 +559,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 	// revoked key is refused (401) on the next request. The prefix is disjoint from tlv_ws_/tlv_sk_.
 	if m.moderatorKeys != nil && strings.HasPrefix(raw, moderatorkey.KeyPrefix) {
 		k, err := m.moderatorKeys.Validate(r.Context(), raw)
-		if err != nil {
+		if errors.Is(err, moderatorkey.ErrInvalid) {
 			return nil, ErrInvalidAuth
+		}
+		if err != nil {
+			// B28.243 — the lookup itself failed, which says nothing about the key.
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 		}
 		return &AuthContext{
 			Scopes:         []string{ScopeMarketModeration},
@@ -517,6 +574,23 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		}, nil
 	}
 
+	// Partner key (B62.5). Exactly {partner_read}, IsAdmin FALSE, and only on the partner's view (partnerContext):
+	// anywhere else Authenticate itself answers ErrPartnerRoute, so a handler that calls Authenticate on its own
+	// refuses it too. Validated against the DB every time, so a revoked key is refused (401) on the next request.
+	if strings.HasPrefix(raw, partnerkey.KeyPrefix) {
+		if m.partnerKeys == nil {
+			return nil, ErrInvalidAuth
+		}
+		k, err := m.partnerKeys.Validate(r.Context(), raw)
+		if errors.Is(err, partnerkey.ErrInvalid) {
+			return nil, ErrInvalidAuth
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+		}
+		return partnerContext(r, k.ID)
+	}
+
 	// Workspace key — always validate against the DB, never
 	// cached, so a revoked key stops working immediately.
 	if strings.HasPrefix(raw, tenant.KeyPrefix) {
@@ -524,8 +598,12 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 			return nil, ErrInvalidAuth
 		}
 		key, err := m.tenantStore.ValidateAPIKey(r.Context(), raw)
-		if err != nil {
+		if errors.Is(err, tenant.ErrInvalidKey) || errors.Is(err, tenant.ErrKeyExpired) {
 			return nil, ErrInvalidAuth
+		}
+		if err != nil {
+			// B28.243 — the lookup itself failed: a database hiccup must not sign the caller out.
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 		}
 		return &AuthContext{
 			WorkspaceID: key.WorkspaceID,

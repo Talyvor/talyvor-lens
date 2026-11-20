@@ -20,6 +20,9 @@ import (
 // A posting belongs to the period its entry's created_at falls in, and lines are ordered by (created_at, entry, line),
 // so a line's balance is the account's opening balance plus every line before it. Test and live money are one balance,
 // as Balance reads it; each line says which it was.
+//
+// B30.23: each line says where its money stands. A payment out's lines (its hold, its going out, its coming back) read
+// the payment's status now — pending, sent, completed, failed or returned — and every other posting is completed.
 
 // MoneyStatementLine is one posting to the account.
 type MoneyStatementLine struct {
@@ -32,7 +35,10 @@ type MoneyStatementLine struct {
 	Counterparty      string    `json:"counterparty"` // who an outside payment was from or to; else the other account, or "workspace:<id>"
 	Memo              string    `json:"memo,omitempty"`
 	PartnerRef        string    `json:"partner_ref,omitempty"`
+	State             string    `json:"state"` // B30.23: pending, sent, completed, failed or returned
 	BalanceAfterMinor int64     `json:"balance_after_minor"`
+	// Task is what the paying agent said the payment is for (B62.2), on money out only; shown after TaskSays.
+	Task string `json:"task,omitempty"`
 }
 
 // MoneyStatement is one currency account over [From, To): Opening + In − Out = Closing, in its currency's minor units.
@@ -40,6 +46,7 @@ type MoneyStatement struct {
 	WorkspaceID  string               `json:"workspace_id"`
 	AccountID    string               `json:"account_id"`
 	AgentID      string               `json:"agent_id,omitempty"`
+	Name         string               `json:"name,omitempty"` // the account's own name, if it was given one
 	Currency     string               `json:"currency"`
 	From         time.Time            `json:"from"`
 	To           time.Time            `json:"to"`
@@ -54,7 +61,7 @@ type MoneyStatement struct {
 // it is only that agent's account: another's, or the company's, is ErrMoneyAccountNotFound, as for its details.
 func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (MoneyStatement, error) {
 	st := MoneyStatement{WorkspaceID: workspaceID, AccountID: accountID, From: from, To: to, Lines: []MoneyStatementLine{}}
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(a.agent_id, ''), a.currency, t.opening, t.money_in, t.money_out
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(a.agent_id, ''), a.name, a.currency, t.opening, t.money_in, t.money_out
 		FROM money_accounts a, LATERAL (
 		  SELECT COALESCE(sum(p.amount_minor) FILTER (WHERE e.created_at < $4), 0)::bigint AS opening,
 		         COALESCE(sum(p.amount_minor) FILTER (WHERE e.created_at >= $4 AND p.amount_minor > 0), 0)::bigint AS money_in,
@@ -62,7 +69,7 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 		    FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
 		   WHERE p.account_id = a.id AND e.created_at < $5) t
 		WHERE a.id = $1 AND a.workspace_id = $2 AND a.purpose IN ('company', 'agent', 'suspense') AND ($3 = '' OR a.agent_id = $3)`,
-		accountID, workspaceID, agentID, from, to).Scan(&st.AgentID, &st.Currency, &st.OpeningMinor, &st.InMinor, &st.OutMinor)
+		accountID, workspaceID, agentID, from, to).Scan(&st.AgentID, &st.Name, &st.Currency, &st.OpeningMinor, &st.InMinor, &st.OutMinor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyStatement{}, ErrMoneyAccountNotFound
 	}
@@ -74,11 +81,17 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.entry_id, p.line, e.created_at, e.kind, p.amount_minor, p.funding,
 		       COALESCE(NULLIF(e.counterparty, ''),
+		         (SELECT CASE WHEN pp.from_account_id = p.account_id THEN pp.to_shown_name ELSE pp.from_shown_name END
+		            FROM person_payments pp WHERE pp.id = p.entry_id), -- B61.32: each side sees the other by their shown name
 		         (SELECT CASE WHEN o.workspace_id = $2 THEN o.id ELSE 'workspace:' || o.workspace_id END
 		            FROM money_postings op JOIN money_accounts o ON o.id = op.account_id
 		           WHERE op.entry_id = p.entry_id AND op.account_id <> p.account_id ORDER BY op.line LIMIT 1), ''),
 		       e.memo, e.partner_ref,
-		       sum(p.amount_minor) OVER (ORDER BY e.created_at, e.id, p.line)::bigint
+		       COALESCE((SELECT mp.status FROM money_payments mp
+		                  WHERE e.kind LIKE 'payment\_out%' AND mp.workspace_id = e.workspace_id
+		                    AND mp.idempotency_key = substr(e.idempotency_key, strpos(e.idempotency_key, ':') + 1)), 'completed'),
+		       sum(p.amount_minor) OVER (ORDER BY e.created_at, e.id, p.line)::bigint,
+		       CASE WHEN p.amount_minor < 0 THEN e.task ELSE '' END
 		  FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
 		 WHERE p.account_id = $1 AND e.created_at >= $3 AND e.created_at < $4
 		 ORDER BY e.created_at, e.id, p.line`, accountID, workspaceID, from, to)
@@ -89,7 +102,7 @@ func (s *DualTokenStore) AccountStatement(ctx context.Context, workspaceID, agen
 	for rows.Next() {
 		var l MoneyStatementLine
 		var running int64
-		if err := rows.Scan(&l.EntryID, &l.Line, &l.At, &l.Kind, &l.AmountMinor, &l.Funding, &l.Counterparty, &l.Memo, &l.PartnerRef, &running); err != nil {
+		if err := rows.Scan(&l.EntryID, &l.Line, &l.At, &l.Kind, &l.AmountMinor, &l.Funding, &l.Counterparty, &l.Memo, &l.PartnerRef, &l.State, &running, &l.Task); err != nil {
 			return MoneyStatement{}, fmt.Errorf("economy: account statement lines: %w", err)
 		}
 		l.At = l.At.UTC()

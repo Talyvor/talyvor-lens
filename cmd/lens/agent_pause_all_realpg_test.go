@@ -24,6 +24,7 @@ func TestAgentRoutes_OneSwitchPausesEveryAgent(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-agents"
+	confirmedAccounts(t, pool, ws, "ws-agents-payee") // B61.52
 	if _, err := pool.Exec(ctx, `INSERT INTO lxc_balances (workspace_id, balance, cash_backed_ulxc) VALUES ($1, 20000000, 20000000)`, ws); err != nil {
 		t.Fatal(err)
 	}

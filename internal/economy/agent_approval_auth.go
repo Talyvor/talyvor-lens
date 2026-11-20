@@ -292,6 +292,9 @@ func approvalPurpose(approvalID string, allow *PayeeAllowance) string {
 	if allow == nil {
 		return "approval:" + approvalID
 	}
+	if allow.Minor > 0 { // B61.40: an amount in the rules' currency is signed for as that amount
+		return fmt.Sprintf("approval:%s:always_allow:%d:minor:%d:%s", approvalID, allow.ULXC, allow.Minor, allow.Per)
+	}
 	return fmt.Sprintf("approval:%s:always_allow:%d:%s", approvalID, allow.ULXC, allow.Per)
 }
 
@@ -314,7 +317,12 @@ func (s *DualTokenStore) ApprovalChallenge(ctx context.Context, workspaceID, app
 	for _, k := range keys {
 		credentialIDs = append(credentialIDs, k.CredentialID)
 	}
-	c, err := s.newChallenge(ctx, workspaceID, approvalPurpose(approvalID, allow))
+	// B62.1: the challenge is the hash of what the sheet shows, so the signature is over exactly that.
+	shown, err := shownApprovals(ctx, s.pool, workspaceID, []string{approvalID})
+	if err != nil {
+		return "", nil, err
+	}
+	c, err := s.newStatementChallenge(ctx, workspaceID, approvalPurpose(approvalID, allow), DecisionStatement{Approvals: shown, AlwaysAllow: allow})
 	return c, credentialIDs, err
 }
 
@@ -348,7 +356,12 @@ func (s *DualTokenStore) BatchApprovalChallenge(ctx context.Context, workspaceID
 	for _, k := range keys {
 		credentialIDs = append(credentialIDs, k.CredentialID)
 	}
-	c, err := s.newChallenge(ctx, workspaceID, batchApprovalPurpose(approve, ids))
+	shown, err := shownApprovals(ctx, s.pool, workspaceID, ids)
+	if err != nil {
+		return "", nil, err
+	}
+	c, err := s.newStatementChallenge(ctx, workspaceID, batchApprovalPurpose(approve, ids),
+		DecisionStatement{Decision: map[bool]string{true: "approve", false: "deny"}[approve], Approvals: shown})
 	return c, credentialIDs, err
 }
 
@@ -370,12 +383,21 @@ func (s *DualTokenStore) DecideAgentApprovals(ctx context.Context, workspaceID s
 		+ (SELECT count(*) FROM workspace_device_keys WHERE workspace_id = $1)`, workspaceID).Scan(&keys); err != nil {
 		return nil, fmt.Errorf("economy: passkeys: %w", err)
 	}
+	if approve {
+		if err := approvalsLiveKeyFirst(ctx, tx, workspaceID, ids); err != nil { // B58.7
+			return nil, err
+		}
+	}
 	if keys == 0 {
 		a = nil // unsigned, as AuthorizeApprovalDecision lets a workspace with no key decide
 	} else if a == nil {
 		return nil, ErrPasskeyRequired
 	} else if err := s.spendAssertion(ctx, tx, workspaceID, batchApprovalPurpose(approve, ids), *a); err != nil {
 		return nil, err
+	} else if approve {
+		if err := keepOwnerSignature(ctx, tx, workspaceID, ids, *a); err != nil { // B62.1
+			return nil, err
+		}
 	}
 	out := make([]AgentApproval, 0, len(ids))
 	for _, id := range ids {

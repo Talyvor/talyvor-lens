@@ -35,6 +35,7 @@ func TestPrepareTransferToContact_OneVerifiedContactOnePayment(t *testing.T) {
 	store.SetPayeeScreener(screener)
 	store.SetScreener(screener)
 	store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
+	confirmedAccount(t, pool, ws) // B61.52: the person has confirmed who they are
 	company, err := store.OpenCurrencyAccount(ctx, ws, "", "USD", "test")
 	if err != nil {
 		t.Fatal(err)

@@ -122,19 +122,19 @@ func TestRooms_TheRoomsWalletItsBudgetAndWhoMaySpendIt(t *testing.T) {
 
 	// Until it has a monthly limit the room has no budget, and nobody spends it.
 	if _, err := store.MaySpend(ctx, owner, room.ID); !errors.Is(err, rooms.ErrPlanLimit) ||
-		err.Error() != "This room has no budget yet. Its owner sets one in Room settings: on Free, up to $100 (1,000 LXC) a month." {
+		err.Error() != "This room has no budget yet. Its owner sets one in Room settings: on Studio, up to $100 a month." {
 		t.Fatalf("the owner spends a room with no budget: %v, want refused for having none", err)
 	}
 
-	// Its monthly limit is the room's budget: above the free plan's $100 (1,000 LXC) it is refused naming the setting
+	// Its monthly limit is the room's budget: above the free plan's $100 it is refused naming the setting
 	// and the plan, and nothing is saved; at $100 it is saved.
 	rules := func(monthly string) (int, string) {
 		return call(owner, http.MethodPut, "/v1/workspaces/"+owner+"/agents/"+wallet+"/rules",
 			`{"monthly_limit_ulxc":`+monthly+`,"max_per_request_ulxc":20000000,"approval_above_ulxc":10000000}`)
 	}
 	if code, body := rules("1000000001"); code != http.StatusPaymentRequired || !strings.Contains(body, `"setting":"rooms_plan_limits"`) ||
-		!strings.Contains(body, `"plan":"free"`) || !strings.Contains(body, `"limit":"room_budget_max_usd"`) || !strings.Contains(body, `"allows":"team"`) ||
-		!strings.Contains(body, `"error":"Free allows a room a budget of up to $100 (1,000 LXC) a month. Team allows $5,000."`) {
+		!strings.Contains(body, `"plan":"business_studio"`) || !strings.Contains(body, `"limit":"room_budget_max_usd"`) || !strings.Contains(body, `"allows":"business_company"`) ||
+		!strings.Contains(body, `"error":"Studio allows a room a budget of up to $100 a month. Company allows $5,000."`) {
 		t.Fatalf("a monthly limit above $100 = %d %s, want 402 naming rooms_plan_limits, the free plan and team", code, body)
 	}
 	var saved int

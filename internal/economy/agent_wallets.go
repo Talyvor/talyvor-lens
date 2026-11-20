@@ -263,6 +263,12 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	if held { // B46.11: earnings owed under a sale, a Room's terms or a royalty, their money held when they were paid out
 		return nil
 	}
+	if held, err = l.s.heldInstantTransfer(ctx, op); err != nil {
+		return fmt.Errorf("%w: %v", money.ErrLimit, err)
+	}
+	if held { // B59.15: an Instant transfer's USDC on its way, judged by the agent's rules and the owner's approval when it was sent
+		return nil
+	}
 	if op.Agent == "" {
 		return fmt.Errorf("%w: only an agent's wallet moves money through the money layer yet", money.ErrLimit)
 	}
@@ -283,7 +289,7 @@ func (l moneyLimits) Allow(ctx context.Context, op money.Op) error {
 	if err := lockAgent(ctx, tx, op.Workspace, op.Agent); err != nil {
 		return fmt.Errorf("%w: %v", money.ErrLimit, err)
 	}
-	if err := enforceAgentRules(ctx, tx, op.Workspace, op.Agent, value, "money:"+op.Key); err != nil {
+	if err := l.s.enforceAgentRules(ctx, tx, op.Workspace, op.Agent, value, "money:"+op.Key); err != nil {
 		err = l.s.refusedMovement(ctx, tx, err)
 		if errors.Is(err, ErrApprovalRequired) {
 			return fmt.Errorf("%w: %v", money.ErrApprovalNeeded, err)

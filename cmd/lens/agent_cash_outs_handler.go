@@ -41,7 +41,11 @@ func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
 		if actx := auth.GetAuthContext(req.Context()); actx != nil {
 			by = actx.UserID
 		}
-		c, err := bank.RequestCashOut(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.AmountULXC, in.Destination, by)
+		ctx, ok := keyedMove(w, req) // B28.72
+		if !ok {
+			return
+		}
+		c, err := bank.RequestCashOut(ctx, chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.AmountULXC, in.Destination, by)
 		if err != nil {
 			writeCashOutErr(w, err)
 			return

@@ -25,7 +25,7 @@ TEST = "cmd/lens/operator_reads_handlers_test.go"
 
 PKG = "./cmd/lens/"
 
-SECRET = "TestKeyPoolStats_NeverCarriesKeyMaterial"
+DUMP_GUARD = "TestKeyPoolStats_NeverCarriesKeyMaterial"
 RECORD = "TestKeyPoolStats_WhatATenantCanReadToday"
 CHAINS = "TestFallbackChains_WhatATenantCanReadToday"
 WIRED = "TestOperatorReadsGoThroughTheirNamedHandlers"
@@ -63,12 +63,12 @@ CONTROLS = [
     ("K1", "KeyStats grows a `key` field carrying the real provider credential",
      [(POOL, STATS_TAIL, '\tLastUsedAt   time.Time `json:"last_used_at"`\n\tKey          string    `json:"key"`\n}'),
       (POOL, STATS_ASSIGN, "\t\t\t\tLastUsedAt:   k.LastUsedAt,\n\t\t\t\tKey:          k.Key,")],
-     SECRET, CHAINS, "the credential dump, under its own name"),
+     DUMP_GUARD, CHAINS, "the credential dump, under its own name"),
 
     ("K2", "the same credential, shipped under an innocent name (`fingerprint`)",
      [(POOL, STATS_TAIL, '\tLastUsedAt   time.Time `json:"last_used_at"`\n\tFingerprint  string    `json:"fingerprint"`\n}'),
       (POOL, STATS_ASSIGN, "\t\t\t\tLastUsedAt:   k.LastUsedAt,\n\t\t\t\tFingerprint:  k.Key,")],
-     SECRET, CHAINS,
+     DUMP_GUARD, CHAINS,
      "the guard asserts on the SECRET VALUE, not on a field name — a rename must not launder it"),
 
     ("K2b", "the same rename, seen by the exposure RECORD rather than by the secret tripwire",
@@ -90,7 +90,7 @@ CONTROLS = [
     ("K4", "the pool stops storing the key material — the fixture would arm nothing",
      [(POOL, "func (p *Pool) Add(provider, key, alias string, rateLimit int) (*PoolKey, error) {",
        "func (p *Pool) Add(provider, key, alias string, rateLimit int) (*PoolKey, error) {\n\tkey = \"\"")],
-     SECRET, CHAINS,
+     DUMP_GUARD, CHAINS,
      "poolWithASecret asserts the key really is stored; a hollow fixture must fail there, "
      "not pass the absence check"),
 
@@ -99,7 +99,7 @@ CONTROLS = [
        'authed.Get("/v1/api/keys/pool", func(w http.ResponseWriter, req *http.Request) {\n'
        '\t\t\twriteJSONOK(w, http.StatusOK, keyPool.Stats())\n'
        '\t\t})')],
-     WIRED, SECRET, "the handler can be perfect and unreached"),
+     WIRED, DUMP_GUARD, "the handler can be perfect and unreached"),
 
     # ⚠ THE DECISION-TRACKING DIRECTION. If somebody gates the read — which is what W6.18 asks
     # Nicolai to decide — the record must fire and say "close the decision", not sit there
@@ -107,12 +107,12 @@ CONTROLS = [
     ("K6", "the ungated read IS gated with requireAdmin — the record must fire, not go quiet",
      [(MAIN, 'authed.Get("/v1/api/keys/pool", newKeyPoolStatsHandler(keyPool))',
        'authed.Get("/v1/api/keys/pool", requireAdmin(authManager, newKeyPoolStatsHandler(keyPool)))')],
-     ASYM, SECRET, "a stale record is worse than no record on an authz surface"),
+     ASYM, DUMP_GUARD, "a stale record is worse than no record on an authz surface"),
 
     ("K7", "a WRITE sibling loses its requireAdmin — the asymmetry the finding rests on changes",
      [(MAIN, 'authed.Delete("/v1/api/keys/pool/{keyID}", requireAdmin(authManager, http.HandlerFunc(newPoolKeyDeleteHandler(keyPool))))',
        'authed.Delete("/v1/api/keys/pool/{keyID}", http.HandlerFunc(newPoolKeyDeleteHandler(keyPool)))')],
-     ASYM, SECRET, "the finding is the asymmetry; if the writes move, the record is stale"),
+     ASYM, DUMP_GUARD, "the finding is the asymmetry; if the writes move, the record is stale"),
 ]
 
 

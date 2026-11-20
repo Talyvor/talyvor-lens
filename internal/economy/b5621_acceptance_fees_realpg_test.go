@@ -81,8 +81,8 @@ func b5621Fees(t *testing.T, ctx context.Context, s *DualTokenStore, kind, accou
 }
 
 // B56.21 — Talyvor keeps its fee for accepting each payment of an invoice, once however often the payment is sent, as
-// its own entry from the issuer's account to Talyvor's revenue: 1% of an agent's payment or a transfer, and 0.75% of a
-// card payment plus what Stripe kept for processing it. The invoice shows each fee. A card payment refunded half and
+// its own entry from the issuer's account to Talyvor's revenue: 1% of an agent's payment or a transfer, and 1% of a
+// card payment (B61.58) plus what Stripe kept for processing it. The invoice shows each fee. A card payment refunded half and
 // then in full gives the fee back in the same shares.
 func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *testing.T) {
 	pool := supplyPool(t)
@@ -90,6 +90,7 @@ func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *t
 	s := screenedStore(pool)
 	s.SetAccountPartners(partners.NewRegistry(nil))
 	const ws, payerWS = "ws-b5621-issuer", "ws-b5621-payer"
+	sandboxConfirmed(t, pool, ws, payerWS) // B61.52: they move money, so they have confirmed who they are
 	_, buyer, company, sellerGBP := b5621Issuer(t, ctx, s, ws, payerWS)
 
 	byCard := b5621Invoice(t, ctx, s, ws, sellerGBP.ID, 12000)
@@ -120,8 +121,8 @@ func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *t
 		}
 	}
 
-	// 0.75% of £120.00 is 90p, and Stripe's £2.00; 1% of £30.00 is 30p; 1% of £25.00 is 25p.
-	want := map[string]int64{byCard.ID: -290, byAgent.ID: -30, byTransfer.ID: -25}
+	// 1% of £120.00 is £1.20 (B61.58), and Stripe's £2.00; 1% of £30.00 is 30p; 1% of £25.00 is 25p.
+	want := map[string]int64{byCard.ID: -320, byAgent.ID: -30, byTransfer.ID: -25}
 	fees := b5621Fees(t, ctx, s, "acceptance_fee", sellerGBP.ID)
 	if len(fees) != 3 {
 		t.Fatalf("the seller's account has the fee entries %v; want one for each of the three payments", fees)
@@ -141,8 +142,8 @@ func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *t
 		WHERE a.workspace_id = $1 AND a.purpose = 'revenue' AND a.currency = 'GBP' AND b.funding = 'test'`, ws).Scan(&revenue); err != nil {
 		t.Fatal(err)
 	}
-	if got := moneyBalance(t, s, ws, sellerGBP.ID).TestMinor; got != 17500-345 || revenue != 345 {
-		t.Fatalf("after the three payments the seller holds %d and Talyvor's revenue %d; want 17155 and 345", got, revenue)
+	if got := moneyBalance(t, s, ws, sellerGBP.ID).TestMinor; got != 17500-375 || revenue != 375 {
+		t.Fatalf("after the three payments the seller holds %d and Talyvor's revenue %d; want 17125 and 375", got, revenue)
 	}
 
 	// Refunded half, the same again, then in full.
@@ -157,12 +158,12 @@ func TestB5621_EachWayOfPayingAnInvoiceBooksItsFeeOnceAndARefundGivesItBack(t *t
 		t.Fatalf("the refunds booked returns %v and fees given back %v; want two of each", returned, back)
 	}
 	for key, minor := range returned {
-		if minor != -6000 || back["acceptance_fee_returned:"+strings.TrimPrefix(key, "invoice_card_returned:")] != 145 {
-			t.Errorf("refund %s returned %d with a fee back of %v; want 6000 and 145", key, -minor, back)
+		if minor != -6000 || back["acceptance_fee_returned:"+strings.TrimPrefix(key, "invoice_card_returned:")] != 160 {
+			t.Errorf("refund %s returned %d with a fee back of %v; want 6000 and 160", key, -minor, back)
 		}
 	}
-	if got := moneyBalance(t, s, ws, sellerGBP.ID).TestMinor; got != 17155-12000+290 {
-		t.Fatalf("after the full refund the seller holds %d; want %d, the card payment gone and its fee back", got, 17155-12000+290)
+	if got := moneyBalance(t, s, ws, sellerGBP.ID).TestMinor; got != 17125-12000+320 {
+		t.Fatalf("after the full refund the seller holds %d; want %d, the card payment gone and its fee back", got, 17125-12000+320)
 	}
 	if _, err := s.ReturnInvoiceCardPayment(ctx, "pi_b5621_unknown", 100); !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("a refund of a payment intent no invoice was paid by = %v; want ErrInvoiceNotFound", err)
@@ -216,7 +217,7 @@ func TestB5621_ALivePaymentStaysInSandboxUntilAcceptingPaymentsIsCleared(t *test
 		t.Fatalf("the live card payment once both are cleared = %v", err)
 	}
 	fees := b5621Fees(t, gb, s, "acceptance_fee", sellerGBP.ID)
-	if b := moneyBalance(t, s, ws, sellerGBP.ID); len(fees) != 1 || b.LiveMinor != 10000-75-170 || b.TestMinor != 0 {
-		t.Fatalf("the live payment left fees %v and the seller %+v; want one fee of 245 and 9755 of live money", fees, b)
+	if b := moneyBalance(t, s, ws, sellerGBP.ID); len(fees) != 1 || b.LiveMinor != 10000-100-170 || b.TestMinor != 0 {
+		t.Fatalf("the live payment left fees %v and the seller %+v; want one fee of 270 and 9730 of live money", fees, b)
 	}
 }

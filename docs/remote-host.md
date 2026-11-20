@@ -119,7 +119,7 @@ fails with 402**. Funding is the third act — it is what `POST /v1/admin/lxc/gr
 
 1. **Create the workspace** — `POST /v1/workspaces` (admin-only).
 2. **Mint a proxy-scoped key** — `POST /v1/workspaces/{id}/api-keys` with `"scopes":["proxy"]`.
-3. **Grant LXC** — `POST /v1/admin/lxc/grant` (admin-only; the ledger row is `admin_grant`, never
+3. **Grant LXC** — `POST /v1/admin/lxc/grant` (admin key plus a step-up code; the ledger row is `admin_grant`, never
    `purchase`, so a comp is always distinguishable from paid revenue).
 
 ### That 402 is the agent allocator — not the LXC gate
@@ -175,8 +175,11 @@ curl -s -X POST http://127.0.0.1:8080/v1/workspaces/acme/api-keys \
 # → {"key":"tlv_ws_…", …}  ← returned ONCE. Hand THIS to your colleague (a password manager, not chat).
 
 # 3. fund it — WITHOUT this the key's first request is the 402 above (200 on success)
+# The grant is behind step-up (B28.264): name yourself, and send the current code from the
+# authenticator app holding LENS_OPERATOR_STEP_UP_SECRET. The use is an operator_audit row.
 curl -s -X POST http://127.0.0.1:8080/v1/admin/lxc/grant \
   -H "Authorization: Bearer $LENS_API_KEY" -H 'Content-Type: application/json' \
+  -H "X-Talyvor-Operator: $TALYVOR_OPERATOR" -H "X-Talyvor-Step-Up: <code>" \
   -d '{"workspace_id":"acme","amount_ulxc":50000000,"reason":"trial onboarding"}'
 # → {"workspace_id":"acme","granted_ulxc":50000000,"new_balance_ulxc":50000000}
 ```

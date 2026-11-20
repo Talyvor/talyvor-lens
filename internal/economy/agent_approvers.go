@@ -283,7 +283,7 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	if a.AmountULXC > limit {
 		return a, fmt.Errorf("%w: %s is above the %s it may approve", ErrAboveApproverLimits, LXCMoney(a.AmountULXC), LXCMoney(limit))
 	}
-	if rules.DailyLimitULXC > 0 {
+	if rules.DailyLimitMinor > 0 { // B61.42: what it approved today in its rules' currency, valued in it rounded up
 		tz := rules.Timezone
 		if tz == "" {
 			tz = "UTC"
@@ -293,9 +293,13 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 			AND decided_at >= (date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2)`, approverID, tz).Scan(&today); err != nil {
 			return a, fmt.Errorf("economy: approver: %w", err)
 		}
-		if today+a.AmountULXC > rules.DailyLimitULXC {
+		approved, err := s.ulxcIn(ctx, workspaceID, today+a.AmountULXC, rules.currency(), true)
+		if err != nil {
+			return a, err
+		}
+		if approved > rules.DailyLimitMinor {
 			return a, fmt.Errorf("%w: with this, it would have approved %s today, above its daily limit of %s", ErrAboveApproverLimits,
-				LXCMoney(today+a.AmountULXC), LXCMoney(rules.DailyLimitULXC))
+				rules.rulesAmount(approved), rules.rulesAmount(rules.DailyLimitMinor))
 		}
 	}
 	requester, err := agentName(ctx, tx, a.AgentID)
@@ -343,6 +347,11 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 	}
 	if err := s.spendAssertion(ctx, tx, workspaceID, approvalPurpose(approvalID, allow), a); err != nil {
 		return AgentApproval{}, err
+	}
+	if approve {
+		if err := keepOwnerSignature(ctx, tx, workspaceID, []string{approvalID}, a); err != nil { // B62.1
+			return AgentApproval{}, err
+		}
 	}
 	ap, err := s.decideInTx(ctx, tx, workspaceID, approvalID, approve, &a)
 	if err != nil {

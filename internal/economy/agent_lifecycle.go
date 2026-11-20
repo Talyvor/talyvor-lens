@@ -26,7 +26,8 @@ var ErrAgentArchived = errors.New("economy: this agent is archived")
 // ErrAgentPotsHeld: the agent still keeps LXC in its pots, which may be locked; it must move them back first.
 var ErrAgentPotsHeld = errors.New("economy: this agent keeps money in its pots. Move it back to its balance before archiving")
 
-// ErrAgentDetails: a blank name, a description longer than MaxAgentDescription, or a colour or face not on its list (B57.10).
+// ErrAgentDetails: a blank name, a description longer than MaxAgentDescription, a colour or face not on its list (B57.10),
+// or a picture or kind of work not on its list (B61.35).
 var ErrAgentDetails = errors.New("economy: invalid agent details")
 
 // MaxAgentDescription is the longest description an agent takes, in characters.
@@ -52,32 +53,59 @@ func requireNotArchived(ctx context.Context, tx pgx.Tx, agentID string) error {
 	return nil
 }
 
-// UpdateAgent renames, describes and/or recolours an agent; a nil field is left as it is. A name cannot be blank, a
-// description is at most MaxAgentDescription characters, and a colour or face is one on its list (B57.10). Returns the agent as the book reads it.
-func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID string, name, description, colour, face *string) (Agent, error) {
-	if (colour != nil && *colour == "") || (face != nil && *face == "") {
-		return Agent{}, fmt.Errorf("%w: an agent's colour and face cannot be blank", ErrAgentDetails)
+// AgentChange is what UpdateAgent changes; a nil field is left as it is.
+type AgentChange struct{ Name, Description, Colour, Face, Picture, Role, RoleWord *string }
+
+// UpdateAgent renames, describes, recolours and/or re-pictures an agent, or changes what it does. A name cannot be
+// blank, a description is at most MaxAgentDescription characters, a colour or face is one on its list (B57.10), and a
+// picture or role is one on its list (B61.35): a picture sets the colour, and a colour without one takes its colour's
+// picture. role_word comes only with role other. Returns the agent as the book reads it.
+func (s *DualTokenStore) UpdateAgent(ctx context.Context, workspaceID, agentID string, c AgentChange) (Agent, error) {
+	if (c.Colour != nil && *c.Colour == "") || (c.Face != nil && *c.Face == "") || (c.Picture != nil && *c.Picture == "") {
+		return Agent{}, fmt.Errorf("%w: an agent's colour, face and picture cannot be blank", ErrAgentDetails)
 	}
-	if err := checkAgentLook(deref(colour), deref(face)); err != nil {
+	if err := checkAgentLook(deref(c.Colour), deref(c.Face)); err != nil {
 		return Agent{}, err
 	}
-	if name != nil {
-		trimmed := strings.TrimSpace(*name)
+	setPicture := c.Picture != nil || c.Colour != nil // a new colour alone wears its own picture (NULL)
+	if c.Picture != nil {
+		colour, err := pictureColour(*c.Picture, deref(c.Colour))
+		if err != nil {
+			return Agent{}, err
+		}
+		c.Colour = &colour
+	}
+	if c.Role == nil && c.RoleWord != nil {
+		return Agent{}, fmt.Errorf("%w: role_word comes with role other", ErrAgentDetails)
+	}
+	if c.Role != nil {
+		if *c.Role == "" {
+			return Agent{}, fmt.Errorf("%w: an agent's role cannot be blank", ErrAgentDetails)
+		}
+		word, err := checkAgentRole(*c.Role, deref(c.RoleWord))
+		if err != nil {
+			return Agent{}, err
+		}
+		c.RoleWord = &word
+	}
+	if c.Name != nil {
+		trimmed := strings.TrimSpace(*c.Name)
 		if trimmed == "" {
 			return Agent{}, fmt.Errorf("%w: an agent's name cannot be blank", ErrAgentDetails)
 		}
-		name = &trimmed
+		c.Name = &trimmed
 	}
-	if description != nil {
-		trimmed := strings.TrimSpace(*description)
+	if c.Description != nil {
+		trimmed := strings.TrimSpace(*c.Description)
 		if utf8.RuneCountInString(trimmed) > MaxAgentDescription {
 			return Agent{}, fmt.Errorf("%w: a description is at most %d characters", ErrAgentDetails, MaxAgentDescription)
 		}
-		description = &trimmed
+		c.Description = &trimmed
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE agent_accounts SET name = COALESCE($3, name), description = COALESCE($4, description),
-		colour = COALESCE($5, colour), face = COALESCE($6, face)
-		WHERE id = $1 AND workspace_id = $2`, agentID, workspaceID, name, description, colour, face)
+		colour = COALESCE($5, colour), face = COALESCE($6, face), picture = CASE WHEN $7 THEN $8 ELSE picture END,
+		role = COALESCE($9, role), role_word = COALESCE($10, role_word)
+		WHERE id = $1 AND workspace_id = $2`, agentID, workspaceID, c.Name, c.Description, c.Colour, c.Face, setPicture, c.Picture, c.Role, c.RoleWord)
 	if err != nil {
 		return Agent{}, fmt.Errorf("economy: update agent: %w", err)
 	}

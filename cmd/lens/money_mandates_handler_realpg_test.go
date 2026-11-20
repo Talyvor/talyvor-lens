@@ -28,6 +28,7 @@ func TestMandateRoutes_APayeePullsWithinTheMandateAndNotAfterIt(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws, payeeWS = "ws-b3019-payer", "ws-b3019-payee"
+	confirmedAccounts(t, pool, ws, payeeWS) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

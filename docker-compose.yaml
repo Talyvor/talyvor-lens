@@ -249,7 +249,7 @@ services:
       # The browser chat's credential (B10.7). ON by default (Nicolai: every capability on): without it
       # /v1/auth/session-keys is never registered and the chat's mint gets a 404. Every chat request is
       # charged (B9.8). TTL empty ⇒ config's DefaultSessionKeyTTL.
-      - LENS_SESSION_KEYS_ENABLED=${LENS_SESSION_KEYS_ENABLED:-true}
+      - LENS_SESSION_KEYS_ENABLED=${LENS_SESSION_KEYS_ENABLED:-true}  # compose-secret-ok: an on/off flag, not a credential
       - LENS_SESSION_KEY_TTL=${LENS_SESSION_KEY_TTL:-}
       # Provider-secret envelope KEK (W6.10). Comma-separated base64 32-byte keys, PRIMARY FIRST
       # (`openssl rand -base64 32`). Empty ⇒ Lens boots with provider-secret custody DISABLED and no

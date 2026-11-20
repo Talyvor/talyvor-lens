@@ -48,7 +48,7 @@ func TestB596_NewWorkspaceIsItsTypeAndKindAndItsFirstAgentFollowsIt(t *testing.T
 	ctx := context.Background()
 	bank, _ := b596Bank(t, pool, "whsec_b596_start")
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, 0), newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, newWorkspaceStarter(bank, 0), newKeyFixture(t).mint, nil)
 	stamp := time.Now().Format("150405.000000")
 
 	for _, bad := range []string{`"account_type":"charity"`, `"money_kind":"gold"`} {
@@ -100,7 +100,8 @@ func TestB596_NewWorkspaceIsItsTypeAndKindAndItsFirstAgentFollowsIt(t *testing.T
 // Every allowed and every refused change of kind, on real balances: fiat to stablecoin is refused; fiat becomes hybrid
 // and its agents both; hybrid becomes fiat only once no stablecoin is held, refused naming the balance until then;
 // hybrid becomes stablecoin once the fiat side is empty, closing the agents' fiat wallets; stablecoin becomes hybrid
-// again. An agent of a kind the workspace does not allow is refused, made or changed. Each change is audited.
+// again. An agent of a kind the workspace does not allow is refused, made or changed. Each change is the operator's
+// (B61.6) and is audited, naming the operator.
 func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
@@ -132,9 +133,17 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 		}
 		return out["money_kind"].(string)
 	}
+	// B61.6: only the operator changes the kind, for support.
+	r.Put("/v1/admin/workspaces/{wsID}/money-kind", newOperatorMoneyKindHandler(store).ServeHTTP)
 	setKind := func(kind string) (int, map[string]any) {
 		t.Helper()
-		return call(http.MethodPut, "/v1/workspaces/"+ws+"/account/money-kind", `{"money_kind":"`+kind+`"}`)
+		req := httptest.NewRequest(http.MethodPut, "/v1/admin/workspaces/"+ws+"/money-kind", strings.NewReader(`{"money_kind":"`+kind+`"}`))
+		req.Header.Set(moderatorOperatorHeader, "nicolai")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		out := map[string]any{}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
 	}
 	refused := func(what string, code int, out map[string]any, field string) {
 		t.Helper()
@@ -225,9 +234,9 @@ func TestB596_TheKindChangesOnlyAsTheSpecSays(t *testing.T) {
 	}
 
 	var audited int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'workspace.money_kind'`,
-		ws, "workspace:"+ws).Scan(&audited); err != nil || audited != 3 {
-		t.Fatalf("kind changes in the audit trail = %d (%v), want 3", audited, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_chain WHERE workspace_id = $1 AND subject = $2 AND kind = 'workspace.money_kind'
+		AND body::jsonb->>'by' = 'operator:nicolai'`, ws, "workspace:"+ws).Scan(&audited); err != nil || audited != 3 {
+		t.Fatalf("kind changes by the operator in the audit trail = %d (%v), want 3", audited, err)
 	}
 	var accountType string
 	if err := pool.QueryRow(ctx, `SELECT account_type FROM workspaces WHERE id = $1`, ws).Scan(&accountType); err != nil || accountType != "business" {

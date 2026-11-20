@@ -36,7 +36,7 @@ func (f *fakeInvoiceCards) CreateInvoiceCheckoutSession(_ context.Context, p bil
 // however often Stripe sends it, and the invoice reads paid. Another company's agent pays a £30.00 invoice from its own
 // account: £30.00 moves from its account to the issuer's, once, and the invoice reads paid. A transfer quoting the
 // invoice's reference marks a third one paid; a fourth, past its due date, reads overdue and is sent one reminder.
-// B56.21: each payment is charged its fee once, 0.75% of the card payment and Stripe's £2.00, and 1% of the agent's
+// B56.21: each payment is charged its fee once, 1% of the card payment (B61.58) and Stripe's £2.00, and 1% of the agent's
 // payment and of the transfer; Stripe's charge.refunded of the card payment returns it and gives its fee back.
 func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -156,8 +156,8 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 	for range 2 { // Stripe sends it twice: it posts once
 		deliver(session)
 	}
-	if got := held(ws, sellerGBP.ID); got != 12000-290 {
-		t.Fatalf("the seller's account holds %d after the card payment; want 11710, £120.00 less 90p and Stripe's £2.00", got)
+	if got := held(ws, sellerGBP.ID); got != 12000-320 {
+		t.Fatalf("the seller's account holds %d after the card payment; want 11680, £120.00 less £1.20 and Stripe's £2.00", got)
 	}
 	var postings int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM money_postings p JOIN money_entries e ON e.id = p.entry_id
@@ -197,8 +197,8 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 			t.Fatalf("the buyer pays = %d %v", code, out)
 		}
 	}
-	if s, b := held(ws, sellerGBP.ID), held(payerWS, buyerGBP.ID); s != 11710+3000-30 || b != 7000 {
-		t.Fatalf("after the agent's payment the seller holds %d and the buyer %d; want 14680 and 7000", s, b)
+	if s, b := held(ws, sellerGBP.ID), held(payerWS, buyerGBP.ID); s != 11680+3000-30 || b != 7000 {
+		t.Fatalf("after the agent's payment the seller holds %d and the buyer %d; want 14650 and 7000", s, b)
 	}
 	if code, _ := call(payerWS, http.MethodPost, "/v1/pay/"+token(byCard)+"/agent", `{"agent_id":"`+buyer.ID+`"}`); code != http.StatusConflict {
 		t.Fatalf("paying a paid invoice = %d; want 409", code)
@@ -246,8 +246,8 @@ func TestInvoiceRoutes_AnInvoicePaidByCardOrByAnAgentPostsToTheIssuer(t *testing
 			t.Errorf("the overdue invoice shows %v; want its one reminder", inv["reminders"])
 		}
 	}
-	if got := held(ws, sellerGBP.ID); got != 14680+2500-25 {
-		t.Fatalf("the seller's account holds %d after the transfer; want 17155", got)
+	if got := held(ws, sellerGBP.ID); got != 14650+2500-25 {
+		t.Fatalf("the seller's account holds %d after the transfer; want 17125", got)
 	}
 
 	refund, _ := json.Marshal(map[string]any{"id": "evt_b5621_refund", "object": "event", "type": "charge.refunded", "livemode": false,

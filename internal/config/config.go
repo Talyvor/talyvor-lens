@@ -598,6 +598,11 @@ type Config struct {
 	// response and the ledger row both carry what it WOULD have cost.
 	PoolConsumerDiscount float64
 
+	// PoolProbeLimit is how many times a minute one workspace may look in the pool for another workspace's answer
+	// before its pooled answers stop carrying the X-Talyvor-Pool-* saving headers (B28.250): asking guessed
+	// prompts at volume is probing the pool. Env: LENS_POOL_PROBE_LIMIT. Default 0, never withheld, until set.
+	PoolProbeLimit int
+
 	// POVIMinStake is the minimum LENS a node must lock as collateral to be
 	// minting-eligible (Part 2). Env: LENS_POVI_MIN_STAKE. Default 100.
 	POVIMinStake float64
@@ -1176,6 +1181,16 @@ type Config struct {
 	// real model calls, so the amount is a cost per signup. At 0 a new workspace still gets its first agent,
 	// key and rules, with no money.
 	StarterTestMoneyULXC int64
+
+	// PhoneChecksPerAddressHour is how many texted sign-in codes one caller's address may ask for in an hour (B61.22).
+	// Env: LENS_PHONE_CHECKS_PER_ADDRESS_HOUR, default 5 (phonesignin.DefaultTextsPerAddressHour, what one number may
+	// get) until Nicolai sets it.
+	PhoneChecksPerAddressHour int
+
+	// PasscodeSecret is mixed into the slow hash of every person's passcode (B61.23), so the rows alone cannot be
+	// tried offline: six digits are a million guesses. It lives outside the database. Env: LENS_PASSCODE_SECRET, at
+	// least 32 characters (`openssl rand -hex 32`); unset, setting and checking a passcode answer 503.
+	PasscodeSecret string
 
 	// GasBudgetWei is each workspace's budget, on each chain, for the network fees a paymaster pays for its agents,
 	// in wei of the chain's coin, before the owner tops it up (B48.5). Env: LENS_GAS_BUDGET_WEI, default 0 —
@@ -2126,6 +2141,13 @@ func Load() (*Config, error) {
 		}
 		c.PoolConsumerDiscount = f
 	}
+	if v := os.Getenv("LENS_POOL_PROBE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid LENS_POOL_PROBE_LIMIT (must be ≥ 0; 0 never withholds the saving headers): %s", v)
+		}
+		c.PoolProbeLimit = n
+	}
 	c.POVISlashFraction = 0.5
 	if v := os.Getenv("LENS_POVI_SLASH_FRACTION"); v != "" {
 		f, err := strconv.ParseFloat(v, 64)
@@ -2589,6 +2611,18 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LENS_STARTER_TEST_MONEY_ULXC must be a non-negative integer (µLXC), got %q", v)
 		}
 		c.StarterTestMoneyULXC = n
+	}
+	c.PasscodeSecret = os.Getenv("LENS_PASSCODE_SECRET")
+	if c.PasscodeSecret != "" && len(c.PasscodeSecret) < 32 {
+		return nil, fmt.Errorf("config: LENS_PASSCODE_SECRET must be at least 32 characters (openssl rand -hex 32), got %d", len(c.PasscodeSecret))
+	}
+	c.PhoneChecksPerAddressHour = 5
+	if v := os.Getenv("LENS_PHONE_CHECKS_PER_ADDRESS_HOUR"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("config: LENS_PHONE_CHECKS_PER_ADDRESS_HOUR must be a positive integer, got %q", v)
+		}
+		c.PhoneChecksPerAddressHour = n
 	}
 	if v := os.Getenv("LENS_GAS_BUDGET_WEI"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)

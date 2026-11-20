@@ -13,6 +13,7 @@ func TestSpendPlan_ASmallUSDCWalletIsNeverThePlansCurrency(t *testing.T) {
 	ctx := WithUseCountry(context.Background(), "GB")
 	s := screenedStore(pool)
 	const ws = "ws-b5545"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix) VALUES ($1, $1, $1)`, ws); err != nil {
 		t.Fatal(err)
 	}

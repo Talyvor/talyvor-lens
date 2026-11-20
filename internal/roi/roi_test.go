@@ -3,6 +3,7 @@ package roi
 import (
 	"context"
 	"go/build"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,5 +261,20 @@ func TestROIHasNoHotPathDependency(t *testing.T) {
 		if forbidden[imp] {
 			t.Errorf("roi must not import %q — it must stay read-only and off the request/hot path", imp)
 		}
+	}
+}
+
+// B67.1 (CodeQL go/reflected-xss #19, #20, #23): the period came off the query string and was echoed into the
+// report, Markdown included, whatever it said; a period the report does not know is reported as the month it is.
+func TestGenerateReport_UnknownPeriodIsReportedAsTheMonth(t *testing.T) {
+	rep, err := newReporter(fullMock(), Config{}).GenerateReport(context.Background(), "ws1", "<script>alert(1)</script>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Period != "monthly" {
+		t.Fatalf("period = %q, want monthly", rep.Period)
+	}
+	if md := RenderMarkdown(rep); strings.Contains(md, "<script>") {
+		t.Fatalf("the query's period reached the report:\n%s", md)
 	}
 }

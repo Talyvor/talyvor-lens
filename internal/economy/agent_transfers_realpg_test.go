@@ -34,6 +34,7 @@ func TestAgentTransfers_SendRequestRecurRefundAndTheClassOfEach(t *testing.T) {
 		if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, cache_prefix, earn_verified) VALUES ($1, $1, $1, true)`, ws); err != nil {
 			t.Fatal(err)
 		}
+		sandboxConfirmed(t, pool, ws) // B61.52: it moves money, so it has confirmed who it is
 	}
 	agent := func(ws, name, owner string, funding string, credits int64) Agent {
 		t.Helper()

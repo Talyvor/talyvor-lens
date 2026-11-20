@@ -23,16 +23,22 @@ import (
 //	                                                   and every check, newest first; a pending check, or a pass, is
 //	                                                   asked again first
 //	POST /v1/workspaces/{wsID}/verification/contact    {email, phone}                          L1: email and phone confirmed
-//	POST /v1/workspaces/{wsID}/verification/identity   {name, country, date_of_birth}          L2: identity checked
+//	POST /v1/workspaces/{wsID}/verification/identity   {name, country, date_of_birth, address: {lines, town, postcode, country}}
+//	                                                                                           L2: identity checked; the
+//	                                                                                           address is optional, and whole
 //	POST /v1/workspaces/{wsID}/verification/company    {name, country, company_number, directors, people_with_significant_control}
 //	                                                                                           L3: company checked
 //
+// A country Talyvor does not serve, the check's or its home address's, is 400 country_not_served (B61.53).
 // Each check needs the level below it (409 otherwise) and answers 201 with the check — passed, failed or pending —
 // and the record. A check the person completes themselves (Persona's) is pending with its link, where they do; the
-// GET carries a fresh link while it waits. The level each capability needs for live money is level_needed on GET /v1/wallets/capabilities.
+// GET carries a fresh link while it waits. Each link sends the person back, once they finish, to the place named by
+// return_to (the POST's field, the GET's query): signup, settings or phone — economy.CheckReturns — and to
+// settings for any other value; an address a caller sends is never used (B65.1). A failed or expired check is
+// started again by the same POST, as a new check. The level each capability needs for live money is level_needed on GET /v1/wallets/capabilities.
 // All four take the workspace's owner or an admin: they are a person's identity.
 type verificationStore interface {
-	Verification(ctx context.Context, verifiers partners.Verifiers, workspaceID string) (economy.WorkspaceVerification, error)
+	VerificationReturning(ctx context.Context, verifiers partners.Verifiers, workspaceID, returnTo string) (economy.WorkspaceVerification, error)
 	StartVerification(ctx context.Context, verifiers partners.Verifiers, workspaceID, by string, in economy.VerificationRequest) (economy.VerificationCheck, error)
 }
 
@@ -42,7 +48,7 @@ func mountVerificationRoutes(r chi.Router, store verificationStore, verifiers pa
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may read its verification")
 			return
 		}
-		v, err := store.Verification(req.Context(), verifiers, chi.URLParam(req, "wsID"))
+		v, err := store.VerificationReturning(req.Context(), verifiers, chi.URLParam(req, "wsID"), req.URL.Query().Get("return_to"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -65,6 +71,9 @@ func mountVerificationRoutes(r chi.Router, store verificationStore, verifiers pa
 			ws := chi.URLParam(req, "wsID")
 			c, err := store.StartVerification(req.Context(), verifiers, ws, who, in)
 			switch {
+			case errors.Is(err, economy.ErrCountryNotServed):
+				writeCountryNotServed(w)
+				return
 			case errors.Is(err, economy.ErrVerificationInvalid):
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
@@ -76,7 +85,7 @@ func mountVerificationRoutes(r chi.Router, store verificationStore, verifiers pa
 				return
 			}
 			// Not asked again: the check has just answered, and asking Persona would make it a second link.
-			v, err := store.Verification(req.Context(), nil, ws)
+			v, err := store.VerificationReturning(req.Context(), nil, ws, "")
 			if err != nil {
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return

@@ -277,6 +277,91 @@ type screenedBeforeLocks struct{}
 
 func (screenedBeforeLocks) ScreenPayment(context.Context, screening.Payment) error { return nil }
 
+// screenFirst screens e before its transaction begins, as a payment out is (B50.1): through are its postings into or
+// out of a partner account, whose accounts may not be opened yet. Screening takes a connection of its own, and one taken
+// inside the transaction, with as many moves at once as the pool has connections, leaves none (B50.54). It answers
+// the screener to post e with inside the transaction: it clears the payments screened here, and only those.
+func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through ...MoneyPosting) (screenedFirst, error) {
+	postings := make([]MoneyPosting, 0, len(through))
+	for _, p := range through {
+		if p.AmountMinor != 0 {
+			p.Currency = strings.ToUpper(strings.TrimSpace(p.Currency))
+			postings = append(postings, p)
+		}
+	}
+	e.Counterparty = strings.TrimSpace(e.Counterparty)
+	var screener PaymentScreener
+	rec := &screenRecorder{}
+	if s.screener != nil {
+		rec.next, screener = s.screener, rec
+	}
+	if err := screenOutside(ctx, e, postings, func(string) bool { return true }, screener); err != nil {
+		return nil, err
+	}
+	return rec.cleared, nil
+}
+
+// firstScreening is an entry a move may post through a partner, with its postings through the partner, to be screened
+// before the move's transaction begins.
+type firstScreening struct {
+	entry   MoneyEntry
+	through []MoneyPosting
+}
+
+// screenBefore screens each of entries before a move's transaction begins, as screenFirst does, for a move that learns
+// only inside its transaction whether it posts them: a card charge the card's controls may decline, a payment the
+// partner has already settled. It answers the screener to post with inside the transaction. A refusal waits for it:
+// each payment through a partner is then refused as the screening was, and a move that posts none is not (B50.56).
+func (s *DualTokenStore) screenBefore(ctx context.Context, entries ...firstScreening) PaymentScreener {
+	var cleared screenedFirst
+	for _, f := range entries {
+		got, err := s.screenFirst(ctx, f.entry, f.through...)
+		if err != nil {
+			return refusedFirst{err}
+		}
+		cleared = append(cleared, got...)
+	}
+	return cleared
+}
+
+// refusedFirst is the screener inside a transaction whose screening before it began refused: it takes no connection,
+// and refuses every payment through a partner with that refusal.
+type refusedFirst struct{ err error }
+
+func (r refusedFirst) ScreenPayment(context.Context, screening.Payment) error { return r.err }
+
+// screenRecorder screens through next for screenFirst, recording each payment next clears.
+type screenRecorder struct {
+	next    PaymentScreener
+	cleared screenedFirst
+}
+
+func (r *screenRecorder) ScreenPayment(ctx context.Context, p screening.Payment) error {
+	if err := r.next.ScreenPayment(ctx, p); err != nil {
+		return err
+	}
+	r.cleared = append(r.cleared, p)
+	return nil
+}
+
+// noPartnerPostings is the screener inside a transaction of a move between accounts that are not a partner's: it takes
+// no connection, and refuses money in or out through a partner, which is screened before its transaction (B50.54).
+var noPartnerPostings PaymentScreener = screenedFirst(nil)
+
+// screenedFirst is the screener inside a transaction of the payments screenFirst screened before it began. It takes
+// no connection: a payment it did not clear, the same in every field, is refused.
+type screenedFirst []screening.Payment
+
+func (f screenedFirst) ScreenPayment(_ context.Context, p screening.Payment) error {
+	for _, c := range f {
+		if c == p {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s %s %s through a partner was not screened before its transaction began", partners.ErrScreeningUnavailable,
+		p.Direction, Money(p.AmountMinor, p.Currency), p.Capability)
+}
+
 // monitorMoved runs transaction monitoring on e once it has moved, when it is a payment through a partner (B30.7).
 // Monitoring never undoes it, so a monitor that fails is logged and the nightly run judges the payment again.
 func (s *DualTokenStore) monitorMoved(ctx context.Context, e MoneyEntry) {
@@ -329,9 +414,10 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 		e.Card, card = &d, [4]*string{&d.MCC, &d.Country, &d.Channel, &d.Wallet}
 	}
 	err := tx.QueryRow(ctx, `INSERT INTO money_entries (id, workspace_id, capability, kind, idempotency_key, memo, counterparty, partner_ref,
-		card_mcc, card_country, card_channel, card_wallet)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
-		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef, card[0], card[1], card[2], card[3]).Scan(&e.CreatedAt)
+		card_mcc, card_country, card_channel, card_wallet, task)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING created_at`,
+		e.ID, e.WorkspaceID, e.Capability, e.Kind, e.IdempotencyKey, e.Memo, e.Counterparty, e.PartnerRef, card[0], card[1], card[2], card[3],
+		taskIn(ctx, e.WorkspaceID)).Scan(&e.CreatedAt) // B62.2: the paying agent's task, in its own workspace
 	if errors.Is(err, pgx.ErrNoRows) {
 		return replayedMoneyEntry(ctx, tx, e, postings)
 	}
@@ -346,6 +432,10 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	}
 	// B30.9: nor, test or live, until the workspace has accepted the capability's latest terms.
 	if err := refuseUnaccepted(ctx, tx, e.WorkspaceID, c); err != nil {
+		return MoneyEntry{}, err
+	}
+	// B61.52: nor, test or live, until the account has confirmed who it is.
+	if err := refuseUnconfirmed(ctx, tx, e.WorkspaceID, c); err != nil {
 		return MoneyEntry{}, err
 	}
 	if e.payeeWorkspaceID != "" {

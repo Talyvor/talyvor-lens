@@ -59,6 +59,9 @@ const trafficAuditCompleteSQL = `UPDATE held_mint_adjudications SET outcome = $2
 func newTrafficRevokeHandler(am adjudicateAuthenticator, db trafficRevokeDB, rev trafficRevokeSurface) http.HandlerFunc {
 	return func(rw http.ResponseWriter, req *http.Request) {
 		actx, err := am.Authenticate(req)
+		if refuseAuthUnavailable(rw, err) {
+			return
+		}
 		if err != nil || actx == nil || !actx.IsAdmin {
 			writeJSONErr(rw, http.StatusForbidden, "admin credentials required")
 			return

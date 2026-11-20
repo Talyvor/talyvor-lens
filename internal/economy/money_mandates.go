@@ -450,6 +450,9 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	if allPaused {
 		return MandatePull{}, ErrMandateWorkspacePaused
 	}
+	if err := liveKeyFirst(ctx, tx, m.WorkspaceID, funding); err != nil { // B58.7: the payer's workspace signs live money with a key
+		return MandatePull{}, err
+	}
 	// The account is held too, so no other movement spends the same money while this one is judged, and its balance is
 	// read after the lock, as the mandate is.
 	var held int64
@@ -476,9 +479,9 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 	if m.PayeeBusinessID != "" {
 		paid = Payee{Kind: "outside", ID: m.PayeeID, Name: m.PayeeName}
 	}
-	rules := WithAgentRequest(ctx, AgentRequest{Payment: true, Approved: true, Payee: paid,
+	rules := WithAgentRequest(ctx, AgentRequest{Payment: true, Approved: true, Payee: paid, Own: partners.Money{Minor: amountMinor, Currency: m.Currency},
 		Memo: Money(amountMinor, m.Currency) + " pulled by " + m.PayeeName + " under mandate " + m.ID})
-	if err := enforceAgentRules(rules, tx, m.WorkspaceID, m.AgentID, value, entryKey); err != nil {
+	if err := s.enforceAgentRules(rules, tx, m.WorkspaceID, m.AgentID, value, entryKey); err != nil {
 		return MandatePull{}, err
 	}
 
@@ -507,7 +510,7 @@ func (s *DualTokenStore) PullMandate(ctx context.Context, mandateID string, paye
 		}
 	}
 	e.Postings = []MoneyPosting{{AccountID: m.AccountID, AmountMinor: -amountMinor}, {AccountID: to, AmountMinor: amountMinor}}
-	if pull.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if pull.Entry, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return MandatePull{}, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO money_mandate_pulls (mandate_id, idempotency_key, entry_id, amount_minor) VALUES ($1, $2, $3, $4)`,

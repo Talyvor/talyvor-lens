@@ -102,7 +102,7 @@ func TestPaymentRequests_PreparedNeverPaid(t *testing.T) {
 	}
 
 	batch := `{"client":"chat","items":[{"payee_id":"payee_grocer","currency":"GBP","amount_minor":12000,"reference":"INV-1"},
-		{"payee_id":"payee_stranger","currency":"gbp","amount_minor":5000,"reference":"INV-2"},
+		{"payee_id":"payee_stranger","currency":"GBP","amount_minor":5000,"reference":"INV-2"},
 		{"payee_id":"payee_nomatch","currency":"GBP","amount_minor":3000,"reference":"INV-3"}]}`
 	code, first := call(http.MethodPost, "/v1/money/payment-requests", "batch-1", batch)
 	if code != http.StatusCreated || first["status"] != "pending_approval" || first["kind"] != "batch" {
