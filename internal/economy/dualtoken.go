@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -92,7 +93,7 @@ func ChargeULXC(usd float64) int64 {
 // ─── errors ──────────────────────────────────────
 
 var (
-	ErrInsufficientLXC     = errors.New("economy: insufficient LXC balance")
+	ErrInsufficientLXC     = errors.New("economy: insufficient balance")
 	ErrConversionTooSmall  = fmt.Errorf("economy: conversion below minimum of %d µLXC", MinConversionLXC)
 	ErrInsufficientLENSFor = errors.New("economy: insufficient LENS balance for conversion")
 )
@@ -367,6 +368,10 @@ type DualTokenStore struct {
 	// monitor runs transaction monitoring on each payment in or out through a partner once it has moved (B30.7);
 	// nil, the nightly run is the only one.
 	monitor MoneyMonitor
+	// paymentsPool is told of each settled Sandbox payment out and payment to a person, after it settles (B63.1);
+	// nil, nothing is measured. poolMeasures is the measures still being written.
+	paymentsPool PaymentsPool
+	poolMeasures *sync.WaitGroup
 	// accountPartners is where a company's currency account is opened (B30.13); nil, none opens.
 	accountPartners AccountPartners
 	// bankInfo is the open-banking partner for a workspace, by whether it is a tester's (B53.13); nil, none connects.
@@ -381,10 +386,14 @@ type DualTokenStore struct {
 	gasBudgetWei int64
 	// gasSponsors answers, per chain, what each sponsored operation was charged (B48.5); a chain not in it is not served.
 	gasSponsors map[int64]smartaccount.Chain
+	// cryptoSendNets are the networks agents send on (B48.9); none, nothing is sent.
+	cryptoSendNets map[string]CryptoSendNetwork
 	// invoicePayBase is the web app's origin an invoice's pay link points at (B30.20).
 	invoicePayBase string
 	// payeeScreener screens an outside payee when it is saved and before it is paid (B30.16); nil, none is.
 	payeeScreener PayeeScreener
+	// personLookupsPerHour is how many people an account may look up an hour (B61.32); 0, the default.
+	personLookupsPerHour int
 	// unusual is when a payment request item's amount is far above its payee's usual (B41.103); zero, never.
 	unusual unusualAmount
 	// started is when this store was made: RunCoveredPayments tries only what this Lens prepared (B55.21).

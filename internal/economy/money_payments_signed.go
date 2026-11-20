@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/talyvor/lens/internal/passkey"
 )
 
@@ -64,5 +66,14 @@ func (s *DualTokenStore) checkPaymentSigned(ctx context.Context, workspaceID str
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	return s.authorizePaymentTx(ctx, tx, workspaceID, in)
+}
+
+// authorizePaymentTx is a person's payment's signature checked inside tx: live money only once the workspace has a live
+// key (B58.7), and then signed as its workspace needs.
+func (s *DualTokenStore) authorizePaymentTx(ctx context.Context, tx pgx.Tx, workspaceID string, in OutsidePayment) error {
+	if err := liveKeyFirst(ctx, tx, workspaceID, in.Funding); err != nil {
+		return err
+	}
 	return s.authorizeSignedTx(ctx, tx, workspaceID, paymentPurpose(in), in.assertion, ErrPaymentUnsigned)
 }

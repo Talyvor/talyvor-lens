@@ -46,6 +46,7 @@ func verifyWithPublishedKeys(jwks []byte, token string) (jwt.MapClaims, error) {
 // credential fails; after a rule change the credential shows the new limit summary, and the old one is revoked.
 func TestKYA_APlatformVerifiesAnAgentsCredentialWithOnlyThePublishedKeys(t *testing.T) {
 	pool := agentRoutesDB(t)
+	unconfirmedAccounts(t, pool) // B61.52: this test's own checks are the account's
 	ctx := context.Background()
 	const ws = "ws-kya"
 	store := economy.NewDualTokenStore(nil, pool, nil)

@@ -23,6 +23,7 @@ func TestMoneyPayoutRoutes_FiftyRowsTwoBadOneApproval(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b3021-payouts"
+	confirmedAccounts(t, pool, ws) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)
@@ -135,8 +136,9 @@ func TestMoneyPayoutRoutes_FiftyRowsTwoBadOneApproval(t *testing.T) {
 	if n, minor := paymentsOut(); n != 48 || minor != total {
 		t.Errorf("the ledger shows %d payments out, £%d.00 in all, want 48 of £%d.00", n, minor/100, total/100)
 	}
-	if b, err := store.Balance(ctx, ws, company.ID); err != nil || b.TestMinor != 500000-total {
-		t.Errorf("the company's account holds %+v (%v), want %d test pence", b, err, 500000-total)
+	// B61.58: a Studio account sends 10 payments free each month, then pays 0.20 each: 38 of the 48.
+	if b, err := store.Balance(ctx, ws, company.ID); err != nil || b.TestMinor != 500000-total-38*20 {
+		t.Errorf("the company's account holds %+v (%v), want %d test pence", b, err, 500000-total-38*20)
 	}
 	if code, again := call(http.MethodPost, "/v1/money/payouts/"+batch+"/approve", "application/json", ""); code != http.StatusOK || again["status"] != "sent" {
 		t.Errorf("approve again = %d %v, want 200 sent", code, again)

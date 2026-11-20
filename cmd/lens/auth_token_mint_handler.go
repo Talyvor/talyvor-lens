@@ -31,6 +31,9 @@ func newAuthTokenMintHandler(authManager *auth.Manager) http.HandlerFunc {
 		// on actx.IsAdmin (29 requireAdmin call sites; zero use RequireScope(ScopeAdmin)), and the
 		// mint credential authenticates with IsAdmin=false — so widening here cannot widen them.
 		actx, err := authManager.Authenticate(req)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if err != nil || actx == nil || (!actx.IsAdmin && !actx.HasScope(auth.ScopeMint)) {
 			writeJSONErr(w, http.StatusForbidden, "admin or mint credentials required")
 			return

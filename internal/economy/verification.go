@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -112,14 +113,15 @@ var (
 )
 
 // VerificationRequest is what a check is asked to confirm: for L1 the email and phone; for L2 the person's name,
-// country and date of birth; for L3 the company's name, country, number, directors and people with significant
-// control. Lens passes the date of birth, email, phone and the people's names to the provider and keeps none of
-// them.
+// country, date of birth and, when given, home address (B61.45); for L3 the company's name, country, number,
+// directors and people with significant control. Lens passes the date of birth, home address, email, phone and the
+// people's names to the provider and keeps none of them.
 type VerificationRequest struct {
 	Level              VerificationLevel `json:"-"`
 	Name               string            `json:"name"`
 	Country            string            `json:"country"`
 	DateOfBirth        string            `json:"date_of_birth"`
+	Address            *HomeAddress      `json:"address,omitempty"` // an identity check's: lines, town, postcode, country
 	Email              string            `json:"email"`
 	Phone              string            `json:"phone"`
 	CompanyNumber      string            `json:"company_number"`
@@ -127,7 +129,30 @@ type VerificationRequest struct {
 	SignificantControl []string          `json:"people_with_significant_control"`
 	// Session is the sign-in asking (auth.AuthContext.Session): only it may lift a lockdown with this check (B41.116).
 	Session string `json:"-"`
+	// ReturnTo names where a check the person completes at the provider's page sends them back to: one of
+	// CheckReturns' names, never an address (B65.1).
+	ReturnTo string `json:"return_to"`
 }
+
+// CheckReturns are the only places a check the person completes at the provider's page (Persona's) sends them back
+// to, by name (B65.1): an address a caller sends is never used, and a name not here is Settings, Verification.
+var CheckReturns = map[string]string{
+	"signup":   "https://app.talyvor.com/signup/confirm",
+	"settings": "https://app.talyvor.com/settings/verification",
+	"phone":    "talyvor://settings/verification",
+}
+
+// checkReturn is the address the return named name stands for: Settings, Verification unless name is one of
+// CheckReturns'.
+func checkReturn(name string) string {
+	if to, ok := CheckReturns[name]; ok {
+		return to
+	}
+	return CheckReturns["settings"]
+}
+
+// HomeAddress is a person's home address, as an identity check passes it to the provider.
+type HomeAddress = partners.KYCAddress
 
 // VerificationCheck is one check and where it stands.
 type VerificationCheck struct {
@@ -150,6 +175,9 @@ type VerificationCheck struct {
 	// identity check confirms: a lockdown's lift goes only to that session, for a re-check matching the earlier one.
 	RequestedSession  string `json:"-"`
 	DateOfBirthDigest string `json:"-"`
+	// ProviderStatus is the provider's own word for where the check stands (Persona's inquiry status), kept for
+	// support only: Detail says it in plain words (B65.1).
+	ProviderStatus string `json:"-"`
 }
 
 // WorkspaceVerification is the owner's record: the level the checks reach, the level live money is judged by, the
@@ -190,6 +218,9 @@ func checkVerificationRequest(in *VerificationRequest) error {
 		return bad("the country is an ISO 3166-1 alpha-2 code, like GB, not %q", in.Country)
 	}
 	in.Country = countries[0]
+	if err := CheckServedCountry(in.Country); err != nil {
+		return fmt.Errorf("%w: %w", ErrVerificationInvalid, err)
+	}
 	if in.Name == "" {
 		return bad("the check needs the full name of the %s", subjects[in.Level])
 	}
@@ -199,8 +230,9 @@ func checkVerificationRequest(in *VerificationRequest) error {
 			return bad("an identity check needs the date of birth as YYYY-MM-DD, not %q", in.DateOfBirth)
 		}
 		in.DateOfBirth = dob.Format(time.DateOnly)
-		return nil
+		return checkHomeAddress(in.Address)
 	}
+	in.Address = nil
 	tidy := func(names []string) []string {
 		out := []string{}
 		for _, n := range names {
@@ -216,6 +248,42 @@ func checkVerificationRequest(in *VerificationRequest) error {
 		return bad("a company check needs the company number")
 	case len(in.Directors) == 0:
 		return bad("a company check names the company's directors")
+	}
+	return nil
+}
+
+// checkHomeAddress refuses a home address without its lines, town, postcode or country, and tidies it: the lines
+// trimmed and the empty ones left out, the postcode in capitals with single spaces, the country as its code.
+func checkHomeAddress(a *HomeAddress) error {
+	if a == nil {
+		return nil
+	}
+	lines := []string{}
+	for _, l := range a.Lines {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	a.Lines, a.Town = lines, strings.Join(strings.Fields(a.Town), " ")
+	a.Postcode = strings.ToUpper(strings.Join(strings.Fields(a.Postcode), " "))
+	bad := func(what string) error {
+		return fmt.Errorf("%w: the home address needs %s", ErrVerificationInvalid, what)
+	}
+	switch {
+	case len(lines) == 0:
+		return bad("its first line")
+	case a.Town == "":
+		return bad("its town")
+	case a.Postcode == "":
+		return bad("its postcode")
+	}
+	countries, err := countryCodes([]string{a.Country})
+	if err != nil {
+		return bad(fmt.Sprintf("its country as an ISO 3166-1 alpha-2 code, like GB, not %q", a.Country))
+	}
+	a.Country = countries[0]
+	if err := CheckServedCountry(a.Country); err != nil {
+		return fmt.Errorf("%w: %w", ErrVerificationInvalid, err)
 	}
 	return nil
 }
@@ -253,7 +321,7 @@ func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partne
 	}
 	kyc := verifiers(subject, in.Country, synthetic)
 	res, err := kyc.StartCheck(ctx, partners.KYCRequest{ID: "kyc_" + uuid.NewString(), Subject: subject, Name: in.Name,
-		Country: in.Country, DateOfBirth: in.DateOfBirth, Email: in.Email, Phone: in.Phone, CompanyNumber: in.CompanyNumber,
+		Country: in.Country, DateOfBirth: in.DateOfBirth, Address: in.Address, Email: in.Email, Phone: in.Phone, CompanyNumber: in.CompanyNumber,
 		Directors: in.Directors, SignificantControl: in.SignificantControl})
 	if errors.Is(err, partners.ErrInvalid) {
 		return VerificationCheck{}, fmt.Errorf("%w: %v", ErrVerificationInvalid, err)
@@ -262,8 +330,8 @@ func (s *DualTokenStore) StartVerification(ctx context.Context, verifiers partne
 		return VerificationCheck{}, fmt.Errorf("economy: verification: %w", err)
 	}
 	c := VerificationCheck{Level: in.Level, Subject: subject, Method: kyc.Name(), Status: string(res.Status), EvidenceRef: res.Ref,
-		Country: in.Country, CompanyNumber: in.CompanyNumber, Detail: res.Detail, RequestedBy: by, Link: res.Link,
-		RequestedSession: in.Session}
+		Country: in.Country, CompanyNumber: in.CompanyNumber, Detail: res.Detail, RequestedBy: by,
+		Link: partners.ReturnLink(res.Link, checkReturn(in.ReturnTo)), RequestedSession: in.Session, ProviderStatus: res.PartnerStatus}
 	if in.Level != LevelContact {
 		c.VerifiedName = in.Name
 	}
@@ -302,10 +370,10 @@ func identityNamed(checks []VerificationCheck, names []string) (person string, n
 func recordVerificationCheck(ctx context.Context, q pgxDB, workspaceID string, c *VerificationCheck) error {
 	c.Test = testOnly(c.Method)
 	if err := q.QueryRow(ctx, `INSERT INTO workspace_verifications (workspace_id, level, subject, method, status, evidence_ref,
-		verified_name, country, company_number, detail, requested_by, requested_session, date_of_birth_digest)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		verified_name, country, company_number, detail, requested_by, requested_session, date_of_birth_digest, provider_status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING created_at`, workspaceID, int(c.Level), c.Subject, c.Method, c.Status, c.EvidenceRef, c.VerifiedName, c.Country,
-		c.CompanyNumber, c.Detail, c.RequestedBy, c.RequestedSession, c.DateOfBirthDigest).Scan(&c.CheckedAt); err != nil {
+		c.CompanyNumber, c.Detail, c.RequestedBy, c.RequestedSession, c.DateOfBirthDigest, c.ProviderStatus).Scan(&c.CheckedAt); err != nil {
 		return fmt.Errorf("economy: record verification: %w", err)
 	}
 	return nil
@@ -314,8 +382,14 @@ func recordVerificationCheck(ctx context.Context, q pgxDB, workspaceID string, c
 // Verification is workspaceID's record. A check still pending, or passed, is asked again first of the provider it
 // went to, if verifiers still sends its kind of check there, and a change — a pending check decided, a pass
 // withdrawn — is appended; a provider that cannot answer leaves the check as it was. With nil verifiers nothing is
-// asked.
+// asked. A link a check still waiting carries sends the person back to Settings, Verification.
 func (s *DualTokenStore) Verification(ctx context.Context, verifiers partners.Verifiers, workspaceID string) (WorkspaceVerification, error) {
+	return s.VerificationReturning(ctx, verifiers, workspaceID, "")
+}
+
+// VerificationReturning is Verification, its links sending the person back to the return named returnTo (one of
+// CheckReturns', B65.1).
+func (s *DualTokenStore) VerificationReturning(ctx context.Context, verifiers partners.Verifiers, workspaceID, returnTo string) (WorkspaceVerification, error) {
 	checks, err := readVerificationChecks(ctx, s.pool, workspaceID)
 	if err != nil {
 		return WorkspaceVerification{}, err
@@ -339,11 +413,11 @@ func (s *DualTokenStore) Verification(ctx context.Context, verifiers partners.Ve
 			slog.Warn("economy: verification: the provider could not say where a check stands", "ref", c.EvidenceRef, "err", err)
 			continue
 		}
-		checks[i].Link = res.Link
+		checks[i].Link = partners.ReturnLink(res.Link, checkReturn(returnTo))
 		if string(res.Status) == c.Status {
 			continue
 		}
-		c.Status, c.Detail, c.Link = string(res.Status), res.Detail, res.Link
+		c.Status, c.Detail, c.Link, c.ProviderStatus = string(res.Status), res.Detail, checks[i].Link, res.PartnerStatus
 		if err := recordVerificationCheck(ctx, s.pool, workspaceID, &c); err != nil {
 			return WorkspaceVerification{}, err
 		}
@@ -360,7 +434,7 @@ func (s *DualTokenStore) Verification(ctx context.Context, verifiers partners.Ve
 // first.
 func readVerificationChecks(ctx context.Context, q pgxDB, workspaceID string) ([]VerificationCheck, error) {
 	rows, err := q.Query(ctx, `SELECT level, subject, method, status, evidence_ref, verified_name, country, company_number, detail,
-		requested_by, requested_session, date_of_birth_digest, started_at, created_at FROM (
+		requested_by, requested_session, date_of_birth_digest, provider_status, started_at, created_at FROM (
 			SELECT DISTINCT ON (evidence_ref) *, min(created_at) OVER (PARTITION BY evidence_ref) AS started_at
 			FROM workspace_verifications WHERE workspace_id = $1 ORDER BY evidence_ref, id DESC) latest
 		ORDER BY started_at DESC, evidence_ref`, workspaceID)
@@ -371,8 +445,12 @@ func readVerificationChecks(ctx context.Context, q pgxDB, workspaceID string) ([
 		var c VerificationCheck
 		var level int16
 		err := row.Scan(&level, &c.Subject, &c.Method, &c.Status, &c.EvidenceRef, &c.VerifiedName, &c.Country, &c.CompanyNumber,
-			&c.Detail, &c.RequestedBy, &c.RequestedSession, &c.DateOfBirthDigest, &c.StartedAt, &c.CheckedAt)
+			&c.Detail, &c.RequestedBy, &c.RequestedSession, &c.DateOfBirthDigest, &c.ProviderStatus, &c.StartedAt, &c.CheckedAt)
 		c.Level, c.Test = VerificationLevel(level), testOnly(c.Method)
+		if words, status := partners.PersonaDetail(c.Detail); status != "" { // recorded in Persona's words before B65.1
+			c.Detail = words
+			c.ProviderStatus = cmp.Or(c.ProviderStatus, status)
+		}
 		return c, err
 	})
 }

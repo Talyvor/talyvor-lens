@@ -191,7 +191,7 @@ RETURNING cache_poolable, distill_poolable, cost_optimize_routing, distill_polic
   (xmax = 0) AS inserted`
 
 // setAccountSQL records a workspace's type and kind of money (B59.6) on the registration that made it, and on no other:
-// the type never changes, and the kind changes only through economy.SetWorkspaceMoneyKind.
+// the type never changes, and the kind changes only through economy.OperatorSetWorkspaceMoneyKind (B61.6: the operator alone).
 const setAccountSQL = `UPDATE workspaces SET account_type = $2, money_kind = $3 WHERE id = $1`
 
 // setProfileSQL records a workspace's sign-up country and registration number (B59.40) on the registration that made it,

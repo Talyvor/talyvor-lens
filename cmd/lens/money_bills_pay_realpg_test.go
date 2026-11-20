@@ -33,6 +33,7 @@ func TestMoneyBillsPay_ThreeDueBillsOneApprovalEachPaidOnce(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws, rpID, origin = "ws-b41102-pay-due", "app.talyvor.com", "https://app.talyvor.com"
+	confirmedAccounts(t, pool, ws) // B61.52
 	registry := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, registry)
 	store := economy.NewDualTokenStore(nil, pool, nil)

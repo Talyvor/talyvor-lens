@@ -29,7 +29,8 @@ func personaMock(t *testing.T, status *string) *httptest.Server {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			if a := in.Data.Attributes; a.Template != "itmpl_kyc" || a.Fields["name-first"] != "Ada" || a.Fields["name-last"] != "Lovelace" ||
-				a.Fields["birthdate"] != "1990-12-10" {
+				a.Fields["birthdate"] != "1990-12-10" || a.Fields["address-street-1"] != "12 Marlborough Road" ||
+				a.Fields["address-city"] != "Twickenham" || a.Fields["address-postal-code"] != "TW1 3AA" || a.Fields["address-country-code"] != "GB" {
 				http.Error(w, `{"errors":[{"title":"bad inquiry"}]}`, http.StatusUnprocessableEntity)
 				return
 			}
@@ -72,8 +73,8 @@ func companiesHouseMock(t *testing.T, status *string) *httptest.Server {
 	return srv
 }
 
-// B30.112 — a Persona identity check is an inquiry from the KYC template, prefilled with the person's name and date
-// of birth, that the person completes at its one-time link; it passes when Persona approves it and fails when
+// B30.112 — a Persona identity check is an inquiry from the KYC template, prefilled with the person's name, date
+// of birth and home address (B61.45), that the person completes at its one-time link; it passes when Persona approves it and fails when
 // Persona declines it. A Sandbox key names the method persona_sandbox.
 func TestPersonaKYC_ThePersonCompletesTheInquiryAtItsLink(t *testing.T) {
 	ctx, status := context.Background(), "created"
@@ -81,7 +82,8 @@ func TestPersonaKYC_ThePersonCompletesTheInquiryAtItsLink(t *testing.T) {
 	if p.Name() != "persona_sandbox" {
 		t.Fatalf("a Sandbox key's method = %q; want persona_sandbox", p.Name())
 	}
-	res, err := p.StartCheck(ctx, KYCRequest{ID: "kyc_1", Subject: KYCPerson, Name: "Ada Lovelace", Country: "GB", DateOfBirth: "1990-12-10"})
+	res, err := p.StartCheck(ctx, KYCRequest{ID: "kyc_1", Subject: KYCPerson, Name: "Ada Lovelace", Country: "GB", DateOfBirth: "1990-12-10",
+		Address: &KYCAddress{Lines: []string{"12 Marlborough Road"}, Town: "Twickenham", Postcode: "TW1 3AA", Country: "GB"}})
 	if err != nil || res.Ref != "inq_1" || res.Status != StatusPending || res.Link != "https://withpersona.com/verify?code=one" {
 		t.Fatalf("starting the check = %+v, %v; want inq_1 pending with its one-time link", res, err)
 	}

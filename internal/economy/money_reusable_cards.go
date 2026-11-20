@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/partners"
 )
 
 // money_reusable_cards.go — B53.2: THE OWNER'S OWN CARD, AND AN AGENT'S: REUSABLE, WITH LIMITS AND BLOCKED CATEGORIES.
@@ -310,8 +311,8 @@ func (s *DualTokenStore) lockReusableCardCap(ctx context.Context, card ReusableC
 // authorizeReusableCharge decides a's charge if it is on a reusable card, in tx: done is false for a card that is
 // not one. Approved only while the card is active, its agent not paused, in its currency, within its limit per payment
 // and what is left of its daily limit, in a category it pays, while its account holds the charge, and — on an agent's
-// card — within the agent's own rules (B54.6).
-func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx, partner string, a money.Authorization) (done, approved bool, reason string, err error) {
+// card — within the agent's own rules (B54.6). An approved charge posts with screened, its screening before tx began (B50.56).
+func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx, partner string, a money.Authorization, screened PaymentScreener) (done, approved bool, reason string, err error) {
 	var c ReusableCard
 	err = tx.QueryRow(ctx, `SELECT `+reusableCardCols+` FROM money_reusable_cards WHERE partner = $1 AND partner_ref = $2 FOR UPDATE`, partner, a.Card).
 		Scan(c.fields()...)
@@ -331,7 +332,7 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 		paused = refuseIfPaused(ctx, tx, c.AgentID)
 	}
 	var spent, held int64
-	from, err := s.payingAccount(ctx, c.WorkspaceID, OutsidePayment{AccountID: c.accountID, Currency: c.Currency})
+	from, err := payingAccountOn(ctx, tx, c.WorkspaceID, OutsidePayment{AccountID: c.accountID, Currency: c.Currency})
 	if err != nil {
 		return true, false, "", err
 	}
@@ -391,7 +392,7 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: c.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_charge",
 			IdempotencyKey: key, Funding: c.Funding, Memo: a.Merchant, Counterparty: a.Merchant, PartnerRef: a.ID,
 			Card: &d, Postings: []MoneyPosting{{AccountID: c.accountID, AmountMinor: -a.Amount.Minor}, {AccountID: from.partnerID, AmountMinor: a.Amount.Minor}}},
-			s.screener); err != nil {
+			screened); err != nil {
 			return true, false, "", err
 		}
 	}
@@ -403,7 +404,7 @@ func (s *DualTokenStore) authorizeReusableCharge(ctx context.Context, tx pgx.Tx,
 
 // agentCardCharge judges a charge the controls of agent card c let through by the agent's own rules, in tx with the
 // agent's row locked, as any money leaving the agent is (moneyLimits.Allow): its limits per payment and per hour, day,
-// week and month, its payee lists and caps, its hours and its approval amount. It answers the charge's value in µLXC,
+// week and month, its payee lists and caps, its merchant categories (B61.43), its hours and its approval amount. It answers the charge's value in µLXC,
 // which counts toward the agent's spend, or why the rules decline it. A charge cannot wait for the owner, so one above
 // the approval amount is declined and files no approval. The merchant is named "merchant:<name>" in the payee lists, so
 // a merchant's own name can never pass for an agent's or a company's id.
@@ -413,9 +414,10 @@ func (s *DualTokenStore) agentCardCharge(ctx context.Context, tx pgx.Tx, c Reusa
 		return 0, "the charge cannot be valued against the agent's limits", nil
 	}
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: key, Payee: Payee{Kind: "merchant", ID: "merchant:" + a.Merchant, Name: a.Merchant},
-		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant})
+		Own:  partners.Money{Minor: a.Amount.Minor, Currency: a.Amount.Asset},
+		Memo: minorString(a.Amount.Minor, a.Amount.Asset) + " at " + a.Merchant, ByCard: true, MerchantCategory: a.Normal().MCC})
 	var need *ApprovalNeededError
-	switch err = enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
+	switch err = s.enforceAgentRules(ctx, tx, c.WorkspaceID, c.AgentID, value, key); {
 	case err == nil:
 		return value, "", nil
 	case errors.As(err, &need):

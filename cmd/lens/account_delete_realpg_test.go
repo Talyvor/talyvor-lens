@@ -587,3 +587,86 @@ func TestB5237_DeletionWaitsForMoneyInFlight_RealPG(t *testing.T) {
 		t.Fatalf("the balance that landed: %d rows, want 1", n)
 	}
 }
+
+// accountDeleteProvision is POST /v1/provision with a mode (B61.7).
+func accountDeleteProvision(t *testing.T, h http.Handler, identity, mode, accountID string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"identity": identity, "mode": mode, "account_id": accountID})
+	req := httptest.NewRequest(http.MethodPost, "/v1/provision", bytes.NewReader(body))
+	req.Header.Set(provisionSecretHeader, accountDeleteSecret)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// A person who opened a second account (B61.7) deletes both: refused, with nothing deleted, while either holds money;
+// then both go and both sessions are refused; and signing up again holds neither, as its first account.
+func TestB5237_PersonDeletesEveryAccountTheyHold_RealPG(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	jwtKey, err := auth.GenerateECKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lens, _ := accountDeleteLens(t, pool, jwtKey, accountDeleteDeps{})
+	const identity = "https://issuer.example|person-5237-two"
+
+	var first, second provisionResponse
+	if rec := accountDeleteProvision(t, lens, identity, "", ""); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &first) != nil {
+		t.Fatalf("first account: %d %s", rec.Code, rec.Body)
+	}
+	if rec := accountDeleteProvision(t, lens, identity, provisionModeOpen, ""); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &second) != nil {
+		t.Fatalf("second account: %d %s", rec.Code, rec.Body)
+	}
+	if second.WorkspaceID == first.WorkspaceID {
+		t.Fatalf("the second account is the first: %s", first.WorkspaceID)
+	}
+	count := func(id string) (n int) {
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM workspaces WHERE id = $1`, id).Scan(&n)
+		return n
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO lxc_balances (workspace_id, balance) VALUES ($1, 5)`, second.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	rec := accountDeletePost(t, lens, "/v1/account/delete", identity)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "credits") || !strings.Contains(rec.Body.String(), second.WorkspaceID) {
+		t.Fatalf("the second account holds credits: %d %s, want 409 naming it and the credits", rec.Code, rec.Body)
+	}
+	if count(first.WorkspaceID) != 1 || count(second.WorkspaceID) != 1 {
+		t.Fatalf("a refused deletion deleted an account (first %d, second %d left)", count(first.WorkspaceID), count(second.WorkspaceID))
+	}
+	if _, err := pool.Exec(ctx, `UPDATE lxc_balances SET balance = 0 WHERE workspace_id = $1`, second.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if count(first.WorkspaceID) != 0 || count(second.WorkspaceID) != 0 {
+		t.Fatalf("after the deletion: first %d, second %d workspaces left, want none", count(first.WorkspaceID), count(second.WorkspaceID))
+	}
+	for name, tok := range map[string]string{"first": first.Token, "second": second.Token} {
+		if code := accountDeleteAuthed(lens, tok); code != http.StatusUnauthorized {
+			t.Errorf("the deleted %s account's session gets %d, want 401", name, code)
+		}
+	}
+	if rec = accountDeletePost(t, lens, "/v1/account/delete", identity); rec.Code != http.StatusNotFound {
+		t.Errorf("deleting again: %d %s, want 404", rec.Code, rec.Body)
+	}
+
+	// Signing up again: one new account, which the person holds wherever their accounts are looked up from their
+	// identity (the passkey routes, the number moves), and neither old one.
+	var again provisionResponse
+	if rec = accountDeleteProvision(t, lens, identity, "", ""); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &again) != nil || !again.Created {
+		t.Fatalf("signing up again: %d %s", rec.Code, rec.Body)
+	}
+	wsm := workspace.New(pool)
+	held, err := wsm.PersonAccounts(ctx, workspace.PersonKey(identity), deriveWorkspaceID(identity))
+	if err != nil || len(held) != 1 || held[0].ID != again.WorkspaceID {
+		t.Fatalf("after signing up again the person holds %+v (%v), want only %s", held, err, again.WorkspaceID)
+	}
+	if rec = accountDeleteProvision(t, lens, identity, provisionModeSession, second.WorkspaceID); rec.Code != http.StatusNotFound {
+		t.Errorf("a session for the deleted second account after signing up again: %d %s, want 404", rec.Code, rec.Body)
+	}
+}

@@ -32,6 +32,9 @@ type artifactCommitBody struct {
 func newArtifactCommitHandler(authn verdictAuthenticator, c artifactCommitter) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ac, err := authn.Authenticate(req)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if err != nil || ac == nil || ac.WorkspaceID == "" {
 			writeJSONErr(w, http.StatusUnauthorized, "unauthorized")
 			return

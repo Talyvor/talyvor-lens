@@ -59,6 +59,9 @@ type Result struct {
 	// Link is where a person completes the operation themselves, when the partner needs them to: a verification's
 	// one-time link (B30.112). Lens never stores it.
 	Link string `json:"link,omitempty"`
+	// PartnerStatus is the partner's own word for where it stands (Persona's inquiry status), kept for support only:
+	// it never reaches a person (B65.1).
+	PartnerStatus string `json:"-"`
 }
 
 var (

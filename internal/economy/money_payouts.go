@@ -298,6 +298,9 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 		return b, nil
 	}
 	if b.Status == PayoutAwaitingApproval {
+		if err := liveKeyFirst(ctx, tx, workspaceID, b.Funding); err != nil { // B58.7
+			return PayoutBatch{}, err
+		}
 		if err := s.authorizeSignedTx(ctx, tx, workspaceID, payoutBatchPurpose(b), a, ErrPasskeyRequired); err != nil {
 			return PayoutBatch{}, err
 		}
@@ -316,7 +319,7 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 			continue
 		}
 		p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: b.AgentID, PayeeID: r.PayeeID, AmountMinor: r.AmountMinor,
-			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line)})
+			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line), lensKey: true})
 		if err != nil {
 			r.Status, r.Detail = PaymentFailed, err.Error()
 			continue

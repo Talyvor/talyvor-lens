@@ -94,6 +94,7 @@ import (
 	"github.com/talyvor/lens/internal/keel"
 	"github.com/talyvor/lens/internal/keypool"
 	"github.com/talyvor/lens/internal/kya"
+	"github.com/talyvor/lens/internal/kyatap"
 	"github.com/talyvor/lens/internal/learner"
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
@@ -115,8 +116,11 @@ import (
 	"github.com/talyvor/lens/internal/oracle"
 	"github.com/talyvor/lens/internal/outputverify"
 	"github.com/talyvor/lens/internal/pairverify"
+	"github.com/talyvor/lens/internal/partnerkey"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/paypool"
+	"github.com/talyvor/lens/internal/phonesignin"
 	"github.com/talyvor/lens/internal/pii"
 	"github.com/talyvor/lens/internal/plans"
 	"github.com/talyvor/lens/internal/platformreport"
@@ -465,9 +469,6 @@ func run() error {
 	if err := rooms.CheckLimits(); err != nil {
 		return err
 	}
-	if err := economy.CheckMoneyOrder(); err != nil {
-		return err
-	}
 	enterpriseFromUSDCents, err := billing.EnterpriseFromUSDCents(os.Getenv("LENS_ENTERPRISE_FROM_USD_CENTS"))
 	if err != nil {
 		return err
@@ -760,6 +761,7 @@ func run() error {
 	// flag would leave consumers paying full price for pooled hits on any deploy with minting off —
 	// the exact complaint this closes, reintroduced through the wiring rather than the code.
 	p.SetPoolConsumerDiscount(cfg.PoolConsumerDiscount)
+	p.SetPoolProbeLimit(cfg.PoolProbeLimit) // B28.250
 	slog.Info("economy: cross-tenant pooled hits are DISCOUNTED for the consumer",
 		slog.Float64("consumer_discount_rate", cfg.PoolConsumerDiscount),
 		slog.Float64("contributor_share_of_discounted_charge", cfg.PoolRoyaltyShare),
@@ -1000,6 +1002,9 @@ func run() error {
 	// nothing else. Created and revoked with `lens moderator-keys`; see docs/moderator-keys.md.
 	moderatorKeys := moderatorkey.NewStore(pool)
 	authManager = authManager.WithModeratorKeys(moderatorKeys)
+	// B62.5 — the account partner's read key: the partner's view of agent activity and nothing else.
+	partnerKeys := partnerkey.NewStore(pool)
+	authManager = authManager.WithPartnerKeys(partnerKeys)
 
 	// W4.6.1 step 4 — session-scoped keys, the credential a browser chat holds instead of a
 	// workspace key.
@@ -1881,6 +1886,10 @@ func run() error {
 	rateEngine := economy.NewRateEngine(tokenLedger, pool)
 	dualToken := economy.NewDualTokenStore(tokenLedger, pool, rateEngine)
 	authManager.WithSessionCutoff(dualToken) // B41.116: a lockdown ends every other session; nothing is served yet
+	// B61.32: how many people an account may look up an hour, a setting Nicolai fills; unset, the default.
+	if n, err := strconv.Atoi(os.Getenv("LENS_PERSON_LOOKUPS_PER_HOUR")); err == nil {
+		dualToken.SetPersonLookupsPerHour(n)
+	}
 	// B30.5: every agent's Know Your Agent credential, signed with Ed25519.
 	kyaKey, kyaEphemeral, err := kya.ParseKey(cfg.KYASigningKey)
 	if err != nil {
@@ -1901,6 +1910,8 @@ func run() error {
 	lensPublicURL, _ := url.Parse(cfg.PublicURL) // config.Load already refused a malformed one
 	agentSigs := &agentsig.Verifier{PublicURL: lensPublicURL, Keys: newAgentKeyDirectory(),
 		Nonces: agentSigStore, Businesses: agentSigStore, Now: time.Now}
+	// B62.6: the credential in the form Visa's Trusted Agent Protocol publishes, with a key of each agent's own.
+	kyaTAP := kyatap.New(kyaSvc, kyaKey.Derive, agentSigStore, time.Now)
 
 	// U18b billing (fiat Stripe → LXC credit). Constructed unconditionally so the
 	// route handler method values are valid; the routes themselves register only
@@ -2039,6 +2050,21 @@ func run() error {
 	if cfg.CompaniesHouseAPIKey != "" {
 		partnerRegistry.UseVerifier(partners.KYCCompany, &partners.CompaniesHouseKYC{Key: cfg.CompaniesHouseAPIKey}, "GB")
 	}
+	// B61.22 — the front door by phone number: codes texted by the registry's text sender (the Sandbox one until a
+	// real sender is configured, B61.31), each hashed under the provision secret the door's routes are mounted on.
+	phoneDoor := &phonesignin.Store{DB: pool, Sender: partnerRegistry.TextMessages, Key: []byte(cfg.ProvisionSecret),
+		PerAddressHour: cfg.PhoneChecksPerAddressHour,
+		PasscodeSecret: []byte(cfg.PasscodeSecret),
+		// B61.24 — a person's sign-in keys are checked as approvals check theirs: the same relying party and origins,
+		// and the same check of a phone's device key.
+		RP:      &passkey.RelyingParty{ID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins},
+		Devices: &devicekey.Verifier{AppleAppID: cfg.DeviceAppleAppID, AllowTest: cfg.DeviceTestAttestation}}
+	// B61.23 — the key rules ask the door's own passcode.
+	phoneDoor.Passcodes = phoneDoor.PasscodeRule()
+	// B61.113 — the door refuses to start while passcodes cannot be set; one line says which variable is missing.
+	if cfg.ProvisionSecret != "" {
+		logPhoneSignInReadiness(logger, phoneDoor)
+	}
 	// B30.12 — the status page lists each partner, Test or live, its last success and failure, and its clearances.
 	statusPage.UseMoneyRails(partnerRegistry, dualToken)
 	// B56.7 — labels read card payments and the partner rails, every time.
@@ -2066,6 +2092,13 @@ func run() error {
 	if cfg.PhysicalCards { // B53.19 — shortcut: the fake holds its cards in memory, so a restart forgets them; replaced by a live card issuer
 		moneyCfg.Issuer = issuerfake.New(dualToken.AuthorizeCardCharge).Adapter()
 	}
+	// B59.14 — an Instant transfer's legs are handed out with their hooks: beneficiaries and addresses screened as payments
+	// are, the Sandbox's on-chain details, and each leg's record kept in instant_transfer_legs.
+	legScreening, err := partnerRegistry.Screening(ctx, economy.CapabilityPaymentsOut)
+	if err != nil {
+		return err
+	}
+	moneyCfg.Hooks = dualToken.InstantTransferHooks(&partners.TestTransferHooks{Screening: legScreening})
 	moneyLayer, err := money.NewRegistry(moneyCfg)
 	if err != nil {
 		return err
@@ -2470,6 +2503,10 @@ func run() error {
 	}
 	moneyMonitor := monitoring.New(pool, monitorSettings, ecbRates)
 	dualToken.SetMonitor(moneyMonitor)
+	// B63.1: the payments pool, measured only: each settled Sandbox payment out and payment to a person is measured
+	// after it settles, beside the money path; an operator reads it by week at /v1/admin/payments-pool.
+	paymentsPool := paypool.New(pool)
+	dualToken.SetPaymentsPool(paymentsPool)
 	// B41.103: an approval card flags an amount far above the payee's usual by monitoring's own thresholds.
 	dualToken.SetUnusualAmount(monitorSettings.NewPayeeLarge.TimesUsual, monitorSettings.NewPayeeLarge.FromPayments, monitorSettings.HistoryDays)
 	go haComps.leader.Run(ctx, "transaction-monitoring", 30*time.Second, func(lctx context.Context) {
@@ -2731,6 +2768,10 @@ func run() error {
 	}).AddSection("requests", func(ctx context.Context) any {
 		return requestTracker.Snapshot(ctx)
 	}).ForOperator(func(r *http.Request) bool { return isAdmin(authManager, r) })
+	// B61.113 — whether the phone door can set passcodes, for everyone, while the door is mounted.
+	if cfg.ProvisionSecret != "" {
+		healthHandler.AddPublicSection("phone_signin", phoneSignInHealth(phoneDoor))
+	}
 	r.Get("/healthz", healthHandler.ServeHTTP)
 
 	// HA endpoints (Upgrade 7). The existing /healthz above is intentionally
@@ -2789,6 +2830,7 @@ func run() error {
 
 		// B30.5: Know Your Agent — the keys agent credentials are signed with, the revocation list, and verify.
 		mountKYAPublicRoutes(pub, kyaSvc)
+		mountKYATAPPublicRoutes(pub, kyaTAP) // B62.6
 		// B41.178: the Talyvor connector — discovery, registration, authorize and token for Claude, ChatGPT and Cursor.
 		mountConnectorPublicRoutes(pub, connectorGrantStore, dualToken, tenantStore, cfg.PublicURL)
 		// B45.23: Agent Cards — Talyvor's own, each agent's, their keys, and verify.
@@ -2857,6 +2899,7 @@ func run() error {
 	r.Post("/v1/admin/screening/cases/{caseID}/refuse", requireStepUp(authManager, stepUp, newScreeningDecideHandler(screener, false)))
 	// B30.7 — the alerts transaction monitoring raised on its compliance cases, newest first.
 	r.Get("/v1/admin/compliance/alerts", requireAdminOrOperatorRead(authManager, newMonitoringAlertsHandler(moneyMonitor)))
+	r.Get("/v1/admin/payments-pool", requireAdminOrOperatorRead(authManager, newPaymentsPoolHandler(paymentsPool))) // B63.1
 	r.Get("/v1/admin/scan/models", requireAdminOrOperatorRead(authManager, newScanModelsHandler(scanModels)))
 	r.Get("/v1/admin/scan/reports", requireAdminOrOperatorRead(authManager, newScanReportsHandler(scanWriter)))                     // B52.25
 	r.Post("/v1/admin/scan/reports/{id}/approve", requireStepUp(authManager, stepUp, newScanReportDecideHandler(scanWriter, true))) // B52.25
@@ -2902,11 +2945,35 @@ func run() error {
 	// (naming the operator), operators read it back filtered or as CSV. Append-only in the database (0182).
 	// operator_audit_handler.go.
 	operatorAudit := operatoraudit.NewStore(pool)
+	// B28.461 — the wrong code that begins step-up's wait is an operator_audit row: who was named, and where.
+	stepUp.OnLock(func(ctx context.Context, operator, target string) error {
+		_, err := operatorAudit.Record(ctx, operatoraudit.Entry{Actor: operator, Action: "step_up.locked", Target: target,
+			Detail: fmt.Sprintf("%d wrong step-up codes inside %s; every step-up action waits %s", stepup.MaxWrong, stepup.GuessWindow, stepup.LockFor)})
+		return err
+	})
 	r.Post("/v1/admin/operator-audit/record", requireAdminOrModerator(authManager, moderatorKeys, newOperatorAuditRecordHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit", requireAdminOrOperatorRead(authManager, newOperatorAuditListHandler(operatorAudit)))
 	r.Get("/v1/admin/operator-audit/export", requireAdminOrOperatorRead(authManager, newOperatorAuditExportHandler(operatorAudit)))
+	// B61.6 — the owner never changes a workspace's kind of money; the operator may, for support, with the step-up code,
+	// an operator_audit row per use and the change in the workspace's audit trail. workspace_money_kind_handler.go.
+	r.Put("/v1/admin/workspaces/{wsID}/money-kind", requireAdminStepUp(authManager, stepUp, operatorAudit, "workspace.money_kind", requireAdmin(authManager, newOperatorMoneyKindHandler(dualToken))))
+	// B62.5 — the account partner's risk team reads every agent payment on its own key, and nothing else; an operator
+	// makes and revokes the key with the step-up code, an operator_audit row each. partner_activity_handler.go.
+	r.Get("/v1/partner/agent-activity", requirePartnerRead(authManager, partnerKeys, newPartnerActivityHandler(dualToken)))
+	r.Get("/v1/partner/agent-activity/export", requirePartnerRead(authManager, partnerKeys, newPartnerActivityExportHandler(dualToken)))
+	r.Get("/v1/partner/agent-activity/summary", requirePartnerRead(authManager, partnerKeys, newPartnerActivitySummaryHandler(dualToken)))
+	r.Post("/v1/admin/partner-keys", requireAdminStepUp(authManager, stepUp, operatorAudit, "partner_key.create", requireAdmin(authManager, newPartnerKeyCreateHandler(partnerKeys))))
+	r.Post("/v1/admin/partner-keys/{id}/revoke", requireAdminStepUp(authManager, stepUp, operatorAudit, "partner_key.revoke", requireAdmin(authManager, newPartnerKeyRevokeHandler(partnerKeys))))
+	r.Get("/v1/admin/partner-keys", requireAdmin(authManager, newPartnerKeyListHandler(partnerKeys)))
+	r.Get("/v1/admin/partner-keys/{id}/uses", requireAdmin(authManager, newPartnerKeyUsesHandler(partnerKeys)))
 	// B44.6 — every talyvor.com waitlist signup, oldest first, for the operator.
 	r.Get("/v1/admin/waitlist", requireAdminOrOperatorRead(authManager, newWaitlistListHandler(pool)))
+	// B61.22 — how many people and what the phone door did in a day, never whose.
+	r.Get("/v1/admin/people/counts", requireAdminOrOperatorRead(authManager, newPeopleCountsHandler(phoneDoor)))
+	// B61.30 — the way back in for a person with neither their number nor a key: the operator moves the number, with
+	// the step-up code and an operator_audit row, after the person's identity check passes again. number_move_handler.go.
+	r.Post("/v1/admin/people/move-number", requireAdminStepUp(authManager, stepUp, operatorAudit, "person.move_number",
+		requireAdmin(authManager, newNumberMoveHandler(phoneDoor, wsManager, dualToken, partnerRegistry.Verification))))
 	// KE-2 observability — every APPLIED drift haircut (default-on in closed-test). Reads the PRIMARY pool
 	// (non-money read of ledger metadata + keel_findings; keeps the U8/U9 ExactlySix replica-reader invariant
 	// unchanged).
@@ -2988,6 +3055,7 @@ func run() error {
 	mcpServer.SetPaymentRequests(dualToken)   // B40.3: prepare_payment, prepare_batch, request_marketplace_purchase, cancel_request, get_request_status; B41.102: prepare_bills_payment; B45.17: list_bills_due; B41.106: get_daily_briefing; B45.14: prepare_transfer_to_contact
 	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	mcpServer.SetAreas(areaStore)             // B59.4: an area's tools only for a workspace that has it
+	mcpServer.SetInstantTransfers(dualToken)  // B59.18: instant_transfer_quote, instant_transfer_send, to a hybrid workspace
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
@@ -3108,6 +3176,10 @@ func run() error {
 
 		// B32.12 — what each plan unlocks, for /pricing.
 		pub.Get("/v1/public/plan-gates", publicPlanGatesHandler)
+		// B61.57 — both ladders, each plan's price in every currency and what it allows (plan_gates_handler.go).
+		pub.Get("/v1/public/plans", publicPlansHandler)
+		// B61.53 — the countries Talyvor serves, for sign-up and the identity check (served_countries_handler.go).
+		pub.Get("/v1/public/countries", publicCountriesHandler)
 
 		// B52.26 — Scan's track record (scan.TrackRecordPath): every published report scored, hits and misses.
 		pub.Get("/v1/public/scan/track-record", newScanTrackRecordHandler(scanWriter).ServeHTTP)
@@ -3212,6 +3284,19 @@ func run() error {
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
 		})
+	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
+	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.107 — and a forgotten passcode is set again with the number's code and one of the person's keys.
+	mountPasscodeReplaceRoute(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
+	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.104 — and a person with a session changes their own number, with the new number's code and their passcode.
+	mountNumberChangeRoute(limited, cfg.ProvisionSecret, phoneDoor, wsManager, dualToken)
+	// B61.24 — and signs in with a passkey or the phone's key, one touch; the sign-up key step's one ceremony also
+	// makes the account's approval key, over a challenge the account issues.
+	mountKeySignInRoutes(limited, cfg.ProvisionSecret, phoneDoor, dualToken, wsManager)
+	// B61.32 — a person's Talyvor name and how they are found, for the suite BFF on the same secret.
+	mountPeopleFindingRoutes(limited, cfg.ProvisionSecret, dualToken)
 	// B44.6 — the talyvor.com waitlist, written by the suite BFF on the same secret.
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
@@ -3273,6 +3358,8 @@ func run() error {
 		authed.Use(areaGate(areaStore))
 		// B59.7 — a fiat workspace is refused an on-chain money route, and a stablecoin workspace a fiat one.
 		authed.Use(moneyKindGate(dualToken))
+		// B61.52 — an account that has not confirmed who it is moves no money, Sandbox money included.
+		authed.Use(identityGate(dualToken))
 
 		apiServer.MountAuthenticated(authed)
 
@@ -3368,8 +3455,12 @@ func run() error {
 		// admin can ONLY approve the algorithm's output (within
 		// band + floor) — there is no way to set an arbitrary rate.
 		// The full computation (all inputs) is returned + persisted.
-		econ.post(authed, "/v1/admin/conversion-rate/approve", func(w http.ResponseWriter, req *http.Request) {
+		// B28.264: behind requireAdminStepUp — the step-up code, and an operator_audit row per use.
+		econ.post(authed, "/v1/admin/conversion-rate/approve", requireAdminStepUp(authManager, stepUp, operatorAudit, "conversion_rate.approve", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil || !actx.IsAdmin {
 				writeJSONErr(w, http.StatusForbidden, "admin credentials required")
 				return
@@ -3384,7 +3475,7 @@ func run() error {
 				return
 			}
 			writeJSONOK(w, http.StatusOK, comp)
-		})
+		})))
 
 		// Admin-only DISTILL preview: a DRY RUN that converts an uploaded
 		// document to Markdown through the KILLABLE subprocess (ProcessIsolator,
@@ -3504,7 +3595,7 @@ func run() error {
 		// admin AND the P-o-I mint rate>0 — no held rows exist otherwise).
 		for _, mt := range []string{"eval_contribution_mints", "routing_prediction_mints", "node_latency_mints", "confidential_compute_mints"} {
 			adj := poolroyalty.NewAdjudicationWriterForTable(pool, poolroyalty.NewRevokerForTable(pool, tokenLedger, mt), "held_mint_adjudications")
-			econ.post(authed, "/v1/admin/held-mints/"+mt+"/adjudicate", newAdjudicateHandler(authManager, adj))
+			econ.post(authed, "/v1/admin/held-mints/"+mt+"/adjudicate", requireAdminStepUp(authManager, stepUp, operatorAudit, "held_mints.revoke", newAdjudicateHandler(authManager, adj)))
 		}
 
 		// Phase-3 Item 2: manual clawback for traffic_mint_holds (the cache/compute/
@@ -3514,7 +3605,7 @@ func run() error {
 		// "request_id|workspace_id|mint_type". Admin-gated; inert until the node network
 		// produces held rows.
 		trafficRevoker := mining.NewTrafficRevoker(pool, tokenLedger)
-		econ.post(authed, "/v1/admin/held-mints/traffic/adjudicate", newTrafficRevokeHandler(authManager, pool, trafficRevoker))
+		econ.post(authed, "/v1/admin/held-mints/traffic/adjudicate", requireAdminStepUp(authManager, stepUp, operatorAudit, "held_mints.revoke", newTrafficRevokeHandler(authManager, pool, trafficRevoker)))
 
 		// Pool-B royalty OBSERVABILITY (read-only, admin-gated, NOT economy-gated).
 		// Forensic infra must survive the kill-switch — the economy is likeliest OFF
@@ -3564,6 +3655,9 @@ func run() error {
 				return
 			}
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil || actx.AuthMethod != auth.MethodJWT {
 				writeJSONErr(w, http.StatusUnauthorized, "valid JWT required")
 				return
@@ -3582,6 +3676,9 @@ func run() error {
 
 		authed.Get("/v1/auth/me", func(w http.ResponseWriter, req *http.Request) {
 			actx, err := authManager.Authenticate(req)
+			if refuseAuthUnavailable(w, err) {
+				return
+			}
 			if err != nil {
 				writeJSONErr(w, http.StatusUnauthorized, "unauthorized")
 				return
@@ -3775,10 +3872,11 @@ func run() error {
 		// escape hatch for a closed trial: a fresh workspace has 0 LXC and no funding path without
 		// Stripe, so it cannot transact. This funds it through economy.GrantLXC (the atomic ledger+
 		// balance move, recorded under LXCTypeGrant so a comp is never mistaken for a paid purchase).
-		// Off ⇒ the route is never registered (chi 404). Body-param target, no {wsID} — requireAdmin
-		// is the sole authority (matching the workspace-register admin route above).
+		// Off ⇒ the route is never registered (chi 404). Body-param target, no {wsID}. B28.264: the
+		// admin key alone is not enough — requireAdminStepUp also wants the operator's step-up code
+		// and writes the use to operator_audit (admin_step_up.go), as for the rate and the revokes.
 		if cfg.AdminLXCGrantEnabled {
-			authed.Post("/v1/admin/lxc/grant", requireAdmin(authManager, newAdminLXCGrantHandler(dualToken)))
+			authed.Post("/v1/admin/lxc/grant", requireAdminStepUp(authManager, stepUp, operatorAudit, "lxc.grant", requireAdmin(authManager, newAdminLXCGrantHandler(dualToken))))
 		}
 
 		// Self-scoped list of the workspaces the caller's credential can act on. No {wsID} segment, so
@@ -4232,6 +4330,9 @@ func run() error {
 		// B32.12 — the workspace's plan and what it unlocks, and the seats check the members feature asks before
 		// it adds one (plan_gates_handler.go). {wsID} is bound to the caller's credential like its siblings.
 		authed.Get("/v1/workspaces/{wsID}/plan", newWorkspacePlanHandler(pool))
+		// B61.57 — the owner moves the account along its own ladder; nothing is charged, and while Lens's Stripe key is
+		// live a paid plan is refused.
+		authed.Put("/v1/workspaces/{wsID}/plan", newWorkspacePlanChangeHandler(pool, billing.LiveKey(cfg.StripeSecretKey)))
 		authed.Get("/v1/workspaces/{wsID}/plan/seats", newSeatsCheckHandler(pool))
 
 		// B27.26 — "Your provider keys" (provider_keys_routes.go), only while custody is armed.
@@ -5061,6 +5162,7 @@ func run() error {
 		mountAgentCardRoutes(authed, dualToken, stripeKinds)                            // B19.12, B25.6
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
+		mountAgentCryptoSendRoutes(authed, dualToken)                                   // B48.9
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
@@ -5076,6 +5178,7 @@ func run() error {
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
+		mountMoneyLowBalanceRoutes(authed, dualToken)                                   // B28.334
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
 		mountMoneyNoticeRoutes(authed, dualToken)                                       // B53.7
@@ -5093,7 +5196,10 @@ func run() error {
 		mountConnectedAccessRoutes(authed, dualToken)                                   // B41.115
 		mountLockdownRoutes(authed, dualToken)                                          // B41.116
 		mountMoneyPaymentRoutes(authed, dualToken)                                      // B30.17
+		mountPersonPaymentRoutes(authed, dualToken)                                     // B61.32
 		mountMoneyConvertRoutes(authed, dualToken)                                      // B56.23
+		mountMoneyWalletRoutes(authed, dualToken)                                       // B59.51
+		mountInstantTransferRoutes(authed, dualToken)                                   // B59.14
 		mountMoneyPayoutRoutes(authed, dualToken)                                       // B30.21
 		mountMoneyCardRoutes(authed, dualToken)                                         // B46.10
 		mountCardSpendRoutes(authed, dualToken)                                         // B59.21
@@ -5109,6 +5215,7 @@ func run() error {
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9
 		mountKYAAgentRoutes(authed, kyaSvc, dualToken)                                  // B30.5
+		mountKYATAPAgentRoutes(authed, kyaTAP, dualToken)                               // B62.6
 		mountAgentCardOwnerRoutes(authed, agentCards)                                   // B45.23
 		mountMarketUseRoutes(authed, marketStore, r, marketMeter, dualToken)            // B20.2
 		mountNegotiationPlaybookRoutes(authed, marketStore, marketMeter, dualToken)     // B52.16
@@ -5158,6 +5265,10 @@ func run() error {
 		// B53.4: one replica raises the spend alerts; the unique key would also make a second one's a no-op.
 		go haComps.leader.Run(ctx, "spend-alerts", 30*time.Second, func(lctx context.Context) {
 			sweepSpendAlerts(lctx, dualToken)
+		})
+		// B28.334: one replica raises the low-balance alerts; the unique key holds them to one an hour on any number.
+		go haComps.leader.Run(ctx, "low-balance-alerts", 30*time.Second, func(lctx context.Context) {
+			sweepLowBalanceAlerts(lctx, dualToken)
 		})
 		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
 		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
@@ -6151,6 +6262,10 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 		msg = "internal server error"
 	} else {
 		msg = api.Refusal(msg)
+	}
+	if msg == api.Refusal(economy.ConfirmIdentitySentence) { // B61.52: the economy's refusal reads as the door's
+		writeJSONOK(w, status, map[string]string{"error": msg, "code": identityNeededCode})
+		return
 	}
 	writeJSONOK(w, status, map[string]string{"error": msg})
 }

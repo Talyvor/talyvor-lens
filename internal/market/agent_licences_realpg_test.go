@@ -74,7 +74,7 @@ func TestAgentLicences_AnAgentTakesOnlyTheLicencesItsRulesAllow(t *testing.T) {
 	}
 
 	_, _, err = s.License(ctx, deps, buyer, buyer20, l.ID, "rent-25", LicenceRequest{OfferID: offer["rent enterprise"]})
-	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "the most one licence may commit it to is $2.00 (20 LXC)") {
+	if !errors.Is(err, economy.ErrAgentRule) || !strings.Contains(err.Error(), "the most one licence may commit it to is $2.00") {
 		t.Fatalf("a 25 LXC rent under a 20 LXC commitment = %v; want refused naming the commitment", err)
 	}
 	if licences, billed := written(buyer20); licences != 1 || billed != 1 {
@@ -129,7 +129,7 @@ func TestAgentLicences_AnAgentTakesOnlyTheLicencesItsRulesAllow(t *testing.T) {
 
 	sim, err := bank.SimulateAgentRules(ctx, buyer, buyer20, economy.SimulatedRequest{AmountULXC: 25_000_000,
 		Payee: &economy.Payee{Kind: "listing", ID: l.ID}, Licence: &economy.Commitment{Kind: OfferRent, Licence: LicenceEnterprise}})
-	if err != nil || sim.Verdict != "refused" || !strings.Contains(sim.Reason, "the most one licence may commit it to is $2.00 (20 LXC)") {
+	if err != nil || sim.Verdict != "refused" || !strings.Contains(sim.Reason, "the most one licence may commit it to is $2.00") {
 		t.Fatalf("simulating the 25 LXC rent = %+v, %v; want refused naming the commitment", sim, err)
 	}
 }

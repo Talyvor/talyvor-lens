@@ -39,7 +39,7 @@ LEAK = "TestPublicNodeDiscovery_DoesNotNameTheOwnerOrItsEndpoint"
 LEAK_EMBED = "TestPublicEmbeddingNodeDiscovery_DoesNotNameTheOwnerOrItsEndpoint"
 CHOOSE = "TestPublicNodeDiscovery_StillAnswersWhichNodeToChoose"
 OWNER = "TestOwnerScopedNodeShapeStillCarriesURLAndWorkspace"
-SECRET = "TestNodeSecretHashIsNeverMarshalled"
+HASH_GUARD = "TestNodeSecretHashIsNeverMarshalled"
 MOUNT = "TestPublicDiscoveryRoutesAreRegisteredWithoutAuth"
 ONLYPROJ = "TestAvailableNodeListersAreReachedOnlyThroughTheProjection"
 
@@ -135,7 +135,7 @@ CONTROLS = [
 
     ("C11", "drop the `json:\"-\"` that keeps the node secret hash off the wire",
      [(EMBED, '\tNodeSecretHash string `json:"-"`', '\tNodeSecretHash string `json:"node_secret_hash"`')],
-     LENSPKG, SECRET, LENSPKG, CHOOSE),
+     LENSPKG, HASH_GUARD, LENSPKG, CHOOSE),
 
     ("C12", "the OWNER's shape loses its url — narrowing must not be allowed to spread",
      [(COMPUTE, '\tURL           string    `json:"url"`', '\tURL           string    `json:"-"`')],

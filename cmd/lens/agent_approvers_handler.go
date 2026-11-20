@@ -26,6 +26,9 @@ import (
 //	DELETE /v1/workspaces/{wsID}/agents/{id}/approver    take it away, at once
 //	GET    /v1/workspaces/{wsID}/agents/approvals/{approvalID}/evidence   the owner's closed mandate, or the agent's
 //	                                                     evidence and the open mandate it ran under
+//	GET    /v1/workspaces/{wsID}/agents/payment-proofs/{id}   the record of one payment the rules let through (B62.1), by its
+//	                                                     id, the payment's reference or its money entry: what the owner
+//	                                                     was shown and signed, the rule, the key, what was sent, verified
 //
 // the approver agent, by its own key only:
 //
@@ -43,6 +46,7 @@ type approverBank interface {
 	RemoveAgentApprover(ctx context.Context, workspaceID, agentID string) error
 	ApproveAsAgent(ctx context.Context, workspaceID, approverID, approvalID string) (economy.AgentApproval, error)
 	ApprovalEvidence(ctx context.Context, workspaceID, approvalID string) (economy.ApprovalEvidence, error)
+	PaymentProof(ctx context.Context, workspaceID, id string) (economy.PaymentProof, error)
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
 }
 
@@ -143,6 +147,19 @@ func mountAgentApproverRoutes(r chi.Router, bank approverBank, cards approverCar
 			"approved_by_agent_id": e.ApprovedByAgentID, "agent_evidence": e.AgentEvidence, "approver_mandate": e.ApproverMandate,
 			"jwks_url": "/.well-known/talyvor-ap2/jwks.json"})
 	})
+	// B62.1: the record of one payment the rules let through — what the owner was shown and signed, and what was sent.
+	r.Get("/v1/workspaces/{wsID}/agents/payment-proofs/{id}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		p, err := bank.PaymentProof(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "id"))
+		if errors.Is(err, economy.ErrPaymentProofNotFound) {
+			writeJSONErr(w, http.StatusNotFound, "no payment of this workspace has a record by that id")
+			return
+		}
+		if err != nil {
+			writeApproverErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, p)
+	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/approvals/{approvalID}/approve", func(w http.ResponseWriter, req *http.Request) {
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
 		// Only the approver's own key: the owner approves as the owner, on the approvals route, signed.

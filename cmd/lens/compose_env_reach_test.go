@@ -255,6 +255,10 @@ var credentialExemptions = map[string]string{
 	"LENS_COMPANIES_HOUSE_API_KEY": "B30.112's Companies House key reaches the process through env_file: lens.env, " +
 		"with LENS_PERSONA_API_KEY and for the same reason.",
 
+	"LENS_PASSCODE_SECRET": "B61.23's passcode secret reaches the process through env_file: lens.env, like " +
+		"LENS_PERSONA_API_KEY and for the same reason: an environment: entry would arrive as \"\" and override the " +
+		"lens.env value, so every passcode would answer 503 and nobody who has one could sign in by phone.",
+
 	"LENS_MONEY_SANDBOX_WEBHOOK_SECRET": "B46.3's money-layer sandbox webhook secret reaches the process through " +
 		"env_file: lens.env, like LENS_STRIPE_ISSUING_WEBHOOK_SECRET and for the same reason: an environment: entry " +
 		"would arrive as \"\" and override the lens.env value, so the sandbox would take no webhook.",

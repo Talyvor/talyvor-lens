@@ -25,6 +25,7 @@ import (
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/modelwatch"
+	"github.com/talyvor/lens/internal/phonesignin"
 	"github.com/talyvor/lens/internal/poolroyalty"
 	"github.com/talyvor/lens/internal/povi"
 	"github.com/talyvor/lens/internal/ratelimit"
@@ -124,6 +125,7 @@ var shipped = map[string]recorded{
 	"povi.DefaultTraceTTL":                        {povi.DefaultTraceTTL, 30 * time.Minute, "POVI trace TTL"},
 	"ratelimit.DefaultBurstMultiplier":            {ratelimit.DefaultBurstMultiplier, 1.5, "burst multiplier"},
 	"tenant.DefaultRetentionDays":                 {tenant.DefaultRetentionDays, 90, "data retention"},
+	"phonesignin.DefaultTextsPerAddressHour":      {phonesignin.DefaultTextsPerAddressHour, 5, "texted sign-in codes one address may ask for in an hour, until Nicolai sets it"},
 	"workspace.DefaultCompressionPolicy":          {workspace.DefaultCompressionPolicy, workspace.CompressionDisabled, "compression default"},
 	"workspace.DefaultDistillPolicy":              {workspace.DefaultDistillPolicy, workspace.DistillAlways, "distill default"},
 	"workspace.DefaultTarePolicy":                 {workspace.DefaultTarePolicy, workspace.TareAlways, "tare default"},

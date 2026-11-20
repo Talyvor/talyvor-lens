@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/storedanswers"
 )
 
@@ -26,8 +28,13 @@ import (
 //	                          agent account's payment reference; mode TEST for details the Test partner made up
 //	POST /v1/money/accounts/{id}/test-money {amount_minor, idempotency_key} — B17.255: the owner or an admin puts
 //	                          test money into a company account, a payment in from the Test partner
-//	GET  /v1/money/accounts/{id}/statement?from=&to=&format=json|csv — B56.14: every posting to it in [from, to), with
-//	                          the opening, in, out and closing balances
+//	POST /v1/money/accounts/{id}/funding {direction, amount_minor, idempotency_key, funding} — B61.66: the owner or an
+//	                          admin moves money now between the company's account and this agent account in its
+//	                          currency: direction to_agent gives the agent money, to_company takes it back
+//	GET  /v1/money/accounts/{id}/statement?from=&to=&format=json|csv|pdf — B56.14: every posting to it in [from, to),
+//	                          with the opening, in, out and closing balances; ?month=YYYY-MM is that calendar month, so
+//	                          far if it is this one (B30.23), and the PDF carries the account's details once a partner
+//	                          has given real ones
 //	GET  /v1/money/overview   ?agent_id= — B30.28: the cash view: totals per currency for the company and each agent,
 //	                          money in and out this month, the next 30 days of standing orders and mandates, the runway
 //
@@ -40,6 +47,7 @@ type moneyAccountBank interface {
 	CurrencyAccounts(ctx context.Context, workspaceID, agentID string) ([]economy.CurrencyAccount, error)
 	CurrencyAccountDetails(ctx context.Context, workspaceID, agentID, accountID string) (economy.CurrencyAccountDetails, error)
 	AddTestMoney(ctx context.Context, workspaceID, accountID string, amountMinor int64, key string) (economy.MoneyEntry, error)
+	MoveAgentMoney(ctx context.Context, workspaceID, agentAccountID, direction string, amountMinor int64, funding, key, by string) (economy.AgentFunding, error)
 	AccountStatement(ctx context.Context, workspaceID, agentID, accountID string, from, to time.Time) (economy.MoneyStatement, error)
 	MoneyOverview(ctx context.Context, workspaceID, agentID string, now time.Time) (economy.MoneyOverview, error)
 }
@@ -81,6 +89,7 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		}
 		a, err := bank.OpenCurrencyAccount(req.Context(), ws, agentID, in.Currency, in.Funding)
 		switch {
+		case writeMoneyKindRefusal(w, err): // B59.42
 		case errors.Is(err, economy.ErrCurrencyAccount):
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, economy.ErrAgentNotFound):
@@ -145,14 +154,47 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONOK(w, http.StatusCreated, e)
 		}
 	})
+	r.Post("/v1/money/accounts/{id}/funding", func(w http.ResponseWriter, req *http.Request) {
+		ws, _ := auth.WorkspaceIdentity(req.Context())
+		by, owner := storedanswers.OwnerOrAdmin(req.Context())
+		if ws == "" || !owner {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may move money between the company and an agent")
+			return
+		}
+		var in struct {
+			Direction      string `json:"direction"`
+			AmountMinor    int64  `json:"amount_minor"`
+			IdempotencyKey string `json:"idempotency_key"`
+			Funding        string `json:"funding"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"direction": "to_agent|to_company", "amount_minor": <positive>, "idempotency_key": "<key>", "funding": "test|live"}`)
+			return
+		}
+		f, err := bank.MoveAgentMoney(req.Context(), ws, chi.URLParam(req, "id"), in.Direction, in.AmountMinor, in.Funding, in.IdempotencyKey, by)
+		switch {
+		case errors.Is(err, economy.ErrAgentFunding):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentFundingShort):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writePaymentErr(w, err)
+		default:
+			writeJSONOK(w, http.StatusCreated, f)
+		}
+	})
 	r.Get("/v1/money/accounts/{id}/statement", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req, "")
 		if !ok {
 			return
 		}
-		from, to, format, err := statementPeriod(req, time.Now())
-		if err == nil && format != "json" && format != "csv" {
-			err = errors.New("format must be json or csv")
+		now := time.Now()
+		from, to, format, err := statementPeriod(req, now)
+		if err == nil && format != "json" && format != "csv" && format != "pdf" {
+			err = errors.New("format must be json, csv or pdf")
+		}
+		if m := req.URL.Query().Get("month"); err == nil && m != "" {
+			from, to, err = statementMonth(m, req.URL.Query().Has("from") || req.URL.Query().Has("to"), now)
 		}
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
@@ -166,6 +208,17 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
+		case format == "pdf":
+			// The details a payer pays into, only once a partner has given real ones: an account it cannot give them for
+			// (the Test partner's, a closed one) is still stated, without them.
+			d, derr := bank.CurrencyAccountDetails(req.Context(), ws, agentID, st.AccountID)
+			if derr != nil || d.Mode != economy.DetailsLive {
+				d = economy.CurrencyAccountDetails{}
+			}
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.pdf"`,
+				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
+			_, _ = w.Write(moneyStatementPDF(st, d)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		default:
 			writeMoneyStatement(w, st)
 		}
@@ -193,6 +246,64 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 	})
 }
 
+// statementMonth is ?month=YYYY-MM as a period: the calendar month in UTC, up to now if it is this one. It is not
+// asked with ?from= or ?to=.
+func statementMonth(month string, withPeriod bool, now time.Time) (from, to time.Time, err error) {
+	if withPeriod {
+		return from, to, errors.New("ask for a month or a period from and to, not both")
+	}
+	m, err := time.Parse("2006-01", month)
+	if err != nil {
+		return from, to, errors.New("month must be YYYY-MM")
+	}
+	from, to = m.UTC(), m.UTC().AddDate(0, 1, 0)
+	if now = now.UTC().Truncate(time.Microsecond); to.After(now) {
+		to = now
+	}
+	if !from.Before(to) {
+		return from, to, errors.New("that month has not begun")
+	}
+	return from, to, nil
+}
+
+// moneyStatementPDF is a currency account's period as a document (B30.23): the account and, once a partner has given
+// them, its details; its opening, in, out and closing; then row for row the CSV, each line with who it was with, its
+// reference, where it stands and the balance after it.
+func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetails) []byte {
+	money := func(minor int64) string { return economy.Money(minor, st.Currency) }
+	title := st.From.UTC().Format("2 Jan 2006") + " – " + st.To.UTC().Format("2 Jan 2006")
+	if st.From.Equal(time.Date(st.From.Year(), st.From.Month(), 1, 0, 0, 0, 0, time.UTC)) && !st.To.After(st.From.AddDate(0, 1, 0)) {
+		title = st.From.UTC().Format("January 2006")
+	}
+	name := cmp.Or(st.Name, "Company")
+	if st.Name == "" && st.AgentID != "" {
+		name = "Agent " + st.AgentID
+	}
+	t := market.PDFTable{Label: "ACCOUNT STATEMENT", Title: title,
+		Lines: []string{fmt.Sprintf("%s · %s account %s", name, st.Currency, st.AccountID)},
+		Columns: []market.PDFColumn{{Name: "DATE", Width: 58}, {Name: "WHAT", Width: 66}, {Name: "WITH", Width: 92},
+			{Name: "REFERENCE", Width: 82}, {Name: "STATE", Width: 52}, {Name: "AMOUNT", Width: 74, Right: true},
+			{Name: "BALANCE", Width: 75.28, Right: true}},
+		Footer: "Times are UTC. Amounts are in " + st.Currency + "."}
+	for _, l := range [][2]string{{"Account holder", d.Holder}, {"Sort code", d.SortCode}, {"Account number", d.AccountNumber},
+		{"IBAN", d.IBAN}, {"BIC", d.BIC}, {"Routing number", d.RoutingNumber}, {"Payment reference", d.PaymentReference}} {
+		if l[1] != "" {
+			t.Lines = append(t.Lines, l[0]+" "+l[1])
+		}
+	}
+	t.Lines = append(t.Lines,
+		fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04")),
+		fmt.Sprintf("Opening %s · In %s · Out %s · Closing %s", money(st.OpeningMinor), money(st.InMinor), money(-st.OutMinor), money(st.ClosingMinor)))
+	day := func(at time.Time) string { return at.UTC().Format("2 Jan 15:04") }
+	t.Rows = append(t.Rows, []string{day(st.From), "opening", "", "", "", "", money(st.OpeningMinor)})
+	for _, l := range st.Lines {
+		t.Rows = append(t.Rows, []string{day(l.At), l.Kind, l.Counterparty, cmp.Or(l.Memo, l.PartnerRef), l.State,
+			money(l.AmountMinor), money(l.BalanceAfterMinor)})
+	}
+	t.Rows = append(t.Rows, []string{day(st.To), "closing", "", "", "", "", money(st.ClosingMinor)})
+	return t.PDF()
+}
+
 // writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,
 // then the closing balance, in the currency's minor units.
 func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
@@ -203,12 +314,13 @@ func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
 	cw := csv.NewWriter(w)
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor"})
-	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor)})
+	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor", "task", "state"})
+	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor), "", ""})
 	for _, l := range st.Lines {
 		_ = cw.Write([]string{l.EntryID, strconv.Itoa(l.Line), at(l.At), l.Kind, i64(l.AmountMinor), st.Currency, l.Funding,
-			csvText(l.Counterparty), csvText(l.Memo), csvText(l.PartnerRef), i64(l.BalanceAfterMinor)})
+			csvText(l.Counterparty), csvText(l.Memo), csvText(l.PartnerRef), i64(l.BalanceAfterMinor),
+			csvText(economy.TaskShown(l.Task)), l.State}) // B62.2: what the agent said, never as a fact
 	}
-	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor)})
+	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor), "", ""})
 	cw.Flush()
 }

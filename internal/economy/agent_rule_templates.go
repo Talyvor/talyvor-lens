@@ -17,15 +17,21 @@ type RuleTemplate struct {
 // ruleTemplate is the template's rules with every rule named: those it sets, and no rule for the rest.
 func ruleTemplate(id, name, summary string, set func(*AgentRules)) RuleTemplate {
 	var hourly, weekly, rpm, commitment, fxDaily int64
-	var maySubscribe bool
+	var maySubscribe, mayInstant bool
 	r := AgentRules{HourlyLimitULXC: &hourly, WeeklyLimitULXC: &weekly, RequestsPerMinute: &rpm,
 		AllowedModels: []string{}, AllowedProviders: []string{}, AllowedListings: []string{},
 		AllowedPayees: []string{}, BlockedPayees: []string{}, ModelDailyLimitsULXC: map[string]int64{},
 		PayeeDailyLimitsULXC: map[string]int64{}, Timezone: "UTC",
 		MaxCommitmentULXC: &commitment, AllowedLicences: []string{}, MaySubscribe: &maySubscribe,
 		PayeeMonthlyLimitsULXC: map[string]int64{}, PayeeAllowances: map[string]PayeeAllowance{},
-		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily}
+		AllowedCurrencies: []string{}, FXDailyLimitULXC: &fxDaily, MayInstantTransfer: &mayInstant,
+		PayeeDailyLimitsMinor: map[string]int64{}, PayeeMonthlyLimitsMinor: map[string]int64{}, FXDailyLimitMinor: new(int64),
+		AllowedMerchantCategories: []string{}, BlockedMerchantCategories: []string{}}
 	set(&r)
+	// B61.12: the same limits held in dollars at the peg, the currency the rules are judged in.
+	r.Currency, r.MaxPerPaymentMinor, r.DailyLimitMinor = CurrencyUSD, centsAtPeg(r.MaxPerRequestULXC), centsAtPeg(r.DailyLimitULXC)
+	r.MonthlyLimitMinor, r.ApprovalAboveMinor = centsAtPeg(r.MonthlyLimitULXC), centsAtPeg(r.ApprovalAboveULXC)
+	r.HourlyLimitMinor, r.WeeklyLimitMinor = centsAtPegOf(r.HourlyLimitULXC), centsAtPegOf(r.WeeklyLimitULXC)
 	return RuleTemplate{ID: id, Name: name, Summary: summary, Rules: r}
 }
 
@@ -41,7 +47,7 @@ func RuleTemplates() []RuleTemplate {
 				r.MonthlyLimitULXC, r.ApprovalAboveULXC, r.PauseOnUnusualSpend = 4000*oneLXC, 5*oneLXC, true
 			}),
 		ruleTemplate("researcher", "Researcher",
-			"Reads and writes long documents in bursts: room for large requests, a weekly budget, and a person asked above 20 LXC.",
+			"Reads and writes long documents in bursts: room for large requests, a weekly budget, and a person asked above $2.",
 			func(r *AgentRules) {
 				r.MaxPerRequestULXC, r.DailyLimitULXC, *r.WeeklyLimitULXC = 10*oneLXC, 300*oneLXC, 1000*oneLXC
 				r.MonthlyLimitULXC, r.ApprovalAboveULXC = 3000*oneLXC, 20*oneLXC

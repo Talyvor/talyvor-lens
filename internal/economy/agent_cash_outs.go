@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -115,7 +114,9 @@ func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentI
 	case s.cashOutPartner == nil:
 		return CashOut{}, ErrNoCashOutPartner
 	}
-	c := CashOut{ID: "cash_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: agentID, AmountULXC: amount,
+	// B28.72: with an Idempotency-Key the cash-out's id is the key's, so a retry finds the cash-out it first asked for.
+	id, keyed := keyedID(ctx, "cash_", "agent_cash_out", workspaceID, agentID)
+	c := CashOut{ID: id, WorkspaceID: workspaceID, AgentID: agentID, AmountULXC: amount,
 		AmountUUSD: amount / ULXCPerUSDMicro, Destination: destination, Partner: s.cashOutPartner.Name(), Status: "held"}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -124,6 +125,22 @@ func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentI
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return CashOut{}, err
+	}
+	// B28.72: under the agent's lock, a cash-out already asked for under this id is a retry: the same one answers as
+	// asked and moves nothing, another is refused.
+	if keyed {
+		var amountWas int64
+		var destinationWas string
+		err := tx.QueryRow(ctx, `SELECT amount_ulxc, destination FROM agent_cash_outs WHERE id = $1`, c.ID).Scan(&amountWas, &destinationWas)
+		switch {
+		case err == nil && (amountWas != amount || destinationWas != destination):
+			return CashOut{}, ErrIdempotencyKeyReused
+		case err == nil:
+			_ = tx.Rollback(ctx)
+			return s.getCashOut(ctx, workspaceID, c.ID)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return CashOut{}, fmt.Errorf("economy: earlier cash-out: %w", err)
+		}
 	}
 	if err := refuseIfPaused(ctx, tx, agentID); err != nil {
 		return CashOut{}, err

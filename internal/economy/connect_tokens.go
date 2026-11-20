@@ -25,6 +25,19 @@ var (
 
 type connectClientKey struct{}
 
+type connectPrepareKey struct{}
+
+// WithConnectPrepareOnly marks a payment as made on a payments:prepare Connect token (B52.41): the agent's rules judge it
+// as ever, and then it always waits for the owner's approval, whatever their approval amount allows.
+func WithConnectPrepareOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, connectPrepareKey{}, true)
+}
+
+func prepareOnly(ctx context.Context) bool {
+	on, _ := ctx.Value(connectPrepareKey{}).(bool)
+	return on
+}
+
 // WithConnectClient marks a payment as made by the assistant clientID, so the approval it files counts against
 // ConnectApprovalsWaiting.
 func WithConnectClient(ctx context.Context, clientID string) context.Context {

@@ -155,6 +155,11 @@ type PaymentRequest struct {
 	Items       []PaymentRequestItem `json:"items"`
 	CreatedAt   time.Time            `json:"created_at"`
 	CancelledAt *time.Time           `json:"cancelled_at,omitempty"`
+	// B57.148: when it was decided — the signed approval kept, the request cancelled, or its approval life run out.
+	DecidedAt *time.Time `json:"decided_at,omitempty"`
+	// B57.161: how it was decided, in words — "Approved and paid", "Approved" while what it approved is not all paid,
+	// "Declined" or "Expired"; "" while it waits.
+	Decision string `json:"decision,omitempty"`
 	// B45.29: set on an outside agent's request — "Verified agent of <business>", "Signed by <domain> (business not
 	// checked)" or "Unverified agent", for the approval card.
 	AgentTrust json.RawMessage `json:"agent_trust,omitempty"`
@@ -213,7 +218,7 @@ func (in *PaymentRequestIn) normalise() (kind string, err error) {
 		it := &in.Items[i]
 		it.PayeeID, it.ListingID, it.Reference = strings.TrimSpace(it.PayeeID), strings.TrimSpace(it.ListingID), strings.TrimSpace(it.Reference)
 		it.BillID = strings.TrimSpace(it.BillID)
-		it.Currency = strings.ToUpper(strings.TrimSpace(it.Currency))
+		it.Currency = strings.TrimSpace(it.Currency)
 		if len(it.Reference) > 140 {
 			return bad("item %d: a reference is up to 140 characters", i+1)
 		}
@@ -239,6 +244,10 @@ func (in *PaymentRequestIn) normalise() (kind string, err error) {
 		case it.AmountMinor <= 0:
 			return bad("item %d: amount_minor must be more than 0", i+1)
 		default:
+			// B50.55: the currency as Lens holds it, never a mis-cased one read as it.
+			if _, ok := MoneyCurrencies[strings.ToUpper(it.Currency)]; ok && it.Currency != strings.ToUpper(it.Currency) {
+				return bad("item %d: write the currency as %q, not %q", i+1, strings.ToUpper(it.Currency), it.Currency)
+			}
 			if _, ok := MoneyCurrencies[it.Currency]; !ok {
 				return bad("item %d: %q is not a currency Talyvor holds", i+1, it.Currency)
 			}
@@ -594,15 +603,26 @@ const (
 	requestExpired4 = `(r.status = 'pending_approval' AND r.created_at <= now() - $4 * interval '1 microsecond')`
 )
 
+// requestDecidedAt3 is when r was decided (B57.148): when its signed approval was kept, when it was cancelled, or when
+// its approval life ($3 microseconds, $4 in requestDecidedAt4) ran out unanswered; NULL while it waits.
+const (
+	requestDecidedAt3 = `(CASE WHEN r.status = 'approved' THEN (SELECT a.approved_at FROM payment_request_approvals a WHERE a.request_id = r.id)
+		WHEN r.status = 'cancelled' THEN r.cancelled_at
+		WHEN ` + requestExpired3 + ` THEN r.created_at + $3 * interval '1 microsecond' END)`
+	requestDecidedAt4 = `(CASE WHEN r.status = 'approved' THEN (SELECT a.approved_at FROM payment_request_approvals a WHERE a.request_id = r.id)
+		WHEN r.status = 'cancelled' THEN r.cancelled_at
+		WHEN ` + requestExpired4 + ` THEN r.created_at + $4 * interval '1 microsecond' END)`
+)
+
 // PaymentRequest reads one of workspaceID's requests; agentID, when not "", only one that agent prepared. An outside
 // agent's request to the agent is its owner's alone to read, approve, cancel or pay (B54.10). One nobody answered
 // within an approval's life reads expired: it can no longer be approved or paid (B55.9).
 func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentID, id string) (PaymentRequest, error) {
 	var r PaymentRequest
 	err := s.pool.QueryRow(ctx, `SELECT id, kind, CASE WHEN `+requestExpired4+` THEN 'expired' ELSE status END, client, agent_id,
-		canonical, payload_hash, created_at, cancelled_at, agent_trust FROM payment_requests r WHERE id = $1 AND workspace_id = $2
-		AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL))`, id, workspaceID, agentID, s.approvalLife().Microseconds()).
-		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.AgentTrust)
+		canonical, payload_hash, created_at, cancelled_at, `+requestDecidedAt4+`, agent_trust FROM payment_requests r WHERE id = $1
+		AND workspace_id = $2 AND ($3 = '' OR (agent_id = $3 AND agent_trust IS NULL))`, id, workspaceID, agentID, s.approvalLife().Microseconds()).
+		Scan(&r.ID, &r.Kind, &r.Status, &r.Client, &r.AgentID, &r.Canonical, &r.PayloadHash, &r.CreatedAt, &r.CancelledAt, &r.DecidedAt, &r.AgentTrust)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrPaymentRequestNotFound
 	}
@@ -634,7 +654,35 @@ func (s *DualTokenStore) PaymentRequest(ctx context.Context, workspaceID, agentI
 	}
 	r.ApprovalURL, r.DeepLink = ApprovalURLBase+r.ID, ApprovalDeepURL+r.ID
 	r.Summary = paymentRequestSummary(r, counts)
+	r.Decision = paymentRequestDecision(r)
 	return r, nil
+}
+
+// paymentRequestDecision says how r was decided (B57.161): approved, and paid once every item it approved is paid;
+// declined when cancelled; expired when its approval life ran out unanswered. "" while it waits.
+func paymentRequestDecision(r PaymentRequest) string {
+	switch r.Status {
+	case "cancelled":
+		return "Declined"
+	case "expired":
+		return "Expired"
+	case "approved":
+		paid := false
+		for _, it := range r.Items {
+			if it.Decision == ItemBlocked || it.PayStatus == PayNotApproved {
+				continue
+			}
+			if it.PaymentID == "" {
+				return "Approved"
+			}
+			paid = true
+		}
+		if paid {
+			return "Approved and paid"
+		}
+		return "Approved"
+	}
+	return ""
 }
 
 // paymentRequestSummary heads the request for a person: "Pay Acme Hosting $340.00", or "Pay 3 payments, $1,240.00: 2
@@ -687,6 +735,32 @@ func (s *DualTokenStore) PendingPaymentRequests(ctx context.Context, workspaceID
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return nil, fmt.Errorf("economy: pending payment requests: %w", err)
+	}
+	out := []PaymentRequest{}
+	for _, id := range ids {
+		r, err := s.PaymentRequest(ctx, workspaceID, agentID, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// DecidedPaymentRequests lists workspaceID's requests that were approved, cancelled or expired, the newest decision
+// first and at most 20 (B57.161), each as PaymentRequest reads it with its decided_at and decision; agentID, when not
+// "", only that agent's (B57.148). Nothing here moves money.
+func (s *DualTokenStore) DecidedPaymentRequests(ctx context.Context, workspaceID, agentID string) ([]PaymentRequest, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM payment_requests r WHERE workspace_id = $1 AND (status IN ('approved', 'cancelled')
+		OR `+requestExpired3+`) AND ($2 = '' OR (agent_id = $2 AND agent_trust IS NULL))
+		ORDER BY `+requestDecidedAt3+` DESC NULLS LAST, id DESC LIMIT 20`,
+		workspaceID, agentID, s.approvalLife().Microseconds())
+	if err != nil {
+		return nil, fmt.Errorf("economy: decided payment requests: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("economy: decided payment requests: %w", err)
 	}
 	out := []PaymentRequest{}
 	for _, id := range ids {

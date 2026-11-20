@@ -141,6 +141,8 @@ func (r *Registry) Configure(s Service, adapter any) error {
 		_, ok = adapter.(TaxPartner)
 	case ServiceAccountInfo:
 		_, ok = adapter.(AccountInfoPartner)
+	case ServiceTextMessages:
+		_, ok = adapter.(TextSender)
 	default:
 		return fmt.Errorf("partners: no service is called %q", s)
 	}

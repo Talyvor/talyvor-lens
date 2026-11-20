@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -37,17 +40,23 @@ const stepUpHeader = "X-Talyvor-Step-Up"
 // stepUpVerifier is *stepup.Verifier.
 type stepUpVerifier interface {
 	Verify(ctx context.Context, operator, code string) error
+	RecordLock(ctx context.Context, operator, target string) error
 }
 
 // requireStepUp gates an operator's compliance action: the global admin key, the operator named in
 // X-Talyvor-Operator — the audit row's who — and a current step-up code in X-Talyvor-Step-Up, which nobody has used
 // yet: one code, one action. A valid
-// admin key without a good code is 403, so the web app knows to ask for one; no step-up secret set is 503.
+// admin key without a good code is 403, so the web app knows to ask for one; no step-up secret set is 503. After five
+// wrong codes every step-up action is 429 with Retry-After for the wait, a good code included (B28.461), and the wrong
+// code that began the wait writes its operator_audit row.
 //
 // FAILS CLOSED like requireAdmin: missing, invalid or nil ⇒ 401; a moderator key or the operator read key ⇒ refused.
 func requireStepUp(am adminAuthenticator, v stepUpVerifier, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actx, err := am.Authenticate(r)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if refuseModerator(w, actx, err) {
 			return
 		}
@@ -60,9 +69,19 @@ func requireStepUp(am adminAuthenticator, v stepUpVerifier, next http.Handler) h
 			writeJSONErr(w, http.StatusBadRequest, "a compliance action names the operator who takes it in "+moderatorOperatorHeader)
 			return
 		}
+		var locked *stepup.ErrLocked
 		switch err := v.Verify(r.Context(), operator, r.Header.Get(stepUpHeader)); {
 		case errors.Is(err, stepup.ErrNotConfigured):
 			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		case errors.As(err, &locked):
+			if locked.Started {
+				if rerr := v.RecordLock(r.Context(), operator, r.Method+" "+r.URL.Path); rerr != nil {
+					slog.Error("stepup: the audit row for the wait could not be written", "operator", operator, "err", rerr)
+				}
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(locked.RetryAfter.Seconds()))))
+			writeJSONErr(w, http.StatusTooManyRequests, err.Error())
 			return
 		case err != nil:
 			writeJSONErr(w, http.StatusForbidden, "step-up required: "+err.Error()+" (send the code from your authenticator app in "+stepUpHeader+")")

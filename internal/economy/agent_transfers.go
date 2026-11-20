@@ -36,6 +36,9 @@ var ErrOwnerUnverified = errors.New("economy: both agents' owners must be verifi
 // ErrRequestNotFound: no such request, or not one this workspace can act on.
 var ErrRequestNotFound = errors.New("economy: no such money request")
 
+// ErrRequestNotYours: a request made of another agent than the one a Connect token pays from (B52.41).
+var ErrRequestNotYours = errors.New("economy: this connection may pay only requests made of its own agent")
+
 // ErrTransferNotFound: no such transfer received by this workspace.
 var ErrTransferNotFound = errors.New("economy: no such transfer")
 
@@ -260,7 +263,7 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 		t.ID = "xfer_" + uuid.NewString()
 	}
 	if judged {
-		if err := enforceAgentRules(ctx, tx, t.FromWorkspaceID, t.FromAgentID, t.AmountULXC, t.ID); err != nil {
+		if err := s.enforceAgentRules(ctx, tx, t.FromWorkspaceID, t.FromAgentID, t.AmountULXC, t.ID); err != nil {
 			return t, err
 		}
 	}
@@ -284,6 +287,12 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 	// B22.1: an uncleared AMBER transfer takes test-funded credits only, or is refused naming the class.
 	if _, err := spendForCapability(ctx, tx, t.FromWorkspaceID, capability, t.AmountULXC); err != nil {
 		return t, err
+	}
+	// B61.52: and no transfer, between one owner's own agents included, leaves an account that has not confirmed who it is.
+	if c, ok := CapabilityByKey(capability); ok {
+		if err := refuseUnconfirmedAnyClass(ctx, tx, t.FromWorkspaceID, c); err != nil {
+			return t, err
+		}
 	}
 	if t.ToWorkspaceID != t.FromWorkspaceID {
 		// B30.8: credits leave or enter a frozen workspace for no other one, whatever the class — the same owner's
@@ -318,8 +327,8 @@ func (s *DualTokenStore) transferTx(ctx context.Context, tx pgx.Tx, t AgentTrans
 		ws, account string
 		amount      int64
 	}{{t.FromWorkspaceID, agentAccount(t.FromAgentID), -t.AmountULXC}, {t.ToWorkspaceID, agentAccount(t.ToAgentID), t.AmountULXC}} {
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref) VALUES ($1, $2, $3, $4, 'transfer', $5)`,
-			entry, p.ws, p.account, p.amount, t.ID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO agent_postings (entry_id, workspace_id, account, amount_ulxc, kind, ref, task) VALUES ($1, $2, $3, $4, 'transfer', $5, $6)`,
+			entry, p.ws, p.account, p.amount, t.ID, postingTask(ctx, p.ws, p.account, p.amount)); err != nil {
 			return t, fmt.Errorf("economy: post transfer: %w", err)
 		}
 	}
@@ -369,10 +378,25 @@ func (s *DualTokenStore) RequestCredits(ctx context.Context, workspaceID, agentI
 	if err := workspace.CheckMoneyWall(ctx, s.pool, workspaceID, payer.WorkspaceID); err != nil {
 		return MoneyRequest{}, err
 	}
+	// B28.72: with an Idempotency-Key the request's id is the key's, so a retry answers the request it first made.
+	id, keyed := keyedID(ctx, "mreq_", "money_request", workspaceID, agentID)
 	r, err := scanMoneyRequest(s.pool.QueryRow(ctx, `INSERT INTO agent_money_requests (id, from_workspace_id, from_agent_id, to_workspace_id,
 		to_agent_id, amount_ulxc, memo)
 		SELECT $1, a.workspace_id, a.id, $4, $5, $6, $7 FROM agent_accounts a WHERE a.id = $3 AND a.workspace_id = $2
-		RETURNING `+moneyRequestColumns, "mreq_"+uuid.NewString(), workspaceID, agentID, payer.WorkspaceID, payer.WalletID, amount, memo))
+		ON CONFLICT (id) DO NOTHING
+		RETURNING `+moneyRequestColumns, id, workspaceID, agentID, payer.WorkspaceID, payer.WalletID, amount, memo))
+	if keyed && errors.Is(err, pgx.ErrNoRows) {
+		was, werr := scanMoneyRequest(s.pool.QueryRow(ctx, `SELECT `+moneyRequestColumns+` FROM agent_money_requests
+			WHERE id = $1 AND from_workspace_id = $2`, id, workspaceID))
+		switch {
+		case werr == nil && (was.ToAgentID != payer.WalletID || was.AmountULXC != amount || was.Memo != memo):
+			return MoneyRequest{}, ErrIdempotencyKeyReused
+		case werr == nil:
+			return was, nil
+		case !errors.Is(werr, pgx.ErrNoRows):
+			return MoneyRequest{}, fmt.Errorf("economy: earlier request: %w", werr)
+		}
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrAgentNotFound
 	}
@@ -382,25 +406,52 @@ func (s *DualTokenStore) RequestCredits(ctx context.Context, workspaceID, agentI
 // AnswerMoneyRequest accepts (making the transfer, judged as the paying agent's spending) or declines a
 // request made to one of workspaceID's agents.
 func (s *DualTokenStore) AnswerMoneyRequest(ctx context.Context, workspaceID, requestID string, accept bool) (MoneyRequest, error) {
+	return s.answerMoneyRequest(ctx, workspaceID, requestID, accept, "")
+}
+
+// AcceptMoneyRequestFor accepts a request made of payerAgentID only (B52.41: a Connect token's own agent); one made of
+// another agent is ErrRequestNotYours. With an Idempotency-Key (WithMoveKey) the transfer is the key's, so a retry of
+// the request it accepted answers it as accepted and moves nothing.
+func (s *DualTokenStore) AcceptMoneyRequestFor(ctx context.Context, workspaceID, requestID, payerAgentID string) (MoneyRequest, error) {
+	if payerAgentID == "" {
+		return MoneyRequest{}, ErrRequestNotYours
+	}
+	return s.answerMoneyRequest(ctx, workspaceID, requestID, true, payerAgentID)
+}
+
+func (s *DualTokenStore) answerMoneyRequest(ctx context.Context, workspaceID, requestID string, accept bool, payerAgentID string) (MoneyRequest, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return MoneyRequest{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	r, err := scanMoneyRequest(tx.QueryRow(ctx, `SELECT `+moneyRequestColumns+` FROM agent_money_requests
-		WHERE id = $1 AND to_workspace_id = $2 AND status = 'pending' FOR UPDATE`, requestID, workspaceID))
+		WHERE id = $1 AND to_workspace_id = $2 FOR UPDATE`, requestID, workspaceID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrRequestNotFound
 	}
 	if err != nil {
 		return r, err
 	}
+	if payerAgentID != "" && r.ToAgentID != payerAgentID {
+		return MoneyRequest{}, ErrRequestNotYours
+	}
+	transferID := ""
+	if key, _ := ctx.Value(moveKeyKey{}).(string); key != "" {
+		transferID = "xfer_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte("money_request_accept\x00"+workspaceID+"\x00"+requestID+"\x00"+key)).String()
+	}
+	if r.Status != "pending" {
+		if transferID != "" && r.Status == "accepted" && r.TransferID == transferID {
+			return r, nil // the retry of the accept that paid it
+		}
+		return MoneyRequest{}, ErrRequestNotFound
+	}
 	status := "declined"
 	if accept {
 		status = "accepted"
 		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: paymentFingerprint(r.ToAgentID, r.FromAgentID, r.AmountULXC, r.Memo),
 			Payee: Payee{Kind: "agent", ID: r.FromAgentID}, Memo: r.Memo})
-		t, err := s.transferTx(ctx, tx, AgentTransfer{FromWorkspaceID: r.ToWorkspaceID, FromAgentID: r.ToAgentID,
+		t, err := s.transferTx(ctx, tx, AgentTransfer{ID: transferID, FromWorkspaceID: r.ToWorkspaceID, FromAgentID: r.ToAgentID,
 			ToWorkspaceID: r.FromWorkspaceID, ToAgentID: r.FromAgentID, AmountULXC: r.AmountULXC, Memo: r.Memo, RequestID: r.ID}, true)
 		if err != nil {
 			return r, s.refusedMovement(ctx, tx, err)

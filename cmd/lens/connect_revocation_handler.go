@@ -19,6 +19,9 @@ type connectRevoker interface {
 func newConnectRevocationHandler(authManager *auth.Manager, store connectRevoker) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		actx, err := authManager.Authenticate(req)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if err != nil || actx == nil || !actx.HasScope(auth.ScopeConnectMint) { // the global key passes HasScope too
 			writeJSONErr(w, http.StatusForbidden, "admin or Connect mint credentials required")
 			return

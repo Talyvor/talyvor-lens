@@ -23,6 +23,7 @@ func TestMoneyOverview_TotalsEqualTheLedgerBalances(t *testing.T) {
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b3028-overview"
+	confirmedAccounts(t, pool, ws, "ws-b3028-payee") // B61.52
 	store := economy.NewDualTokenStore(nil, pool, nil)
 	store.SetAccountPartners(partners.NewRegistry(nil))
 	store.SetScreener(screening.NewScreener(pool, partners.NewRegistry(nil)))

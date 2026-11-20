@@ -19,8 +19,12 @@ import (
 // Both are set when the workspace is made (migration 0373; the provision route names them). The type never changes.
 // The kind is the limit for its agents' wallet kinds (B48.1): a fiat workspace's agents are fiat, a stablecoin
 // workspace's crypto, and a hybrid workspace's agents may be any, a new one holding both a fiat and a stablecoin
-// balance. A single kind becomes hybrid at any time, and its agents then hold both; hybrid becomes a single kind only
-// once the other side's balances are all zero, and is refused naming them otherwise. Every change is in the audit trail.
+// balance.
+//
+// B61.6: the owner never changes the kind either. Another kind is another account, opened by signing up again; the
+// owner's route answers KindFixedSentence. Only the operator, for support, changes it (OperatorSetWorkspaceMoneyKind): a
+// single kind becomes hybrid at any time, and its agents then hold both; hybrid becomes a single kind only once the
+// other side's balances are all zero, and is refused naming them otherwise. Every change is in the audit trail.
 
 // The two account types.
 const (
@@ -46,6 +50,9 @@ var (
 	// ErrWorkspaceNotFound: no workspace by that id.
 	ErrWorkspaceNotFound = errors.New("economy: no such workspace")
 )
+
+// KindFixedSentence is the owner's answer to a change of the kind of money (B61.6).
+const KindFixedSentence = "An account's kind of money is fixed. Open another account to use another kind."
 
 // WorkspaceAccount is a workspace's type and kind of money, and the country and (a business's) registration number it
 // signed up with (B59.40), each "" when not given.
@@ -168,6 +175,38 @@ func checkAgentWalletKind(ctx context.Context, q interface {
 	return nil
 }
 
+// moneyKindOf is the kind of money that holds currency: stablecoin for USDC, fiat for every other.
+func moneyKindOf(currency string) string {
+	if currency == CurrencyUSDC {
+		return MoneyKindStablecoin
+	}
+	return MoneyKindFiat
+}
+
+// payeeMoneyKind is the kind of money a payee is paid in: stablecoin for a USDC address, fiat for a bank account.
+func payeeMoneyKind(p OutsidePayee) string {
+	if p.Address != "" {
+		return MoneyKindStablecoin
+	}
+	return MoneyKindFiat
+}
+
+// checkMoneySide refuses money of kind, fiat or stablecoin, in workspaceID unless its kind of money holds it (B59.42):
+// field names what named the money, its currency or its payee. A route of either side (B59.7) is judged here, where
+// the account, payee, payment or conversion is made, so every caller of it is.
+func checkMoneySide(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, workspaceID, field, kind string) error {
+	held, err := workspaceMoneyKind(ctx, q, workspaceID)
+	if err != nil {
+		return err
+	}
+	if held != MoneyKindHybrid && held != kind {
+		return &MoneyKindRefusal{Field: field, MoneyKind: held}
+	}
+	return nil
+}
+
 // WorkspaceAccount is workspaceID's type and kind of money, and its sign-up country and registration number.
 func (s *DualTokenStore) WorkspaceAccount(ctx context.Context, workspaceID string) (WorkspaceAccount, error) {
 	out := WorkspaceAccount{WorkspaceID: workspaceID}
@@ -182,11 +221,12 @@ func (s *DualTokenStore) WorkspaceAccount(ctx context.Context, workspaceID strin
 	return out, nil
 }
 
-// SetWorkspaceMoneyKind changes workspaceID's kind of money to kind, by the person by. A single kind becomes hybrid, and
-// every agent of it then holds both; hybrid becomes a single kind only while the other side holds nothing, its agents
-// then holding that kind alone. Any other change is refused with a *MoneyKindRefusal, as is one with money left on the
-// other side. Asking for the kind it has changes nothing.
-func (s *DualTokenStore) SetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, by string) (WorkspaceAccount, error) {
+// OperatorSetWorkspaceMoneyKind changes workspaceID's kind of money to kind, by the operator named operator, for
+// support (B61.6: the owner never does). A single kind becomes hybrid, and every agent of it then holds both; hybrid
+// becomes a single kind only while the other side holds nothing, its agents then holding that kind alone. Any other
+// change is refused with a *MoneyKindRefusal, as is one with money left on the other side. Asking for the kind it has
+// changes nothing.
+func (s *DualTokenStore) OperatorSetWorkspaceMoneyKind(ctx context.Context, workspaceID, kind, operator string) (WorkspaceAccount, error) {
 	if err := CheckMoneyKind(kind); err != nil {
 		return WorkspaceAccount{}, err
 	}
@@ -194,15 +234,17 @@ func (s *DualTokenStore) SetWorkspaceMoneyKind(ctx context.Context, workspaceID,
 	if err != nil {
 		return WorkspaceAccount{}, err
 	}
+	if was.MoneyKind != kind && kind != MoneyKindHybrid && was.MoneyKind != MoneyKindHybrid {
+		return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind} // fiat to stablecoin goes through hybrid
+	}
+	by := "operator:" + operator
 	switch {
 	case was.MoneyKind == kind:
 		return was, nil
 	case kind == MoneyKindHybrid:
 		return s.widenMoneyKind(ctx, was, by)
-	case was.MoneyKind == MoneyKindHybrid:
-		return s.narrowMoneyKind(ctx, was, kind, by)
 	}
-	return WorkspaceAccount{}, &MoneyKindRefusal{Field: "money_kind", MoneyKind: was.MoneyKind} // fiat to stablecoin goes through hybrid
+	return s.narrowMoneyKind(ctx, was, kind, by)
 }
 
 // widenMoneyKind makes was's workspace hybrid, and each of its agents both: a wallet an agent gains opens when it is
@@ -301,7 +343,8 @@ func (s *DualTokenStore) narrowMoneyKind(ctx context.Context, was WorkspaceAccou
 	return was, nil
 }
 
-// setMoneyKindTx records was's workspace as kind in tx, and the change, with the agents it changed, in the audit trail.
+// setMoneyKindTx records was's workspace as kind in tx, and the change, with the agents it changed and who changed it,
+// in the audit trail.
 func setMoneyKindTx(ctx context.Context, tx pgx.Tx, was WorkspaceAccount, kind, by string, agents []string) error {
 	tag, err := tx.Exec(ctx, `UPDATE workspaces SET money_kind = $2, updated_at = now() WHERE id = $1 AND money_kind = $3`,
 		was.WorkspaceID, kind, was.MoneyKind)

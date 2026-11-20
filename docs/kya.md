@@ -48,7 +48,10 @@ Claims:
 | `iat`, `nbf`, `exp` | issued, valid from, expires (seconds since the epoch). A credential lasts `LENS_KYA_CREDENTIAL_TTL`, 24 hours by default |
 | `agent.id`, `agent.name` | the agent |
 | `owner.workspace_id` | the workspace that owns the agent and answers for it |
+| `owner.kind` | `business` or `personal`: whether a company or a person answers for the agent |
 | `owner.name` | the name the owner's verification confirmed — a person's or a company's; absent before any |
+| `owner.country` | the country that check confirmed, ISO 3166-1 alpha-2 (`GB`); absent before any |
+| `owner.registration_number` | a company's registration number that check confirmed; absent for a person |
 | `owner.level` | the verification level the owner's checks reach: `L0` signed in, `L1` email and phone confirmed, `L2` identity checked, `L3` company checked (number, directors, people with significant control) |
 | `owner.live_level` | the level counting only checks by a real verification provider. Talyvor's test provider's passes count toward `level` and never toward `live_level` |
 | `capabilities` | every wallet capability, each with `money`: `live` when this agent may use it with real money now, `test` when it takes sandbox funds only |
@@ -76,7 +79,8 @@ An example payload:
   "jti": "kya_6f1c…",
   "iat": 1791460800, "nbf": 1791460800, "exp": 1791547200,
   "agent": { "id": "agt_3b9d…", "name": "Research bot" },
-  "owner": { "workspace_id": "ws_81a2…", "name": "Acme Ltd", "level": "L3", "live_level": "L3" },
+  "owner": { "workspace_id": "ws_81a2…", "kind": "business", "name": "Acme Ltd", "country": "GB",
+             "registration_number": "01234567", "level": "L3", "live_level": "L3" },
   "capabilities": [
     { "capability": "spend_on_talyvor", "money": "live" },
     { "capability": "fx", "money": "test" }
@@ -145,3 +149,48 @@ by as long as you cache the revocation list.
 
 Freezing, archiving and changing rules revoke the credential as they happen. After a rule change the agent's next
 credential states the new limits. A frozen agent is given a new credential once its owner resumes it.
+
+## In the Trusted Agent Protocol's form (B62.6)
+
+The same credential, for one request to one merchant, in the form Visa's Trusted Agent Protocol merchant
+specification publishes. The agent, or its owner, asks for it just before the request:
+
+    POST /v1/workspaces/{workspace}/agents/{agent}/credential/tap
+    {"authority": "shop.example", "path": "/checkout", "tag": "agent-payer-auth"}
+
+`tag` is `agent-browser-auth` while the agent browses and `agent-payer-auth` when it pays. The answer is what the agent
+sends with that request:
+
+- `signature_input` and `signature`: the `Signature-Input` and `Signature` headers, an RFC 9421 signature labelled
+  `sig2` over `"@authority"` and `"@path"`, with `created`, `expires` (8 minutes later, or when the credential expires
+  if sooner), `keyid`, `alg="Ed25519"`, a 64-byte `nonce` and the `tag`;
+- `agentic_consumer`: the Agentic Consumer Recognition Object for the request's body — `nonce` (the signature's),
+  `idToken`, `kid` (the signature's `keyid`), `alg` and `signature`.
+
+`idToken` is the credential as a JWT of `typ` `JWT+ext.id_token`, signed by Talyvor with the keys above: every claim
+of the credential, `aud` the merchant's origin (`https://shop.example`), `exp` the signature's, and `cnf.jwk` (RFC
+7800) the agent's own Ed25519 key, the one both signatures are made with. Its `jti` is the credential's, so revoking
+the credential revokes it.
+
+The object's `signature` is Ed25519, base64, over the compact JSON of its other four fields in the order above:
+`{"nonce":…,"idToken":…,"kid":…,"alg":…}`.
+
+### Checking one
+
+Offline: verify `idToken` with Talyvor's published keys and check its `aud` is your origin; take the agent's key from
+its `cnf.jwk`; check the object's signature and the request signature with that key, that `kid` and `keyid` are that
+key's thumbprint and the two nonces are one; that `expires - created` is at most 8 minutes and `expires` has not
+passed; and that you have not seen the nonce in the last 8 minutes. Then check the revocation list as above.
+
+Online, ask Talyvor, which does all of that and also checks the credential still says what is true:
+
+    POST /v1/kya/verify/tap
+    {"authority": "shop.example", "path": "/checkout", "signature_input": "…", "signature": "…",
+     "agentic_consumer": {"nonce": "…", "idToken": "…", "kid": "…", "alg": "Ed25519", "signature": "…"}}
+
+It answers `{"valid": true, "tag", "claims"}`, or `{"valid": false, "reason"}`. Each one verifies once: its nonce is
+then used.
+
+This form is signed by Talyvor, not by Visa: its keys are Talyvor's, not in Visa's key directory, and its ID token is
+Talyvor's, not one Visa issued.
+

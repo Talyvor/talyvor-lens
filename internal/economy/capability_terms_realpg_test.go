@@ -34,6 +34,7 @@ func TestCapabilityTerms_AConversionWaitsForItsTermsAndAgainForANewVersion(t *te
 	ctx := context.Background()
 	s := screenedStore(pool)
 	const ws = "ws-b309-fx"
+	sandboxConfirmed(t, pool, ws) // B61.52: they move money, so they have confirmed who they are
 	fx := CapabilityTermsTexts(capabilityterms.FS)[CapabilityFX]
 	if published, err := s.PublishFirstTerms(ctx, map[string]TermsText{CapabilityFX: fx}); err != nil || len(published) != 1 {
 		t.Fatalf("PublishFirstTerms = %v, %v; want fx published", published, err)

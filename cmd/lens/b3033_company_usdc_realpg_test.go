@@ -17,6 +17,7 @@ func TestB3033_ACompanyPaysAnApprovedUSDCAddressFromItsOwnAccountAndNeverAnUnlis
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const ws = "ws-b3033"
+	confirmedAccounts(t, pool, ws) // B61.52
 	const sanctioned = "0x00000000000000000000000000000000000bad02"
 	reg := partners.NewRegistry(nil)
 	screener := screening.NewScreener(pool, b487Screening{sanctioned: partners.AddressSanctioned})

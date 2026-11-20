@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/talyvor/lens/internal/fees"
 	"github.com/talyvor/lens/internal/partners"
 )
 
@@ -106,10 +105,10 @@ func (s *DualTokenStore) QuoteInternational(ctx context.Context, workspaceID str
 		return InternationalQuote{}, fmt.Errorf("%w: %s's account is in %s too, so this is not an international payment: POST /v1/money/payments pays it",
 			ErrOutsidePayment, payee.Name, deliver)
 	}
-	fee, ok := fees.Current().IntlPaymentFeeMinor[in.Currency]
-	if !ok {
-		return InternationalQuote{}, fmt.Errorf("%w: no international payment fee is set for %s (LENS_INTL_PAYMENT_FEE_MINOR), and one is never sent free",
-			ErrOutsidePayment, in.Currency)
+	// B61.58: free while the plan's international payments this month last, Fleet's 20% less; priced again when paid.
+	fee, _, err := paymentFee(ctx, s.pool, workspaceID, AllowanceInternational, in.Currency, time.Now())
+	if err != nil {
+		return InternationalQuote{}, err
 	}
 	if err := s.destinationAllowed(ctx, in.Funding, payee); err != nil {
 		return InternationalQuote{}, err
@@ -214,15 +213,37 @@ func routeAccount(ctx context.Context, tx pgx.Tx, workspaceID, currency, purpose
 	return id, nil
 }
 
+// partnerPostings are the postings of movements through a partner account, out or back, screened before the
+// transaction that posts them (B50.56).
+func (p OutsidePayment) partnerPostings(back bool) []MoneyPosting {
+	toPartner := p.AmountMinor + p.PartnerCostMinor
+	if back {
+		toPartner = -toPartner
+	}
+	through := []MoneyPosting{{AmountMinor: toPartner, Currency: p.Currency}}
+	if p.international() {
+		through = append(through, MoneyPosting{AmountMinor: -p.ArrivesMinor, Currency: p.ArrivesCurrency},
+			MoneyPosting{AmountMinor: p.ArrivesMinor, Currency: p.ArrivesCurrency})
+	}
+	return through
+}
+
 // movements are the postings that take p out (hold → the partner, and Talyvor's fee → revenue) and, for a returned
 // one, back (the partner → the account; the fee stays). An international payment posts the payee's currency too: what
 // arrives comes in from the route's conversion account and goes out through its payments account, each a partner
-// account the reconciliation (B30.11) finds no statement for.
+// account the reconciliation (B30.11) finds no statement for. Their postings through a partner are partnerPostings.
 func (s *DualTokenStore) movements(ctx context.Context, tx pgx.Tx, p OutsidePayment, partnerAccountID string) (out, back []MoneyPosting, err error) {
 	toPartner := p.AmountMinor + p.PartnerCostMinor
 	out = []MoneyPosting{{AccountID: p.holdAccountID, AmountMinor: -p.debit()}, {AccountID: partnerAccountID, AmountMinor: toPartner}}
 	back = []MoneyPosting{{AccountID: partnerAccountID, AmountMinor: -toPartner}, {AccountID: p.AccountID, AmountMinor: toPartner}}
 	if !p.international() {
+		if p.FeeMinor > 0 { // B61.58: a local payment's fee, after the plan's free ones
+			revenue, err := routeAccount(ctx, tx, p.WorkspaceID, p.Currency, MoneyRevenue, "", "Talyvor fees")
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, MoneyPosting{AccountID: revenue, AmountMinor: p.FeeMinor})
+		}
 		return out, back, nil
 	}
 	revenue, err := routeAccount(ctx, tx, p.WorkspaceID, p.Currency, MoneyRevenue, "", "Talyvor fees")

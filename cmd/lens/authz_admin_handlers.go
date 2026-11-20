@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -30,6 +31,9 @@ type adminAuthenticator interface {
 func requireAdmin(am adminAuthenticator, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actx, err := am.Authenticate(r)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if refuseModerator(w, actx, err) {
 			return
 		}
@@ -67,6 +71,9 @@ func isAdmin(am adminAuthenticator, r *http.Request) bool {
 func requireAdminOrOperatorRead(am adminAuthenticator, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actx, err := am.Authenticate(r)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if refuseModerator(w, actx, err) {
 			return
 		}
@@ -106,6 +113,17 @@ func refuseModerator(w http.ResponseWriter, actx *auth.AuthContext, err error) b
 	return true
 }
 
+// refuseAuthUnavailable answers 503 with Retry-After when the credential's store could not be asked
+// (B28.243), and reports whether it did. A database hiccup is not a wrong key: refusing it 401 or 403
+// tells a caller whose key is fine to sign in again.
+func refuseAuthUnavailable(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, auth.ErrAuthUnavailable) {
+		return false
+	}
+	auth.WriteAuthUnavailable(w)
+	return true
+}
+
 // moderatorUseRecorder is the slice of *moderatorkey.Store requireAdminOrModerator needs.
 type moderatorUseRecorder interface {
 	RecordUse(ctx context.Context, keyID int64, operator, method, path string) error
@@ -123,6 +141,9 @@ const moderatorOperatorHeader = "X-Talyvor-Operator"
 func requireAdminOrModerator(am adminAuthenticator, uses moderatorUseRecorder, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actx, err := am.Authenticate(r)
+		if refuseAuthUnavailable(w, err) {
+			return
+		}
 		if err != nil || actx == nil {
 			writeJSONErr(w, http.StatusUnauthorized, "admin credentials required")
 			return

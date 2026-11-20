@@ -101,6 +101,21 @@ WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT c.relispa
   AND a.attname LIKE '%workspace%' AND a.atttypid IN ('text'::regtype, 'varchar'::regtype)
 GROUP BY c.relname`
 
+// AccountHoldings is what workspace id holds of accountHoldings, read without its lock: a person's every account is
+// checked before any of them is deleted, and DeleteAccount checks each again under the lock.
+func (m *Manager) AccountHoldings(ctx context.Context, id string) ([]string, error) {
+	txer, ok := m.pool.(txBeginner)
+	if !ok {
+		return nil, fmt.Errorf("workspace: reading an account's holdings needs a database that begins transactions")
+	}
+	tx, err := txer.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("workspace: begin reading an account's holdings: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return holdings(ctx, tx, id)
+}
+
 // DeleteAccount deletes workspace id as described above. It returns ErrNoAccount for an unknown id and an
 // *AccountHoldsMoneyError when it holds money; either way nothing changes. beforeCommit, if set, ends what the
 // workspace has outside Postgres (its subscription in Stripe, its cached answers) once everything else is done and

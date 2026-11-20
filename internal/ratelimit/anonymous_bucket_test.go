@@ -13,7 +13,7 @@ import (
 // bucketed by its client IP, and a second IP has its own bucket.
 func TestAnonymousCallerIsBucketedByIPNotByWorkspaceHeader(t *testing.T) {
 	l, _ := setupLimiter(t, []RateRule{{RequestsPerMinute: 3}})
-	h := middleware.ClientIPFromXFF()(RateLimitMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})))
+	h := middleware.ClientIPFromXFF("10.0.0.0/8")(RateLimitMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})))
 	call := func(ip, ws string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/billing/webhook", nil)
 		req.RemoteAddr = "10.0.0.2:4000"
