@@ -103,14 +103,18 @@ func walletToolDefinitions() []map[string]any {
 	address := str("a wallet: its id, or its @handle")
 	accept := map[string]any{"type": "boolean", "description": "true to accept, false to decline"}
 	none := map[string]any{}
+	// B28.72: every wallet tool that moves credits or asks for them takes an idempotency_key.
+	key := func(what string) map[string]any {
+		return str("send the same key when you retry this exact " + what + ": it is made once. Without one, every call is its own " + what + ".")
+	}
 	return []map[string]any{
 		tool("wallet_send", "Send credits from your wallet to any agent's wallet on Talyvor, within your spending rules.",
 			map[string]any{"to": address, "amount_ulxc": amount, "memo": str("what it is for"), "idempotency_key": str(idempotencyKeyDescription)}, "to", "amount_ulxc"),
 		tool("wallet_request", "Ask another agent's wallet for credits; it accepts or declines.",
-			map[string]any{"from": address, "amount_ulxc": amount, "memo": str("what it is for")}, "from", "amount_ulxc"),
+			map[string]any{"from": address, "amount_ulxc": amount, "memo": str("what it is for"), "idempotency_key": key("request")}, "from", "amount_ulxc"),
 		tool("wallet_requests", "The requests for credits you made and were made.", none),
 		tool("wallet_answer_request", "Accept (pay, within your spending rules) or decline a request made of you.",
-			map[string]any{"request_id": str("the request"), "accept": accept}, "request_id", "accept"),
+			map[string]any{"request_id": str("the request"), "accept": accept, "idempotency_key": str(idempotencyKeyDescription)}, "request_id", "accept"),
 		tool("wallet_refund", "Give a transfer you received back to its sender, once.",
 			map[string]any{"transfer_id": str("the transfer you received")}, "transfer_id"),
 		tool("wallet_credit_line", "Your company's credit line from Talyvor: its limit, what is used and what is available.", none),
@@ -123,7 +127,8 @@ func walletToolDefinitions() []map[string]any {
 		tool("wallet_answer_loan", "Accept (the principal is paid to you) or decline a loan offered to you.",
 			map[string]any{"loan_id": str("the loan"), "accept": accept}, "loan_id", "accept"),
 		tool("wallet_escrow_pay", "Pay into escrow for another agent: held until you confirm delivery, or released at release_at unless you dispute it.",
-			map[string]any{"to": address, "amount_ulxc": amount, "release_at": str("RFC 3339 time it is released at, undisputed"), "memo": str("what the deal is")},
+			map[string]any{"to": address, "amount_ulxc": amount, "release_at": str("RFC 3339 time it is released at, undisputed"), "memo": str("what the deal is"),
+				"idempotency_key": str(idempotencyKeyDescription)},
 			"to", "amount_ulxc", "release_at"),
 		tool("wallet_escrows", "The escrows you paid into and are owed, with each state.", none),
 		tool("wallet_escrow_confirm", "Confirm delivery on an escrow you paid into: it is released to the payee now.",
@@ -135,7 +140,8 @@ func walletToolDefinitions() []map[string]any {
 			map[string]any{"name": str("its name"), "kind": str("goal, budget or reserve"), "target_ulxc": num("a goal's target, in µLXC"),
 				"locked_until": str("RFC 3339 time nothing can be taken out before")}, "name", "kind"),
 		tool("wallet_pot_move", "Move credits into a pot from your balance, or out of it back (unless it is locked).",
-			map[string]any{"pot_id": str("the pot"), "amount_ulxc": amount, "direction": str("in or out")}, "pot_id", "amount_ulxc", "direction"),
+			map[string]any{"pot_id": str("the pot"), "amount_ulxc": amount, "direction": str("in or out"), "idempotency_key": key("move")},
+			"pot_id", "amount_ulxc", "direction"),
 		tool("wallet_quotes", "The simulated market's instruments and prices in USD, from the ECB's reference rates.", none),
 		tool("wallet_portfolio_open", "Open a simulated portfolio with simulated US dollars. Simulated: no money or credits move.",
 			map[string]any{"name": str("its name"), "cash_uusd": num("simulated cash in µUSD")}, "name", "cash_uusd"),
@@ -280,11 +286,15 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 		return *a.Accept, nil
 	}
 	switch name {
-	case "wallet_send":
+	case "wallet_send", "wallet_request", "wallet_answer_request", "wallet_escrow_pay", "wallet_pot_move":
 		if len(a.IdempotencyKey) > 128 {
 			return nil, &toolRefusal{"idempotency_key must be at most 128 characters"}
 		}
-		return bank.SendCredits(economy.WithMoveKey(ctx, a.IdempotencyKey), ws, agent, a.To, a.AmountULXC, a.Memo)
+		ctx = economy.WithMoveKey(ctx, a.IdempotencyKey) // B28.72
+	}
+	switch name {
+	case "wallet_send":
+		return bank.SendCredits(ctx, ws, agent, a.To, a.AmountULXC, a.Memo)
 	case "wallet_request":
 		return bank.RequestCredits(ctx, ws, agent, a.From, a.AmountULXC, a.Memo)
 	case "wallet_requests":
