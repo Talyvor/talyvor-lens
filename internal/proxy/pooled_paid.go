@@ -31,6 +31,8 @@ func (p *Proxy) markPooledPaid(ctx context.Context, wsID string, hit *poolroyalt
 	if hit == nil || p.exact == nil || wsID == "" {
 		return
 	}
+	ctx, cancel := detachBounded(ctx) // B28.242: the charge it records survived a hang-up, so must the mark
+	defer cancel()
 	if err := p.exact.MarkPooledPaid(ctx, wsID, hit.EntryID, cache.AnswerDigest(answer)); err != nil {
 		slog.Warn("proxy: could not record a paid pooled answer (an exact repeat will be charged again)",
 			slog.String("workspace_id", wsID), slog.String("err", err.Error()))

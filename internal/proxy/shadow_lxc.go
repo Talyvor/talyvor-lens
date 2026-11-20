@@ -73,6 +73,8 @@ func (p *Proxy) shadowSpendLXC(ctx context.Context, workspaceID string, costUSD 
 		// spurious SpendLXC(0) / "debit failed" warning.
 		return
 	}
+	ctx, cancel := detachBounded(ctx) // B28.242: a client that hangs up after the answer is still charged
+	defer cancel()
 	if err := p.lxcSink.SpendLXC(ctx, workspaceID, lxcAmount, "shadow: AI call billing"); err != nil {
 		// Logged-and-swallowed, exactly like the adjacent cost_usd RecordSpend.
 		// Insufficient LXC, DB errors — none of it touches the served response.
