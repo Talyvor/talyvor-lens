@@ -69,9 +69,12 @@ func (s *DualTokenStore) checkPaymentSigned(ctx context.Context, workspaceID str
 	return s.authorizePaymentTx(ctx, tx, workspaceID, in)
 }
 
-// authorizePaymentTx is a person's payment's signature checked inside tx: live money only once the workspace has a live
-// key (B58.7), and then signed as its workspace needs.
+// authorizePaymentTx is a person's payment's signature checked inside tx: live money only once payments out has a
+// clearance at all (B17.500) and the workspace has a live key (B58.7), and then signed as its workspace needs.
 func (s *DualTokenStore) authorizePaymentTx(ctx context.Context, tx pgx.Tx, workspaceID string, in OutsidePayment) error {
+	if err := unclearedLive(ctx, tx, in.Funding, CapabilityPaymentsOut); err != nil {
+		return err
+	}
 	if err := liveKeyFirst(ctx, tx, workspaceID, in.Funding); err != nil {
 		return err
 	}

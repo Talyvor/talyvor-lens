@@ -45,3 +45,20 @@ func approvalsLiveKeyFirst(ctx context.Context, q pgxDB, workspaceID string, ids
 	}
 	return liveKeyFirst(ctx, q, workspaceID, FundingLive)
 }
+
+// unclearedLive refuses live funding for capability key while no clearance lets it take real money anywhere (B17.500):
+// said before a key is asked for, since a key added for it would sign a payment that still could not be made.
+func unclearedLive(ctx context.Context, q pgxDB, funding, key string) error {
+	c, ok := CapabilityByKey(key)
+	if funding != FundingLive || !ok || c.Class == ClassGreen {
+		return nil
+	}
+	countries, err := clearanceCountries(ctx, q, c.Key)
+	if err != nil {
+		return err
+	}
+	if countries == nil {
+		return fmt.Errorf("a payment of live money is refused: %w", &CapabilityRefusal{Capability: c})
+	}
+	return nil
+}
