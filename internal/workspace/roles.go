@@ -9,22 +9,25 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/workspace/role"
 )
 
 // B28.342: a workspace's owner gives other people a role in it (migration 2611231954a, workspace_roles). The owner is
 // not a role: whoever signs in to their own account holds every power it has, as before.
+// The roles themselves live in package role, so auth can name them without importing workspace.
 const (
-	RoleViewer   = "viewer"   // reads everything; moves, approves and changes nothing
-	RoleFinance  = "finance"  // reads, and funds, pays, sends, converts and takes money back
-	RoleApprover = "approver" // reads, and approves or declines what waits for an approval
-	RoleAdmin    = "admin"    // everything but the workspace's keys, passkeys and roles, which stay the owner's
+	RoleViewer   = role.Viewer
+	RoleFinance  = role.Finance
+	RoleApprover = role.Approver
+	RoleAdmin    = role.Admin
 )
 
 // Roles are the roles a person may be given, least power first.
-var Roles = []string{RoleViewer, RoleFinance, RoleApprover, RoleAdmin}
+var Roles = role.All
 
 // ErrRoleUnknown refuses a role that is not one of Roles.
-var ErrRoleUnknown = errors.New("role must be viewer, finance, approver or admin")
+var ErrRoleUnknown = role.ErrUnknown
 
 // ErrRoleEmail refuses an email that is not one address.
 var ErrRoleEmail = errors.New("email must be one email address")
@@ -55,14 +58,7 @@ type RoleAccount struct {
 }
 
 // CheckRole reports ErrRoleUnknown unless role is one of Roles.
-func CheckRole(role string) error {
-	for _, r := range Roles {
-		if role == r {
-			return nil
-		}
-	}
-	return ErrRoleUnknown
-}
+func CheckRole(r string) error { return role.Check(r) }
 
 // RoleEmail is email as workspace_roles keys it: one bare address, lower case.
 func RoleEmail(email string) (string, error) {

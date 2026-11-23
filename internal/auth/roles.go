@@ -12,7 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"github.com/talyvor/lens/internal/workspace"
+	wsrole "github.com/talyvor/lens/internal/workspace/role"
 )
 
 // roles.go — B28.342: a person the workspace's owner gave a role (Viewer, Finance, Approver or Admin) signs in to the
@@ -44,7 +44,7 @@ func GenerateRoleToken(workspaceID, personKey, role string, key *ecdsa.PrivateKe
 	if workspaceID == "" || personKey == "" {
 		return "", errors.New("auth: a role session names its workspace and its person")
 	}
-	if err := workspace.CheckRole(role); err != nil {
+	if err := wsrole.Check(role); err != nil {
 		return "", err
 	}
 	now := time.Now()
@@ -140,7 +140,7 @@ var approverRoutes = []string{
 // the owner's own parts; beside that Viewer does nothing, Finance moves money (financeRoutes), Approver decides
 // approvals (approverRoutes), and Admin does everything else the owner does. Anything not named is refused.
 func RoleAllows(role, method, path string) bool {
-	if workspace.CheckRole(role) != nil || !strings.HasPrefix(path, "/v1/") {
+	if wsrole.Check(role) != nil || !strings.HasPrefix(path, "/v1/") {
 		return false
 	}
 	segs := strings.Split(strings.TrimSuffix(path, "/"), "/")
@@ -157,11 +157,11 @@ func RoleAllows(role, method, path string) bool {
 		return true
 	}
 	switch role {
-	case workspace.RoleAdmin:
+	case wsrole.Admin:
 		return true
-	case workspace.RoleFinance:
+	case wsrole.Finance:
 		return method == http.MethodPost && matchesAny(financeRoutes, segs)
-	case workspace.RoleApprover:
+	case wsrole.Approver:
 		return method == http.MethodPost && matchesAny(approverRoutes, segs)
 	}
 	return false
