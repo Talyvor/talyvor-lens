@@ -43,6 +43,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/approvals":                    moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/challenge":          moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/decide":             moneySideEither,
+	"/v1/workspaces/{}/agents/approvals/{}":                 moneySideEither, // B62.9
 	"/v1/workspaces/{}/agents/approvals/{}/approve":         moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/{}/challenge":       moneySideEither,
 	"/v1/workspaces/{}/agents/payment-proofs/{}":            moneySideEither, // B62.1

@@ -1089,6 +1089,18 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 	})
+	// B62.9: one approval, with why a payment it approved was stopped; another workspace's is 404.
+	r.Get("/v1/workspaces/{wsID}/agents/approvals/{approvalID}", func(w http.ResponseWriter, req *http.Request) {
+		a, err := bank.GetAgentApproval(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"))
+		switch {
+		case errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, a)
+		}
+	})
 	decide := func(approve bool) http.HandlerFunc {
 		return ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID, approvalID := chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID")

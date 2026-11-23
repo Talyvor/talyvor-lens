@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"regexp"
 	"slices"
@@ -1474,6 +1475,10 @@ func (s *DualTokenStore) refusedMovement(ctx context.Context, tx pgx.Tx, err err
 	var changed *ApprovalChangedError
 	if errors.As(err, &changed) { // B62.1: rolled back, so what it held is released; the owner is told
 		_ = tx.Rollback(ctx)
+		// B62.9: and the stop is kept, so the approval can say why. The payment is stopped whether or not that write lands.
+		if kerr := s.keepStoppedPayment(ctx, changed); kerr != nil {
+			slog.Error("approval changed: keep the stop", slog.String("approval_id", changed.Shown.ApprovalID), slog.String("err", kerr.Error()))
+		}
 		s.tellApprovalChanged(changed)
 		return err
 	}
@@ -1528,6 +1533,9 @@ type AgentApproval struct {
 	Currency         string `json:"currency,omitempty"`
 	AmountMinor      int64  `json:"amount_minor,omitempty"`
 	Trust            string `json:"trust,omitempty"`
+	// Stopped is the newest payment it stopped because it was not the one approved (B62.9); null when none did, or
+	// once the payment approved was sent under it.
+	Stopped *ApprovalStopped `json:"stopped"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1542,7 +1550,11 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
 	budget_left_after_minor, task,
-	payment_request_id, currency, amount_minor, trust`
+	payment_request_id, currency, amount_minor, trust,
+	(SELECT changed[1] FROM stopped_payments WHERE approval_id = agent_approvals.id AND workspace_id = agent_approvals.workspace_id
+		AND agent_approvals.status <> 'used' ORDER BY created_at DESC, id DESC LIMIT 1) AS stopped_changed,
+	(SELECT created_at FROM stopped_payments WHERE approval_id = agent_approvals.id AND workspace_id = agent_approvals.workspace_id
+		AND agent_approvals.status <> 'used' ORDER BY created_at DESC, id DESC LIMIT 1) AS stopped_at`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1551,9 +1563,15 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var kind *string
 	var amountMinor *int64
 	var agent string
+	var stoppedChanged *string
+	var stoppedAt *time.Time
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task, &a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task,
+		&a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust, &stoppedChanged, &stoppedAt)
+	if stoppedChanged != nil && stoppedAt != nil {
+		a.Stopped = &ApprovalStopped{Changed: *stoppedChanged, At: *stoppedAt}
+	}
 	if p.Kind != "" {
 		a.Payee = &p
 	}
