@@ -47,6 +47,8 @@ var (
 	ErrPayeeConfirmed = errors.New("economy: this payee needs no confirmation")
 	// ErrPayeePasskey: a payee is confirmed only with an assertion by one of the workspace's passkeys.
 	ErrPayeePasskey = errors.New("economy: a payee is confirmed with one of the workspace's passkeys, signing its challenge. Register one first")
+	// ErrPayeeNameShared: a payment by name to a name more than one saved payee has (B28.346); it pays none of them.
+	ErrPayeeNameShared = errors.New("economy: more than one saved payee has this name: pay one of them by its payee_id")
 )
 
 // OutsidePayee is a saved payee outside Talyvor, and what its bank said of its name.
@@ -294,6 +296,31 @@ func (s *DualTokenStore) PayeesNamed(ctx context.Context, workspaceID, name stri
 		}
 	}
 	return out, nil
+}
+
+// PayeeByName is workspaceID's one saved payee called name, in any case and spacing (B28.346: pay a saved payee by
+// name). A name no payee has is ErrPayeeNotFound, a part of one included ("Ada" is not "Ada Lovelace"); a name two
+// payees share is ErrPayeeNameShared, naming their ids. The payment then pays the payee's id, as one paid by id.
+func (s *DualTokenStore) PayeeByName(ctx context.Context, workspaceID, name string) (OutsidePayee, error) {
+	named, err := s.PayeesNamed(ctx, workspaceID, name)
+	if err != nil {
+		return OutsidePayee{}, err
+	}
+	want := strings.ToLower(strings.Join(strings.Fields(name), " "))
+	var exact []OutsidePayee
+	var ids []string
+	for _, p := range named {
+		if strings.ToLower(strings.Join(strings.Fields(p.Name), " ")) == want {
+			exact, ids = append(exact, p), append(ids, p.ID)
+		}
+	}
+	switch len(exact) {
+	case 0:
+		return OutsidePayee{}, fmt.Errorf("%w called %q", ErrPayeeNotFound, name)
+	case 1:
+		return exact[0], nil
+	}
+	return OutsidePayee{}, fmt.Errorf("%w: %s", ErrPayeeNameShared, strings.Join(ids, ", "))
 }
 
 func (s *DualTokenStore) outsidePayee(ctx context.Context, q pgxDB, workspaceID, payeeID, lock string) (OutsidePayee, error) {
