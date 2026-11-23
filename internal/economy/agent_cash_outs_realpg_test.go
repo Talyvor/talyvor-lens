@@ -47,12 +47,12 @@ func TestCashOuts_HeldPaidFailedAndTheClass(t *testing.T) {
 		return
 	}
 
-	if _, err := s.RequestCashOut(ctx, "ws-live", live.ID, 10*lxc, "bank ••9999", "owner"); !errors.Is(err, ErrCapabilityNotCleared) ||
+	if _, err := s.RequestCashOut(ctx, "ws-live", live.ID, 10*lxc, "bank ••9999", "owner", nil); !errors.Is(err, ErrCapabilityNotCleared) ||
 		!strings.Contains(err.Error(), "class RED") {
 		t.Fatalf("cashing out live money with no clearance = %v, want refused as class RED", err)
 	}
 
-	c, err := s.RequestCashOut(ctx, "ws-c", a.ID, 40*lxc, "test bank ••1234", "owner")
+	c, err := s.RequestCashOut(ctx, "ws-c", a.ID, 40*lxc, "test bank ••1234", "owner", nil)
 	if err != nil || c.Status != "submitted" || c.Partner != "test" || c.AmountUUSD != 40*lxc/ULXCPerUSDMicro || c.TestFundedULXC != 40*lxc {
 		t.Fatalf("request = %+v, %v; want submitted to the test partner, all test money", c, err)
 	}
@@ -69,7 +69,7 @@ func TestCashOuts_HeldPaidFailedAndTheClass(t *testing.T) {
 		t.Fatalf("after the partner paid: %+v, held %d, cashed out %d; want paid, 0, 40 LXC", list, held, gone)
 	}
 
-	f, err := s.RequestCashOut(ctx, "ws-c", a.ID, 20*lxc, "test-fail account", "owner")
+	f, err := s.RequestCashOut(ctx, "ws-c", a.ID, 20*lxc, "test-fail account", "owner", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

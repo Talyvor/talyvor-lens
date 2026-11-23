@@ -127,8 +127,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/card/draws-on": moneySideEither, // B30.30: the account in the card's currency
 
 	// agent_cash_outs_handler.go
-	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
-	"/v1/workspaces/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs/challenge": moneySideFiat, // B28.339
+	"/v1/workspaces/{}/cash-outs":                     moneySideFiat,
 
 	// agent_crypto_sends_handler.go
 	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
