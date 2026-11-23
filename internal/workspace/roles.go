@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// B28.342: a workspace's owner gives other people a role in it (migration 2611200021a, workspace_roles). The owner is
+// B28.342: a workspace's owner gives other people a role in it (migration 2611231954a, workspace_roles). The owner is
 // not a role: whoever signs in to their own account holds every power it has, as before.
 const (
 	RoleViewer   = "viewer"   // reads everything; moves, approves and changes nothing

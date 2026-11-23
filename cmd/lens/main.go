@@ -99,6 +99,7 @@ import (
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/mcp"
+	"github.com/talyvor/lens/internal/members"
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/modality"
@@ -106,6 +107,7 @@ import (
 	"github.com/talyvor/lens/internal/modelwatch"
 	"github.com/talyvor/lens/internal/moderatorkey"
 	"github.com/talyvor/lens/internal/money"
+	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/issuerfake"
 	"github.com/talyvor/lens/internal/monitoring"
 	"github.com/talyvor/lens/internal/nativepush"
@@ -994,7 +996,8 @@ func run() error {
 	authManager := auth.NewManager(os.Getenv("LENS_API_KEY"), jwtKey, keyStore, tenantStore).
 		WithMintKey(os.Getenv("LENS_MINT_KEY")).
 		WithConnectMintKey(os.Getenv("LENS_CONNECT_MINT_KEY")).
-		WithOperatorReadKey(os.Getenv("LENS_OPERATOR_READ_KEY"))
+		WithOperatorReadKey(os.Getenv("LENS_OPERATOR_READ_KEY")).
+		WithAccountDeletions(wsManager) // B52.37: a deleted account's session tokens are refused
 
 	// B20.13 — the marketplace moderator key: the web app's credential for the review queue and
 	// nothing else. Created and revoked with `lens moderator-keys`; see docs/moderator-keys.md.
@@ -1107,10 +1110,28 @@ func run() error {
 		}
 		defer retentionPool.Close()
 	}
+	wsManager.WithUsageEventsPool(retentionPool) // B52.37: a deleted account's token_events go as this role
 	auditRetention := audit.NewRetention(retentionPool, cfg.AuditRetention,
 		cfg.AuditRequireExportBeforePrune, cfg.AuditExportURL != "")
 	go haComps.leader.Run(ctx, "audit-retention", 30*time.Second, func(lctx context.Context) {
 		auditRetention.StartSweeper(lctx, time.Hour)
+	})
+	// B52.37 — usage rows of a deleted account that its deletion missed (a request still running) go within the hour.
+	go haComps.leader.Run(ctx, "deleted-accounts-usage", 30*time.Second, func(lctx context.Context) {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			if n, err := audit.DeleteDeletedAccountsEvents(lctx, retentionPool); err != nil {
+				slog.Warn("deleted accounts' usage rows not deleted", "err", err)
+			} else if n > 0 {
+				slog.Info("deleted accounts' usage rows deleted", "rows", n)
+			}
+			select {
+			case <-lctx.Done():
+				return
+			case <-t.C:
+			}
+		}
 	})
 	auditExport := audit.NewScheduledExport(pool, cfg.AuditExportURL)
 	go haComps.leader.Run(ctx, "audit-export", 30*time.Second, func(lctx context.Context) {
@@ -3210,6 +3231,8 @@ func run() error {
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
 	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
 	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
+	// B48.10 — a request to be paid, as its shared link shows it — PUBLIC (its id is the secret a link carries).
+	limited.Get("/v1/crypto-requests/{requestID}", serveCryptoRequest(dualToken))
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
@@ -3218,6 +3241,10 @@ func run() error {
 	if cfg.PhysicalCards {
 		syntheticDue.physicalCards = dualToken // B53.19
 	}
+
+	// B52.35 — a person joins another workspace by invite; POST /v1/provision mints a member's read-only token for it.
+	workspaceMembers := members.New(pool)
+	authManager.WithMemberCheck(workspaceMembers.LiveMember)
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -3264,7 +3291,8 @@ func run() error {
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
-		})
+		}, workspaceMembers.MemberID)
+	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B28.342 — a person signs in to a workspace they hold a role in, with a session that does what the role may.
 	mountRoleSessionRoute(limited, cfg.ProvisionSecret, wsManager,
 		func(workspaceID, personKey, role string, ttl time.Duration) (string, error) {
@@ -3272,6 +3300,8 @@ func run() error {
 		})
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
+	// B61.107 — and a forgotten passcode is set again with the number's code and one of the person's keys.
+	mountPasscodeReplaceRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.30 — the number moves whose person's email addresses the BFF is to tell.
 	mountNumberMoveNoticeRoute(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.104 — and a person with a session changes their own number, with the new number's code and their passcode.
@@ -3285,6 +3315,30 @@ func run() error {
 	mountWaitlistRoute(limited, cfg.ProvisionSecret, pool)
 	// B56.18 — the single sign-on connection that covers an email, with its secret, for the suite BFF alone.
 	mountSSOSignInRoute(limited, cfg.ProvisionSecret, ssoStore)
+
+	// B52.37 — a person deletes their account, on the same secret.
+	var chainIndexer *economy.ChainIndexer
+	if chainIdx != nil {
+		chainIndexer = chainIdx.x
+	}
+	var solanaHoldings holdings.Reader // unset: a Solana wallet cannot be read, so its owner's deletion waits
+	if url := os.Getenv("LENS_SOLANA_RPC_URL"); url != "" {
+		solanaHoldings = holdings.Solana{RPCURL: url}
+	}
+	if err := subscribeAccountDeletions(nc, keyStore.EvictWorkspace); err != nil {
+		return fmt.Errorf("account deletions: subscribe: %w", err)
+	}
+	mountAccountDeleteRoute(limited, cfg.ProvisionSecret, accountDeleteDeps{accounts: wsManager, answers: syntheticAnswers,
+		keys: evictEverywhere(keyStore.EvictWorkspace, nc),
+		chain: func(ctx context.Context, wsID string) ([]string, error) {
+			return dualToken.SmartAccountsHolding(ctx, chainIndexer, solanaHoldings, wsID)
+		},
+		billing: func(ctx context.Context, wsID string) error {
+			if err := billingSvc.CancelForAccountDeletion(ctx, wsID); err != nil || testBillingSvc == nil {
+				return err
+			}
+			return testBillingSvc.CancelForAccountDeletion(ctx, wsID)
+		}})
 	// B26.1 — synthetic workspaces older than seven days are deleted, by the leader alone.
 	if cfg.SyntheticKey != "" {
 		go haComps.leader.Run(ctx, "synthetic-purge", 30*time.Second, func(lctx context.Context) {
@@ -5124,6 +5178,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountAgentCryptoSendRoutes(authed, dualToken)                                   // B48.9
+		mountCryptoRequestRoutes(authed, dualToken, chainIdx)                           // B48.10
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
@@ -5172,6 +5227,7 @@ func run() error {
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38
+		mountWorkspaceMemberRoutes(authed, workspaceMembers)                            // B52.35
 		mountSellerTaxRoutes(authed, sellerTax)                                         // B32.41
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9

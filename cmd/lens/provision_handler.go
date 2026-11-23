@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -71,6 +73,13 @@ type tokenMinter func(workspaceID, userID string, scopes []string, ttl time.Dura
 // provisionScopes is what a provisioned session token may do.
 var provisionScopes = []string{auth.ScopeAnalytics, auth.ScopeKeys}
 
+// memberScopes is what a member's token for another person's workspace may do (B52.35): read it, and only while the
+// membership lasts (auth.ScopeMember). What a member may do beyond reading is Nick's decision.
+var memberScopes = []string{auth.ScopeAnalytics, auth.ScopeMember}
+
+// memberCheck answers identity's live membership of a workspace it does not own, or "" (B52.35).
+type memberCheck func(ctx context.Context, workspaceID, identity string) (memberID string, err error)
+
 type provisionRequest struct {
 	Identity string `json:"identity"`
 	// Mode is "", list, open or session (B61.7); AccountID names the account a session is for.
@@ -87,6 +96,8 @@ type provisionRequest struct {
 	// country, and a business's registration number (trimmed, at most 64 characters). Profile, not an identity check.
 	Country            string `json:"country"`
 	RegistrationNumber string `json:"registration_number"`
+	// WorkspaceID, when set and not the identity's own, asks for a member's token for that workspace (B52.35).
+	WorkspaceID string `json:"workspace_id"`
 }
 
 type provisionResponse struct {
@@ -112,14 +123,36 @@ var newAccountID = func() (string, error) {
 	return workspace.NewAccountID(b), nil
 }
 
-func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter) {
+// accountDeletionLookup says when a workspace's account was deleted (*workspace.Manager, B52.37).
+type accountDeletionLookup interface {
+	AccountDeletedAt(ctx context.Context, id string) (time.Time, bool, error)
+}
+
+// currentWorkspaceID is identity's workspace now: deriveWorkspaceID's, or, after each deletion of its account, the next
+// generation's, so a person who signs up again gets a new workspace and nothing the deleted one kept (B52.37).
+func currentWorkspaceID(ctx context.Context, identity string, d accountDeletionLookup) (string, error) {
+	for gen := 0; ; gen++ {
+		id := deriveWorkspaceID(identity)
+		if gen > 0 {
+			id = deriveWorkspaceID(identity + "\x00" + strconv.Itoa(gen))
+		}
+		if d == nil {
+			return id, nil
+		}
+		if _, deleted, err := d.AccountDeletedAt(ctx, id); err != nil || !deleted {
+			return id, err
+		}
+	}
+}
+
+func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) {
 	if secret == "" {
 		return
 	}
-	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint))
+	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint, isMember))
 }
 
-func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter) http.HandlerFunc {
+func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(req.Header.Get(provisionSecretHeader)), []byte(secret)) != 1 {
 			writeJSONErr(w, http.StatusUnauthorized, "provisioning credentials required")
@@ -134,7 +167,13 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, "identity required")
 			return
 		}
-		firstID := deriveWorkspaceID(in.Identity)
+		deletions, _ := p.(accountDeletionLookup)
+		firstID, err := currentWorkspaceID(req.Context(), in.Identity, deletions)
+		if err != nil {
+			slog.Error("provision: account deletions not read", "err", err)
+			writeJSONErr(w, http.StatusServiceUnavailable, "sign-in is unavailable right now; try again shortly")
+			return
+		}
 		person := workspace.PersonKey(in.Identity)
 		switch in.Mode {
 		case "", provisionModeOpen:
@@ -185,6 +224,25 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// B52.35: a workspace_id that is not the person's own asks for a member's token for it. One of the person's
+		// own accounts (B61.7) is still theirs and gets the owner's token; anything else is a membership or a 403.
+		if in.WorkspaceID != "" && in.WorkspaceID != firstID {
+			if in.Mode != "" {
+				writeJSONErr(w, http.StatusBadRequest, "workspace_id is not taken with a mode")
+				return
+			}
+			owned, err := p.PersonOwnsAccount(req.Context(), person, firstID, in.WorkspaceID)
+			if err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if owned {
+				writeProvisioned(w, p, mint, in.WorkspaceID, in.TTLHours, false, nil)
+				return
+			}
+			provisionMember(w, req, p, mint, isMember, in)
+			return
+		}
 		// B61.53: an account is opened only in a country Talyvor serves. A sign-in to an account that exists makes
 		// nothing, so the country it names is not checked and the account keeps the one it has.
 		_, existed := p.GetWorkspace(firstID)
@@ -204,7 +262,7 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			if err := p.ReservePersonAccount(req.Context(), person, firstID, id); err != nil {
+			if err := p.ReservePersonAccount(req.Context(), person, deriveWorkspaceID(in.Identity), id); err != nil {
 				if errors.Is(err, workspace.ErrPersonAccountLimit) {
 					writeJSONErr(w, http.StatusConflict, err.Error())
 					return
@@ -233,6 +291,16 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 		// TestProvision_SecondCallPreservesNonConsentSettings is the lock, and it fails
 		// against the natural always-register implementation. existed is the first account's,
 		// looked up above; an account opened after it is new by construction.
+		// B52.37: a first account opened after a deletion is not the one deriveWorkspaceID names, so it is recorded as
+		// the person's like any other, and every caller that finds a person's accounts from that id finds it.
+		reserved := wsID != firstID
+		if !existed && wsID == firstID && firstID != deriveWorkspaceID(in.Identity) {
+			if err := p.ReservePersonAccount(req.Context(), person, deriveWorkspaceID(in.Identity), wsID); err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			reserved = true
+		}
 		if !existed {
 			// Pass a pooling choice ONLY when the caller made one, so silence reaches the
 			// manager as silence and the new-workspace default applies. On an existing
@@ -244,7 +312,7 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 				opts = append(opts, workspace.WithCachePoolableChoice(*in.CachePoolable))
 			}
 			if err := p.RegisterWorkspace(req.Context(), workspace.Workspace{ID: wsID, Name: name}, opts...); err != nil {
-				if wsID != firstID {
+				if reserved {
 					_ = p.ReleasePersonAccount(req.Context(), person, wsID)
 				}
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -286,5 +354,35 @@ func writeProvisioned(w http.ResponseWriter, p provisioner, mint tokenMinter, ws
 		Token:         tok,
 		ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
 		FirstAgent:    first,
+	})
+}
+
+// provisionMember mints a read-only token for another person's workspace, naming the membership, only while identity
+// is a live member of it: otherwise 403 and nothing is minted. It never creates or changes a workspace.
+func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint tokenMinter, isMember memberCheck, in provisionRequest) {
+	memberID := ""
+	if isMember != nil {
+		var err error
+		if memberID, err = isMember(req.Context(), in.WorkspaceID, in.Identity); err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if _, exists := p.GetWorkspace(in.WorkspaceID); memberID == "" || !exists {
+		writeJSONErr(w, http.StatusForbidden, "you are not a member of that workspace")
+		return
+	}
+	poolable, _ := p.CachePoolableConsent(in.WorkspaceID)
+	ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
+	tok, err := mint(in.WorkspaceID, memberID, memberScopes, ttl)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSONOK(w, http.StatusOK, provisionResponse{
+		WorkspaceID:   in.WorkspaceID,
+		CachePoolable: poolable,
+		Token:         tok,
+		ExpiresAt:     time.Now().Add(ttl).UTC().Format(time.RFC3339),
 	})
 }

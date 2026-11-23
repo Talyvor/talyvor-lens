@@ -79,6 +79,22 @@ type Manager struct {
 	now          func() time.Time
 	maxStaleness time.Duration // 0 = disabled; wired from LENS_WORKSPACE_MAX_STALENESS in main
 	lastReload   time.Time     // zero until the first successful LoadAll
+
+	// usageEvents begins the transactions that delete a deleted account's token_events: the lens_retention role's
+	// pool, the only role that may (B39.6). nil ⇒ pool (B52.37).
+	usageEvents txBeginner
+}
+
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+}
+
+// WithUsageEventsPool gives DeleteAccount the pool of the role that may delete token_events (B52.37).
+func (m *Manager) WithUsageEventsPool(p *pgxpool.Pool) *Manager {
+	if p != nil {
+		m.usageEvents = p
+	}
+	return m
 }
 
 type Workspace struct {
