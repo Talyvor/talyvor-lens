@@ -117,10 +117,11 @@ func (m *Manager) AccountHoldings(ctx context.Context, id string) ([]string, err
 }
 
 // DeleteAccount deletes workspace id as described above. It returns ErrNoAccount for an unknown id and an
-// *AccountHoldsMoneyError when it holds money; either way nothing changes. beforeCommit, if set, ends what the
-// workspace has outside Postgres (its subscription in Stripe, its cached answers) once everything else is done and
-// still under the lock: its error is returned and nothing is deleted.
-func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit func(context.Context) error) error {
+// *AccountHoldsMoneyError when it holds money; either way nothing changes. A non-empty identity also ends that
+// person's memberships of other workspaces (B52.35), in the same transaction: the caller passes it with the person's
+// last account. beforeCommit, if set, ends what the workspace has outside Postgres (its subscription in Stripe, its
+// cached answers) once everything else is done and still under the lock: its error is returned and nothing is deleted.
+func (m *Manager) DeleteAccount(ctx context.Context, id, identity string, beforeCommit func(context.Context) error) error {
 	txer, ok := m.pool.(txBeginner)
 	if !ok {
 		return fmt.Errorf("workspace: deleting an account needs a database that begins transactions")
@@ -166,6 +167,13 @@ func (m *Manager) DeleteAccount(ctx context.Context, id string, beforeCommit fun
 	if _, err := tx.Exec(ctx, `UPDATE money_reusable_cards SET status = 'frozen', updated_at = now()
 		WHERE workspace_id = $1 AND status = 'active'`, id); err != nil {
 		return fmt.Errorf("workspace: freeze cards: %w", err)
+	}
+	// Their memberships of other workspaces end, so a member token of theirs is refused at its next request.
+	if identity != "" {
+		if _, err := tx.Exec(ctx, `UPDATE workspace_members SET removed_at = now() WHERE identity = $1 AND removed_at IS NULL`,
+			identity); err != nil {
+			return fmt.Errorf("workspace: end memberships: %w", err)
+		}
 	}
 	if err := leaveRooms(ctx, tx, id); err != nil {
 		return err

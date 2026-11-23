@@ -1522,6 +1522,12 @@ type AgentApproval struct {
 	// Task is what the agent said the payment is for (B62.2), in its own words: shown after TaskSays, never as a fact.
 	// "" when it gave none.
 	Task string `json:"task"`
+	// B48.10: another Talyvor agent's request to be paid by this one — the request, what it asks in its own currency,
+	// and the trust Talyvor has in the agent asking.
+	PaymentRequestID string `json:"payment_request_id,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	AmountMinor      int64  `json:"amount_minor,omitempty"`
+	Trust            string `json:"trust,omitempty"`
 }
 
 // agentApprovalColumns reads an approval, unaliased, from agent_approvals: the paying agent's name and the payer's balance now too.
@@ -1535,7 +1541,8 @@ const agentApprovalColumns = `id, agent_id, amount_ulxc, model, reason, payee_ki
 		WHEN 'account' THEN (SELECT COALESCE(sum(balance_minor), 0) FROM money_account_balances
 			WHERE account_id = agent_approvals.paid_from_account_id AND agent_approvals.paid_from_funding IN ('', funding))
 	END::bigint, asks_above_ulxc, budget_left_after_ulxc, kind, connect_client_id, rules_currency, asks_above_minor,
-	budget_left_after_minor, task`
+	budget_left_after_minor, task,
+	payment_request_id, currency, amount_minor, trust`
 
 func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var a AgentApproval
@@ -1546,7 +1553,7 @@ func scanAgentApproval(row pgx.Row) (AgentApproval, error) {
 	var agent string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AmountULXC, &a.Model, &a.Reason, &p.Kind, &p.ID, &p.Name, &a.Memo, &a.Status, &a.CreatedAt, &a.DecidedAt,
 		&a.ApprovedByAgentID, &a.ExpiresAt, &a.DenyReason, &kind, &from.AccountID, &from.Currency, &amountMinor, &agent, &from.BalanceMinor,
-		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task)
+		&a.AsksAboveULXC, &a.BudgetLeftAfterULXC, &a.Kind, &a.ConnectClientID, &a.RulesCurrency, &a.AsksAboveMinor, &a.BudgetLeftAfterMinor, &a.Task, &a.PaymentRequestID, &a.Currency, &a.AmountMinor, &a.Trust)
 	if p.Kind != "" {
 		a.Payee = &p
 	}

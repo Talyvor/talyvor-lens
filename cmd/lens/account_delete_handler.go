@@ -23,7 +23,7 @@ import (
 type accountDeleter interface {
 	PersonAccounts(ctx context.Context, personKey, firstID string) ([]workspace.PersonAccount, error)
 	AccountHoldings(ctx context.Context, id string) ([]string, error)
-	DeleteAccount(ctx context.Context, id string, beforeCommit func(context.Context) error) error
+	DeleteAccount(ctx context.Context, id, identity string, beforeCommit func(context.Context) error) error
 	AccountDeletedAt(ctx context.Context, id string) (time.Time, bool, error)
 }
 
@@ -149,7 +149,12 @@ func newAccountDeleteHandler(secret string, d accountDeleteDeps) http.HandlerFun
 			}
 			var holds *workspace.AccountHoldsMoneyError
 			var step *accountDeleteStepError
-			switch err := d.accounts.DeleteAccount(req.Context(), wsID, outside); {
+			// The person's memberships of other workspaces end with their last account, in its transaction.
+			person := ""
+			if i == len(ids)-1 {
+				person = in.Identity
+			}
+			switch err := d.accounts.DeleteAccount(req.Context(), wsID, person, outside); {
 			case errors.Is(err, workspace.ErrNoAccount):
 				continue // deleted by a deletion running beside this one
 			case errors.As(err, &holds):

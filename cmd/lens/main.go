@@ -99,6 +99,7 @@ import (
 	"github.com/talyvor/lens/internal/localrouter"
 	"github.com/talyvor/lens/internal/market"
 	"github.com/talyvor/lens/internal/mcp"
+	"github.com/talyvor/lens/internal/members"
 	"github.com/talyvor/lens/internal/metrics"
 	"github.com/talyvor/lens/internal/mining"
 	"github.com/talyvor/lens/internal/modality"
@@ -3229,6 +3230,8 @@ func run() error {
 	limited.Post("/v1/money/webhooks/{partner}", moneyLayer.ServeWebhook)
 	// B48.6 — the wallet provider's onchain-activity webhooks — PUBLIC (signed by the provider): 503 until LENS_CHAIN_INDEX.
 	limited.Post("/v1/money/chain/webhooks/coinbase", chainIdx.serveWebhook)
+	// B48.10 — a request to be paid, as its shared link shows it — PUBLIC (its id is the secret a link carries).
+	limited.Get("/v1/crypto-requests/{requestID}", serveCryptoRequest(dualToken))
 
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
@@ -3237,6 +3240,10 @@ func run() error {
 	if cfg.PhysicalCards {
 		syntheticDue.physicalCards = dualToken // B53.19
 	}
+
+	// B52.35 — a person joins another workspace by invite; POST /v1/provision mints a member's read-only token for it.
+	workspaceMembers := members.New(pool)
+	authManager.WithMemberCheck(workspaceMembers.LiveMember)
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -3283,7 +3290,8 @@ func run() error {
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
 		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
 			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
-		})
+		}, workspaceMembers.MemberID)
+	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.107 — and a forgotten passcode is set again with the number's code and one of the person's keys.
@@ -5163,6 +5171,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountAgentCryptoSendRoutes(authed, dualToken)                                   // B48.9
+		mountCryptoRequestRoutes(authed, dualToken, chainIdx)                           // B48.10
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
 		mountCompanyLoanRoutes(authed, dualToken)                                       // B22.5
@@ -5211,6 +5220,7 @@ func run() error {
 		mountMarketRoutes(authed, marketStore)                                          // B20.1
 		mountMarketDiscoveryRoutes(authed, marketStore)                                 // B32.50
 		mountTaxProfileRoutes(authed, taxProfiles)                                      // B32.38
+		mountWorkspaceMemberRoutes(authed, workspaceMembers)                            // B52.35
 		mountSellerTaxRoutes(authed, sellerTax)                                         // B32.41
 		mountVerificationRoutes(authed, dualToken, partnerRegistry.Verification)        // B30.4
 		mountCapabilityTermsRoutes(authed, dualToken)                                   // B30.9

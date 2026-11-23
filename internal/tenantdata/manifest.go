@@ -192,6 +192,10 @@ var Manifest = map[string]Entry{
 	"workspace_business_details": {Delete, "B59.30: a Business workspace's company name and who last saved it; its number and country are on workspaces"},
 	"workspace_business_people":  {Delete, "B59.30: the company's people with control — each one's name, role and share; deleting the details row deletes these too (ON DELETE CASCADE)"},
 
+	// B48.10: their keys are longer than the rest, so they stand apart rather than realign them.
+	"crypto_payment_requests":         {Retain, "B48.10: each request to be paid into an agent's crypto wallet — amount, network, the wallet, memo, expiry, the payer's address when named and the owner's decision on an overpayment; it explains why money arrived; financial-record retention"},
+	"crypto_payment_request_payments": {Retain, "B48.10: which chain_movements deposit paid which request, how much and whether it came late; financial-record retention"},
+
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
 
@@ -309,6 +313,8 @@ var Manifest = map[string]Entry{
 	"room_prizes":                  {Delete, "B32.35: keys `poster_workspace_id`: the prizes a workspace posted in its rooms; a room's own prizes cascade with it"},
 	"room_reports":                 {Delete, "B32.52: keys `reporter_workspace_id`: the reports a workspace made of rooms and their messages; a room's own reports cascade with it"},
 	"room_takeovers":               {Delete, "B41.148: keys `noticed_by_workspace_id`: the notices a workspace gave rooms' owners; a room's own notices cascade with it"},
+	"workspace_members":            {Delete, "B52.35: the people its owner let into the workspace by invite, and when; a person's own memberships elsewhere are keyed by their identity and end with their account (B52.37)"},
+	"workspace_member_invites":     {Delete, "B52.35: the workspace's invite links, each kept as its token's SHA-256, with its expiry and use count"},
 	"room_takeover_votes":          {Delete, "B41.148: the workspace's votes for a room's lead; a notice's votes cascade with it"},
 	"room_points":                  {Retain, "B41.143: audit-guarded (0350, append-only): the points each workspace earned for accepted contributions to a room — the record a contributor plan is counted from"},
 	"room_agreement_signatures":    {Retain, "B41.150: audit-guarded (0353, append-only): each workspace's e-signature of a room's contributor agreement, with the text version signed — the evidence its IP assignment rests on"},

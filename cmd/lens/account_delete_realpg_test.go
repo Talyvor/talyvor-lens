@@ -23,6 +23,7 @@ import (
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/dbmigrate"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/members"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/storedanswers"
@@ -45,11 +46,12 @@ func accountDeleteLens(t *testing.T, pool *pgxpool.Pool, jwtKey *ecdsa.PrivateKe
 		t.Fatal(err)
 	}
 	keys := auth.New(app)
-	am := auth.NewManager("", jwtKey, keys, tenant.NewStore(app)).WithAccountDeletions(wsm)
+	wsMembers := members.New(app)
+	am := auth.NewManager("", jwtKey, keys, tenant.NewStore(app)).WithAccountDeletions(wsm).WithMemberCheck(wsMembers.LiveMember)
 	r := chi.NewRouter()
 	mountProvisionRoute(r, accountDeleteSecret, wsm, nil, func(ws, user string, scopes []string, ttl time.Duration) (string, error) {
 		return auth.GenerateToken(ws, user, scopes, am.PrivateKey(), ttl)
-	})
+	}, wsMembers.MemberID)
 	d.accounts, d.keys = wsm, keys.EvictWorkspace
 	mountAccountDeleteRoute(r, accountDeleteSecret, d)
 	r.With(auth.AuthMiddleware(keys, am)).Get("/whoami", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -668,5 +670,62 @@ func TestB5237_PersonDeletesEveryAccountTheyHold_RealPG(t *testing.T) {
 	}
 	if rec = accountDeleteProvision(t, lens, identity, provisionModeSession, second.WorkspaceID); rec.Code != http.StatusNotFound {
 		t.Errorf("a session for the deleted second account after signing up again: %d %s, want 404", rec.Code, rec.Body)
+	}
+}
+
+// A person who is a member of someone else's workspace (B52.35) deletes their account: the membership ends with it, so
+// their member token for that workspace is refused and none is minted again, and the owner's workspace is untouched.
+func TestB5237_DeletionEndsMembershipsElsewhere_RealPG(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	jwtKey, err := auth.GenerateECKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lens, _ := accountDeleteLens(t, pool, jwtKey, accountDeleteDeps{})
+	const owner, person = "https://issuer.example|owner-5237-members", "https://issuer.example|person-5237-members"
+
+	var theirs, mine provisionResponse
+	if rec := accountDeleteProvision(t, lens, owner, "", ""); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &theirs) != nil {
+		t.Fatalf("owner's account: %d %s", rec.Code, rec.Body)
+	}
+	if rec := accountDeleteProvision(t, lens, person, "", ""); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &mine) != nil {
+		t.Fatalf("person's account: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_members (id, workspace_id, identity) VALUES ('wsm_5237', $1, $2)`,
+		theirs.WorkspaceID, person); err != nil {
+		t.Fatal(err)
+	}
+	memberToken := func() *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"identity": person, "workspace_id": theirs.WorkspaceID})
+		req := httptest.NewRequest(http.MethodPost, "/v1/provision", bytes.NewReader(body))
+		req.Header.Set(provisionSecretHeader, accountDeleteSecret)
+		rec := httptest.NewRecorder()
+		lens.ServeHTTP(rec, req)
+		return rec
+	}
+	var member provisionResponse
+	if rec := memberToken(); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &member) != nil {
+		t.Fatalf("member token: %d %s", rec.Code, rec.Body)
+	}
+	if code := accountDeleteAuthed(lens, member.Token); code != http.StatusOK {
+		t.Fatalf("the member token before the deletion gets %d, want 200", code)
+	}
+
+	if rec := accountDeletePost(t, lens, "/v1/account/delete", person); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if code := accountDeleteAuthed(lens, member.Token); code != http.StatusUnauthorized {
+		t.Errorf("the deleted person's member token gets %d, want 401", code)
+	}
+	if rec := memberToken(); rec.Code != http.StatusForbidden {
+		t.Errorf("a member token for the deleted person: %d %s, want 403", rec.Code, rec.Body)
+	}
+	var live int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_members WHERE identity = $1 AND removed_at IS NULL`, person).Scan(&live); err != nil || live != 0 {
+		t.Errorf("the deleted person has %d live memberships (%v), want 0", live, err)
+	}
+	if code := accountDeleteAuthed(lens, theirs.Token); code != http.StatusOK {
+		t.Errorf("the owner's session after the member's deletion gets %d, want 200", code)
 	}
 }
