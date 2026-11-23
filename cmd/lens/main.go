@@ -3037,6 +3037,9 @@ func run() error {
 	mcpServer.SetRecurringPayments(dualToken) // B45.13: prepare_recurring_payments
 	mcpServer.SetAreas(areaStore)             // B59.4: an area's tools only for a workspace that has it
 	mcpServer.SetInstantTransfers(dualToken)  // B59.18: instant_transfer_quote, instant_transfer_send, to a hybrid workspace
+	if chainIdx != nil {
+		mcpServer.SetCryptoRequests(chainIdx.x) // B48.16: wallet_request in USDC, and the networks wallet_receive_details names
+	}
 	// B32.23: and shop the marketplace with them — search, license, use within a max price, cancel.
 	mcpServer.SetMarket(marketStore, mcpMarketDeps{lens: r, wallet: roomWalletProxy(p.HandleOpenAI, p.HandleAnthropic), meter: marketMeter, agents: dualToken})
 	// B19.16: approvals signed with the owner's passkey; a web push per approval filed when a VAPID key is set.
