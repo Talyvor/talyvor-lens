@@ -410,7 +410,11 @@ func (s *DualTokenStore) DecideAgentApprovals(ctx context.Context, workspaceID s
 		}
 		out = append(out, ap)
 	}
-	return out, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	s.endDecidedApprovals(workspaceID, out...) // B41.136
+	return out, nil
 }
 
 // AuthorizeApprovalDecision lets a decision on approvalID through: at once for a workspace with no
@@ -612,6 +616,7 @@ func (s *DualTokenStore) notifyApproval(workspaceID, approvalID string) {
 		s.pushDevices(ctx, workspaceID, nativepush.Message{Title: "Approval needed", Body: body, Category: "agent_approval", Data: map[string]string{
 			"type": "agent_approval", "approval_id": approvalID, "workspace_id": workspaceID, "agent_id": agentID,
 			"agent_name": agentName, "payee_name": payeeName, "currency": "LXC", "amount_minor": strconv.FormatInt(amount, 10)}})
+		s.startLiveActivity(ctx, workspaceID, "ap:"+approvalID) // B41.136: on the lock screen with the app closed
 		s.pushWeb(ctx, workspaceID, payload)
 		if s.approvalChat != nil {
 			if err := s.approvalChat.Post(ctx, workspaceID, approvalchat.Approval{ID: approvalID, Agent: agentName, To: to,

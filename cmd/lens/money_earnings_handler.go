@@ -27,6 +27,7 @@ import (
 //	                                 a payout held for it names; earnings held for it are paid. A wrong signature is 403
 //	GET  /v1/money/earnings-payouts  the payouts the workspace made or was paid, newest first: a sale, a Room's split
 //	                                 or a royalty, its agreement, and held, pending, completed, failed or returned
+//	                                 (?format=csv: the same list as a CSV, B28.332)
 //	POST /v1/rooms/{roomID}/payouts  {amount_minor, currency, shares}, with an Idempotency-Key: the room's owner pays
 //	                                 out of the room's wallet to its members as the room's terms split it — equal, by
 //	                                 votes, or shares the owner decides ({member workspace: basis points}, summing to
@@ -128,6 +129,10 @@ func mountMoneyEarningsRoutes(r chi.Router, bank moneyEarningsBank, roomsStore r
 		list, err := bank.EarningsPayouts(req.Context(), ws)
 		if err != nil {
 			writeEarningsErr(w, err)
+			return
+		}
+		if wantsCSV(req) {
+			writeListCSV(w, "earnings-payouts", list)
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"payouts": list})

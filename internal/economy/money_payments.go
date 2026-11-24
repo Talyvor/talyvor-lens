@@ -430,9 +430,15 @@ func (p OutsidePayment) sendRequest(from payingAccount, payee OutsidePayee) part
 // payingAccount finds the account in pays from, which must be open in in.Currency: in.AccountID, which is in.AgentID's
 // when that is set; else in.AgentID's account; else the company's.
 func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, in OutsidePayment) (payingAccount, error) {
+	return payingAccountOn(ctx, s.pool, workspaceID, in)
+}
+
+// payingAccountOn is payingAccount read on q: a move that holds a transaction reads it there, never on a second
+// connection (B50.56).
+func payingAccountOn(ctx context.Context, q pgxDB, workspaceID string, in OutsidePayment) (payingAccount, error) {
 	var a payingAccount
-	var purpose, currency, status string
-	err := s.pool.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.id, c.partner_account_ref,
+	var purpose, currency, status, companyStatus string
+	err := q.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.status, c.id, c.partner_account_ref,
 			COALESCE((SELECT p.id FROM money_accounts p WHERE p.workspace_id = c.workspace_id AND p.purpose = 'partner'
 				AND p.partner_account_ref = c.partner_account_ref AND c.partner_account_ref <> '' LIMIT 1), '')
 		FROM money_accounts a JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
@@ -440,7 +446,7 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 		  AND (($3 <> '' AND a.id = $3) OR ($3 = '' AND $4 <> '' AND a.agent_id = $4 AND a.status <> 'closed')
 		    OR ($3 = '' AND $4 = '' AND a.purpose = 'company' AND a.status <> 'closed'))
 		ORDER BY a.created_at DESC LIMIT 1`, workspaceID, in.Currency, in.AccountID, in.AgentID).
-		Scan(&a.id, &a.agentID, &purpose, &currency, &status, &a.companyID, &a.partnerRef, &a.partnerID)
+		Scan(&a.id, &a.agentID, &purpose, &currency, &status, &companyStatus, &a.companyID, &a.partnerRef, &a.partnerID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return a, fmt.Errorf("%w: no %s account to pay from. Open one at /v1/money/accounts", ErrMoneyAccountNotFound, in.Currency)
@@ -450,6 +456,8 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 		return a, fmt.Errorf("%w: an agent pays only from its own account", ErrMoneyAccountNotFound)
 	case status != MoneyOpen:
 		return a, fmt.Errorf("%w: %s is %s", ErrMoneyAccountNotOpen, a.id, status)
+	case companyStatus != MoneyOpen: // B30.24: a frozen company account holds its agents' sub-accounts too
+		return a, fmt.Errorf("%w: the company's %s account %s is %s", ErrMoneyAccountNotOpen, currency, a.companyID, companyStatus)
 	case a.partnerRef == "" || a.partnerID == "":
 		return a, fmt.Errorf("%w: the company's %s account is not held at a partner", ErrMoneyAccountNotOpen, currency)
 	}
@@ -506,6 +514,11 @@ func holdAccount(ctx context.Context, tx pgx.Tx, workspaceID, currency string) (
 // moves nothing; completed moves the held money out (movements); failed gives it back; returned moves it out and back.
 // A state already reached moves nothing again.
 func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePayment, partnerAccountID string, res partners.Result) (OutsidePayment, error) {
+	// B50.56: what res moves through the partner is screened before the transaction, on a connection of its own.
+	screened, err := s.screenPartnerResult(ctx, p.ID, res)
+	if err != nil {
+		return p, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return p, fmt.Errorf("economy: payment: %w", err)
@@ -528,7 +541,7 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		if outside {
 			e.Counterparty, e.PartnerRef = p.PayeeName, p.PartnerRef
 		}
-		e, err := postMoneyTx(ctx, tx, e, s.screener)
+		e, err := postMoneyTx(ctx, tx, e, screened)
 		if outside && err == nil {
 			moved = append(moved, e)
 		}
@@ -590,6 +603,32 @@ func (s *DualTokenStore) applyPartnerResult(ctx context.Context, p OutsidePaymen
 		s.measurePaymentOut(ctx, p)
 	}
 	return p, nil
+}
+
+// screenPartnerResult screens what applyPartnerResult would move through the partner for payment id, read without a
+// lock, when res completes or returns it (B50.56). A payment that moves on before its transaction reads it is refused
+// as not screened.
+func (s *DualTokenStore) screenPartnerResult(ctx context.Context, id string, res partners.Result) (PaymentScreener, error) {
+	if res.Status != partners.StatusCompleted && res.Status != partners.StatusReturned {
+		return noPartnerPostings, nil
+	}
+	p, err := scanOutsidePayment(s.pool.QueryRow(ctx, `SELECT `+outsidePaymentCols+` FROM money_payments WHERE id = $1`, id))
+	if err != nil {
+		return nil, err
+	}
+	entry := func(key string, back bool) firstScreening {
+		return firstScreening{MoneyEntry{WorkspaceID: p.WorkspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: key, Funding: p.Funding,
+			Counterparty: p.PayeeName}, p.partnerPostings(back)}
+	}
+	var entries []firstScreening
+	open := p.Status == PaymentPending || p.Status == PaymentSent
+	if open {
+		entries = append(entries, entry(p.screenKey(), false))
+	}
+	if res.Status == partners.StatusReturned && (open || p.Status == PaymentCompleted) {
+		entries = append(entries, entry(p.key("returned"), true))
+	}
+	return s.screenBefore(ctx, entries...), nil
 }
 
 // RefreshOutsidePayment reads workspaceID's payment id — with agentID set, only that agent's — and first asks the

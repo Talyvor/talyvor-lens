@@ -49,11 +49,11 @@ type moneyPayoutBank interface {
 }
 
 func mountMoneyPayoutRoutes(r chi.Router, bank moneyPayoutBank) {
-	caller := func(w http.ResponseWriter, req *http.Request) (ws, agentID string, ok bool) {
-		return moneyCaller(w, req, bank.AgentOfKey)
+	caller := func(w http.ResponseWriter, req *http.Request, roles ...string) (ws, agentID string, ok bool) {
+		return moneyCaller(w, req, bank.AgentOfKey, roles...)
 	}
 	r.Post("/v1/money/payouts", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -80,11 +80,11 @@ func mountMoneyPayoutRoutes(r chi.Router, bank moneyPayoutBank) {
 		writeJSONOK(w, http.StatusCreated, b)
 	})
 	r.Post("/v1/money/payouts/{id}/approve", func(w http.ResponseWriter, req *http.Request) {
-		ws, _, ok := caller(w, req)
+		ws, _, ok := caller(w, req, approvalRoles...)
 		if !ok {
 			return
 		}
-		who, owner := storedanswers.OwnerOrAdmin(req.Context())
+		who, owner := storedanswers.OwnerOrRole(req.Context(), approvalRoles...)
 		if !owner {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin approves a payout batch")
 			return
@@ -104,11 +104,11 @@ func mountMoneyPayoutRoutes(r chi.Router, bank moneyPayoutBank) {
 		writeJSONOK(w, http.StatusOK, b)
 	})
 	r.Post("/v1/money/payouts/{id}/approve/challenge", func(w http.ResponseWriter, req *http.Request) {
-		ws, _, ok := caller(w, req)
+		ws, _, ok := caller(w, req, approvalRoles...)
 		if !ok {
 			return
 		}
-		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); !owner {
+		if _, owner := storedanswers.OwnerOrRole(req.Context(), approvalRoles...); !owner {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin approves a payout batch")
 			return
 		}

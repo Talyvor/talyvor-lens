@@ -33,6 +33,12 @@
 #   - ${NAME:?message}     required: compose itself refuses to start, by name. The fix.
 #   - ${NAME}              plain passthrough, resolves empty when unset.
 #   - NAME=                explicitly blank.
+#   - ${NAME:-${OTHER:?m}} a default that is itself required, passed through or empty
+#                          (`${OTHER:?`, `${OTHER}`, `${OTHER:-}`) supplies nothing either.
+#                          A nested `${SECRET_NAME:-...}` is judged on its own, so
+#                          ${NAME:-${POSTGRES_PASSWORD:-changeme}} is flagged by that inner name.
+#                          This used to need a line exemption, and a line exemption also
+#                          hid the next default written on that line (B17.503).
 #
 # EXCEPTIONS are a DENY-LIST OF NAMED LINES with a written reason, never a path filter. An
 # allow-list of directories or files can only ratify what was already reviewed; it cannot
@@ -74,18 +80,25 @@ for f in $files; do
     case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in \#*) continue ;; esac
     if printf '%s' "$line" | grep -qE '#[[:space:]]*compose-secret-ok:'; then continue; fi
 
-    # Shape 1: ${NAME:-value} with a NON-EMPTY value. The `[^}]` requires at least one
-    # character after `:-`, so `${NAME:-}` is excluded by construction.
-    if printf '%s' "$line" | grep -qE '\$\{'"$NAME_RE"':-[^}]' ; then
-      var=$(printf '%s' "$line" | grep -oE '\$\{'"$NAME_RE"':-' | head -1 | sed 's/^\${//; s/:-$//')
+    # Shape 1: ${NAME:-value} with a NON-EMPTY value. Every occurrence on the line is judged,
+    # nested ones included, and the finding names the variable whose default supplies a value.
+    flagged=0
+    rest=$line
+    while [[ $rest =~ \$\{($NAME_RE):-(.*)$ ]]; do
+      var=${BASH_REMATCH[1]}
+      rest=${BASH_REMATCH[3]}
+      case "$rest" in \}*) continue ;; esac
+      if [[ $rest =~ ^\$\{[A-Za-z0-9_]+(:\?|\}|:-\}) ]]; then continue; fi
+      if [[ $rest =~ ^\$\{$NAME_RE:- ]]; then continue; fi
       echo "$f:$lineno: ERROR: compose supplies a default for secret-shaped variable '$var'"
       echo "    $(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
       echo "    A \`:-\` default SUPPLIES the value, so the service starts with a committed"
       echo "    secret and its own fail-closed check is satisfied by it. Use \`\${$var:?...}\`"
       echo "    so compose refuses to start, or \`\${$var:-}\` if the variable is optional."
       findings=$((findings + 1))
-      continue
-    fi
+      flagged=1
+    done
+    if [ "$flagged" -ne 0 ]; then continue; fi
 
     # Shape 2: a literal inline value — `- NAME=value` or `NAME: value` — with no `${...}`
     # anywhere on the line. Anchored to an env-entry shape so prose and keys don't match.

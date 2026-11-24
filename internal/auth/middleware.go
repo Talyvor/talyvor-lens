@@ -70,8 +70,17 @@ func AuthMiddleware(ks *KeyStore, m *Manager) func(http.Handler) http.Handler {
 					writeAuthError(w, http.StatusForbidden, "a partner key may only read the partner's view of agent activity")
 					return
 				}
+				if errors.Is(err, ErrRoleRoute) {
+					// B28.342: a role session does what its role may, and nothing else.
+					writeAuthError(w, http.StatusForbidden, "your role in this workspace does not allow this")
+					return
+				}
 				if errors.Is(err, ErrConnectRoute) {
 					writeAuthError(w, http.StatusForbidden, "a Connect token may only pay from its own agent, inside the agent's rules, or accept a money request made of it")
+					return
+				}
+				if errors.Is(err, ErrMemberReadOnly) {
+					writeAuthError(w, http.StatusForbidden, "a member of this workspace may only read it")
 					return
 				}
 				if err == nil && actx.AuthMethod == MethodModeratorKey {

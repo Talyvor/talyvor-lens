@@ -109,9 +109,9 @@ func (s *DualTokenStore) SetLabelRails(cardPayments string, rails railReader) {
 	s.cardPayments, s.partnerRails = cardPayments, rails
 }
 
-// labelFacts reads the clearances in force and each rail's mode now.
-func (s *DualTokenStore) labelFacts(ctx context.Context) (LabelFacts, error) {
-	cleared, err := clearancesInForce(ctx, s.pool)
+// labelFacts reads, through q, the clearances in force and each rail's mode now.
+func (s *DualTokenStore) labelFacts(ctx context.Context, q pgxDB) (LabelFacts, error) {
+	cleared, err := clearancesInForce(ctx, q)
 	if err != nil {
 		return LabelFacts{}, err
 	}
@@ -136,7 +136,12 @@ func (s *DualTokenStore) labelFacts(ctx context.Context) (LabelFacts, error) {
 
 // Labels is every money capability's label (B56.7), by key.
 func (s *DualTokenStore) Labels(ctx context.Context) (map[string]string, error) {
-	f, err := s.labelFacts(ctx)
+	return s.labelsIn(ctx, s.pool)
+}
+
+// labelsIn is Labels read through q: a payment's own transaction reads them as they are when it moves (B62.7).
+func (s *DualTokenStore) labelsIn(ctx context.Context, q pgxDB) (map[string]string, error) {
+	f, err := s.labelFacts(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -152,15 +157,20 @@ func (s *DualTokenStore) Labels(ctx context.Context) (map[string]string, error) 
 // WorkspaceLabels is Labels for workspaceID: Sandbox too while its plan has no live money for a B30 capability, or
 // it is synthetic.
 func (s *DualTokenStore) WorkspaceLabels(ctx context.Context, workspaceID string) (map[string]string, error) {
-	out, err := s.Labels(ctx)
+	return s.workspaceLabelsIn(ctx, s.pool, workspaceID)
+}
+
+// workspaceLabelsIn is WorkspaceLabels read through q.
+func (s *DualTokenStore) workspaceLabelsIn(ctx context.Context, q pgxDB, workspaceID string) (map[string]string, error) {
+	out, err := s.labelsIn(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := plans.Of(ctx, s.pool, workspaceID)
+	plan, err := plans.Of(ctx, q, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	synthetic, err := testWorkspace(ctx, s.pool, workspaceID)
+	synthetic, err := testWorkspace(ctx, q, workspaceID)
 	if err != nil {
 		return nil, err
 	}

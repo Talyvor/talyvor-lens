@@ -334,8 +334,11 @@ func (s *Service) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		if s.returnInvoiceCard(w, r.Context(), &event) && s.reverseMarketCharge(w, r.Context(), &event) {
 			s.handleRefund(w, r.Context(), &event)
 		}
-	case "charge.dispute.created": // B20.5 — a charged-back marketplace bill reverses its sellers' earnings
-		s.handleDispute(w, r.Context(), &event)
+	case "charge.dispute.created":
+		// B30.92 — a charged-back top-up takes its credits back; B20.5 — a charged-back marketplace bill reverses its sellers' earnings
+		if s.reverseTopUpDispute(w, r.Context(), &event) {
+			s.handleDispute(w, r.Context(), &event)
+		}
 	case "checkout.session.async_payment_failed":
 		w.WriteHeader(http.StatusOK) // no money moved → ack, no action
 	// MODEL 2 (W4.6.1 step 1) — the recurring half. See subscriptions.go.

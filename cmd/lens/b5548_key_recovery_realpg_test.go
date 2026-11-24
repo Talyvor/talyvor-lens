@@ -59,13 +59,24 @@ func b5548NewEnv(t *testing.T) (b5548Env, *economy.DualTokenStore) {
 	}}, store
 }
 
-// call sends body as actx from ip, signed in signedIn ago (a negative signedIn sends no X-Talyvor-Signed-In-At).
+// b5548CaddyPeer is Caddy's address on the compose bridge: the TCP peer of every request that came through our proxy.
+const b5548CaddyPeer = "172.18.0.3:41234"
+
+// call sends body as actx from ip through Caddy, signed in signedIn ago (a negative signedIn sends no
+// X-Talyvor-Signed-In-At).
 func (e b5548Env) call(actx *auth.AuthContext, ip string, signedIn time.Duration, method, path string, body any) (int, map[string]any, http.Header) {
+	e.t.Helper()
+	return e.callFrom(actx, b5548CaddyPeer, ip, signedIn, method, path, body)
+}
+
+// callFrom is call from the TCP peer peer, with xff as the X-Forwarded-For it sends.
+func (e b5548Env) callFrom(actx *auth.AuthContext, peer, xff string, signedIn time.Duration, method, path string, body any) (int, map[string]any, http.Header) {
 	e.t.Helper()
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(method, path, strings.NewReader(string(b)))
 	req = req.WithContext(auth.WithAuthContext(req.Context(), actx))
-	req.Header.Set("X-Forwarded-For", ip)
+	req.RemoteAddr = peer
+	req.Header.Set("X-Forwarded-For", xff)
 	if signedIn >= 0 {
 		req.Header.Set("X-Talyvor-Signed-In-At", time.Now().Add(-signedIn).UTC().Format(time.RFC3339))
 	}
@@ -323,6 +334,43 @@ func TestB5548_SixWrongCodesAnswer429(t *testing.T) {
 	}
 	if code, out, _ := recoverAt(other, "203.0.113.22", otherCode); code != http.StatusCreated {
 		t.Errorf("another workspace's right code from a fresh IP = %d %v, want 201", code, out)
+	}
+}
+
+// B67.2 — the wrong codes are counted under the client IP our proxy saw, never one the caller wrote: a caller that
+// reaches Lens directly is counted under its TCP peer whatever X-Forwarded-For it forges, and one that comes through
+// Caddy with a forged entry ahead of Caddy's is counted under the entry Caddy wrote. Either way, five wrong codes lock
+// that client out of another workspace too.
+func TestB672_ForgedForwardedForIsCountedUnderTheProxysView(t *testing.T) {
+	e, store := b5548NewEnv(t)
+	ctx := context.Background()
+	recoverFrom := func(ws, peer, xff, code string) int {
+		c, _, _ := e.callFrom(e.owner(ws), peer, xff, time.Minute, http.MethodPost, "/v1/workspaces/"+ws+"/keys/recover",
+			map[string]any{"code": code, "passkey": e.passkeyRegistration(ws)})
+		return c
+	}
+	cases := []struct {
+		name, peer string
+		xff        func(i int) string
+	}{
+		{"a direct caller", "198.51.100.42:5000", func(i int) string { return "10.0.0." + strconv.Itoa(i+1) }},
+		{"a caller through Caddy", b5548CaddyPeer, func(i int) string { return "192.0.2." + strconv.Itoa(i+1) + ", 203.0.113.50" }},
+	}
+	for n, c := range cases {
+		ws, other := "ws-b672-"+strconv.Itoa(n), "ws-b672-other-"+strconv.Itoa(n)
+		_ = e.lockedOut(ctx, store, ws)
+		otherCode := e.lockedOut(ctx, store, other)
+		for i := range 5 {
+			if code := recoverFrom(ws, c.peer, c.xff(i), "0000 0000 0000 0000 0000"); code != http.StatusForbidden {
+				t.Fatalf("%s: wrong code %d = %d, want 403", c.name, i+1, code)
+			}
+		}
+		if code := recoverFrom(other, c.peer, c.xff(5), otherCode); code != http.StatusTooManyRequests {
+			t.Errorf("%s: another workspace's right code under a fresh forged X-Forwarded-For = %d, want 429", c.name, code)
+		}
+		if n := b5548LiveKeys(t, store, other); n != 0 {
+			t.Errorf("%s: live keys of the other workspace = %d, want 0", c.name, n)
+		}
 	}
 }
 

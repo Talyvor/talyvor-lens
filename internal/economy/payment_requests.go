@@ -827,5 +827,6 @@ func (s *DualTokenStore) CancelPaymentRequest(ctx context.Context, workspaceID, 
 	if err := tx.Commit(ctx); err != nil {
 		return PaymentRequest{}, err
 	}
+	s.endLiveActivity(workspaceID, "pr:"+id, "declined") // B41.136
 	return s.PaymentRequest(ctx, workspaceID, agentID, id)
 }

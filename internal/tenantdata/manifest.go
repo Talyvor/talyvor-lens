@@ -119,6 +119,7 @@ var Manifest = map[string]Entry{
 	// question or answer is held in either.
 	"deletion_requests":         {Retain, "B21.3: the record that erasure was requested and completed"},
 	"workspace_requests":        {Retain, "B59.27: the record that support, a complaint, closing the account, an export or a deletion was asked for and how Talyvor answered, as B21.3 keeps deletion_requests"},
+	"account_deletions":         {Retain, "B52.37: the record that the person deleted their account, and when; the workspace's tokens issued before it are refused against it"},
 	"stored_answer_deletions":   {Retain, "B21.3: the audit log of each deletion of stored answers"},
 	"answer_removals":           {Retain, "B23.1: who marked a served answer wrong, and what was removed; holds no question or answer"},
 	"agent_postings":            {Retain, "B19.1: audit-guarded (0140, append-only): the agents' double-entry LXC ledger; financial-record retention"},
@@ -126,6 +127,7 @@ var Manifest = map[string]Entry{
 	"agent_payee_payments":      {Retain, "B28.304: audit-guarded (0191, append-only): every payment an agent's rules let through and whom it paid, which its per-payee daily caps count; financial-record retention"},
 	"agent_rule_spends":         {Retain, "B61.41: audit-guarded (2611160734b, append-only): what each movement rules in pounds or euros let through was worth in their currency then, which their period limits count; financial-record retention"},
 	"payment_proofs":            {Retain, "B62.1: audit-guarded (2611162348b, append-only): for each payment an agent's rules let through, what the owner was shown and signed, the rule and rules version, and what was sent; financial-record retention"},
+	"stopped_payments":          {Retain, "B62.9: audit-guarded (2611230421a, append-only): each payment stopped because it was not the one its approval showed, what was shown and would have been sent, and what differed; financial-record retention"},
 	"agent_card_settlements":    {Retain, "B19.25: audit-guarded (0157, append-only): each capture, release and refund that settled an agent card authorisation, and the LXC it moved; financial-record retention"},
 	"agent_transfers":           {Retain, "B22.3: keys `from_workspace_id`+`to_workspace_id`; audit-guarded (0159, append-only): each transfer of credits between two agents and its postings; financial-record retention"},
 	"agent_tool_calls":          {Retain, "B19.9: audit-guarded (0145, append-only): every call an agent made to its wallet tools; the record of what it asked and was refused"},
@@ -182,6 +184,7 @@ var Manifest = map[string]Entry{
 	"agent_crypto_sends":        {Retain, "B48.9: keys `workspace_id`+`to_workspace_id`: each USDC send from an agent's smart account — the address paid, amount, network, who asked and approved it, and its transaction; it explains chain_movements; financial-record retention"},
 	"crypto_address_proofs":     {Delete, "B48.7: each self-hosted address the owner proved they hold the key of, with the signed message; nothing to keep once the workspace is gone"},
 	"money_allowances":          {Retain, "B30.27: each agent's monthly allowance in a currency — amount, day, sweep-back; its money_allowance_runs name the money_entries each month posted; financial-record retention"},
+	"wallet_moves":              {Retain, "B48.8: each top-up or cash-out of an agent's wallet — route, what it sold, the partner's fee, the rate, what it bought, the bank account it paid — and the money_entries row it posted; it explains money_entries; financial-record retention"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
 	// B48.7: its key is longer than the rest, so it stands apart rather than realign them.
@@ -190,6 +193,10 @@ var Manifest = map[string]Entry{
 	// B59.30 (0379): their keys are longer than the rest, so they stand apart rather than realign them.
 	"workspace_business_details": {Delete, "B59.30: a Business workspace's company name and who last saved it; its number and country are on workspaces"},
 	"workspace_business_people":  {Delete, "B59.30: the company's people with control — each one's name, role and share; deleting the details row deletes these too (ON DELETE CASCADE)"},
+
+	// B48.10: their keys are longer than the rest, so they stand apart rather than realign them.
+	"crypto_payment_requests":         {Retain, "B48.10: each request to be paid into an agent's crypto wallet — amount, network, the wallet, memo, expiry, the payer's address when named and the owner's decision on an overpayment; it explains why money arrived; financial-record retention"},
+	"crypto_payment_request_payments": {Retain, "B48.10: which chain_movements deposit paid which request, how much and whether it came late; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
@@ -308,6 +315,8 @@ var Manifest = map[string]Entry{
 	"room_prizes":                  {Delete, "B32.35: keys `poster_workspace_id`: the prizes a workspace posted in its rooms; a room's own prizes cascade with it"},
 	"room_reports":                 {Delete, "B32.52: keys `reporter_workspace_id`: the reports a workspace made of rooms and their messages; a room's own reports cascade with it"},
 	"room_takeovers":               {Delete, "B41.148: keys `noticed_by_workspace_id`: the notices a workspace gave rooms' owners; a room's own notices cascade with it"},
+	"workspace_members":            {Delete, "B52.35: the people its owner let into the workspace by invite, and when; a person's own memberships elsewhere are keyed by their identity and end with their account (B52.37)"},
+	"workspace_member_invites":     {Delete, "B52.35: the workspace's invite links, each kept as its token's SHA-256, with its expiry and use count"},
 	"room_takeover_votes":          {Delete, "B41.148: the workspace's votes for a room's lead; a notice's votes cascade with it"},
 	"room_points":                  {Retain, "B41.143: audit-guarded (0350, append-only): the points each workspace earned for accepted contributions to a room — the record a contributor plan is counted from"},
 	"room_agreement_signatures":    {Retain, "B41.150: audit-guarded (0353, append-only): each workspace's e-signature of a room's contributor agreement, with the text version signed — the evidence its IP assignment rests on"},
@@ -328,6 +337,7 @@ var Manifest = map[string]Entry{
 	"market_listing_reports":       {Delete, "B20.4: keys `reporter_workspace_id`: the reports a workspace made of listings; reports of its own listings cascade with them"},
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
 	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},
+	"workspace_live_activities":    {Delete, "B41.136: each Live Activity's push token on the owner's iPhones, by the held payment it shows"},
 	"key_enrolments":               {Delete, "B55.1: the keys waiting to join the workspace from another device — their public keys, attestations and codes"},
 	"workspace_recovery_codes":     {Delete, "B55.48: the hash of the workspace's recovery code, and when each was used"},
 	"key_recovery_failures":        {Delete, "B55.48: when a wrong recovery code was tried, and from which IP"},
@@ -346,6 +356,8 @@ var Manifest = map[string]Entry{
 	"bank_connections":             {Delete, "B53.13: the owner's accounts at other banks Lens may read — bank, account name, consent, balance"},
 	"bank_transactions":            {Delete, "B53.13: the transactions read from those accounts — amount, merchant, date"},
 	"spend_alerts":                 {Delete, "B53.4: each time spending reached 50, 80 or 100% of a budget, a card's cap or an agent's limit, with the amounts"},
+	"balance_thresholds":           {Delete, "B28.334: the owner's low-balance threshold for an agent's balance in a currency"},
+	"low_balance_alerts":           {Delete, "B28.334: each hour an agent's balance was below its threshold, with the balance and the threshold"},
 	"spend_notice_settings":        {Delete, "B53.7: the owner's quiet hours, time zone and the kinds of notice switched off"},
 	"spend_notices":                {Delete, "B53.7: each notice of a payment, budget alert, unusual payment, Coach tip or weekly digest, with its words and whether it was sent"},
 	"alert_channels":               {Delete, "B28.338: where the owner sends alerts — push, a webhook's url and signing secret, or a Slack incoming webhook"},
@@ -410,6 +422,7 @@ var Manifest = map[string]Entry{
 	"output_attributions":           {Delete, ""},
 	"pattern_mine_credits":          {Delete, ""},
 	"number_move_holds":             {Delete, "B61.30: until when the account cannot move money after its person's number was moved"},
+	"workspace_roles":               {Delete, "B28.342: keys `workspace_id`: the roles its owner gave people in the workspace, by email"},
 	"person_accounts":               {Delete, "B61.7: which person (a hash of their identity) opened this workspace after their first account"},
 	"person_lookups":                {Delete, "B61.32: when the account looked a person up, for its limit an hour"},
 	"person_crypto_wallets":         {Delete, "B48.32: the agent wallet a person receives crypto into on each network; it goes with the person (ON DELETE CASCADE)"},
