@@ -115,8 +115,8 @@ func (b personPaymentBody) payment(req *http.Request, agentID string) economy.Pe
 }
 
 func mountPersonPaymentRoutes(r chi.Router, bank personPayer) {
-	caller := func(w http.ResponseWriter, req *http.Request) (ws, agentID string, ok bool) {
-		return moneyCaller(w, req, bank.AgentOfKey)
+	caller := func(w http.ResponseWriter, req *http.Request, roles ...string) (ws, agentID string, ok bool) {
+		return moneyCaller(w, req, bank.AgentOfKey, roles...)
 	}
 	r.Post("/v1/money/people/find", func(w http.ResponseWriter, req *http.Request) {
 		ws, _, ok := caller(w, req)
@@ -138,7 +138,7 @@ func mountPersonPaymentRoutes(r chi.Router, bank personPayer) {
 		writeJSONOK(w, http.StatusOK, found)
 	})
 	r.Post("/v1/money/people/pay/challenge", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -159,7 +159,7 @@ func mountPersonPaymentRoutes(r chi.Router, bank personPayer) {
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
 	})
 	r.With(withTask).Post("/v1/money/people/pay", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}

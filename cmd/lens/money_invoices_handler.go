@@ -46,13 +46,13 @@ type moneyInvoiceBank interface {
 
 func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 	// caller is the key's workspace and the agent asked for: an agent's own key may ask only for itself.
-	caller := func(w http.ResponseWriter, req *http.Request, asked string) (ws, agentID string, ok bool) {
+	caller := func(w http.ResponseWriter, req *http.Request, asked string, roles ...string) (ws, agentID string, ok bool) {
 		ws, _ = auth.WorkspaceIdentity(req.Context())
 		if ws == "" {
 			writeJSONErr(w, http.StatusBadRequest, "invoices are a workspace's: use a workspace's key")
 			return "", "", false
 		}
-		if _, owner := storedanswers.OwnerOrAdmin(req.Context()); owner {
+		if _, owner := storedanswers.OwnerOrRole(req.Context(), roles...); owner {
 			return ws, asked, true
 		}
 		keyAgent := ""
@@ -71,7 +71,7 @@ func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"account_id", "customer_name", "customer_email", "lines": [{"description", "quantity", "unit_amount_minor", "vat_rate_bps"}], "due_date": "YYYY-MM-DD", "send"}`)
 			return
 		}
-		ws, agentID, ok := caller(w, req, "")
+		ws, agentID, ok := caller(w, req, "", moneyRoles...)
 		if !ok {
 			return
 		}
@@ -94,9 +94,9 @@ func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"invoices": invoices})
 	})
-	move := func(do func(ctx context.Context, workspaceID, agentID, id string) (economy.Invoice, error)) http.HandlerFunc {
+	move := func(do func(ctx context.Context, workspaceID, agentID, id string) (economy.Invoice, error), roles ...string) http.HandlerFunc {
 		return func(w http.ResponseWriter, req *http.Request) {
-			ws, agentID, ok := caller(w, req, "")
+			ws, agentID, ok := caller(w, req, "", roles...)
 			if !ok {
 				return
 			}
@@ -108,7 +108,7 @@ func mountInvoiceRoutes(r chi.Router, bank moneyInvoiceBank) {
 			writeJSONOK(w, http.StatusOK, inv)
 		}
 	}
-	r.Post("/v1/money/invoices/{id}/send", move(bank.SendInvoice))
+	r.Post("/v1/money/invoices/{id}/send", move(bank.SendInvoice, moneyRoles...))
 	r.Post("/v1/money/invoices/{id}/void", move(bank.VoidInvoice))
 	r.With(withTask).Post("/v1/pay/{token}/agent", func(w http.ResponseWriter, req *http.Request) {
 		var in struct {

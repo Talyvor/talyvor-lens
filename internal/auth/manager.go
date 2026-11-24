@@ -177,6 +177,8 @@ type TokenClaims struct {
 	// AgentID and ClientID are a Connect token's agent and assistant (B52.4); empty on every other JWT.
 	AgentID  string `json:"agent_id,omitempty"`
 	ClientID string `json:"client_id,omitempty"`
+	// Role is a role session's role (B28.342, roles.go); empty on every other JWT.
+	Role string `json:"role,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -218,6 +220,9 @@ type AuthContext struct {
 	// TokenID is a JWT's jti: one per sign-in, so a lockdown (B41.116) can end every session but the one that ran it.
 	// EMPTY for every other method, and for a JWT minted before tokens carried one.
 	TokenID string `json:"token_id,omitempty"`
+	// Role is the role a role session holds in the workspace now (B28.342): viewer, finance, approver or admin.
+	// EMPTY for the owner's own session and every other method.
+	Role string `json:"role,omitempty"`
 }
 
 // Session names the sign-in a request came from — a JWT's own id, or the scoped API key's — and is "" when the
@@ -335,6 +340,7 @@ type Manager struct {
 	moderatorKeys   moderatorKeyValidator
 	partnerKeys     partnerKeyValidator
 	sessionCutoff   sessionCutoff
+	roles           roleSource
 	deletions       accountDeletions
 	liveMember      func(ctx context.Context, workspaceID, memberID string) (bool, error)
 
@@ -506,6 +512,11 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		}
 		if claims.ExpiresAt != nil {
 			actx.ExpiresAt = claims.ExpiresAt.Time
+		}
+		if claims.Role != "" {
+			if _, err := m.roleContext(r, actx); err != nil {
+				return nil, err
+			}
 		}
 		if m.sessionCutoff != nil {
 			var issued time.Time // a token with no iat is older than any lockdown

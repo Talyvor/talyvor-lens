@@ -174,9 +174,9 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 	})
 	r.Post("/v1/money/accounts/{id}/funding", func(w http.ResponseWriter, req *http.Request) {
 		ws, _ := auth.WorkspaceIdentity(req.Context())
-		by, owner := storedanswers.OwnerOrAdmin(req.Context())
+		by, owner := storedanswers.OwnerOrRole(req.Context(), moneyRoles...)
 		if ws == "" || !owner {
-			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may move money between the company and an agent")
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, an admin or a person whose role allows it may move money between the company and an agent")
 			return
 		}
 		var in struct {

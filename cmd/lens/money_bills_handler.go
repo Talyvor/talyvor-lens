@@ -43,13 +43,13 @@ type moneyBillBank interface {
 }
 
 func mountMoneyBillRoutes(r chi.Router, bank moneyBillBank, conv distill.IsolatedConverter) {
-	owner := func(w http.ResponseWriter, req *http.Request) (string, bool) {
+	owner := func(w http.ResponseWriter, req *http.Request, roles ...string) (string, bool) {
 		ws, _ := auth.WorkspaceIdentity(req.Context())
 		if ws == "" {
 			writeJSONErr(w, http.StatusBadRequest, "bills are a workspace's: use a workspace's key")
 			return "", false
 		}
-		if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
+		if _, ok := storedanswers.OwnerOrRole(req.Context(), roles...); !ok {
 			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may manage its bills")
 			return "", false
 		}
@@ -131,7 +131,7 @@ func mountMoneyBillRoutes(r chi.Router, bank moneyBillBank, conv distill.Isolate
 		}
 	})
 	r.Post("/v1/money/bills/pay", func(w http.ResponseWriter, req *http.Request) {
-		ws, ok := owner(w, req)
+		ws, ok := owner(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -149,7 +149,7 @@ func mountMoneyBillRoutes(r chi.Router, bank moneyBillBank, conv distill.Isolate
 		if actx := auth.GetAuthContext(req.Context()); actx != nil {
 			keyID = actx.APIKeyID
 		}
-		by, _ := storedanswers.OwnerOrAdmin(req.Context())
+		by, _ := storedanswers.OwnerOrRole(req.Context(), moneyRoles...)
 		client, err := economy.PaymentRequestClient(keyID, "", in.Client)
 		var pr economy.PaymentRequest
 		again := false
