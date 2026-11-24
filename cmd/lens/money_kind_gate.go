@@ -195,10 +195,12 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/crypto-requests/{}/overpayment": moneySideOnChain,
 
 	// device_keys_handler.go
-	"/v1/money/devices":               moneySideEither,
-	"/v1/money/devices/challenge":     moneySideEither,
-	"/v1/money/devices/{}/push-token": moneySideEither,
-	"/v1/money/devices/{}/revoke":     moneySideEither,
+	"/v1/money/devices":                        moneySideEither,
+	"/v1/money/devices/challenge":              moneySideEither,
+	"/v1/money/devices/{}/push-token":          moneySideEither,
+	"/v1/money/devices/{}/live-activity-token": moneySideEither,
+	"/v1/money/devices/{}/live-activities":     moneySideEither,
+	"/v1/money/devices/{}/revoke":              moneySideEither,
 
 	// key_enrolments_handler.go
 	"/v1/workspaces/{}/agents/keys/enrolments":              moneySideEither,

@@ -210,6 +210,72 @@ func (a *APNs) Send(ctx context.Context, token string, m Message) error {
 	return nil
 }
 
+// B41.136 — LIVE ACTIVITIES WITH THE APP CLOSED. The phone app's held-payment Live Activity is expo-widgets' generic
+// one: its attributes type is LiveActivityAttributes, its only attribute the url a tap opens, and its content state
+// the layout's name and its props as a JSON string — what the app's own start() and end() send.
+
+// LiveActivity is one push to a Live Activity: "start" to the phone's push-to-start token, "update" or "end" to one
+// activity's own push token. Alert is what the phone shows as it starts; Props is the layout's props, JSON.
+type LiveActivity struct {
+	Event string
+	Name  string
+	Props []byte
+	URL   string
+	Alert Message
+}
+
+// LiveActivityAttributesType is expo-widgets' ActivityAttributes struct, the one a push-to-start names.
+const LiveActivityAttributesType = "LiveActivityAttributes"
+
+// SendLiveActivity sends la to a push-to-start token or an activity's push token, both hex as a device token is.
+// ErrGone means the token should be forgotten.
+func (a *APNs) SendLiveActivity(ctx context.Context, token string, la LiveActivity) error {
+	if !ValidToken("ios", token) {
+		return errors.New("nativepush: not an APNs Live Activity token")
+	}
+	bearer, err := a.providerToken()
+	if err != nil {
+		return err
+	}
+	aps := map[string]any{"timestamp": time.Now().Unix(), "event": la.Event,
+		"content-state": map[string]string{"name": la.Name, "props": string(la.Props)}}
+	if la.Event == "start" {
+		aps["attributes-type"] = LiveActivityAttributesType
+		aps["attributes"] = map[string]string{"url": la.URL}
+		aps["alert"] = map[string]string{"title": la.Alert.Title, "body": la.Alert.Body}
+	}
+	body, _ := json.Marshal(map[string]any{"aps": aps})
+	h := http.Header{}
+	h.Set("Authorization", "bearer "+bearer)
+	h.Set("apns-topic", a.topic+".push-type.liveactivity")
+	h.Set("apns-push-type", "liveactivity")
+	h.Set("apns-priority", "10")
+	h.Set("Content-Type", "application/json")
+	status, out, err := post(ctx, a.Client, a.Host+"/3/device/"+token, h, body)
+	if err != nil {
+		return fmt.Errorf("nativepush: APNs: %w", err)
+	}
+	var reply struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(out, &reply)
+	switch {
+	case status == http.StatusGone || status == http.StatusBadRequest && (reply.Reason == "BadDeviceToken" || reply.Reason == "DeviceTokenNotForTopic"):
+		return ErrGone
+	case status != http.StatusOK:
+		return fmt.Errorf("nativepush: APNs answered %d %s", status, reply.Reason)
+	}
+	return nil
+}
+
+// SendLiveActivity sends la on platform's service: Live Activities are an iPhone's alone, so only APNs sends one.
+func (s Senders) SendLiveActivity(ctx context.Context, platform, token string, la LiveActivity) error {
+	if platform == "ios" && s.APNs != nil {
+		return s.APNs.SendLiveActivity(ctx, token, la)
+	}
+	return nil
+}
+
 // FCM sends through Firebase Cloud Messaging's HTTP v1 API as a service account.
 type FCM struct {
 	projectID, email, tokenURI string
