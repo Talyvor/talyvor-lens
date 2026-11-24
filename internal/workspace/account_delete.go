@@ -174,6 +174,9 @@ func (m *Manager) DeleteAccount(ctx context.Context, id, identity string, before
 			identity); err != nil {
 			return fmt.Errorf("workspace: end memberships: %w", err)
 		}
+		if err := endPersonSignIn(ctx, tx, identity); err != nil {
+			return err
+		}
 	}
 	if err := leaveRooms(ctx, tx, id); err != nil {
 		return err
@@ -295,6 +298,58 @@ func (m *Manager) DeleteAccount(ctx context.Context, id, identity string, before
 	m.mu.Lock()
 	delete(m.workspaces, id)
 	m.mu.Unlock()
+	return nil
+}
+
+// endPersonSignIn ends the phone sign-in record of the person who holds identity (B52.44), in their last account's
+// deletion: their keys, the tickets and challenges for them, their passcode and how they are found to be paid are
+// deleted, every phone ticket for their number is used up, and their people row is kept anonymised (migration
+// 2611231844c), so the number and the passkey, device key and passcode sign nobody in and the number can sign up
+// again as a new person. A person who never signed in by phone has no row, and nothing is done.
+func endPersonSignIn(ctx context.Context, tx pgx.Tx, identity string) error {
+	var person, phone string
+	err := tx.QueryRow(ctx, `SELECT id, phone FROM people WHERE identity = $1 AND deleted_at IS NULL`, StoredIdentity(identity)).
+		Scan(&person, &phone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("workspace: the person's sign-in: %w", err)
+	}
+	// internal/phonesignin's own locks, in its order, so a sign-in running beside this one finishes first or then
+	// finds nobody.
+	for _, key := range []string{"phone:" + phone, "person-keys:" + person, "passcode:" + person} {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+			return fmt.Errorf("workspace: lock the person's sign-in: %w", err)
+		}
+	}
+	var now string // the number now, if a change of number committed before the lock
+	if err := tx.QueryRow(ctx, `SELECT phone FROM people WHERE id = $1 FOR UPDATE`, person).Scan(&now); err != nil {
+		return fmt.Errorf("workspace: lock the person: %w", err)
+	}
+	// The tickets and challenges first: they name the keys.
+	if _, err := tx.Exec(ctx, `DELETE FROM person_key_tickets WHERE person_id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: delete the person's key tickets: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM person_key_challenges WHERE person_id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: delete the person's key challenges: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM person_keys WHERE person_id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: delete the person's keys: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM person_passcodes WHERE person_id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: delete the person's passcode: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM people_found WHERE person_id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: delete how the person is found: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE phone_tickets SET used_at = now() WHERE phone IN ($1, $2) AND used_at IS NULL`, phone, now); err != nil {
+		return fmt.Errorf("workspace: end the number's tickets: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE people SET phone = 'deleted:' || id, identity = 'deleted:' || id, deleted_at = clock_timestamp()
+		WHERE id = $1`, person); err != nil {
+		return fmt.Errorf("workspace: anonymise the person: %w", err)
+	}
 	return nil
 }
 
