@@ -143,6 +143,8 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/money/devices":                                     "a device key",
 	"POST /v1/money/devices/challenge":                           "a device key's challenge",
 	"POST /v1/money/devices/{}/push-token":                       "notifications",
+	"POST /v1/money/devices/{}/live-activity-token":              "notifications",
+	"POST /v1/money/devices/{}/live-activities":                  "notifications",
 	"POST /v1/money/devices/{}/revoke":                           "a device key",
 
 	// Looking: a quote, a search, a question, a payee saved, a bank linked to read, a bill read.

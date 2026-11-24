@@ -1651,7 +1651,11 @@ func (s *DualTokenStore) DecideAgentApproval(ctx context.Context, workspaceID, a
 	if err != nil {
 		return a, err
 	}
-	return a, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return a, err
+	}
+	s.endDecidedApprovals(workspaceID, a) // B41.136
+	return a, nil
 }
 
 // defaultApprovalTTL is how long an approval lasts (B50.18, Nick 28 Oct): a request waits that long for its tap, and

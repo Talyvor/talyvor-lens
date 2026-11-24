@@ -330,7 +330,11 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	if err != nil {
 		return a, fmt.Errorf("economy: approve: %w", err)
 	}
-	return a, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return a, err
+	}
+	s.endDecidedApprovals(workspaceID, a) // B41.136
+	return a, nil
 }
 
 // DecideAgentApprovalSigned decides approvalID with the owner's signature a: checked, and its challenge spent, as
@@ -364,7 +368,11 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 	if err != nil {
 		return ap, err
 	}
-	return ap, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return ap, err
+	}
+	s.endDecidedApprovals(workspaceID, ap) // B41.136
+	return ap, nil
 }
 
 // decideInTx decides pending approvalID inside tx; an approval signed by the owner's assertion a keeps the owner's AP2
