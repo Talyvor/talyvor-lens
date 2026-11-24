@@ -102,10 +102,12 @@ func TestB4810_RequestsToBePaidAreMatchedToTheirDeposits(t *testing.T) {
 		}
 		return m
 	}
+	// One expiry for every ask: a replay compares it, and a fresh time.Now() per call differs once a second has passed.
+	expires := time.Now().Add(time.Hour).Truncate(time.Second)
 	ask := func(key string, amount int64, payerAddr string) CryptoRequest {
 		t.Helper()
 		r, err := x.CreatePaymentRequest(ctx, CryptoRequestIn{WorkspaceID: wsA, AgentID: seller, Token: "USDC", Network: "base", AmountMinor: amount,
-			Memo: "invoice " + key, ExpiresAt: time.Now().Add(time.Hour).Truncate(time.Second), PayerAddress: payerAddr, IdempotencyKey: key,
+			Memo: "invoice " + key, ExpiresAt: expires, PayerAddress: payerAddr, IdempotencyKey: key,
 			CreatedBy: "owner"})
 		if err != nil {
 			t.Fatal(err)
