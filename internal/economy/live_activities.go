@@ -306,15 +306,23 @@ func (s *DualTokenStore) endLiveActivity(workspaceID, key, state string) {
 	}()
 }
 
-// endDecidedApprovals ends the activities of agent approvals just decided: approved, or declined. One still pending
-// (the first of two approvals over the second-approver line, B28.315) keeps its activity.
+// endDecidedApprovals ends the activities of agent approvals just decided: approved, or declined.
 func (s *DualTokenStore) endDecidedApprovals(workspaceID string, approvals ...AgentApproval) {
 	for _, a := range approvals {
-		switch a.Status {
-		case "approved":
-			s.endLiveActivity(workspaceID, "ap:"+a.ID, "approved")
-		case "denied":
-			s.endLiveActivity(workspaceID, "ap:"+a.ID, "declined")
+		if state, ended := decidedActivityState(a.Status); ended {
+			s.endLiveActivity(workspaceID, "ap:"+a.ID, state)
 		}
 	}
+}
+
+// decidedActivityState is the state an approval's activity ends in. One still pending (the first of two approvals
+// over the second-approver line, B28.315) keeps its activity.
+func decidedActivityState(status string) (string, bool) {
+	switch status {
+	case "approved":
+		return "approved", true
+	case "denied":
+		return "declined", true
+	}
+	return "", false
 }
