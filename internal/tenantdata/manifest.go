@@ -337,6 +337,7 @@ var Manifest = map[string]Entry{
 	"market_listing_reports":       {Delete, "B20.4: keys `reporter_workspace_id`: the reports a workspace made of listings; reports of its own listings cascade with them"},
 	"workspace_passkeys":           {Delete, "B19.16: the owner's passkeys' public keys"},
 	"workspace_device_keys":        {Delete, "B40.4: the owner's phones' device public keys and the attestations they were registered with"},
+	"workspace_live_activities":    {Delete, "B41.136: each Live Activity's push token on the owner's iPhones, by the held payment it shows"},
 	"key_enrolments":               {Delete, "B55.1: the keys waiting to join the workspace from another device — their public keys, attestations and codes"},
 	"workspace_recovery_codes":     {Delete, "B55.48: the hash of the workspace's recovery code, and when each was used"},
 	"key_recovery_failures":        {Delete, "B55.48: when a wrong recovery code was tried, and from which IP"},
