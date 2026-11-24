@@ -32,7 +32,7 @@ func b617Router(t *testing.T) (chi.Router, *ecdsaKeyFixture, *pgxpool.Pool) {
 	mgr, pool := provisionManager(t)
 	keys := newKeyFixture(t)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, nil, keys.mint)
+	mountProvisionRoute(r, provisionSecret, mgr, nil, keys.mint, nil)
 	return r, keys, pool
 }
 

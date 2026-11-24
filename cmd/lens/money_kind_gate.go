@@ -43,6 +43,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/approvals":                    moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/challenge":          moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/decide":             moneySideEither,
+	"/v1/workspaces/{}/agents/approvals/{}":                 moneySideEither, // B62.9
 	"/v1/workspaces/{}/agents/approvals/{}/approve":         moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/{}/challenge":       moneySideEither,
 	"/v1/workspaces/{}/agents/payment-proofs/{}":            moneySideEither, // B62.1
@@ -129,8 +130,9 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/card/cancel":   moneySideEither, // a control that stops money is never refused
 
 	// agent_cash_outs_handler.go
-	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
-	"/v1/workspaces/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs/challenge": moneySideFiat, // B28.339
+	"/v1/workspaces/{}/cash-outs":                     moneySideFiat,
 
 	// agent_crypto_sends_handler.go
 	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
@@ -181,6 +183,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/credit-score":        moneySideEither,
 	"/v1/money/credit-score/review": moneySideEither,
 
+	// B48.10: crypto_requests_handler.go, an agent asking to be paid USDC into its smart account
+	"/v1/workspaces/{}/agents/{}/crypto-requests":                moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}":             moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}/overpayment": moneySideOnChain,
+
 	// device_keys_handler.go
 	"/v1/money/devices":               moneySideEither,
 	"/v1/money/devices/challenge":     moneySideEither,
@@ -210,12 +217,17 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/lxc/history":     moneySideEither,
 
 	// money_accounts_handler.go
-	"/v1/money/accounts":               moneySideEither,
-	"/v1/money/accounts/{}/details":    moneySideEither,
-	"/v1/money/accounts/{}/funding":    moneySideEither, // B61.66: between the company and an agent, in the account's currency
-	"/v1/money/accounts/{}/statement":  moneySideEither,
-	"/v1/money/accounts/{}/test-money": moneySideEither,
-	"/v1/money/overview":               moneySideEither,
+	"/v1/money/accounts":                       moneySideEither,
+	"/v1/money/accounts/{}/close":              moneySideEither,
+	"/v1/money/accounts/{}/close/challenge":    moneySideEither,
+	"/v1/money/accounts/{}/details":            moneySideEither,
+	"/v1/money/accounts/{}/freeze":             moneySideEither,
+	"/v1/money/accounts/{}/funding":            moneySideEither, // B61.66: between the company and an agent, in the account's currency
+	"/v1/money/accounts/{}/statement":          moneySideEither,
+	"/v1/money/accounts/{}/test-money":         moneySideEither,
+	"/v1/money/accounts/{}/unfreeze":           moneySideEither,
+	"/v1/money/accounts/{}/unfreeze/challenge": moneySideEither,
+	"/v1/money/overview":                       moneySideEither,
 
 	// money_allowances_handler.go
 	"/v1/money/allowances":         moneySideEither,

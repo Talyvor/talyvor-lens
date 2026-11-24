@@ -10,12 +10,16 @@ import (
 
 	"github.com/talyvor/lens/internal/auth"
 	"github.com/talyvor/lens/internal/economy"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // B22.9 — cash-out to money, behind a licensed partner (economy/agent_cash_outs.go).
 //
-//	POST /v1/workspaces/{wsID}/agents/{agentID}/cash-outs   {amount_ulxc, destination} — turn the agent's credits
-//	                                                        into money in the owner's bank account
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/cash-outs/challenge  {amount_ulxc, destination} — the challenge that
+//	                                                        cash-out is signed over, and the passkeys that may sign it
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/cash-outs   {amount_ulxc, destination, assertion} — turn the agent's
+//	                                                        credits into money in the owner's bank account; once the
+//	                                                        workspace has a passkey or device key, only signed (403)
 //	GET  /v1/workspaces/{wsID}/cash-outs                    every cash-out and where it stands
 //
 // Only the workspace's owner or an admin may cash out — never an agent's own key. Held requests are handed to
@@ -23,18 +27,40 @@ import (
 // nothing. Mounted in the authed group.
 
 type cashOutBank interface {
-	RequestCashOut(ctx context.Context, workspaceID, agentID string, amount int64, destination, requestedBy string) (economy.CashOut, error)
+	CashOutChallenge(ctx context.Context, workspaceID, agentID string, amount int64, destination string) (string, []string, error)
+	RequestCashOut(ctx context.Context, workspaceID, agentID string, amount int64, destination, requestedBy string, a *passkey.Assertion) (economy.CashOut, error)
 	ListCashOuts(ctx context.Context, workspaceID string) ([]economy.CashOut, error)
 }
 
 func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
-		var in struct {
-			AmountULXC  int64  `json:"amount_ulxc"`
-			Destination string `json:"destination"`
-		}
+	type cashOutBody struct {
+		AmountULXC  int64              `json:"amount_ulxc"`
+		Destination string             `json:"destination"`
+		Assertion   *passkey.Assertion `json:"assertion"`
+	}
+	decode := func(w http.ResponseWriter, req *http.Request) (cashOutBody, bool) {
+		var in cashOutBody
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, `body must be {"amount_ulxc": …, "destination": "<a label for the bank account>"}`)
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"amount_ulxc": …, "destination": "<a label for the bank account>", "assertion": {…}}`)
+			return in, false
+		}
+		return in, true
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := decode(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.CashOutChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.AmountULXC, in.Destination)
+		if err != nil {
+			writeCashOutErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		in, ok := decode(w, req)
+		if !ok {
 			return
 		}
 		by := ""
@@ -45,7 +71,7 @@ func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
 		if !ok {
 			return
 		}
-		c, err := bank.RequestCashOut(ctx, chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.AmountULXC, in.Destination, by)
+		c, err := bank.RequestCashOut(ctx, chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in.AmountULXC, in.Destination, by, in.Assertion)
 		if err != nil {
 			writeCashOutErr(w, err)
 			return
@@ -68,6 +94,8 @@ func writeCashOutErr(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, economy.ErrNoCashOutPartner):
 		writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, economy.ErrCashOutUnsigned), errors.Is(err, passkey.ErrInvalid):
+		writeJSONErr(w, http.StatusForbidden, err.Error())
 	default:
 		writeTransferErr(w, err)
 	}
