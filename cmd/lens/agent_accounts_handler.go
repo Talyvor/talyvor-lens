@@ -239,7 +239,11 @@ import (
 //
 //	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/quote  {"route": "wallet"|"card"|"bank_transfer"|"convert"|"cash_out",
 //	                                                     "amount_minor", "currency", "from_agent_id"?, "payee_id"?, "to_currency"?}
-//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/confirm   make it, once; 409 when expired or refused.
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/challenge B48.42: what a cash-out's or convert's
+//	                                                     confirm is signed over, by a passkey or the phone's key
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/confirm   {"assertion"?} make it, once; 409 when expired
+//	                                                     or refused; a cash-out or convert 403 unsigned once the
+//	                                                     workspace has a passkey or device key.
 //	                                                     Once money has left, a refusal holds it (status held), and
 //	                                                     confirming again carries it on to its end
 //	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/return    a held move's money, given back by the ramp
@@ -285,7 +289,8 @@ type agentBank interface {
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
 	QuoteWalletMove(ctx context.Context, workspaceID, agentID string, r economy.WalletMoveRequest, by string, workspaceOwner bool) (economy.WalletMove, error)
-	ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
+	WalletMoveChallenge(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (string, []string, error)
+	ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool, a *passkey.Assertion) (economy.WalletMove, error)
 	ReturnWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
 	WalletMoves(ctx context.Context, workspaceID, agentID string) ([]economy.WalletMove, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, c economy.AgentChange) (economy.Agent, error)
@@ -879,7 +884,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrWalletMoveExpired), errors.Is(err, money.ErrRefused), errors.Is(err, money.ErrInsufficientFunds):
 			writeJSONErr(w, http.StatusConflict, err.Error())
-		case errors.As(err, &refusal), errors.As(err, new(*screening.Refusal)):
+		case errors.As(err, &refusal), errors.As(err, new(*screening.Refusal)), errors.Is(err, economy.ErrWalletMoveUnsigned),
+			errors.Is(err, passkey.ErrInvalid):
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrAgentWalletsOff), errors.Is(err, economy.ErrNoRampPartner), errors.Is(err, partners.ErrScreeningUnavailable):
 			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
@@ -905,9 +911,21 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		out, err := bank.QuoteWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in, actor(req), wsOwner(req))
 		writeMove(w, out, err)
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/confirm", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
-		out, err := bank.ConfirmWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		c, creds, err := bank.WalletMoveChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
 			actor(req), wsOwner(req))
+		writeMove(w, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"}, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/confirm", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be empty or {"assertion": {…}}`)
+			return
+		}
+		out, err := bank.ConfirmWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req), in.Assertion)
 		writeMove(w, out, err)
 	}))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/return", ownerOnly(func(w http.ResponseWriter, req *http.Request) {

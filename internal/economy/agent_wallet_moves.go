@@ -15,6 +15,7 @@ import (
 
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // agent_wallet_moves.go — B48.8: TOPPING UP AND CASHING OUT AN AGENT'S WALLET.
@@ -40,6 +41,10 @@ import (
 // The USDC a ramp buys arrives in the agent's wallet as a deposit, which the money layer's webhook reports
 // (ReceivePayment). A top-up posts once, under that deposit's key, whichever sees it first: the confirm, when the money
 // layer knows the ramp's reference as a deposit, or the webhook (deliverWalletMove).
+//
+// B48.42: a cash-out or a convert moves money out to the ramp, so once the workspace has a passkey or the phone's key,
+// its first confirm is signed by one of them over the move's own challenge (WalletMoveChallenge), as B28.339 has a
+// credits cash-out signed. A move a confirm already began is carried on with no new signature.
 
 // The routes money comes into or leaves an agent's wallet by.
 const (
@@ -59,6 +64,9 @@ var (
 	ErrWalletMoveExpired = errors.New("economy: the quote has expired: ask for a new one")
 	// ErrNoRampPartner: no ramp is set, so nothing buys or sells USDC.
 	ErrNoRampPartner = errors.New("economy: buying or selling USDC needs a ramp partner, and none is configured")
+	// ErrWalletMoveUnsigned: the workspace signs its cash-outs and converts, and this confirm carried no signature.
+	ErrWalletMoveUnsigned = errors.New("economy: this workspace signs its cash-outs and converts with a passkey or the phone app. " +
+		"Sign this move's challenge (POST /v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/challenge)")
 )
 
 // SetRampPartner is who buys USDC for agents' wallets and sells it for money (B48.8); nil, only route wallet works.
@@ -342,6 +350,53 @@ func (s *DualTokenStore) mayConfirm(ctx context.Context, m WalletMove, by string
 	return mayMove(m.Route, fromAgent, by, owner, workspaceOwner)
 }
 
+// signsWalletMove is whether a move of route is signed before it is confirmed: money leaving to the ramp, for the
+// owner's bank (cash_out) or from the owner's fiat wallet (convert). Top-ups by card or bank, and moves between the
+// owner's own wallets, are not.
+func signsWalletMove(route string) bool {
+	return route == WalletMoveCashOut || route == WalletMoveConvert
+}
+
+// walletMovePurpose binds a challenge to m exactly as quoted — its id, route, what it sells and where it goes — so a
+// signature for it confirms no other move, nor this one for another amount or bank account.
+func walletMovePurpose(m WalletMove) string {
+	to := m.PayeeID
+	if m.Route != WalletMoveCashOut {
+		to = "pay-in " + m.payInName + " " + m.payInAddress
+	}
+	return fmt.Sprintf("wallet_move:%s:%s:%d:%s:%s", m.ID, m.Route, m.SellMinor, m.SellCurrency, to)
+}
+
+// WalletMoveChallenge issues the challenge confirming the cash-out or convert quoted as id is signed over, and the
+// workspace's passkeys that may sign it; its device keys sign it too. by asks it as they would confirm it (mayConfirm).
+func (s *DualTokenStore) WalletMoveChallenge(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (challenge string,
+	credentialIDs []string, err error) {
+	m, err := scanWalletMove(s.pool.QueryRow(ctx, `SELECT `+walletMoveCols+` FROM wallet_moves WHERE id = $1 AND workspace_id = $2 AND agent_id = $3`,
+		id, workspaceID, agentID))
+	if err != nil {
+		return "", nil, err
+	}
+	if err := s.mayConfirm(ctx, m, by, workspaceOwner); err != nil {
+		return "", nil, err
+	}
+	switch {
+	case !signsWalletMove(m.Route):
+		return "", nil, fmt.Errorf("%w: only a cash-out or a convert is signed", ErrWalletMove)
+	case m.Status != "quoted" || m.stage != "":
+		return "", nil, fmt.Errorf("%w: this move is already confirmed: confirm it again with no signature", ErrWalletMove)
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, walletMovePurpose(m))
+	return c, credentialIDs, err
+}
+
 // checkCashOutPayee refuses a cash-out unless payeeID is the owner's own bank account: a saved payee whose bank
 // confirmed its name exactly, and that name is the person whose identity check (L2) passed — for live money, a check a
 // real provider passed — and whose details have not changed since the move was quoted (quotedAt) nor in the last 24 hours.
@@ -486,8 +541,9 @@ func (s *DualTokenStore) runWalletMove(ctx context.Context, m WalletMove) (strin
 		exec.ToAddress = d.Address
 	}
 	r, err := s.rampPartner.Execute(ctx, exec)
-	if err == nil { // the ramp has taken it: its money can no longer be given back
-		if _, err := s.pool.Exec(ctx, `UPDATE wallet_moves SET executed_at = COALESCE(executed_at, now()) WHERE id = $1`, m.ID); err != nil {
+	if err == nil { // the ramp has taken it: its money can no longer be given back; its reference tells its delivery
+		if _, err := s.pool.Exec(ctx, `UPDATE wallet_moves SET executed_at = COALESCE(executed_at, now()), ramp_ref = COALESCE(NULLIF($2, ''), ramp_ref)
+			WHERE id = $1`, m.ID, r.Ref); err != nil {
 			return "", fmt.Errorf("economy: wallet move: %w", err)
 		}
 	}
@@ -622,8 +678,9 @@ func (s *DualTokenStore) walletMoveFromRoute(ctx context.Context, m WalletMove) 
 // nothing of it has started: one the owner approved late is priced again, and one a partner began is replayed to its
 // end. The partners' no to its first step fails the move (money.ErrRefused); the ramp's, once the wallet paid it in,
 // prices it again to wait for the owner's confirm; any other no once money may have left holds it (status held). A held
-// move confirmed again is replayed to its end.
-func (s *DualTokenStore) ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (WalletMove, error) {
+// move confirmed again is replayed to its end. a signs a cash-out's or a convert's first confirm (WalletMoveChallenge),
+// which a workspace with a passkey or device key needs (B48.42).
+func (s *DualTokenStore) ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool, a *passkey.Assertion) (WalletMove, error) {
 	if s.moneyLayer == nil {
 		return WalletMove{}, ErrAgentWalletsOff
 	}
@@ -661,6 +718,13 @@ func (s *DualTokenStore) ConfirmWalletMove(ctx context.Context, workspaceID, age
 	if m, err = scanWalletMove(tx.QueryRow(ctx, `SELECT `+walletMoveCols+` FROM wallet_moves WHERE id = $1`, id)); err != nil ||
 		(m.Status != "quoted" && m.Status != "held") {
 		return m, err
+	}
+	// B48.42: the first confirm of a cash-out or convert is signed, under the lock, before anything of it is written; a
+	// move a confirm already began is carried on unsigned.
+	if signsWalletMove(m.Route) && m.Status == "quoted" && m.stage == "" {
+		if err := s.authorizeSignedTx(ctx, tx, workspaceID, walletMovePurpose(m), a, ErrWalletMoveUnsigned); err != nil {
+			return WalletMove{}, err
+		}
 	}
 	// A move a partner step began may have money out: from here no refusal fails it.
 	replay := m.stage == walletMoveStarted
@@ -822,13 +886,16 @@ func (s *DualTokenStore) ConfirmWalletMove(ctx context.Context, workspaceID, age
 // deliverWalletMove posts payment in, arrived in the agent's wallet to, as the delivery of the top-up into it the ramp
 // executed for exactly that much — once, under the deposit's key — and answers whether it was one's.
 //
-// shortcut: a delivery is told from another deposit by its wallet and its exact amount, the oldest such top-up first;
-// match on the ramp's transaction hash when a live ramp reports one.
+// B48.42: a delivery is the deposit whose transaction is the one the ramp reported executing the top-up (ramp_ref: the
+// deposit's partner reference, or the transaction hash it begins with). Only the Test ramp, whose deliveries the money
+// layer reports under its own references, is matched by the wallet and the exact amount, the oldest such top-up first.
 func (s *DualTokenStore) deliverWalletMove(ctx context.Context, workspaceID, to string, in InboundPayment) (MoneyEntry, bool, error) {
 	var id string
 	err := s.pool.QueryRow(ctx, `SELECT id FROM wallet_moves WHERE workspace_id = $1 AND to_account_id = $2 AND route IN ('card', 'bank_transfer', 'convert')
-		AND status IN ('quoted', 'held') AND stage = 'started' AND buy_minor = $3 AND buy_currency = $4 AND funding = $5 ORDER BY created_at LIMIT 1`,
-		workspaceID, to, in.AmountMinor, in.Currency, in.Funding).Scan(&id)
+		AND status IN ('quoted', 'held') AND stage = 'started' AND buy_minor = $3 AND buy_currency = $4 AND funding = $5
+		AND ((ramp_ref <> '' AND lower(ramp_ref) IN (lower($6), lower(split_part($6, ':', 1)))) OR partner IN ($7, $8))
+		ORDER BY ramp_ref <> '' AND lower(ramp_ref) IN (lower($6), lower(split_part($6, ':', 1))) DESC, created_at LIMIT 1`,
+		workspaceID, to, in.AmountMinor, in.Currency, in.Funding, in.PartnerRef, money.SandboxName, "test").Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MoneyEntry{}, false, nil
 	}

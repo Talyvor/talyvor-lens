@@ -112,6 +112,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/wallet-kind":               moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet-moves":              moneySideEither, // B48.8: the body names the route, wallet to card to cash-out
 	"/v1/workspaces/{}/agents/{}/wallet-moves/quote":        moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/challenge": moneySideEither, // B48.42
 	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/confirm":   moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/return":    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallets":                   moneySideEither,

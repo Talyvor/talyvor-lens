@@ -451,7 +451,7 @@ func TestB488_TopUpAndCashOutAnAgentsWalletPostOnceAtTheQuote(t *testing.T) {
 	transfers.pendNext = true
 	gone, hangUp := context.WithCancel(ctx)
 	hangUp()
-	if got, err := store.ConfirmWalletMove(gone, ws, ops.ID, m.ID, "owner", true); err != nil || got.Status != "quoted" || !strings.Contains(got.Detail, "pending") ||
+	if got, err := store.ConfirmWalletMove(gone, ws, ops.ID, m.ID, "owner", true, nil); err != nil || got.Status != "quoted" || !strings.Contains(got.Detail, "pending") ||
 		transfers.stage != "started" || !transfers.alive {
 		t.Fatalf("convert confirmed by an owner who hung up = %+v %v (stage at the pay-in %q, alive %v); want it pending, started first",
 			got, err, transfers.stage, transfers.alive)
@@ -558,7 +558,7 @@ func TestB488_TopUpAndCashOutAnAgentsWalletPostOnceAtTheQuote(t *testing.T) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		got, err := store.ConfirmWalletMove(ctx, ws, ops.ID, m.ID, "owner", true)
+		got, err := store.ConfirmWalletMove(ctx, ws, ops.ID, m.ID, "owner", true, nil)
 		done <- answer{got, err}
 	}()
 	for waiting := false; !waiting; {
