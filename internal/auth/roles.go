@@ -88,11 +88,13 @@ func (m *Manager) roleContext(r *http.Request, actx *AuthContext) (*AuthContext,
 }
 
 // ownerOnlySegments are the parts of a path no role reaches, whatever the method: the workspace's keys, passkeys,
-// devices, recovery, lockdown and roles stay its owner's.
+// devices, recovery, lockdown and roles stay its owner's, and so do the owner's own identity, verification, billing,
+// business details and the requests they file (closing the account, the data export and its download).
 var ownerOnlySegments = []string{
 	"keys", "api-keys", "key-rotations", "provider-keys", "session-keys", "partner-keys", "passkey", "passkeys",
 	"devices", "enrolments", "recover", "recovery-code", "recovery-signer", "lockdown", "roles",
 	"connect-token", "connect-revocations", "permission-mandates", "mandates",
+	"verification", "requests", "export", "billing", "identity", "business-details",
 }
 
 // financeRoutes are what Finance may do beside reading: move money in, out and between the workspace's accounts and
@@ -100,8 +102,8 @@ var ownerOnlySegments = []string{
 var financeRoutes = []string{
 	"/v1/workspaces/*/agents/*/fund",
 	"/v1/workspaces/*/agents/*/withdraw",
-	"/v1/workspaces/*/agents/*/topup",
 	"/v1/workspaces/*/agents/*/cash-outs",
+	"/v1/workspaces/*/agents/*/cash-outs/challenge",
 	"/v1/money/accounts/*/funding",
 	"/v1/money/accounts/*/withdraw",
 	"/v1/money/accounts/*/withdraw/challenge",
@@ -129,16 +131,26 @@ var approverRoutes = []string{
 	"/v1/workspaces/*/agents/approvals/*/approve",
 	"/v1/workspaces/*/agents/approvals/*/deny",
 	"/v1/workspaces/*/agents/approvals/*/challenge",
-	"/v1/workspaces/*/agents/*/approvals/*/approve",
 	"/v1/money/payment-requests/*/approve",
 	"/v1/money/payment-requests/*/approval",
 	"/v1/money/payouts/*/approve",
 	"/v1/money/payouts/*/approve/challenge",
 }
 
+// adminRoutes are what Admin may do beside what Finance and Approver may: make an agent, set its rules and pause it.
+// Each is "METHOD path".
+var adminRoutes = []string{
+	"POST /v1/workspaces/*/agents",
+	"PUT /v1/workspaces/*/agents/*/rules",
+	"POST /v1/workspaces/*/agents/*/rules/challenge",
+	"POST /v1/workspaces/*/agents/*/pause",
+}
+
 // RoleAllows reports whether role may make a method request of path. Every role reads (GET and HEAD) everything but
 // the owner's own parts; beside that Viewer does nothing, Finance moves money (financeRoutes), Approver decides
-// approvals (approverRoutes), and Admin does everything else the owner does. Anything not named is refused.
+// approvals (approverRoutes), and Admin does both and adminRoutes. Anything not named is refused. This is the first
+// gate: a handler still admits a role session only where it names that role (storedanswers.OwnerOrRole), and
+// storedanswers.OwnerOrAdmin refuses every role session.
 func RoleAllows(role, method, path string) bool {
 	if wsrole.Check(role) != nil || !strings.HasPrefix(path, "/v1/") {
 		return false
@@ -158,11 +170,22 @@ func RoleAllows(role, method, path string) bool {
 	}
 	switch role {
 	case wsrole.Admin:
-		return true
+		return method == http.MethodPost && (matchesAny(financeRoutes, segs) || matchesAny(approverRoutes, segs)) ||
+			matchesMethod(adminRoutes, method, segs)
 	case wsrole.Finance:
 		return method == http.MethodPost && matchesAny(financeRoutes, segs)
 	case wsrole.Approver:
 		return method == http.MethodPost && matchesAny(approverRoutes, segs)
+	}
+	return false
+}
+
+// matchesMethod is matchesAny for "METHOD path" patterns.
+func matchesMethod(patterns []string, method string, segs []string) bool {
+	for _, p := range patterns {
+		if m, path, _ := strings.Cut(p, " "); m == method && matchesAny([]string{path}, segs) {
+			return true
+		}
 	}
 	return false
 }

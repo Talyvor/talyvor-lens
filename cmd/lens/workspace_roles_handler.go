@@ -38,6 +38,26 @@ type roleSessions interface {
 	TakeUpRole(ctx context.Context, workspaceID, email, personKey string) (string, error)
 }
 
+// The roles a handler admits beside the owner (B28.342), each handler by name: moneyRoles where auth's financeRoutes
+// reach, approvalRoles where its approverRoutes reach, adminRoles for its adminRoutes. Every other handler refuses a
+// role session, because storedanswers.OwnerOrAdmin does.
+var (
+	moneyRoles    = []string{workspace.RoleFinance, workspace.RoleAdmin}
+	approvalRoles = []string{workspace.RoleApprover, workspace.RoleAdmin}
+	adminRoles    = []string{workspace.RoleAdmin}
+)
+
+// ownerOrRole is ownerOnly that also admits a role session holding one of roles (B28.342).
+func ownerOrRole(next http.HandlerFunc, roles ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if _, ok := storedanswers.OwnerOrRole(req.Context(), roles...); !ok {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, an admin or a person whose role allows it may do this")
+			return
+		}
+		next(w, req)
+	}
+}
+
 // roleTokenMinter mints a role session.
 type roleTokenMinter func(workspaceID, personKey, role string, ttl time.Duration) (string, error)
 
@@ -95,6 +115,9 @@ func mountWorkspaceRoleRoutes(r chi.Router, book roleBook) {
 }
 
 // mountRoleSessionRoute registers POST /v1/provision/roles on the provisioning secret, and nothing when it is unset.
+// It takes the email the BFF sends on trust: a role is given to an email, so whoever names it holds the role. The
+// BFF must send only an address the person proved with a code sent to it, in this sign-in or an earlier one, never
+// one they typed and did not prove.
 func mountRoleSessionRoute(r chi.Router, secret string, sessions roleSessions, mint roleTokenMinter) {
 	if secret == "" {
 		return
@@ -106,7 +129,7 @@ func mountRoleSessionRoute(r chi.Router, secret string, sessions roleSessions, m
 		}
 		var in struct {
 			Identity  string `json:"identity"`
-			Email     string `json:"email"` // the verified email the person signed in with
+			Email     string `json:"email"` // an email the person proved with a code sent to it, never one only typed
 			Mode      string `json:"mode"`
 			AccountID string `json:"account_id"`
 			TTLHours  int    `json:"ttl_hours"`
