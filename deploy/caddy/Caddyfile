@@ -34,7 +34,8 @@
 }
 
 talyvor.com {
-	redir https://app.talyvor.com/marketing 301
+	# B64.10 — keep the query (utm_ tags) through the redirect; {?query} is "?" plus the query, or nothing.
+	redir https://app.talyvor.com/marketing{?query} 301
 }
 
 app.talyvor.com {

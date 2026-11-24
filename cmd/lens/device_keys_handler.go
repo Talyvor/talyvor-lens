@@ -27,6 +27,12 @@ import (
 //	                                       last key, or one that owns an agent's account, is never revoked, and only the owner signed in revokes (B55.15, 409)
 //	POST /v1/money/devices/{id}/push-token {"push_token"} — B40.15: the phone's APNs or FCM token ("" removes it);
 //	                                       approvals are then pushed to it, beside web push, until the key is revoked
+//	POST /v1/money/devices/{id}/live-activity-token {"push_to_start_token"} — B41.136: the iPhone's ActivityKit
+//	                                       push-to-start token ("" removes it); each held payment starts its Live
+//	                                       Activity there, with the app closed
+//	POST /v1/money/devices/{id}/live-activities {"key", "push_token"} — B41.136: one Live Activity's push token, by
+//	                                       the held payment it shows (pr:<request id> or ap:<approval id>); it is sent
+//	                                       its end once the payment is approved or declined
 //
 // A device key then signs wherever an "assertion" is taken for an approval or a mandate:
 // {"device_id", "challenge", "signature"}. Registering a key is the owner's signed-in session's alone (B50.33); every other route is the owner's or an admin's. Mounted in the authed group.
@@ -37,6 +43,8 @@ type deviceKeyBank interface {
 	ListDeviceKeys(ctx context.Context, workspaceID string) ([]economy.DeviceKey, error)
 	RevokeDeviceKey(ctx context.Context, workspaceID, id, by string) (economy.DeviceKey, error)
 	SetDevicePushToken(ctx context.Context, workspaceID, id, token string) (economy.DeviceKey, error)
+	SetDeviceLiveActivityToken(ctx context.Context, workspaceID, id, token string) (economy.DeviceKey, error)
+	SetLiveActivityPushToken(ctx context.Context, workspaceID, id, key, token string) error
 }
 
 func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
@@ -149,6 +157,55 @@ func mountDeviceKeyRoutes(r chi.Router, bank deviceKeyBank) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, d)
+		}
+	})
+	r.Post("/v1/money/devices/{id}/live-activity-token", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Token *string `json:"push_to_start_token"`
+		}
+		if json.NewDecoder(req.Body).Decode(&in) != nil || in.Token == nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"push_to_start_token"}: the iPhone's ActivityKit push-to-start token, or "" to remove it`)
+			return
+		}
+		d, err := bank.SetDeviceLiveActivityToken(req.Context(), ws, chi.URLParam(req, "id"), *in.Token)
+		switch {
+		case errors.Is(err, economy.ErrDeviceKeyNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrAgentRule):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, d)
+		}
+	})
+	r.Post("/v1/money/devices/{id}/live-activities", func(w http.ResponseWriter, req *http.Request) {
+		ws, _, ok := owner(w, req)
+		if !ok {
+			return
+		}
+		var in struct {
+			Key       string `json:"key"`
+			PushToken string `json:"push_token"`
+		}
+		if json.NewDecoder(req.Body).Decode(&in) != nil || in.Key == "" || in.PushToken == "" {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"key", "push_token"}: the held payment the Live Activity shows and its push token`)
+			return
+		}
+		err := bank.SetLiveActivityPushToken(req.Context(), ws, chi.URLParam(req, "id"), in.Key, in.PushToken)
+		switch {
+		case errors.Is(err, economy.ErrDeviceKeyNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrAgentRule):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, map[string]string{"key": in.Key})
 		}
 	})
 }

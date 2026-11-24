@@ -43,6 +43,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/approvals":                    moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/challenge":          moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/decide":             moneySideEither,
+	"/v1/workspaces/{}/agents/approvals/{}":                 moneySideEither, // B62.9
 	"/v1/workspaces/{}/agents/approvals/{}/approve":         moneySideEither,
 	"/v1/workspaces/{}/agents/approvals/{}/challenge":       moneySideEither,
 	"/v1/workspaces/{}/agents/payment-proofs/{}":            moneySideEither, // B62.1
@@ -54,6 +55,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/keys":                         moneySideEither,
 	"/v1/workspaces/{}/agents/lockdown":                     moneySideEither,
 	"/v1/workspaces/{}/agents/owner-wallets":                moneySideEither,
+	"/v1/workspaces/{}/agents/owner-wallets/moves":          moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys":                     moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/challenge":           moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/{}":                  moneySideEither,
@@ -108,6 +110,10 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/topup":                     moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet":                    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet-kind":               moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves":              moneySideEither, // B48.8: the body names the route, wallet to card to cash-out
+	"/v1/workspaces/{}/agents/{}/wallet-moves/quote":        moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/confirm":   moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/return":    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallets":                   moneySideEither,
 	"/v1/workspaces/{}/agents/{}/withdraw":                  moneySideEither,
 
@@ -121,14 +127,16 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/agent-card/rotate": moneySideEither,
 
 	// agent_cards_handler.go
-	"/v1/workspaces/{}/agents/{}/card":          moneySideEither,
-	"/v1/workspaces/{}/agents/{}/card/freeze":   moneySideEither, // a control that stops money is never refused
-	"/v1/workspaces/{}/agents/{}/card/unfreeze": moneySideEither,
-	"/v1/workspaces/{}/agents/{}/card/draws-on": moneySideEither, // B30.30: the account in the card's currency
+	"/v1/workspaces/{}/agents/{}/card":               moneySideEither,
+	"/v1/workspaces/{}/agents/{}/card/freeze":        moneySideEither, // a control that stops money is never refused
+	"/v1/workspaces/{}/agents/{}/card/unfreeze":      moneySideEither,
+	"/v1/workspaces/{}/agents/{}/card/draws-on":      moneySideEither, // B30.30: the account in the card's currency
+	"/v1/workspaces/{}/agents/{}/card/merchant-lock": moneySideEither, // B30.31: a control that narrows where money goes
 
 	// agent_cash_outs_handler.go
-	"/v1/workspaces/{}/agents/{}/cash-outs": moneySideFiat,
-	"/v1/workspaces/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs":           moneySideFiat,
+	"/v1/workspaces/{}/agents/{}/cash-outs/challenge": moneySideFiat, // B28.339
+	"/v1/workspaces/{}/cash-outs":                     moneySideFiat,
 
 	// agent_crypto_sends_handler.go
 	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
@@ -179,11 +187,18 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/credit-score":        moneySideEither,
 	"/v1/money/credit-score/review": moneySideEither,
 
+	// B48.10: crypto_requests_handler.go, an agent asking to be paid USDC into its smart account
+	"/v1/workspaces/{}/agents/{}/crypto-requests":                moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}":             moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-requests/{}/overpayment": moneySideOnChain,
+
 	// device_keys_handler.go
-	"/v1/money/devices":               moneySideEither,
-	"/v1/money/devices/challenge":     moneySideEither,
-	"/v1/money/devices/{}/push-token": moneySideEither,
-	"/v1/money/devices/{}/revoke":     moneySideEither,
+	"/v1/money/devices":                        moneySideEither,
+	"/v1/money/devices/challenge":              moneySideEither,
+	"/v1/money/devices/{}/push-token":          moneySideEither,
+	"/v1/money/devices/{}/live-activity-token": moneySideEither,
+	"/v1/money/devices/{}/live-activities":     moneySideEither,
+	"/v1/money/devices/{}/revoke":              moneySideEither,
 
 	// key_enrolments_handler.go
 	"/v1/workspaces/{}/agents/keys/enrolments":              moneySideEither,
@@ -208,12 +223,17 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/lxc/history":     moneySideEither,
 
 	// money_accounts_handler.go
-	"/v1/money/accounts":               moneySideEither,
-	"/v1/money/accounts/{}/details":    moneySideEither,
-	"/v1/money/accounts/{}/funding":    moneySideEither, // B61.66: between the company and an agent, in the account's currency
-	"/v1/money/accounts/{}/statement":  moneySideEither,
-	"/v1/money/accounts/{}/test-money": moneySideEither,
-	"/v1/money/overview":               moneySideEither,
+	"/v1/money/accounts":                       moneySideEither,
+	"/v1/money/accounts/{}/close":              moneySideEither,
+	"/v1/money/accounts/{}/close/challenge":    moneySideEither,
+	"/v1/money/accounts/{}/details":            moneySideEither,
+	"/v1/money/accounts/{}/freeze":             moneySideEither,
+	"/v1/money/accounts/{}/funding":            moneySideEither, // B61.66: between the company and an agent, in the account's currency
+	"/v1/money/accounts/{}/statement":          moneySideEither,
+	"/v1/money/accounts/{}/test-money":         moneySideEither,
+	"/v1/money/accounts/{}/unfreeze":           moneySideEither,
+	"/v1/money/accounts/{}/unfreeze/challenge": moneySideEither,
+	"/v1/money/overview":                       moneySideEither,
 
 	// money_allowances_handler.go
 	"/v1/money/allowances":         moneySideEither,
@@ -235,6 +255,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/budgets":        moneySideEither,
 	"/v1/money/budgets/alerts": moneySideEither,
 	"/v1/money/budgets/{}":     moneySideEither,
+
+	// money_low_balance_handler.go
+	"/v1/money/low-balance":        moneySideEither,
+	"/v1/money/low-balance/alerts": moneySideEither,
+	"/v1/money/low-balance/{}":     moneySideEither,
 
 	// money_cards_handler.go
 	"/v1/money/cards":            moneySideEither,

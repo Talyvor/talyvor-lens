@@ -29,9 +29,10 @@ import (
 //
 // The owner adds channels: push (their phones and browsers), a webhook (a URL of theirs, each POST signed) or Slack
 // (an incoming webhook). Every minute SweepAlertChannels queues one delivery per channel for each alert raised since
-// the channel was added — a limit alert (B53.4: 50, 80 or 100% of a budget, a card's cap or an agent's limit) or an
-// unusual-spend alert (B19.6) — and sends the queued ones. A delivery that fails is tried again on the next sweep, up
-// to alertDeliveryAttempts times. Email waits for an email integration: it is refused, never faked.
+// the channel was added — a limit alert (B53.4: 50, 80 or 100% of a budget, a card's cap or an agent's limit), an
+// unusual-spend alert (B19.6) or a low-balance alert (B28.334) — and sends the queued ones. A delivery that fails is
+// tried again on the next sweep, up to alertDeliveryAttempts times. Email waits for an email integration: it is
+// refused, never faked.
 //
 // A webhook's POST carries the alert as JSON, with X-Talyvor-Timestamp (Unix seconds) and X-Talyvor-Signature:
 // "v1=" + hex(HMAC-SHA256(secret, timestamp + "." + body)). The secret is shown once, when the channel is added.
@@ -48,6 +49,7 @@ const (
 const (
 	AlertKindLimit        = "limit"         // a spend_alerts row
 	AlertKindUnusualSpend = "unusual_spend" // an agent_spend_alerts row
+	AlertKindLowBalance   = "low_balance"   // a low_balance_alerts row (B28.334)
 )
 
 // alertDeliveryAttempts is how many times a delivery is tried before it is marked failed.
@@ -227,6 +229,34 @@ func (s *DualTokenStore) QueueAlertDeliveries(ctx context.Context, workspaceID s
 		if paused {
 			p.body += " It is paused until you resume it."
 		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("economy: alert deliveries: %w", err)
+	}
+	rows, err = s.pool.Query(ctx, `SELECT c.workspace_id, c.id, a.id, COALESCE(g.name, ''), a.balance_minor, a.threshold_minor, a.currency
+		FROM alert_channels c JOIN low_balance_alerts a ON a.workspace_id = c.workspace_id AND a.created_at >= c.created_at
+		LEFT JOIN agent_accounts g ON g.id = a.agent_id AND g.workspace_id = a.workspace_id
+		WHERE ($1 = '' OR c.workspace_id = $1) AND NOT EXISTS (SELECT 1 FROM alert_deliveries d
+			WHERE d.channel_id = c.id AND d.alert_kind = 'low_balance' AND d.alert_id = a.id)
+		ORDER BY a.created_at, a.id LIMIT 1000`, workspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("economy: alert deliveries: %w", err)
+	}
+	for rows.Next() {
+		var p pending
+		var name, currency string
+		var balance, threshold int64
+		if err := rows.Scan(&p.ws, &p.channel, &p.alert, &name, &balance, &threshold, &currency); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("economy: alert deliveries: %w", err)
+		}
+		if name == "" {
+			name = "An agent"
+		}
+		p.kind, p.title = AlertKindLowBalance, "Low balance"
+		p.body = fmt.Sprintf("%s has %s, below the %s you set.", name, Money(balance, currency), Money(threshold, currency))
 		todo = append(todo, p)
 	}
 	rows.Close()

@@ -271,6 +271,16 @@ func TestB486_EveryMovementSeenConfirmedAndReconciled(t *testing.T) {
 	if closing != onChain.Int64() || closing != 2027_000000 || len(st.Lines) != 6 {
 		t.Fatalf("the statement's chain account closes at %d with %d lines; the chain holds %s; want 2027000000 by 6 lines", closing, len(st.Lines), onChain)
 	}
+
+	// B48.10: a request to be paid into the wallet signs x402 under the EIP-712 domain the chain's token says.
+	req, err := idx.x.CreatePaymentRequest(ctx, economy.CryptoRequestIn{WorkspaceID: ws, AgentID: agent.ID, Network: "base",
+		AmountMinor: 1_000000, ExpiresAt: time.Now().Add(time.Hour), IdempotencyKey: "b4810-devnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extra := req.X402["accepts"].([]map[string]any)[0]["extra"].(map[string]any); extra["name"] != "USD Coin" || extra["version"] != "2" {
+		t.Fatalf("x402's EIP-712 domain on the devnet: %v, want the token's USD Coin / 2", extra)
+	}
 }
 
 type recordingAlerter struct{ sent []string }

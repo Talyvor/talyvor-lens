@@ -128,11 +128,17 @@ func (s *DualTokenStore) CreateStandingOrder(ctx context.Context, workspaceID, f
 	if _, err := s.PayableOutsidePayee(ctx, workspaceID, payeeID); err != nil {
 		return AgentSchedule{}, err
 	}
+	id, keyed := keyedID(ctx, "sch_", "agent_schedule", workspaceID, fromAgentID)
 	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `
 		INSERT INTO agent_payment_schedules (id, workspace_id, from_agent_id, to_payee_id, amount_ulxc, amount_minor, currency, memo, every, next_run_at, end_at)
 		SELECT $1, $2, f.id, $4, 0, $5, $6, $7, $8, $9, $10 FROM agent_accounts f WHERE f.id = $3 AND f.workspace_id = $2
+		ON CONFLICT (id) DO NOTHING
 		RETURNING `+agentScheduleColumns,
-		"sch_"+uuid.NewString(), workspaceID, fromAgentID, payeeID, amountMinor, currency, memo, every, firstRunAt.UTC(), endAt))
+		id, workspaceID, fromAgentID, payeeID, amountMinor, currency, memo, every, firstRunAt.UTC(), endAt))
+	if keyed && errors.Is(err, pgx.ErrNoRows) {
+		return s.earlierSchedule(ctx, workspaceID, AgentSchedule{ID: id, ToPayeeID: payeeID, AmountMinor: amountMinor, Currency: currency,
+			Memo: memo, Every: every})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sc, ErrAgentNotFound
 	}
@@ -290,12 +296,17 @@ func (s *DualTokenStore) CreateAgentSchedule(ctx context.Context, workspaceID, f
 			return AgentSchedule{}, err
 		}
 	}
+	id, keyed := keyedID(ctx, "sch_", "agent_schedule", workspaceID, fromAgentID)
 	sc, err := scanAgentSchedule(s.pool.QueryRow(ctx, `
 		INSERT INTO agent_payment_schedules (id, workspace_id, from_agent_id, to_agent_id, amount_ulxc, memo, every, next_run_at)
 		SELECT $1, $2, f.id, t.id, $5, $6, $7, $8 FROM agent_accounts f, agent_accounts t
 		 WHERE f.id = $3 AND f.workspace_id = $2 AND t.id = $4 -- B22.3: the payee may be any agent on Talyvor
+		ON CONFLICT (id) DO NOTHING
 		RETURNING `+agentScheduleColumns,
-		"sch_"+uuid.NewString(), workspaceID, fromAgentID, toAgentID, amount, memo, every, firstRunAt.UTC()))
+		id, workspaceID, fromAgentID, toAgentID, amount, memo, every, firstRunAt.UTC()))
+	if keyed && errors.Is(err, pgx.ErrNoRows) {
+		return s.earlierSchedule(ctx, workspaceID, AgentSchedule{ID: id, ToAgentID: toAgentID, AmountULXC: amount, Memo: memo, Every: every})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sc, ErrAgentNotFound
 	}
@@ -303,6 +314,23 @@ func (s *DualTokenStore) CreateAgentSchedule(ctx context.Context, workspaceID, f
 		return sc, fmt.Errorf("economy: create schedule: %w", err)
 	}
 	return sc, nil
+}
+
+// earlierSchedule answers the schedule an Idempotency-Key already made (B28.72), when the retry asks for the same payee,
+// amount, memo and frequency; another under the same key is refused. No schedule under it: the agent was not found.
+func (s *DualTokenStore) earlierSchedule(ctx context.Context, workspaceID string, want AgentSchedule) (AgentSchedule, error) {
+	was, err := scanAgentSchedule(s.pool.QueryRow(ctx, `SELECT `+agentScheduleColumns+` FROM agent_payment_schedules
+		WHERE id = $1 AND workspace_id = $2`, want.ID, workspaceID))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return AgentSchedule{}, ErrAgentNotFound
+	case err != nil:
+		return AgentSchedule{}, fmt.Errorf("economy: earlier schedule: %w", err)
+	case was.ToAgentID != want.ToAgentID || was.ToPayeeID != want.ToPayeeID || was.AmountULXC != want.AmountULXC ||
+		was.AmountMinor != want.AmountMinor || was.Currency != want.Currency || was.Memo != want.Memo || was.Every != want.Every:
+		return AgentSchedule{}, ErrIdempotencyKeyReused
+	}
+	return was, nil
 }
 
 // ListAgentSchedules reads a workspace's schedules, active first, then newest.

@@ -222,7 +222,12 @@ func New(spend spendReader, total totalReader, budgetList budgetLister, fc forec
 // period (monthly default). Cached for cfg.TTL — the aggregation is
 // expensive, so dashboard/API polls don't regenerate it per request.
 func (r *Reporter) GenerateReport(ctx context.Context, ws, period string) (ExecReport, error) {
-	if period == "" {
+	// Only the periods a report has (budgets.PeriodBounds) are kept; any other value, "total" included, is the month.
+	// The period comes off the query string, so what is reported (and cached) is always one of these constants (B67.1).
+	switch period {
+	case "weekly":
+		period = "weekly"
+	default:
 		period = "monthly"
 	}
 	now := r.now()

@@ -67,7 +67,8 @@ const (
 var moneyPurposes = map[string]bool{MoneyCompany: true, MoneyAgent: true, MoneyPot: true, MoneyHold: true,
 	MoneySuspense: true, MoneyPartner: true, MoneyRevenue: true, MoneyChain: true}
 
-// The states of a money account. Only an open one takes postings.
+// The states of a money account. An open one takes postings; a frozen one takes money in and refuses money out
+// (B30.24); a closed one takes none.
 const (
 	MoneyOpen   = "open"
 	MoneyFrozen = "frozen"
@@ -77,7 +78,7 @@ const (
 var (
 	// ErrMoneyAccountNotFound: no money account by that id in this workspace.
 	ErrMoneyAccountNotFound = errors.New("economy: no such money account")
-	// ErrMoneyAccountNotOpen: a posting to a frozen or closed account.
+	// ErrMoneyAccountNotOpen: money out of a frozen account, or any posting to a closed one.
 	ErrMoneyAccountNotOpen = errors.New("economy: the money account is not open")
 	// ErrMoneyUnbalanced: an entry whose postings do not sum to zero in each currency, refused when it commits.
 	ErrMoneyUnbalanced = errors.New("economy: a money entry's postings must sum to zero in each currency")
@@ -280,7 +281,7 @@ func (screenedBeforeLocks) ScreenPayment(context.Context, screening.Payment) err
 // out of a partner account, whose accounts may not be opened yet. Screening takes a connection of its own, and one taken
 // inside the transaction, with as many moves at once as the pool has connections, leaves none (B50.54). It answers
 // the screener to post e with inside the transaction: it clears the payments screened here, and only those.
-func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through ...MoneyPosting) (PaymentScreener, error) {
+func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through ...MoneyPosting) (screenedFirst, error) {
 	postings := make([]MoneyPosting, 0, len(through))
 	for _, p := range through {
 		if p.AmountMinor != 0 {
@@ -297,8 +298,37 @@ func (s *DualTokenStore) screenFirst(ctx context.Context, e MoneyEntry, through 
 	if err := screenOutside(ctx, e, postings, func(string) bool { return true }, screener); err != nil {
 		return nil, err
 	}
-	return screenedFirst(rec.cleared), nil
+	return rec.cleared, nil
 }
+
+// firstScreening is an entry a move may post through a partner, with its postings through the partner, to be screened
+// before the move's transaction begins.
+type firstScreening struct {
+	entry   MoneyEntry
+	through []MoneyPosting
+}
+
+// screenBefore screens each of entries before a move's transaction begins, as screenFirst does, for a move that learns
+// only inside its transaction whether it posts them: a card charge the card's controls may decline, a payment the
+// partner has already settled. It answers the screener to post with inside the transaction. A refusal waits for it:
+// each payment through a partner is then refused as the screening was, and a move that posts none is not (B50.56).
+func (s *DualTokenStore) screenBefore(ctx context.Context, entries ...firstScreening) PaymentScreener {
+	var cleared screenedFirst
+	for _, f := range entries {
+		got, err := s.screenFirst(ctx, f.entry, f.through...)
+		if err != nil {
+			return refusedFirst{err}
+		}
+		cleared = append(cleared, got...)
+	}
+	return cleared
+}
+
+// refusedFirst is the screener inside a transaction whose screening before it began refused: it takes no connection,
+// and refuses every payment through a partner with that refusal.
+type refusedFirst struct{ err error }
+
+func (r refusedFirst) ScreenPayment(context.Context, screening.Payment) error { return r.err }
 
 // screenRecorder screens through next for screenFirst, recording each payment next clears.
 type screenRecorder struct {
@@ -425,19 +455,22 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 
 	// Each account is the entry's workspace's — another's is not found, but for a mandate pull's payee's company account
 	// or an invoice issuer's agent account — and is held open until tx ends: a freeze or a close waits for the money
-	// already moving.
-	rows, err := tx.Query(ctx, `SELECT id, currency, status, purpose FROM money_accounts
-		WHERE id = ANY($1) AND (workspace_id = $2 OR (workspace_id = $3 AND purpose IN ('company', 'agent'))) FOR SHARE`,
+	// already moving. An agent's sub-account also carries its company account's state (B30.24), read off that row as
+	// it is held open too, so a freeze of the company's account waits for its agents' money as well.
+	rows, err := tx.Query(ctx, `SELECT a.id, a.currency, a.status, a.purpose, COALESCE(a.parent_account_id, '')
+		FROM money_accounts a
+		WHERE (a.id = ANY($1) OR a.id IN (SELECT parent_account_id FROM money_accounts WHERE id = ANY($1)))
+		  AND (a.workspace_id = $2 OR (a.workspace_id = $3 AND a.purpose IN ('company', 'agent'))) FOR SHARE`,
 		ids, e.WorkspaceID, e.payeeWorkspaceID)
 	if err != nil {
 		return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 	}
-	type held struct{ currency, status, purpose string }
+	type held struct{ currency, status, purpose, parent string }
 	accounts := map[string]held{}
 	for rows.Next() {
 		var id string
 		var h held
-		if err := rows.Scan(&id, &h.currency, &h.status, &h.purpose); err != nil {
+		if err := rows.Scan(&id, &h.currency, &h.status, &h.purpose, &h.parent); err != nil {
 			rows.Close()
 			return MoneyEntry{}, fmt.Errorf("economy: post money: %w", err)
 		}
@@ -453,11 +486,16 @@ func postMoneyTx(ctx context.Context, tx pgx.Tx, e MoneyEntry, screener PaymentS
 	args := []any{e.ID, e.Funding}
 	for i, p := range postings {
 		h, ok := accounts[p.AccountID]
+		parentStatus := accounts[h.parent].status // "" for an account with no parent
 		switch {
 		case !ok:
 			return MoneyEntry{}, fmt.Errorf("%w: %s", ErrMoneyAccountNotFound, p.AccountID)
-		case h.status != MoneyOpen:
-			return MoneyEntry{}, fmt.Errorf("%w: %s is %s", ErrMoneyAccountNotOpen, p.AccountID, h.status)
+		case h.status == MoneyClosed || parentStatus == MoneyClosed:
+			return MoneyEntry{}, fmt.Errorf("%w: %s is closed", ErrMoneyAccountNotOpen, p.AccountID)
+		case h.status == MoneyFrozen && p.AmountMinor < 0: // B30.24: nothing leaves a frozen account; money in still lands
+			return MoneyEntry{}, fmt.Errorf("%w: %s is frozen", ErrMoneyAccountNotOpen, p.AccountID)
+		case parentStatus == MoneyFrozen && p.AmountMinor < 0:
+			return MoneyEntry{}, fmt.Errorf("%w: the company account of %s is frozen", ErrMoneyAccountNotOpen, p.AccountID)
 		case p.Currency == "":
 			postings[i].Currency = h.currency
 		case p.Currency != h.currency:

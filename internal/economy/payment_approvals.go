@@ -252,6 +252,7 @@ func (s *DualTokenStore) ApprovePaymentRequest(ctx context.Context, workspaceID,
 	if err := tx.Commit(ctx); err != nil {
 		return r, err
 	}
+	s.endLiveActivity(workspaceID, "pr:"+id, "approved") // B41.136
 	return s.PayPaymentRequest(ctx, workspaceID, "", id)
 }
 

@@ -172,7 +172,7 @@ func (s *Store) SignInChallenge(ctx context.Context, origin, personID string) (K
 		}
 	}
 	if personID != "" {
-		if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1`, personID)); err != nil {
+		if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1 AND deleted_at IS NULL`, personID)); err != nil {
 			return KeyChallenge{}, err
 		}
 	}
@@ -182,7 +182,7 @@ func (s *Store) SignInChallenge(ctx context.Context, origin, personID string) (K
 // RegisterChallenge is the challenge a new key for personID is made over. challenge, when not empty, is one Lens has
 // just issued for the person's account's approval key, so the one ceremony at sign-up's key step makes both.
 func (s *Store) RegisterChallenge(ctx context.Context, personID, challenge string) (KeyChallenge, error) {
-	if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1`, personID)); err != nil {
+	if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1 AND deleted_at IS NULL`, personID)); err != nil {
 		return KeyChallenge{}, err
 	}
 	c, err := s.newKeyChallenge(ctx, s.DB, "register", personID, "", challenge)
@@ -500,7 +500,7 @@ func scanPersonKey(row pgx.Row) (PersonKey, error) {
 // PersonIdentity is the identity personID holds, the one POST /v1/provision is given for them.
 func (s *Store) PersonIdentity(ctx context.Context, personID string) (string, error) {
 	var identity string
-	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1`, personID).Scan(&identity)
+	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1 AND deleted_at IS NULL`, personID).Scan(&identity)
 	identity = workspace.IdentityFromStored(identity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNoPerson
