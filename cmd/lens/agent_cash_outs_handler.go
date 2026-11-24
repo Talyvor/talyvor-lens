@@ -46,7 +46,7 @@ func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
 		}
 		return in, true
 	}
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs/challenge", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		in, ok := decode(w, req)
 		if !ok {
 			return
@@ -57,8 +57,8 @@ func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
-	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	}, moneyRoles...))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/cash-outs", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		in, ok := decode(w, req)
 		if !ok {
 			return
@@ -77,7 +77,7 @@ func mountCashOutRoutes(r chi.Router, bank cashOutBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusCreated, c)
-	}))
+	}, moneyRoles...))
 	r.Get("/v1/workspaces/{wsID}/cash-outs", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		list, err := bank.ListCashOuts(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {

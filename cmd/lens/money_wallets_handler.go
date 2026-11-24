@@ -39,15 +39,15 @@ type moneyWalletBank interface {
 	ConvertSides(ctx context.Context, workspaceID, quoteID, key string, a *passkey.Assertion) (economy.Conversion, error)
 }
 
-// walletOwner is the key's workspace when its owner or an admin calls; otherwise it writes the refusal.
+// walletOwner is the key's workspace when its owner, an admin or a Finance or Admin role calls; otherwise it writes the refusal.
 func walletOwner(w http.ResponseWriter, req *http.Request) (string, bool) {
 	ws, _ := auth.WorkspaceIdentity(req.Context())
 	if ws == "" {
 		writeJSONErr(w, http.StatusBadRequest, "wallets are a workspace's: use a workspace's key")
 		return "", false
 	}
-	if _, ok := storedanswers.OwnerOrAdmin(req.Context()); !ok {
-		writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may withdraw or convert its money")
+	if _, ok := storedanswers.OwnerOrRole(req.Context(), moneyRoles...); !ok { // B28.342: its routes are all Finance's
+		writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, an admin or a person whose role allows it may withdraw or convert its money")
 		return "", false
 	}
 	return ws, true
