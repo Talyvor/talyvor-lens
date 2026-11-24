@@ -20,12 +20,28 @@ import (
 	"github.com/talyvor/lens/internal/tenant"
 )
 
-type fakeCardIssuer struct{ issued int }
+type fakeCardIssuer struct {
+	issued    int
+	replaced  []string // B28.321: the cardholder each replacement was issued to
+	cancelled []string // the cards cancelled at Stripe
+}
 
 func (f *fakeCardIssuer) IssueCard(_ context.Context, _, agentID, _ string, _ agentcard.Cardholder) (economy.AgentCard, error) {
 	f.issued++
-	return economy.AgentCard{ID: "ic_test_1", AgentID: agentID, StripeCardholderID: "ich_test_1", Last4: "4242",
+	return economy.AgentCard{ID: fmt.Sprintf("ic_test_%d", f.issued+len(f.replaced)), AgentID: agentID, StripeCardholderID: "ich_test_1", Last4: "4242",
 		ExpMonth: 9, ExpYear: 2029, Currency: "gbp"}, nil
+}
+
+func (f *fakeCardIssuer) ReplaceCard(_ context.Context, _, _ string, old economy.AgentCard) (economy.AgentCard, error) {
+	f.replaced = append(f.replaced, old.StripeCardholderID)
+	n := f.issued + len(f.replaced)
+	return economy.AgentCard{ID: fmt.Sprintf("ic_test_%d", n), AgentID: old.AgentID, StripeCardholderID: old.StripeCardholderID,
+		Last4: fmt.Sprintf("%04d", 1000+n), ExpMonth: 9, ExpYear: 2030, Currency: old.Currency}, nil
+}
+
+func (f *fakeCardIssuer) CancelCard(_ context.Context, _, cardID string) error {
+	f.cancelled = append(f.cancelled, cardID)
+	return nil
 }
 
 // B19.12 — in test mode an agent's card is approved within its rules and declined outside them, and every

@@ -773,6 +773,19 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent},
 				map[string]any{"200": map[string]any{"description": "the card, unfrozen"}, "404": map[string]any{"description": "no such agent, or it holds no card"}}),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/card/replace": map[string]any{
+			"post": op("Replace the agent's card",
+				"Owner or admin. A new card is issued to the same cardholder; it draws on what the old one did and keeps its freeze and its merchant lock. The old card is cancelled, so every purchase on it is declined and nothing leaves the agent.",
+				[]map[string]any{ws, agent},
+				map[string]any{"201": map[string]any{"description": "the new card"}, "404": map[string]any{"description": "no such agent, or it holds no card"},
+					"403": map[string]any{"description": "the workspace is locked down: no new card is issued"}, "409": map[string]any{"description": "a live Stripe key, or the card was cancelled or replaced meanwhile — nothing is changed"}}),
+		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/card/cancel": map[string]any{
+			"post": op("Cancel the agent's card",
+				"Owner or admin. For good: every purchase on a cancelled card is declined and nothing leaves the agent. The agent holds no card until it is issued a new one.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": map[string]any{"description": "the card, cancelled"}, "404": map[string]any{"description": "no such agent, or it holds no card"}}),
+		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/card/draws-on": map[string]any{
 			"post": withBody(op("Choose what the agent's card spends",
 				"Owner or admin. credits: the agent's credits. account: the agent's currency account in the card's currency, which must be open; each purchase is judged by the agent's rules and held on the account until it is captured, reversed or refunded.",

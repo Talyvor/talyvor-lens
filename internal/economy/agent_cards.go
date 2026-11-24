@@ -32,6 +32,10 @@ import (
 // approved purchase is HELD: it moves on the money ledger from the account into the workspace's hold (card_hold) in
 // the transaction that records it, its row naming the account, and its capture, release or refund settles there
 // (agent_card_settlements.go). Test money only, like the card itself.
+//
+// B28.321: an owner cancels a card, or replaces it with a new one to the same cardholder. A cancelled card stays a row
+// (migration 2611200635b): every purchase on it is declined and writes no posting, and its earlier purchases still
+// settle where they were held. An agent holds at most one card that is not cancelled.
 
 // LXCTypeAgentCard marks an agent's card purchase in lxc_ledger — LXC that left for a merchant, which no
 // revenue sum over type 'spend' may count as Talyvor's.
@@ -65,22 +69,27 @@ var ErrCardMerchantLock = errors.New(`economy: a card's merchant lock is "off", 
 // ErrAgentCardFrozen is why a purchase on a frozen card is declined (B17.111).
 var ErrAgentCardFrozen = errors.New("the card is frozen: unfreeze it to buy with it")
 
+// ErrAgentCardCancelled is why a purchase on a cancelled card is declined (B28.321).
+var ErrAgentCardCancelled = errors.New("the card is cancelled: it pays for nothing")
+
 // AgentCard is an agent's virtual card, as Stripe issued it. Livemode is always false (class RED).
 type AgentCard struct {
-	ID                 string    `json:"id"`
-	AgentID            string    `json:"agent_id"`
-	StripeCardholderID string    `json:"stripe_cardholder_id"`
-	Last4              string    `json:"last4"`
-	ExpMonth           int       `json:"exp_month"`
-	ExpYear            int       `json:"exp_year"`
-	Currency           string    `json:"currency"`
-	Livemode           bool      `json:"livemode"`
-	Frozen             bool      `json:"frozen"`                       // B17.111: every purchase on it is declined
-	DrawsOn            string    `json:"draws_on"`                     // B30.30: CardDrawsOnCredits or CardDrawsOnAccount
-	MerchantLock       string    `json:"merchant_lock"`                // B30.31: CardMerchantLockOff, …First or …Merchant
-	LockedMerchantID   string    `json:"locked_merchant_id,omitempty"` // B30.31: the only merchant the card pays
-	Label              string    `json:"label,omitempty"`              // B56.7: live or sandbox
-	CreatedAt          time.Time `json:"created_at"`
+	ID                 string     `json:"id"`
+	AgentID            string     `json:"agent_id"`
+	StripeCardholderID string     `json:"stripe_cardholder_id"`
+	Last4              string     `json:"last4"`
+	ExpMonth           int        `json:"exp_month"`
+	ExpYear            int        `json:"exp_year"`
+	Currency           string     `json:"currency"`
+	Livemode           bool       `json:"livemode"`
+	Frozen             bool       `json:"frozen"`                       // B17.111: every purchase on it is declined
+	DrawsOn            string     `json:"draws_on"`                     // B30.30: CardDrawsOnCredits or CardDrawsOnAccount
+	MerchantLock       string     `json:"merchant_lock"`                // B30.31: CardMerchantLockOff, …First or …Merchant
+	LockedMerchantID   string     `json:"locked_merchant_id,omitempty"` // B30.31: the only merchant the card pays
+	Label              string     `json:"label,omitempty"`              // B56.7: live or sandbox
+	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`       // B28.321: every purchase on it is declined, for good
+	ReplacedBy         string     `json:"replaced_by,omitempty"`        // B28.321: the card issued in its place
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // SaveAgentCard records the card Stripe issued to agentID.
@@ -97,7 +106,7 @@ func (s *DualTokenStore) SaveAgentCard(ctx context.Context, workspaceID string, 
 		return c, err
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO agent_cards (id, workspace_id, agent_id, stripe_cardholder_id, last4, exp_month, exp_year, currency)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (agent_id) DO NOTHING RETURNING created_at`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (agent_id) WHERE cancelled_at IS NULL DO NOTHING RETURNING created_at`,
 		c.ID, workspaceID, c.AgentID, c.StripeCardholderID, c.Last4, c.ExpMonth, c.ExpYear, c.Currency).Scan(&c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrAgentHasCard
@@ -112,7 +121,7 @@ func (s *DualTokenStore) SaveAgentCard(ctx context.Context, workspaceID string, 
 	return c, nil
 }
 
-// GetAgentCard reads the card agentID holds; ErrAgentNotFound for an agent not in workspaceID, ErrNoAgentCard
+// GetAgentCard reads the card agentID holds, never a cancelled one; ErrAgentNotFound for an agent not in workspaceID, ErrNoAgentCard
 // for one with no card.
 func (s *DualTokenStore) GetAgentCard(ctx context.Context, workspaceID, agentID string) (AgentCard, error) {
 	var exists bool
@@ -126,7 +135,7 @@ func (s *DualTokenStore) GetAgentCard(ctx context.Context, workspaceID, agentID 
 	c := AgentCard{AgentID: agentID}
 	err := s.pool.QueryRow(ctx, `SELECT id, stripe_cardholder_id, last4, exp_month, exp_year, currency, livemode, frozen, draws_on,
 		merchant_lock, COALESCE(locked_merchant_id, ''), created_at
-		FROM agent_cards WHERE agent_id = $1`, agentID).Scan(&c.ID, &c.StripeCardholderID, &c.Last4, &c.ExpMonth, &c.ExpYear,
+		FROM agent_cards WHERE agent_id = $1 AND cancelled_at IS NULL`, agentID).Scan(&c.ID, &c.StripeCardholderID, &c.Last4, &c.ExpMonth, &c.ExpYear,
 		&c.Currency, &c.Livemode, &c.Frozen, &c.DrawsOn, &c.MerchantLock, &c.LockedMerchantID, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNoAgentCard
@@ -163,7 +172,7 @@ func (s *DualTokenStore) SetAgentCardFrozen(ctx context.Context, workspaceID, ag
 			return AgentCard{}, err
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = $3 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, frozen)
+	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET frozen = $3 WHERE agent_id = $1 AND workspace_id = $2 AND cancelled_at IS NULL`, agentID, workspaceID, frozen)
 	if err != nil {
 		return AgentCard{}, fmt.Errorf("economy: freeze agent card: %w", err)
 	}
@@ -172,6 +181,81 @@ func (s *DualTokenStore) SetAgentCardFrozen(ctx context.Context, workspaceID, ag
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return AgentCard{}, err
+	}
+	return s.GetAgentCard(ctx, workspaceID, agentID)
+}
+
+// CancelAgentCard cancels the card agentID holds (B28.321): every later purchase on it is declined and writes no posting.
+// Under the agent's row lock, as a purchase is decided, so a purchase being decided finishes first. A lockdown never
+// stops it: it stops money. It returns the cancelled card.
+func (s *DualTokenStore) CancelAgentCard(ctx context.Context, workspaceID, agentID string) (AgentCard, error) {
+	card, err := s.GetAgentCard(ctx, workspaceID, agentID)
+	if err != nil {
+		return card, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return card, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
+		return card, err
+	}
+	var at time.Time
+	err = tx.QueryRow(ctx, `UPDATE agent_cards SET cancelled_at = now() WHERE id = $1 AND agent_id = $2 AND workspace_id = $3
+		AND cancelled_at IS NULL RETURNING cancelled_at`, card.ID, agentID, workspaceID).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return card, ErrNoAgentCard
+	}
+	if err != nil {
+		return card, fmt.Errorf("economy: cancel agent card: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return card, err
+	}
+	card.CancelledAt = &at
+	return card, nil
+}
+
+// ReplaceAgentCard cancels oldCardID, the card agentID holds, and records next, the card issued in its place to the same
+// cardholder (B28.321), in one transaction under the agent's row lock: from its commit every purchase on the old card is
+// declined and the new one is judged by the agent's rules and balance. The new card draws on what the old one did, and
+// keeps its freeze and its merchant lock (B30.31), a first lock that has its merchant still locked to that merchant. A
+// workspace in lockdown gets no working card this way (B41.116): ErrLockedDown, and nothing changes.
+func (s *DualTokenStore) ReplaceAgentCard(ctx context.Context, workspaceID, agentID, oldCardID string, next AgentCard) (AgentCard, error) {
+	if next.Livemode {
+		return next, errors.New("economy: an agent card must be a test-mode card")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return next, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
+		return next, err
+	}
+	if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil {
+		return next, err
+	}
+	var drawsOn, lock string
+	var frozen bool
+	var lockedID *string
+	err = tx.QueryRow(ctx, `UPDATE agent_cards SET cancelled_at = now(), replaced_by = $4 WHERE id = $1 AND agent_id = $2
+		AND workspace_id = $3 AND cancelled_at IS NULL RETURNING draws_on, frozen, merchant_lock, locked_merchant_id`,
+		oldCardID, agentID, workspaceID, next.ID).Scan(&drawsOn, &frozen, &lock, &lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return next, ErrNoAgentCard
+	}
+	if err != nil {
+		return next, fmt.Errorf("economy: replace agent card: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_cards (id, workspace_id, agent_id, stripe_cardholder_id, last4, exp_month, exp_year, currency,
+		draws_on, frozen, merchant_lock, locked_merchant_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, next.ID, workspaceID,
+		agentID, next.StripeCardholderID, next.Last4, next.ExpMonth, next.ExpYear, next.Currency, drawsOn, frozen, lock, lockedID); err != nil {
+		return next, fmt.Errorf("economy: save the replacement card: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return next, err
 	}
 	return s.GetAgentCard(ctx, workspaceID, agentID)
 }
@@ -200,7 +284,7 @@ func (s *DualTokenStore) SetAgentCardDrawsOn(ctx context.Context, workspaceID, a
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return card, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_cards SET draws_on = $3 WHERE agent_id = $1 AND workspace_id = $2`, agentID, workspaceID, drawsOn); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE agent_cards SET draws_on = $3 WHERE agent_id = $1 AND workspace_id = $2 AND cancelled_at IS NULL`, agentID, workspaceID, drawsOn); err != nil {
 		return card, fmt.Errorf("economy: card draws on: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -236,7 +320,8 @@ func (s *DualTokenStore) SetAgentCardMerchantLock(ctx context.Context, workspace
 			return AgentCard{}, err
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET merchant_lock = $3, locked_merchant_id = $4 WHERE agent_id = $1 AND workspace_id = $2`,
+	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET merchant_lock = $3, locked_merchant_id = $4 WHERE agent_id = $1 AND workspace_id = $2
+		AND cancelled_at IS NULL`,
 		agentID, workspaceID, lock, locked)
 	if err != nil {
 		return AgentCard{}, fmt.Errorf("economy: card merchant lock: %w", err)
@@ -375,11 +460,15 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	if err := lockAgent(ctx, tx, d.WorkspaceID, d.AgentID); err != nil {
 		return d, err
 	}
-	var frozen bool
+	var frozen, cancelled bool
 	var drawsNow, lock, lockedID string
-	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, merchant_lock, COALESCE(locked_merchant_id, '') FROM agent_cards WHERE id = $1`,
-		a.CardID).Scan(&frozen, &drawsNow, &lock, &lockedID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, merchant_lock, COALESCE(locked_merchant_id, ''), cancelled_at IS NOT NULL
+		FROM agent_cards WHERE id = $1`, a.CardID).Scan(&frozen, &drawsNow, &lock, &lockedID, &cancelled); err != nil {
 		return d, err
+	}
+	if cancelled { // B28.321: whatever the purchase, an increment of one approved before the cancel included
+		_ = tx.Rollback(ctx)
+		return s.declineCard(ctx, a, d, ErrAgentCardCancelled.Error())
 	}
 	// An increment is held where its purchase is, so each authorisation settles wholly on credits or on one account.
 	var began string

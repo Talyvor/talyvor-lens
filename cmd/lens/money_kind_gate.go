@@ -132,6 +132,8 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/card/unfreeze":      moneySideEither,
 	"/v1/workspaces/{}/agents/{}/card/draws-on":      moneySideEither, // B30.30: the account in the card's currency
 	"/v1/workspaces/{}/agents/{}/card/merchant-lock": moneySideEither, // B30.31: a control that narrows where money goes
+	"/v1/workspaces/{}/agents/{}/card/replace":       moneySideEither, // B28.321
+	"/v1/workspaces/{}/agents/{}/card/cancel":        moneySideEither, // a control that stops money is never refused
 
 	// agent_cash_outs_handler.go
 	"/v1/workspaces/{}/agents/{}/cash-outs":           moneySideFiat,
