@@ -157,3 +157,108 @@ func TestB28321_CancelledCardWritesNoPostingReplacementDoes(t *testing.T) {
 		t.Fatalf("issuing a new card after the cancel = %d %s, want 201", code, body)
 	}
 }
+
+// B28.321 — a replacement keeps what the owner set on the card it replaces: a card locked to the merchant of its first
+// purchase is replaced by one locked to that merchant, and a frozen card by a frozen one, in the same transaction as
+// the cancel. A purchase elsewhere on the first, and any purchase on the second until it is unfrozen, is declined and
+// writes no posting.
+func TestB28321_ReplacementKeepsMerchantLockAndFreeze(t *testing.T) {
+	pool := agentRoutesDB(t)
+	ctx := context.Background()
+	const ws = "ws-b28321-keep"
+	for _, q := range []string{
+		`INSERT INTO lxc_balances (workspace_id, balance, cash_backed_ulxc, test_funded_ulxc) VALUES ('ws-b28321-keep', 1000000000, 1000000000, 1000000000)`,
+		`INSERT INTO workspaces (id, name, cache_prefix) VALUES ('ws-b28321-keep', 'ws-b28321-keep', 'ws-b28321-keep')`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := economy.NewDualTokenStore(nil, pool, nil)
+	r := chi.NewRouter()
+	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
+	mountAgentCardRoutes(r, store, &fakeCardIssuer{})
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "user-nicolai", Scopes: []string{auth.ScopeKeys}}
+	call := func(path, body string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK && w.Code != http.StatusCreated {
+			t.Fatalf("POST %s = %d %s", path, w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+	base := "/v1/workspaces/" + ws + "/agents"
+	var agent economy.Agent
+	_ = json.Unmarshal([]byte(call(base, `{"name":"buyer"}`)), &agent)
+	card := base + "/" + agent.ID + "/card"
+	call(base+"/"+agent.ID+"/fund", `{"amount_ulxc":800000000}`)
+	call(card, `{"first_name":"Test","last_name":"Shopper","line1":"1 High Street","city":"London","postal_code":"EC1A 1BB"}`)
+	replace := func() economy.AgentCard {
+		t.Helper()
+		var c economy.AgentCard
+		_ = json.Unmarshal([]byte(call(card+"/replace", "")), &c)
+		return c
+	}
+	purchase := func(cardID, id, merchantID string) economy.CardDecision {
+		t.Helper()
+		d, err := store.AuthorizeAgentCard(ctx, economy.CardAuthorization{EventID: "evt_keep_" + id, AuthorizationID: "iauth_keep_" + id,
+			CardID: cardID, AmountMinor: 40, Currency: "gbp", MerchantName: "Shop " + merchantID, MerchantID: merchantID,
+			At: time.Now(), USDMicros: 500_000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	entries := func() (n int64) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT count(DISTINCT entry_id) FROM agent_postings WHERE workspace_id = $1 AND kind = 'card'`, ws).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Locked to the merchant of its first purchase, which locks it to m-paper; its replacement pays m-paper only.
+	call(card+"/merchant-lock", `{"lock":"first"}`)
+	if d := purchase("ic_test_1", "first", "m-paper"); !d.Approved {
+		t.Fatalf("the first purchase on the locked card = %+v, want approved", d)
+	}
+	next := replace()
+	if next.ID != "ic_test_2" || next.MerchantLock != economy.CardMerchantLockFirst || next.LockedMerchantID != "m-paper" {
+		t.Fatalf("the replacement = %+v, want ic_test_2 locked to m-paper", next)
+	}
+	if d := purchase("ic_test_2", "ink", "m-ink"); d.Approved || !strings.Contains(d.Reason, "m-paper") {
+		t.Fatalf("a purchase at another merchant on the replacement = %+v, want declined by the lock to m-paper", d)
+	}
+	if n := entries(); n != 1 {
+		t.Fatalf("after the declined purchase at m-ink: %d card entries, want still 1", n)
+	}
+	if d := purchase("ic_test_2", "paper", "m-paper"); !d.Approved {
+		t.Fatalf("a purchase at m-paper on the replacement = %+v, want approved", d)
+	}
+	if n := entries(); n != 2 {
+		t.Fatalf("after the replacement's purchase at m-paper: %d card entries, want 2", n)
+	}
+
+	// Frozen, then replaced: the replacement is frozen and declines every purchase until it is unfrozen.
+	call(card+"/merchant-lock", `{"lock":"off"}`)
+	call(card+"/freeze", "")
+	if next = replace(); next.ID != "ic_test_3" || !next.Frozen {
+		t.Fatalf("the frozen card's replacement = %+v, want ic_test_3 frozen", next)
+	}
+	if d := purchase("ic_test_3", "frozen", "m-ink"); d.Approved || d.Reason != economy.ErrAgentCardFrozen.Error() {
+		t.Fatalf("a purchase on the frozen card's replacement = %+v, want declined as frozen", d)
+	}
+	if n := entries(); n != 2 {
+		t.Fatalf("after the frozen replacement's purchase: %d card entries, want still 2", n)
+	}
+	call(card+"/unfreeze", "")
+	if d := purchase("ic_test_3", "thawed", "m-ink"); !d.Approved {
+		t.Fatalf("a purchase on the replacement once unfrozen = %+v, want approved", d)
+	}
+	if n := entries(); n != 3 {
+		t.Fatalf("after the unfrozen replacement's purchase: %d card entries, want 3", n)
+	}
+}
