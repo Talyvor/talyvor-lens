@@ -67,9 +67,12 @@ func (c Cardholder) Validate() string {
 	return ""
 }
 
-// Issuer issues an agent's card.
+// Issuer issues an agent's card, replaces it and cancels it (B28.321).
 type Issuer interface {
 	IssueCard(ctx context.Context, workspaceID, agentID, agentName string, holder Cardholder) (economy.AgentCard, error)
+	// ReplaceCard issues a new card for old's agent to old's cardholder; old itself is cancelled with CancelCard.
+	ReplaceCard(ctx context.Context, workspaceID, agentName string, old economy.AgentCard) (economy.AgentCard, error)
+	CancelCard(ctx context.Context, workspaceID, cardID string) error
 }
 
 // Stripe is the Issuer on Stripe's API.
@@ -134,8 +137,39 @@ func (s *Stripe) IssueCard(ctx context.Context, workspaceID, agentID, agentName 
 	if err != nil {
 		return economy.AgentCard{}, fmt.Errorf("agentcard: create cardholder: %w", err)
 	}
+	return s.issue(ctx, workspaceID, agentID, agentName, holderObj.ID, "")
+}
+
+// ReplaceCard issues an active virtual card for old's agent to the cardholder old was issued to (B28.321).
+func (s *Stripe) ReplaceCard(ctx context.Context, workspaceID, agentName string, old economy.AgentCard) (economy.AgentCard, error) {
+	if s.key == "" {
+		return economy.AgentCard{}, ErrNotConfigured
+	}
+	if !TestMode(s.key) {
+		return economy.AgentCard{}, ErrLiveKey
+	}
+	return s.issue(ctx, workspaceID, old.AgentID, agentName, old.StripeCardholderID, old.ID)
+}
+
+// CancelCard cancels cardID at Stripe, for good. Lens declines every purchase on a card it has cancelled whether or not
+// Stripe has, so this only tidies Stripe's side.
+func (s *Stripe) CancelCard(ctx context.Context, workspaceID, cardID string) error {
+	if s.key == "" {
+		return ErrNotConfigured
+	}
+	p := &stripe.IssuingCardParams{Status: stripe.String(string(stripe.IssuingCardStatusCanceled))}
+	p.Context = ctx
+	p.AddMetadata("workspace_id", workspaceID)
+	if _, err := s.api.IssuingCards.Update(cardID, p); err != nil {
+		return fmt.Errorf("agentcard: cancel card: %w", err)
+	}
+	return nil
+}
+
+// issue issues cardholderID an active virtual card for the agent; replaces names the card it replaces, if any.
+func (s *Stripe) issue(ctx context.Context, workspaceID, agentID, agentName, cardholderID, replaces string) (economy.AgentCard, error) {
 	cp := &stripe.IssuingCardParams{
-		Cardholder: stripe.String(holderObj.ID),
+		Cardholder: stripe.String(cardholderID),
 		Currency:   stripe.String(s.currency),
 		Type:       stripe.String(string(stripe.IssuingCardTypeVirtual)),
 		Status:     stripe.String(string(stripe.IssuingCardStatusActive)),
@@ -144,12 +178,15 @@ func (s *Stripe) IssueCard(ctx context.Context, workspaceID, agentID, agentName 
 	cp.AddMetadata("workspace_id", workspaceID)
 	cp.AddMetadata("agent_id", agentID)
 	cp.AddMetadata("agent_name", agentName)
+	if replaces != "" {
+		cp.AddMetadata("replaces", replaces)
+	}
 	card, err := s.api.IssuingCards.New(cp)
 	if err != nil {
 		return economy.AgentCard{}, fmt.Errorf("agentcard: issue card: %w", err)
 	}
 	return economy.AgentCard{
-		ID: card.ID, AgentID: agentID, StripeCardholderID: holderObj.ID, Last4: card.Last4,
+		ID: card.ID, AgentID: agentID, StripeCardholderID: cardholderID, Last4: card.Last4,
 		ExpMonth: int(card.ExpMonth), ExpYear: int(card.ExpYear), Currency: string(card.Currency), Livemode: card.Livemode,
 	}, nil
 }
