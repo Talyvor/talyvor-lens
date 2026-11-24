@@ -794,5 +794,14 @@ func openAPIWalletPaths() map[string]any {
 					"404": map[string]any{"description": "no such agent, or it holds no card"}, "409": map[string]any{"description": "the agent has no open account in the card's currency"}}),
 				body(obj([]string{"draws_on"}, map[string]any{"draws_on": str}))),
 		},
+		"/v1/workspaces/{wsID}/agents/{agentID}/card/merchant-lock": map[string]any{
+			"post": withBody(op("Lock the agent's card to one merchant",
+				"Owner or admin. lock first: the card is locked to the merchant of the next purchase it approves. lock merchant: locked to merchant_id, the merchant's network id. lock off: any merchant again. A purchase from any other merchant is declined, and its reason names the lock.",
+				[]map[string]any{ws, agent},
+				map[string]any{"200": map[string]any{"description": "the card"}, "400": map[string]any{"description": "lock is not off, first, or merchant with a merchant_id"},
+					"403": map[string]any{"description": "the workspace is locked down, so the card cannot be unlocked"},
+					"404": map[string]any{"description": "no such agent, or it holds no card"}}),
+				body(obj([]string{"lock"}, map[string]any{"lock": str, "merchant_id": str}))),
+		},
 	}
 }

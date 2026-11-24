@@ -56,6 +56,16 @@ const (
 	CardDrawsOnAccount = "account" // the agent's currency account in the card's currency
 )
 
+// How an agent card is locked to one merchant (B30.31).
+const (
+	CardMerchantLockOff      = "off"      // any merchant the agent's rules let through
+	CardMerchantLockFirst    = "first"    // locked to the merchant of the first purchase the card approves from now on
+	CardMerchantLockMerchant = "merchant" // locked to the merchant id the owner set
+)
+
+// ErrCardMerchantLock: a card's merchant lock is off, first, or merchant with the merchant's network id.
+var ErrCardMerchantLock = errors.New(`economy: a card's merchant lock is "off", "first", or "merchant" with the merchant's network id`)
+
 // ErrAgentCardFrozen is why a purchase on a frozen card is declined (B17.111).
 var ErrAgentCardFrozen = errors.New("the card is frozen: unfreeze it to buy with it")
 
@@ -72,11 +82,13 @@ type AgentCard struct {
 	ExpYear            int        `json:"exp_year"`
 	Currency           string     `json:"currency"`
 	Livemode           bool       `json:"livemode"`
-	Frozen             bool       `json:"frozen"`                 // B17.111: every purchase on it is declined
-	DrawsOn            string     `json:"draws_on"`               // B30.30: CardDrawsOnCredits or CardDrawsOnAccount
-	Label              string     `json:"label,omitempty"`        // B56.7: live or sandbox
-	CancelledAt        *time.Time `json:"cancelled_at,omitempty"` // B28.321: every purchase on it is declined, for good
-	ReplacedBy         string     `json:"replaced_by,omitempty"`  // B28.321: the card issued in its place
+	Frozen             bool       `json:"frozen"`                       // B17.111: every purchase on it is declined
+	DrawsOn            string     `json:"draws_on"`                     // B30.30: CardDrawsOnCredits or CardDrawsOnAccount
+	MerchantLock       string     `json:"merchant_lock"`                // B30.31: CardMerchantLockOff, …First or …Merchant
+	LockedMerchantID   string     `json:"locked_merchant_id,omitempty"` // B30.31: the only merchant the card pays
+	Label              string     `json:"label,omitempty"`              // B56.7: live or sandbox
+	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`       // B28.321: every purchase on it is declined, for good
+	ReplacedBy         string     `json:"replaced_by,omitempty"`        // B28.321: the card issued in its place
 	CreatedAt          time.Time  `json:"created_at"`
 }
 
@@ -121,9 +133,10 @@ func (s *DualTokenStore) GetAgentCard(ctx context.Context, workspaceID, agentID 
 		return AgentCard{}, ErrAgentNotFound
 	}
 	c := AgentCard{AgentID: agentID}
-	err := s.pool.QueryRow(ctx, `SELECT id, stripe_cardholder_id, last4, exp_month, exp_year, currency, livemode, frozen, draws_on, created_at
+	err := s.pool.QueryRow(ctx, `SELECT id, stripe_cardholder_id, last4, exp_month, exp_year, currency, livemode, frozen, draws_on,
+		merchant_lock, COALESCE(locked_merchant_id, ''), created_at
 		FROM agent_cards WHERE agent_id = $1 AND cancelled_at IS NULL`, agentID).Scan(&c.ID, &c.StripeCardholderID, &c.Last4, &c.ExpMonth, &c.ExpYear,
-		&c.Currency, &c.Livemode, &c.Frozen, &c.DrawsOn, &c.CreatedAt)
+		&c.Currency, &c.Livemode, &c.Frozen, &c.DrawsOn, &c.MerchantLock, &c.LockedMerchantID, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNoAgentCard
 	}
@@ -276,6 +289,62 @@ func (s *DualTokenStore) SetAgentCardDrawsOn(ctx context.Context, workspaceID, a
 	return s.GetAgentCard(ctx, workspaceID, agentID)
 }
 
+// SetAgentCardMerchantLock locks the card agentID holds to one merchant, or unlocks it (B30.31): lock "first" locks it
+// to the merchant of the next purchase it approves, "merchant" to merchantID, the merchant's network id; "off" pays
+// any merchant again. Under the agent's row lock, as a purchase is decided, so each purchase sees the lock as it is
+// now; unlocking is refused while the workspace is locked down, as unfreezing is.
+func (s *DualTokenStore) SetAgentCardMerchantLock(ctx context.Context, workspaceID, agentID, lock, merchantID string) (AgentCard, error) {
+	merchantID = strings.TrimSpace(merchantID)
+	var locked any
+	switch {
+	case lock == CardMerchantLockMerchant && merchantID != "":
+		locked = merchantID
+	case (lock == CardMerchantLockOff || lock == CardMerchantLockFirst) && merchantID == "":
+	default:
+		return AgentCard{}, ErrCardMerchantLock
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AgentCard{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
+		return AgentCard{}, err
+	}
+	if lock == CardMerchantLockOff {
+		if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil { // B41.116
+			return AgentCard{}, err
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET merchant_lock = $3, locked_merchant_id = $4 WHERE agent_id = $1 AND workspace_id = $2 AND cancelled_at IS NULL`,
+		agentID, workspaceID, lock, locked)
+	if err != nil {
+		return AgentCard{}, fmt.Errorf("economy: card merchant lock: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return AgentCard{}, ErrNoAgentCard
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AgentCard{}, err
+	}
+	return s.GetAgentCard(ctx, workspaceID, agentID)
+}
+
+// cardMerchantLocked is why a purchase at merchantID is declined on a card whose merchant lock is lock, locked to
+// lockedID (B30.31); "" when it is not. A lock is judged by the merchant's network id, so on a locked card a request
+// without one is declined, even before the card has the merchant of its first purchase.
+func cardMerchantLocked(lock, lockedID, merchantID string) string {
+	switch {
+	case lock == CardMerchantLockOff, lock == "":
+		return ""
+	case merchantID == "":
+		return "the card is locked to one merchant, and this request does not say which merchant it is from"
+	case lockedID == "" || lockedID == merchantID:
+		return ""
+	}
+	return "the card is locked to one merchant (network id " + lockedID + "), so a purchase from any other is declined"
+}
+
 // CardAuthorization is one authorisation request Stripe sent for a card.
 type CardAuthorization struct {
 	EventID             string // evt_…: the request, and the row's key
@@ -387,9 +456,9 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 		return d, err
 	}
 	var frozen, cancelled bool
-	var drawsNow string
-	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, cancelled_at IS NOT NULL FROM agent_cards WHERE id = $1`, a.CardID).
-		Scan(&frozen, &drawsNow, &cancelled); err != nil {
+	var drawsNow, lock, lockedID string
+	if err := tx.QueryRow(ctx, `SELECT frozen, draws_on, merchant_lock, COALESCE(locked_merchant_id, ''), cancelled_at IS NOT NULL
+		FROM agent_cards WHERE id = $1`, a.CardID).Scan(&frozen, &drawsNow, &lock, &lockedID, &cancelled); err != nil {
 		return d, err
 	}
 	if cancelled { // B28.321: whatever the purchase, an increment of one approved before the cancel included
@@ -410,6 +479,9 @@ func (s *DualTokenStore) approveCard(ctx context.Context, a CardAuthorization, d
 	case frozen:
 		_ = tx.Rollback(ctx)
 		return s.declineCard(ctx, a, d, ErrAgentCardFrozen.Error())
+	case cardMerchantLocked(lock, lockedID, a.MerchantID) != "":
+		_ = tx.Rollback(ctx)
+		return s.declineCard(ctx, a, d, cardMerchantLocked(lock, lockedID, a.MerchantID))
 	case drawsNow != drawsOn:
 		_ = tx.Rollback(ctx)
 		return s.declineCard(ctx, a, d, "what the card draws on changed while this purchase was decided: try it again")
@@ -522,10 +594,17 @@ func (s *DualTokenStore) holdCardOnAccount(ctx context.Context, tx pgx.Tx, a Car
 	return s.commitCardDecision(ctx, tx, a, d)
 }
 
-// commitCardDecision records approved decision d of a in tx and commits it with what it moved.
+// commitCardDecision records approved decision d of a in tx and commits it with what it moved. A card locked to the
+// merchant of its first purchase is locked to a's merchant with it (B30.31).
 func (s *DualTokenStore) commitCardDecision(ctx context.Context, tx pgx.Tx, a CardAuthorization, d CardDecision) (CardDecision, error) {
 	if err := insertCardAuthorization(ctx, tx, a, d); err != nil {
 		return d, err
+	}
+	if a.MerchantID != "" {
+		if _, err := tx.Exec(ctx, `UPDATE agent_cards SET locked_merchant_id = $2
+			WHERE id = $1 AND merchant_lock = 'first' AND locked_merchant_id IS NULL`, a.CardID, a.MerchantID); err != nil {
+			return d, fmt.Errorf("economy: card merchant lock: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		if d2, ok, rerr := s.recordedCardDecision(ctx, a.EventID); rerr == nil && ok {

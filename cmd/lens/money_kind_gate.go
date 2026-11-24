@@ -55,6 +55,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/keys":                         moneySideEither,
 	"/v1/workspaces/{}/agents/lockdown":                     moneySideEither,
 	"/v1/workspaces/{}/agents/owner-wallets":                moneySideEither,
+	"/v1/workspaces/{}/agents/owner-wallets/moves":          moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys":                     moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/challenge":           moneySideEither,
 	"/v1/workspaces/{}/agents/passkeys/{}":                  moneySideEither,
@@ -109,6 +110,10 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/topup":                     moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet":                    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallet-kind":               moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves":              moneySideEither, // B48.8: the body names the route, wallet to card to cash-out
+	"/v1/workspaces/{}/agents/{}/wallet-moves/quote":        moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/confirm":   moneySideEither,
+	"/v1/workspaces/{}/agents/{}/wallet-moves/{}/return":    moneySideEither,
 	"/v1/workspaces/{}/agents/{}/wallets":                   moneySideEither,
 	"/v1/workspaces/{}/agents/{}/withdraw":                  moneySideEither,
 
@@ -122,12 +127,13 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/agents/{}/agent-card/rotate": moneySideEither,
 
 	// agent_cards_handler.go
-	"/v1/workspaces/{}/agents/{}/card":          moneySideEither,
-	"/v1/workspaces/{}/agents/{}/card/freeze":   moneySideEither, // a control that stops money is never refused
-	"/v1/workspaces/{}/agents/{}/card/unfreeze": moneySideEither,
-	"/v1/workspaces/{}/agents/{}/card/draws-on": moneySideEither, // B30.30: the account in the card's currency
-	"/v1/workspaces/{}/agents/{}/card/replace":  moneySideEither, // B28.321
-	"/v1/workspaces/{}/agents/{}/card/cancel":   moneySideEither, // a control that stops money is never refused
+	"/v1/workspaces/{}/agents/{}/card":               moneySideEither,
+	"/v1/workspaces/{}/agents/{}/card/freeze":        moneySideEither, // a control that stops money is never refused
+	"/v1/workspaces/{}/agents/{}/card/unfreeze":      moneySideEither,
+	"/v1/workspaces/{}/agents/{}/card/draws-on":      moneySideEither, // B30.30: the account in the card's currency
+	"/v1/workspaces/{}/agents/{}/card/merchant-lock": moneySideEither, // B30.31: a control that narrows where money goes
+	"/v1/workspaces/{}/agents/{}/card/replace":       moneySideEither, // B28.321
+	"/v1/workspaces/{}/agents/{}/card/cancel":        moneySideEither, // a control that stops money is never refused
 
 	// agent_cash_outs_handler.go
 	"/v1/workspaces/{}/agents/{}/cash-outs":           moneySideFiat,

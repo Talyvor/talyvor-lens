@@ -23,10 +23,13 @@ import (
 //	     purchase on a frozen card is declined and nothing leaves the agent
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/draws-on   {draws_on: "credits" | "account"}   (B30.30) what the card
 //	     spends: the agent's credits, or its currency account in the card's currency, which must be open
-//	POST /v1/workspaces/{wsID}/agents/{id}/card/replace   (B28.321) a new card to the same cardholder, drawing on what the
 //	     old one did; the old one is cancelled: every purchase on it is declined and nothing leaves the agent. 201, the new card
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/cancel    (B28.321) the card, cancelled for good; the agent holds no card
+//	POST /v1/workspaces/{wsID}/agents/{id}/card/cancel    (B28.321) the card, cancelled for good; the agent holds no card
 //	     until it is issued a new one. 200, the cancelled card
+//	POST /v1/workspaces/{wsID}/agents/{id}/card/merchant-lock   {lock: "off" | "first" | "merchant", merchant_id}
+//	     (B30.31) lock the card to one merchant: the merchant of its next approved purchase, or the merchant id the
+//	     owner sets; a purchase from any other merchant is declined, the lock named in its reason
 //
 // Each purchase is decided by Stripe's call to POST /v1/agent-cards/authorizations (agentcard.Handler), by
 // the agent's rules and balance; the decision and the ECB rate it was priced at are on each authorisation.
@@ -40,6 +43,7 @@ type agentCardBank interface {
 	SetAgentCardDrawsOn(ctx context.Context, workspaceID, agentID, drawsOn string) (economy.AgentCard, error)
 	CancelAgentCard(ctx context.Context, workspaceID, agentID string) (economy.AgentCard, error)
 	ReplaceAgentCard(ctx context.Context, workspaceID, agentID, oldCardID string, next economy.AgentCard) (economy.AgentCard, error)
+	SetAgentCardMerchantLock(ctx context.Context, workspaceID, agentID, lock, merchantID string) (economy.AgentCard, error)
 	ListAgentCardAuthorizations(ctx context.Context, workspaceID, agentID string, limit int) ([]economy.CardAuthorizationRecord, error)
 }
 
@@ -180,6 +184,29 @@ func mountAgentCardRoutes(r chi.Router, bank agentCardBank, issuer agentcard.Iss
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrMoneyAccountNotOpen):
 			writeJSONErr(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, card)
+		}
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/card/merchant-lock", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var body struct {
+			Lock       string `json:"lock"`
+			MerchantID string `json:"merchant_id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, `body must be {"lock": "off" | "first" | "merchant", "merchant_id": "…"}`)
+			return
+		}
+		card, err := bank.SetAgentCardMerchantLock(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), body.Lock, body.MerchantID)
+		switch {
+		case errors.Is(err, economy.ErrCardMerchantLock):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrNoAgentCard):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrLockedDown):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
