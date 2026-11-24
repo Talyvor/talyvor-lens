@@ -378,10 +378,25 @@ func (s *DualTokenStore) RequestCredits(ctx context.Context, workspaceID, agentI
 	if err := workspace.CheckMoneyWall(ctx, s.pool, workspaceID, payer.WorkspaceID); err != nil {
 		return MoneyRequest{}, err
 	}
+	// B28.72: with an Idempotency-Key the request's id is the key's, so a retry answers the request it first made.
+	id, keyed := keyedID(ctx, "mreq_", "money_request", workspaceID, agentID)
 	r, err := scanMoneyRequest(s.pool.QueryRow(ctx, `INSERT INTO agent_money_requests (id, from_workspace_id, from_agent_id, to_workspace_id,
 		to_agent_id, amount_ulxc, memo)
 		SELECT $1, a.workspace_id, a.id, $4, $5, $6, $7 FROM agent_accounts a WHERE a.id = $3 AND a.workspace_id = $2
-		RETURNING `+moneyRequestColumns, "mreq_"+uuid.NewString(), workspaceID, agentID, payer.WorkspaceID, payer.WalletID, amount, memo))
+		ON CONFLICT (id) DO NOTHING
+		RETURNING `+moneyRequestColumns, id, workspaceID, agentID, payer.WorkspaceID, payer.WalletID, amount, memo))
+	if keyed && errors.Is(err, pgx.ErrNoRows) {
+		was, werr := scanMoneyRequest(s.pool.QueryRow(ctx, `SELECT `+moneyRequestColumns+` FROM agent_money_requests
+			WHERE id = $1 AND from_workspace_id = $2`, id, workspaceID))
+		switch {
+		case werr == nil && (was.ToAgentID != payer.WalletID || was.AmountULXC != amount || was.Memo != memo):
+			return MoneyRequest{}, ErrIdempotencyKeyReused
+		case werr == nil:
+			return was, nil
+		case !errors.Is(werr, pgx.ErrNoRows):
+			return MoneyRequest{}, fmt.Errorf("economy: earlier request: %w", werr)
+		}
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrAgentNotFound
 	}

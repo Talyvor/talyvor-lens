@@ -17,10 +17,9 @@ import (
 )
 
 // B50.54 — no move posts through a partner with the store's screener inside its transaction: the screener takes a
-// connection of its own, and the transaction already holds one. The moves left below screen inside their transaction
-// still and are B50.56's; each is taken off the list as it screens first.
+// connection of its own, and the transaction already holds one. B50.56 moved the last of them, so none is left.
 func TestB5054_NoMoveScreensWithTheStoresScreenerInsideItsTransaction(t *testing.T) {
-	left := []string{"AuthorizeCardCharge", "applyEarningsResult", "applyPartnerResult", "authorizeReusableCharge", "creditCardPayment", "leaveSuspense"}
+	var left []string
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)

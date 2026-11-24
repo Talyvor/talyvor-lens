@@ -69,7 +69,12 @@ type Escrow struct {
 	CreatedAt        time.Time     `json:"created_at"`
 	DecidedAt        *time.Time    `json:"decided_at,omitempty"`
 	Events           []EscrowEvent `json:"events"`
+
+	keyed bool // its id is an Idempotency-Key's (B28.72)
 }
+
+// errEscrowPaidIn: the escrow under this Idempotency-Key was already paid into; its retry answers it.
+var errEscrowPaidIn = errors.New("economy: escrow already paid in")
 
 func escrowAccount(id string) string { return "escrow:" + id }
 
@@ -101,8 +106,10 @@ func (s *DualTokenStore) PayIntoEscrow(ctx context.Context, workspaceID, payerAg
 	if to.WalletID == payerAgentID {
 		return Escrow{}, ErrSameAgent
 	}
-	e := Escrow{ID: "escrow_" + uuid.NewString(), PayerWorkspaceID: workspaceID, PayerAgentID: payerAgentID,
-		PayeeWorkspaceID: to.WorkspaceID, PayeeAgentID: to.WalletID, AmountULXC: amount, Memo: memo, ReleaseAt: releaseAt}
+	// B28.72: with an Idempotency-Key the escrow's id is the key's, so a retry finds the escrow it first paid into.
+	id, keyed := keyedID(ctx, "escrow_", "agent_escrow", workspaceID, payerAgentID)
+	e := Escrow{ID: id, PayerWorkspaceID: workspaceID, PayerAgentID: payerAgentID,
+		PayeeWorkspaceID: to.WorkspaceID, PayeeAgentID: to.WalletID, AmountULXC: amount, Memo: memo, ReleaseAt: releaseAt, keyed: keyed}
 	ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, Fingerprint: paymentFingerprint(payerAgentID, to.WalletID, amount, "escrow\x00"+memo),
 		Payee: Payee{Kind: "agent", ID: to.WalletID, Name: to.Name}, Memo: memo})
 	tx, err := s.pool.Begin(ctx)
@@ -110,7 +117,10 @@ func (s *DualTokenStore) PayIntoEscrow(ctx context.Context, workspaceID, payerAg
 		return Escrow{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.payIntoEscrowTx(ctx, tx, &e); err != nil {
+	if err := s.payIntoEscrowTx(ctx, tx, &e); errors.Is(err, errEscrowPaidIn) {
+		_ = tx.Rollback(ctx)
+		return s.GetEscrow(ctx, workspaceID, e.ID)
+	} else if err != nil {
 		return Escrow{}, s.refusedMovement(ctx, tx, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -149,6 +159,21 @@ func (s *DualTokenStore) payIntoEscrowTx(ctx context.Context, tx pgx.Tx, e *Escr
 			return ErrOwnerUnverified
 		}
 		owners[x.agent] = owner
+	}
+	// B28.72: under both locks, an escrow already paid in under this id is a retry: the same one answers as paid and
+	// moves nothing, another is refused. Checked before the rules, so the first one's own spend does not refuse its retry.
+	if e.keyed {
+		var payee, memo string
+		var amount int64
+		err := tx.QueryRow(ctx, `SELECT payee_agent_id, amount_ulxc, memo FROM agent_escrows WHERE id = $1`, e.ID).Scan(&payee, &amount, &memo)
+		switch {
+		case err == nil && (payee != e.PayeeAgentID || amount != e.AmountULXC || memo != e.Memo):
+			return ErrIdempotencyKeyReused
+		case err == nil:
+			return errEscrowPaidIn
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("economy: earlier escrow: %w", err)
+		}
 	}
 	capability := "move_between_own_agents"
 	if owners[e.PayerAgentID] != owners[e.PayeeAgentID] {

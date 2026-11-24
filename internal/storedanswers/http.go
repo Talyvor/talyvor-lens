@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +59,9 @@ func OwnerOrAdmin(ctx context.Context) (who string, ok bool) {
 		return "operator", true
 	case actx.AuthMethod == auth.MethodSessionKey:
 		return "", false
+	case actx.Role != "":
+		// B28.342: a role session is never the owner. A handler that admits one names its roles (OwnerOrRole).
+		return "", false
 	case actx.HasScope(auth.ScopeKeys) || actx.HasScope(auth.ScopeAdmin):
 		who := actx.AuthMethod
 		if actx.UserID != "" {
@@ -69,6 +73,19 @@ func OwnerOrAdmin(ctx context.Context) (who string, ok bool) {
 		return who, true
 	}
 	return "", false
+}
+
+// OwnerOrRole is OwnerOrAdmin that also admits a role session (B28.342) holding one of roles, named for the audit row
+// as the person and their role. Only the handlers of the routes a role may reach (auth.RoleAllows) call it, each
+// naming the roles it admits.
+func OwnerOrRole(ctx context.Context, roles ...string) (who string, ok bool) {
+	if actx := auth.GetAuthContext(ctx); actx != nil && actx.Role != "" && !actx.IsAdmin {
+		if actx.AuthMethod != auth.MethodJWT || actx.UserID == "" || !slices.Contains(roles, actx.Role) {
+			return "", false
+		}
+		return auth.MethodJWT + ":user:" + actx.UserID + ":role:" + actx.Role, true
+	}
+	return OwnerOrAdmin(ctx)
 }
 
 // CountsHandler serves GET /v1/workspaces/{wsID}/stored-answers.

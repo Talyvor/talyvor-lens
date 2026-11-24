@@ -142,3 +142,22 @@ func TestClientIP_NoXFFFailsClosed(t *testing.T) {
 		t.Errorf("client IP without a Caddy hop = %q, want \"\" — client headers must not be a fallback", forged)
 	}
 }
+
+// B67.2 (GHSA for chi's ClientIPFromXFF, fixed in v5.4.0): a caller that reaches lens without passing through Caddy —
+// any peer outside the private and loopback ranges our proxy sits in — is its own TCP peer. Whatever X-Forwarded-For it
+// sends, including a chain that looks like it came through a trusted hop, cannot choose the IP lens sees.
+func TestClientIP_DirectCallerIsItsTCPPeer(t *testing.T) {
+	for _, xff := range []string{"10.0.0.7", "10.0.0.7, 172.18.0.3", "9.9.9.9", "9.9.9.9, 198.51.100.42"} {
+		r := chi.NewRouter()
+		r.Use(clientIPMiddleware())
+		var got string
+		r.Get("/", func(w http.ResponseWriter, req *http.Request) { got = clientIP(req) })
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "198.51.100.42:5000"
+		req.Header.Set("X-Forwarded-For", xff)
+		r.ServeHTTP(httptest.NewRecorder(), req)
+		if got != "198.51.100.42" {
+			t.Errorf("direct caller forging X-Forwarded-For %q: client IP = %q, want its TCP peer %q", xff, got, "198.51.100.42")
+		}
+	}
+}

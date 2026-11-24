@@ -24,7 +24,9 @@ import (
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/holdings"
 	"github.com/talyvor/lens/internal/money/smartaccount"
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/screening"
 	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/tenant"
 	"github.com/talyvor/lens/internal/workspace"
@@ -232,6 +234,23 @@ import (
 //	                                                     pays what it sponsors, so an owner cannot until a top-up
 //	                                                     is paid for (403)
 //
+// B48.8 — topping up and cashing out an agent's wallet (agent_wallet_moves.go); each is quoted — rate, the partner's
+// fee and what it buys — then confirmed once, and shows in both wallets' history:
+//
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/quote  {"route": "wallet"|"card"|"bank_transfer"|"convert"|"cash_out",
+//	                                                     "amount_minor", "currency", "from_agent_id"?, "payee_id"?, "to_currency"?}
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/challenge B48.42: what a cash-out's or convert's
+//	                                                     confirm is signed over, by a passkey or the phone's key
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/confirm   {"assertion"?} make it, once; 409 when expired
+//	                                                     or refused; a cash-out or convert 403 unsigned once the
+//	                                                     workspace has a passkey or device key.
+//	                                                     Once money has left, a refusal holds it (status held), and
+//	                                                     confirming again carries it on to its end
+//	POST /v1/workspaces/{wsID}/agents/{id}/wallet-moves/{moveID}/return    a held move's money, given back by the ramp
+//	                                                     that has not executed it; 409 when it cannot be
+//	GET  /v1/workspaces/{wsID}/agents/{id}/wallet-moves     its top-ups, cash-outs and moves to the owner's other agents
+//	GET  /v1/workspaces/{wsID}/agents/owner-wallets/moves   what left the owner's own wallets
+//
 // B28.298 — an agent's lifecycle (internal/economy/agent_lifecycle.go):
 //
 //	PATCH /v1/workspaces/{wsID}/agents/{id}   {"name"?, "description"?, "colour"?, "face"?, "picture"?, "role"?,
@@ -269,6 +288,11 @@ type agentBank interface {
 	WalletTaxExport(ctx context.Context, workspaceID string, from, to time.Time) (economy.TaxExport, error)
 	WorkspaceGasBudget(ctx context.Context, workspaceID string, chainID int64) (economy.GasBudget, error)
 	TopUpGasBudget(ctx context.Context, workspaceID string, chainID, wei int64, userID string) (economy.GasBudget, error)
+	QuoteWalletMove(ctx context.Context, workspaceID, agentID string, r economy.WalletMoveRequest, by string, workspaceOwner bool) (economy.WalletMove, error)
+	WalletMoveChallenge(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (string, []string, error)
+	ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool, a *passkey.Assertion) (economy.WalletMove, error)
+	ReturnWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
+	WalletMoves(ctx context.Context, workspaceID, agentID string) ([]economy.WalletMove, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, c economy.AgentChange) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -374,7 +398,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, book)
 	})
-	r.Post("/v1/workspaces/{wsID}/agents", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			Name  string `json:"name"`
 			Owner string `json:"owner_user_id"` // an admin credential names the person; anyone else owns what they create
@@ -442,7 +466,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			Template string             `json:"template"`
 			Rules    economy.AgentRules `json:"rules"`
 		}{a, tmpl.ID, rules})
-	}))
+	}, adminRoles...))
 	r.Get("/v1/workspaces/{wsID}/agents/rule-templates", func(w http.ResponseWriter, req *http.Request) {
 		writeJSONOK(w, http.StatusOK, map[string]any{"templates": economy.RuleTemplates()})
 	})
@@ -509,7 +533,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		})
 	}))
 	move := func(fn func(ctx context.Context, workspaceID, agentID string, amount int64) (int64, error)) http.HandlerFunc {
-		return ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		return ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 			var in struct {
 				AmountULXC int64 `json:"amount_ulxc"`
 			}
@@ -536,7 +560,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			default:
 				writeJSONOK(w, http.StatusOK, map[string]any{"agent_id": agentID, "balance_ulxc": bal})
 			}
-		})
+		}, moneyRoles...)
 	}
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/fund", move(bank.FundAgent))
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/withdraw", move(bank.WithdrawAgent))
@@ -560,7 +584,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		rules, err := bank.GetAgentRules(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		writeRules(w, rules, err)
 	})
-	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/summary", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/summary", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		sum, err := bank.AgentSummary(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		switch {
 		case errors.Is(err, economy.ErrAgentNotFound):
@@ -570,7 +594,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		default:
 			writeJSONOK(w, http.StatusOK, sum)
 		}
-	}))
+	}, workspace.Roles...))
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet", func(w http.ResponseWriter, req *http.Request) {
 		wallet, err := bank.AgentWallet(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
 		switch {
@@ -850,8 +874,75 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		b, err := bank.TopUpGasBudget(req.Context(), chi.URLParam(req, "wsID"), in.ChainID, in.Wei, actx.UserID)
 		writeGasBudget(w, b, err)
 	}))
+	// B48.8: top an agent's wallet up, or cash it out — quoted first, confirmed once.
+	writeMove := func(w http.ResponseWriter, out any, err error) {
+		var refusal *economy.CapabilityRefusal
+		switch {
+		case errors.Is(err, economy.ErrWalletMove), errors.Is(err, economy.ErrWalletKind):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrWalletMoveNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, economy.ErrWalletMoveExpired), errors.Is(err, money.ErrRefused), errors.Is(err, money.ErrInsufficientFunds):
+			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.As(err, &refusal), errors.As(err, new(*screening.Refusal)), errors.Is(err, economy.ErrWalletMoveUnsigned),
+			errors.Is(err, passkey.ErrInvalid):
+			writeJSONErr(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, economy.ErrAgentWalletsOff), errors.Is(err, economy.ErrNoRampPartner), errors.Is(err, partners.ErrScreeningUnavailable):
+			writeJSONErr(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, money.ErrPartnerDown):
+			writeJSONErr(w, http.StatusBadGateway, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, out)
+		}
+	}
+	// The workspace's owner is the person whose provisioned session carries the keys scope (storedanswers.OwnerOrAdmin);
+	// an admin key, or the operator, is not.
+	wsOwner := func(req *http.Request) bool {
+		actx := auth.GetAuthContext(req.Context())
+		return actx != nil && !actx.IsAdmin && actx.HasScope(auth.ScopeKeys)
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/quote", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in economy.WalletMoveRequest
+		if !decode(w, req, &in, `{"route", "amount_minor", "currency", "from_agent_id"?, "payee_id"?, "to_currency"?}`) {
+			return
+		}
+		out, err := bank.QuoteWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), in, actor(req), wsOwner(req))
+		writeMove(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		c, creds, err := bank.WalletMoveChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req))
+		writeMove(w, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"}, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/confirm", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		var in struct {
+			Assertion *passkey.Assertion `json:"assertion"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONErr(w, http.StatusBadRequest, `body must be empty or {"assertion": {…}}`)
+			return
+		}
+		out, err := bank.ConfirmWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req), in.Assertion)
+		writeMove(w, out, err)
+	}))
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}/return", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.ReturnWalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"),
+			actor(req), wsOwner(req))
+		writeMove(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.WalletMoves(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeMove(w, out, err)
+	}))
+	r.Get("/v1/workspaces/{wsID}/agents/owner-wallets/moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.WalletMoves(req.Context(), chi.URLParam(req, "wsID"), "")
+		writeMove(w, out, err)
+	}))
 	// B55.13: the body is the rules, or {"rules", "assertion"} when the change loosens them (…/rules/challenge).
-	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Put("/v1/workspaces/{wsID}/agents/{agentID}/rules", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, "body must be the agent's rules: "+err.Error())
@@ -876,9 +967,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		rules, err := bank.ChangeAgentRules(rulesChange(req, "set"), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"),
 			economy.RulesProposal{Rules: &in}, signed.Assertion)
 		writeRules(w, rules, err)
-	}))
+	}, adminRoles...))
 	// B55.13: what a change would do to the rules — looser or not, in words — and the challenge a looser one is signed over.
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/challenge", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		var in economy.RulesProposal
 		dec := json.NewDecoder(req.Body)
 		dec.DisallowUnknownFields()
@@ -913,7 +1004,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONOK(w, http.StatusOK, map[string]any{"looser": j.Looser, "changes": j.Changes, "challenge": j.Challenge,
 				"allow_credentials": j.AllowCredentials, "user_verification": "required"})
 		}
-	}))
+	}, adminRoles...))
 	// B52.41: rules filed for the owner's passkey. A raise is kept and applies nothing until …/approve carries an
 	// assertion over …/challenge; rules that only tighten apply at once.
 	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/rules/proposals", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
@@ -1083,10 +1174,26 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if wantsCSV(req) {
+			writeListCSV(w, "approvals", list)
+			return
+		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 	})
+	// B62.9: one approval, with why a payment it approved was stopped; another workspace's is 404.
+	r.Get("/v1/workspaces/{wsID}/agents/approvals/{approvalID}", func(w http.ResponseWriter, req *http.Request) {
+		a, err := bank.GetAgentApproval(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"))
+		switch {
+		case errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, a)
+		}
+	})
 	decide := func(approve bool) http.HandlerFunc {
-		return ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		return ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 			wsID, approvalID := chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID")
 			// B19.16: once the workspace has a passkey, the decision carries an assertion over this approval's challenge.
 			var in struct {
@@ -1123,8 +1230,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, economy.ErrSameApprover), errors.Is(err, economy.ErrSecondApproverNeeded), errors.Is(err, economy.ErrApproverUnknown):
+				writeSecondApproval(w, err)
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			case in.AlwaysAllow != nil && a.WaitingForSecondApprover:
+				// Over the second-approver line the rule waits too: it is made with the approval that approves the payment.
+				writeJSONOK(w, http.StatusOK, a)
 			case in.AlwaysAllow != nil:
 				// After the decision, so a refused signature saves no rule; the approval stands either way.
 				rules, err := bank.AllowPayee(rulesChange(req, "always allow"), wsID, approvalID, *in.AlwaysAllow)
@@ -1143,7 +1255,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			default:
 				writeJSONOK(w, http.StatusOK, a)
 			}
-		})
+		}, approvalRoles...)
 	}
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/approve", decide(true))
 	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/deny", decide(false))
@@ -1339,14 +1451,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, b)
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pause", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/pause", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
 			Reason string `json:"reason"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		agentID := chi.URLParam(req, "agentID")
 		writePaused(w, agentID, true, bank.PauseAgent(req.Context(), chi.URLParam(req, "wsID"), agentID, in.Reason))
-	}))
+	}, adminRoles...))
 	// B41.108: once the workspace has a passkey or device key, resuming carries {"assertion"} over its challenge.
 	resumeChallenge := func(w http.ResponseWriter, req *http.Request, agentID string) {
 		c, creds, err := bank.ResumeChallenge(req.Context(), chi.URLParam(req, "wsID"), agentID)
@@ -1439,16 +1551,22 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			first = *in.FirstRunAt
 		}
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
+		ctx, ok := keyedMove(w, req) // B28.72: a schedule to an agent or a payee is made once per Idempotency-Key
+		if !ok {
+			return
+		}
 		var sc economy.AgentSchedule
 		switch {
 		case in.ToPayeeID != "":
-			sc, err = bank.CreateStandingOrder(req.Context(), wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
+			sc, err = bank.CreateStandingOrder(ctx, wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
 		case in.ToListingID != "":
 			sc, err = bank.CreateAgentListingSchedule(req.Context(), wsID, agentID, in.ToListingID, in.AmountULXC, in.Memo, in.Every, first)
 		default:
-			sc, err = bank.CreateAgentSchedule(req.Context(), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
+			sc, err = bank.CreateAgentSchedule(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
 		}
 		switch {
+		case errors.Is(err, economy.ErrIdempotencyKeyReused):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrPayeeNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrSameAgent), errors.Is(err, economy.ErrListingPayee):
@@ -1467,6 +1585,10 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		list, err := bank.ListAgentSchedules(req.Context(), chi.URLParam(req, "wsID"))
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if wantsCSV(req) {
+			writeListCSV(w, "schedules", list)
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"schedules": list})
@@ -1677,7 +1799,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"keys": list})
 	}))
-	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/{approvalID}/challenge", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		// B54.29: approving with always_allow is signed over the allowance too, so its challenge names it.
 		var in struct {
 			AlwaysAllow *economy.PayeeAllowance `json:"always_allow"`
@@ -1696,7 +1818,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required", "approval": a})
 		}
-	}))
+	}, approvalRoles...))
 	// B41.204: one passkey assertion decides several approvals — "approve" or "deny", over the set of ids.
 	type batchDecision struct {
 		IDs       []string           `json:"approval_ids"`
@@ -1712,7 +1834,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		return in, true
 	}
-	r.Post("/v1/workspaces/{wsID}/agents/approvals/challenge", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/challenge", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		in, ok := readBatch(w, req)
 		if !ok {
 			return
@@ -1726,8 +1848,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
 		}
-	}))
-	r.Post("/v1/workspaces/{wsID}/agents/approvals/decide", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+	}, approvalRoles...))
+	r.Post("/v1/workspaces/{wsID}/agents/approvals/decide", ownerOrRole(func(w http.ResponseWriter, req *http.Request) {
 		in, ok := readBatch(w, req)
 		if !ok {
 			return
@@ -1742,12 +1864,14 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrApprovalsChanged), errors.Is(err, economy.ErrApprovalNotFound):
 			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrSameApprover), errors.Is(err, economy.ErrSecondApproverNeeded), errors.Is(err, economy.ErrApproverUnknown):
+			writeSecondApproval(w, err)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
 			writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 		}
-	}))
+	}, approvalRoles...))
 	r.Get("/v1/workspaces/{wsID}/agents/push/public-key", func(w http.ResponseWriter, req *http.Request) {
 		key, ok := bank.PushPublicKey()
 		if !ok {
@@ -1920,7 +2044,27 @@ func declineReason(w http.ResponseWriter, req *http.Request, reason string, appr
 		writeJSONErr(w, http.StatusBadRequest, `reason goes with deny, up to 200 characters`)
 		return nil, false
 	}
-	return economy.WithDenyReason(req.Context(), reason), true
+	// B28.315: and who decides, so a payment over the second-approver line counts two different people's approvals.
+	// Only a person signed in on their own session counts.
+	ctx := economy.WithDenyReason(req.Context(), reason)
+	if actx := auth.GetAuthContext(ctx); actx != nil && actx.AuthMethod == auth.MethodJWT && !actx.IsAdmin {
+		ctx = economy.WithApprover(ctx, actx.UserID)
+	}
+	return ctx, true
+}
+
+// writeSecondApproval answers a refused approval of a payment over the second-approver line (B28.315), with a code the
+// approval sheet keys its words on: same_approver ("Approved by you. Waiting for a second approver."),
+// second_approver_needed and approver_unknown.
+func writeSecondApproval(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, economy.ErrSameApprover):
+		writeJSONOK(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "same_approver"})
+	case errors.Is(err, economy.ErrSecondApproverNeeded):
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "second_approver_needed"})
+	default:
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "approver_unknown"})
+	}
 }
 
 func writePaused(w http.ResponseWriter, agentID string, paused bool, err error) {
@@ -1961,7 +2105,7 @@ func keyAgent(req *http.Request, bank agentBank) (string, error) {
 // rulesChange is req's context naming who changes an agent's rules with it, and how (B28.307): the version the
 // change makes records them.
 func rulesChange(req *http.Request, what string) context.Context {
-	who, _ := storedanswers.OwnerOrAdmin(req.Context())
+	who, _ := storedanswers.OwnerOrRole(req.Context(), workspace.Roles...) // B28.342: names an Admin who changes them
 	return economy.WithRulesChange(req.Context(), who, what)
 }
 

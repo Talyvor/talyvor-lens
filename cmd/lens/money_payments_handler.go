@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -26,6 +27,9 @@ import (
 //	                          B54.33: the owner's or an admin's payment, once the workspace has a passkey or device key,
 //	                          also takes "assertion", that key's signature over the challenge below for exactly this
 //	                          payment; without it, or signed for another, it pays nothing (403).
+//	                          B28.346: payee_name in place of payee_id pays the one saved payee of that name, in any
+//	                          case and spacing, as paying its id does; a name none has is 404, one two share 409. The
+//	                          challenge and the quote take payee_name too.
 //	POST /v1/money/payments/challenge {the payment, as it will be sent} — B54.33: {challenge, allow_credentials}, the
 //	                          challenge it is signed over (a passkey's, or the phone's device key's).
 //	POST /v1/money/payments/quote {payee_id, amount_minor, currency, account_id, funding} — B30.22: prices a payment
@@ -39,6 +43,7 @@ import (
 
 type moneyPaymentBank interface {
 	AgentOfKey(ctx context.Context, scopedKeyID string) (agentID, workspaceID string, err error)
+	PayeeByName(ctx context.Context, workspaceID, name string) (economy.OutsidePayee, error)
 	PayOutside(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.OutsidePayment, error)
 	PayOutsideSigned(ctx context.Context, workspaceID string, in economy.OutsidePayment, a *passkey.Assertion) (economy.OutsidePayment, error)
 	PaymentChallenge(ctx context.Context, workspaceID string, in economy.OutsidePayment) (string, []string, error)
@@ -47,15 +52,16 @@ type moneyPaymentBank interface {
 	RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (economy.OutsidePayment, error)
 }
 
-// moneyCaller is the key's workspace and the agent it may act for: "" for the owner or an admin, who may act for any.
-// agentOf is bank.AgentOfKey. It writes the refusal and answers ok false when the key may not make payments.
-func moneyCaller(w http.ResponseWriter, req *http.Request, agentOf func(context.Context, string) (string, string, error)) (ws, agentID string, ok bool) {
+// moneyCaller is the key's workspace and the agent it may act for: "" for the owner or an admin, who may act for any,
+// and for a role session holding one of roles (B28.342). agentOf is bank.AgentOfKey. It writes the refusal and
+// answers ok false when the key may not make payments.
+func moneyCaller(w http.ResponseWriter, req *http.Request, agentOf func(context.Context, string) (string, string, error), roles ...string) (ws, agentID string, ok bool) {
 	ws, _ = auth.WorkspaceIdentity(req.Context())
 	if ws == "" {
 		writeJSONErr(w, http.StatusBadRequest, "payments are a workspace's: use a workspace's key")
 		return "", "", false
 	}
-	if _, owner := storedanswers.OwnerOrAdmin(req.Context()); owner {
+	if _, owner := storedanswers.OwnerOrRole(req.Context(), roles...); owner {
 		return ws, "", true
 	}
 	if actx := auth.GetAuthContext(req.Context()); actx != nil && actx.APIKeyID != "" {
@@ -69,11 +75,24 @@ func moneyCaller(w http.ResponseWriter, req *http.Request, agentOf func(context.
 }
 
 func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
-	caller := func(w http.ResponseWriter, req *http.Request) (ws, agentID string, ok bool) {
-		return moneyCaller(w, req, bank.AgentOfKey)
+	caller := func(w http.ResponseWriter, req *http.Request, roles ...string) (ws, agentID string, ok bool) {
+		return moneyCaller(w, req, bank.AgentOfKey, roles...)
+	}
+	// payee is in's payee: payee_id, or else the one saved payee called payee_name (B28.346). It writes the refusal and
+	// answers ok false when the name finds no one payee.
+	payee := func(w http.ResponseWriter, req *http.Request, ws string, in economy.OutsidePayment) (id string, ok bool) {
+		if in.PayeeID != "" || strings.TrimSpace(in.PayeeName) == "" {
+			return in.PayeeID, true
+		}
+		p, err := bank.PayeeByName(req.Context(), ws, in.PayeeName)
+		if err != nil {
+			writePaymentErr(w, err)
+			return "", false
+		}
+		return p.ID, true
 	}
 	r.With(withTask).Post("/v1/money/payments", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -88,7 +107,11 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		if k := req.Header.Get("Idempotency-Key"); k != "" {
 			in.IdempotencyKey = k
 		}
-		pay := economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
+		payeeID, ok := payee(w, req, ws, in.OutsidePayment)
+		if !ok {
+			return
+		}
+		pay := economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: payeeID,
 			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey,
 			QuoteID: in.QuoteID}
 		var p economy.OutsidePayment
@@ -105,7 +128,7 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		writeJSONOK(w, http.StatusCreated, p)
 	})
 	r.Post("/v1/money/payments/challenge", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -121,7 +144,11 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		if k := req.Header.Get("Idempotency-Key"); k != "" {
 			in.IdempotencyKey = k
 		}
-		c, creds, err := bank.PaymentChallenge(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, PayeeID: in.PayeeID,
+		payeeID, ok := payee(w, req, ws, in)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.PaymentChallenge(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, PayeeID: payeeID,
 			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding, Reference: in.Reference, IdempotencyKey: in.IdempotencyKey,
 			QuoteID: in.QuoteID})
 		if err != nil {
@@ -131,7 +158,7 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
 	})
 	r.Post("/v1/money/payments/quote", func(w http.ResponseWriter, req *http.Request) {
-		ws, agentID, ok := caller(w, req)
+		ws, agentID, ok := caller(w, req, moneyRoles...)
 		if !ok {
 			return
 		}
@@ -140,7 +167,11 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"payee_id", "amount_minor", "currency"}`)
 			return
 		}
-		q, err := bank.QuoteInternational(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: in.PayeeID,
+		payeeID, ok := payee(w, req, ws, in)
+		if !ok {
+			return
+		}
+		q, err := bank.QuoteInternational(req.Context(), ws, economy.OutsidePayment{AccountID: in.AccountID, AgentID: agentID, PayeeID: payeeID,
 			AmountMinor: in.AmountMinor, Currency: in.Currency, Funding: in.Funding})
 		if err != nil {
 			writePaymentErr(w, err)
@@ -186,7 +217,7 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, economy.ErrPayeeUnconfirmed), errors.Is(err, economy.ErrPayeeCoolingOff), errors.Is(err, economy.ErrAddressProofNeeded), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
-		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote):
+		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote), errors.Is(err, economy.ErrPayeeNameShared):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
 		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, economy.ErrKeyBeforeLivePayment), errors.Is(err, passkey.ErrInvalid),

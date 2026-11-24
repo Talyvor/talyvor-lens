@@ -30,7 +30,7 @@ import (
 // Read with a partner key (internal/partnerkey) and nothing else: a workspace key, a moderator key, the operator read
 // key and the admin key are all refused here, and auth.Manager refuses the partner key on every other route. Every
 // read is a partner_key_uses row, written before it is answered; a row that cannot be written answers 503 and shows
-// nothing. In Sandbox the view shows Sandbox payments only (economy.PartnerViewMode).
+// nothing. In Sandbox the view shows Sandbox payments only, in Live the Live ones only (economy.PartnerViewMode, B62.7).
 //
 //	POST /v1/admin/partner-keys              makes a key, its raw value shown once   admin key + step-up code
 //	POST /v1/admin/partner-keys/{id}/revoke  revokes one                             admin key + step-up code
@@ -142,11 +142,7 @@ func partnerCursor(p economy.PartnerPayment) string {
 // partnerMode answers the view's mode, or writes why there is none and returns "".
 func partnerMode(w http.ResponseWriter, r *http.Request, store partnerActivityReader) string {
 	mode, err := store.PartnerViewMode(r.Context())
-	switch {
-	case errors.Is(err, economy.ErrPartnerViewLive):
-		writeJSONErr(w, http.StatusConflict, "not shown: some money here is live, and a payment's record does not say yet whether it was Sandbox or Live")
-		return ""
-	case err != nil:
+	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "could not read whether this is Sandbox or Live")
 		return ""
 	}
@@ -164,6 +160,7 @@ func newPartnerActivityHandler(store partnerActivityReader) http.Handler {
 		if mode == "" {
 			return
 		}
+		f.Mode = mode
 		rows, err := store.PartnerActivity(r.Context(), f)
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, "could not read the agent activity")
@@ -191,6 +188,7 @@ func newPartnerActivityExportHandler(store partnerActivityReader) http.Handler {
 		if mode == "" {
 			return
 		}
+		f.Mode = mode
 		var all []economy.PartnerPayment
 		for f.Limit = partnerPageMax; len(all) < partnerExportMax; {
 			page, err := store.PartnerActivity(r.Context(), f)
@@ -216,7 +214,7 @@ func newPartnerActivityExportHandler(store partnerActivityReader) http.Handler {
 			}
 			_ = cw.Write([]string{csvCell(p.ID), p.At.UTC().Format(time.RFC3339), csvCell(p.AccountID), p.VerificationLevel.String(),
 				csvCell(p.AgentID), strconv.FormatInt(p.AmountMinor, 10), csvCell(p.Currency), csvCell(p.Rule), version,
-				strconv.FormatBool(p.OwnerApproved), csvCell(p.ApprovalKey), csvCell(p.ProofID), p.State})
+				strconv.FormatBool(p.OwnerApproved), csvCell(p.ApprovalKey), csvCell(p.ProofID), p.State, p.Mode})
 		}
 		cw.Flush()
 	})
@@ -233,6 +231,7 @@ func newPartnerActivitySummaryHandler(store partnerActivityReader) http.Handler 
 		if mode == "" {
 			return
 		}
+		f.Mode = mode
 		days, err := store.PartnerActivitySummary(r.Context(), f)
 		if err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, "could not count the agent activity")

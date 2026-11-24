@@ -90,6 +90,7 @@ var identityOpenRoutes = map[string]string{
 	"PUT /v1/workspaces/{}/agents/{}/spend-permission":                "a rule on the agent's own wallet",
 	"POST /v1/workspaces/{}/agents/{}/spend-permission/prepare":       "a rule's preparation",
 	"POST /v1/workspaces/{}/agents/{}/card/draws-on":                  "a setting on a card already made",
+	"POST /v1/workspaces/{}/agents/{}/card/merchant-lock":             "a setting on a card already made",
 	"PUT /v1/workspaces/{}/agents/{}/approver":                        "a rule: who approves",
 	"DELETE /v1/workspaces/{}/agents/{}/approver":                     "a rule: who approves",
 	"POST /v1/workspaces/{}/agents/{}/approver/challenge":             "a rule's passkey challenge",
@@ -120,6 +121,7 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/workspaces/{}/agents/approvals/{}/challenge":            "a passkey challenge: the approval itself is asked",
 	"POST /v1/money/card-challenges":                                  "a card's challenge: the spend itself is asked",
 	"POST /v1/money/accounts/{}/withdraw/challenge":                   "a passkey challenge: the movement itself is asked",
+	"POST /v1/workspaces/{}/agents/{}/cash-outs/challenge":            "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/convert/challenge":                                "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/payments/challenge":                               "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/people/pay/challenge":                             "a passkey challenge: the movement itself is asked",
@@ -141,6 +143,8 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/money/devices":                                     "a device key",
 	"POST /v1/money/devices/challenge":                           "a device key's challenge",
 	"POST /v1/money/devices/{}/push-token":                       "notifications",
+	"POST /v1/money/devices/{}/live-activity-token":              "notifications",
+	"POST /v1/money/devices/{}/live-activities":                  "notifications",
 	"POST /v1/money/devices/{}/revoke":                           "a device key",
 
 	// Looking: a quote, a search, a question, a payee saved, a bank linked to read, a bill read.

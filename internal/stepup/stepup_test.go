@@ -59,3 +59,74 @@ func TestVerifyAcceptsACurrentCodeOnce(t *testing.T) {
 		t.Fatal("a 10-byte secret was taken; it needs 16")
 	}
 }
+
+// B28.461 — five wrong codes inside ten minutes and step-up waits fifteen, a good code included; after the wait a good
+// code works; a good code before the fifth clears the count; a missing or malformed code is never counted.
+func TestVerifyWaitsAfterFiveWrongCodes(t *testing.T) {
+	key := []byte("0123456789abcdef0123")
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	newV := func() *Verifier {
+		v, err := New(base32.StdEncoding.EncodeToString(key), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.now = func() time.Time { return at }
+		return v
+	}
+	wrong := func(v *Verifier) error { return v.Verify(ctx, "nicolai", "000000") }
+	if CodeAt(key, at) == "000000" {
+		t.Fatal("the test's wrong code is the good one")
+	}
+	var locked *ErrLocked
+
+	v := newV()
+	for i := 1; i < MaxWrong; i++ {
+		if err := wrong(v); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("wrong code %d = %v; want ErrInvalid", i, err)
+		}
+	}
+	for _, empty := range []string{"", "  ", "12345", "abcdef"} { // not guesses: still four counted
+		if err := v.Verify(ctx, "ada", empty); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("code %q = %v; want ErrInvalid", empty, err)
+		}
+	}
+	if err := wrong(v); !errors.As(err, &locked) || !locked.Started || locked.RetryAfter != LockFor {
+		t.Fatalf("the fifth wrong code = %v; want the wait to start, %s", err, LockFor)
+	}
+	if err := v.Verify(ctx, "ada", "111111"); !errors.As(err, &locked) || locked.Started { // another operator: one count
+		t.Fatalf("the sixth wrong code, under another name = %v; want ErrLocked, not started again", err)
+	}
+	at = at.Add(time.Minute)
+	if err := v.Verify(ctx, "nicolai", CodeAt(key, at)); !errors.As(err, &locked) || locked.RetryAfter != LockFor-time.Minute {
+		t.Fatalf("a good code during the wait = %v; want ErrLocked for %s", err, LockFor-time.Minute)
+	}
+	at = at.Add(LockFor)
+	if err := v.Verify(ctx, "nicolai", CodeAt(key, at)); err != nil {
+		t.Fatalf("a good code after the wait: %v", err)
+	}
+
+	// A good code before the fifth wrong one clears the count: four wrong, good, four wrong is no wait.
+	v = newV()
+	for i := 1; i < MaxWrong; i++ {
+		_ = wrong(v)
+	}
+	if err := v.Verify(ctx, "nicolai", CodeAt(key, at)); err != nil {
+		t.Fatalf("a good code after four wrong: %v", err)
+	}
+	for i := 1; i < MaxWrong; i++ {
+		if err := wrong(v); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("wrong code %d after a good one = %v; want ErrInvalid: the count was not cleared", i, err)
+		}
+	}
+
+	// Wrong codes more than ten minutes apart do not add up.
+	v = newV()
+	for i := 1; i < MaxWrong; i++ {
+		_ = wrong(v)
+	}
+	at = at.Add(GuessWindow)
+	if err := wrong(v); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a fifth wrong code ten minutes after the first = %v; want ErrInvalid", err)
+	}
+}

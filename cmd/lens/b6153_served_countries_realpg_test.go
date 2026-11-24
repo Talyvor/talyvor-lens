@@ -22,7 +22,7 @@ import (
 func TestB6153_SignUpRefusesACountryTalyvorDoesNotServe(t *testing.T) {
 	mgr, pool := provisionManager(t)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint)
+	mountProvisionRoute(r, provisionSecret, mgr, nil, newKeyFixture(t).mint, nil)
 	stamp := time.Now().Format("150405.000000")
 
 	for _, country := range []string{"RU", "by", "KZ"} {
