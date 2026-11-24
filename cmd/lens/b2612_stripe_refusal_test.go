@@ -58,6 +58,9 @@ func (b2612Bank) GetAgentCard(context.Context, string, string) (economy.AgentCar
 func (b2612Bank) SaveAgentCard(_ context.Context, _ string, c economy.AgentCard) (economy.AgentCard, error) {
 	return c, nil
 }
+func (b2612Bank) LockdownStatus(context.Context, string) (economy.WorkspaceLockdown, error) {
+	return economy.WorkspaceLockdown{}, nil
+}
 func (b2612Bank) ListAgentCardAuthorizations(context.Context, string, string, int) ([]economy.CardAuthorizationRecord, error) {
 	return nil, nil
 }

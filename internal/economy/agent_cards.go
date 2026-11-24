@@ -92,7 +92,8 @@ type AgentCard struct {
 	CreatedAt          time.Time  `json:"created_at"`
 }
 
-// SaveAgentCard records the card Stripe issued to agentID.
+// SaveAgentCard records the card Stripe issued to agentID. A workspace in lockdown gets no new card (B50.58):
+// ErrLockedDown, and nothing is recorded.
 func (s *DualTokenStore) SaveAgentCard(ctx context.Context, workspaceID string, c AgentCard) (AgentCard, error) {
 	if c.Livemode {
 		return c, errors.New("economy: an agent card must be a test-mode card")
@@ -103,6 +104,9 @@ func (s *DualTokenStore) SaveAgentCard(ctx context.Context, workspaceID string, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockAgent(ctx, tx, workspaceID, c.AgentID); err != nil {
+		return c, err
+	}
+	if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil {
 		return c, err
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO agent_cards (id, workspace_id, agent_id, stripe_cardholder_id, last4, exp_month, exp_year, currency)
