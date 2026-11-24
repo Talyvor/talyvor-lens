@@ -93,6 +93,8 @@ contract MockToken is ERC20 {
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) { _decimals = decimals_; }
     function decimals() public view override returns (uint8) { return _decimals; }
     function mint(address to, uint256 amount) external { _mint(to, amount); }
+    // USDC's EIP-712 domain version (FiatTokenV2), which x402 payment requirements read (B48.10).
+    function version() external pure returns (string memory) { return "2"; }
 }
 EOF
 cat >"$work/tok/foundry.toml" <<EOF
