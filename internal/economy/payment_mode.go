@@ -26,6 +26,8 @@ func paymentCapabilities(rail string, payee Payee, otherOwner bool) []string {
 		keys = append(keys, CapabilityCurrencyAccounts)
 	case "marketplace_bill":
 		keys = append(keys, CapabilityBuyListings)
+	case "stablecoin":
+		keys = append(keys, CapabilityStablecoins)
 	default: // the agent's LXC
 		switch {
 		case payee.Kind == "agent" && !otherOwner:
