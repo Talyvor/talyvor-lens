@@ -90,6 +90,7 @@ var identityOpenRoutes = map[string]string{
 	"PUT /v1/workspaces/{}/agents/{}/spend-permission":                "a rule on the agent's own wallet",
 	"POST /v1/workspaces/{}/agents/{}/spend-permission/prepare":       "a rule's preparation",
 	"POST /v1/workspaces/{}/agents/{}/card/draws-on":                  "a setting on a card already made",
+	"POST /v1/workspaces/{}/agents/{}/card/merchant-lock":             "a setting on a card already made",
 	"PUT /v1/workspaces/{}/agents/{}/approver":                        "a rule: who approves",
 	"DELETE /v1/workspaces/{}/agents/{}/approver":                     "a rule: who approves",
 	"POST /v1/workspaces/{}/agents/{}/approver/challenge":             "a rule's passkey challenge",
