@@ -21,6 +21,8 @@ import (
 //	GET  /v1/wallets/{address}                              who a wallet ID or @handle is, before sending to it
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/send        {to, amount_ulxc, memo} — to any agent on Talyvor
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/requests    {from, amount_ulxc, memo} — ask an agent for credits
+//
+// Sending, asking and accepting take an Idempotency-Key: the same key sent again answers what it first did (B28.72).
 //	GET  /v1/workspaces/{wsID}/money-requests               the requests its agents made and were made
 //	POST /v1/workspaces/{wsID}/money-requests/{id}/accept   pay a request made of one of its agents; on a Connect
 //	                                                        token, one made of the token's agent only (B52.41)
@@ -124,7 +126,11 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"from": "<wallet id or @handle>", "amount_ulxc": <positive µLXC>, "memo": "<optional>"}`)
 			return
 		}
-		m, err := bank.RequestCredits(req.Context(), chi.URLParam(req, "wsID"), agentID, in.From, in.AmountULXC, in.Memo)
+		ctx, ok := keyedMove(w, req)
+		if !ok {
+			return
+		}
+		m, err := bank.RequestCredits(ctx, chi.URLParam(req, "wsID"), agentID, in.From, in.AmountULXC, in.Memo)
 		if err != nil {
 			writeTransferErr(w, err)
 			return
@@ -142,7 +148,11 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 	for _, answer := range []string{"accept", "decline"} {
 		accept := answer == "accept"
 		byOwner := ownerOnly(func(w http.ResponseWriter, req *http.Request) {
-			m, err := bank.AnswerMoneyRequest(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "requestID"), accept)
+			ctx, ok := keyedMove(w, req)
+			if !ok {
+				return
+			}
+			m, err := bank.AnswerMoneyRequest(ctx, chi.URLParam(req, "wsID"), chi.URLParam(req, "requestID"), accept)
 			if err != nil {
 				writeTransferErr(w, err)
 				return
@@ -200,6 +210,17 @@ func mountAgentTransferRoutes(r chi.Router, bank agentTransferBank) {
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"transfers": list})
 	})
+}
+
+// keyedMove carries the request's Idempotency-Key into the store (B28.72): the same key sent again moves the money,
+// and writes its row, once. A key over 128 characters is answered 400 and false.
+func keyedMove(w http.ResponseWriter, req *http.Request) (context.Context, bool) {
+	key := req.Header.Get("Idempotency-Key")
+	if len(key) > 128 {
+		writeJSONErr(w, http.StatusBadRequest, "the Idempotency-Key must be at most 128 characters")
+		return nil, false
+	}
+	return economy.WithMoveKey(req.Context(), key), true
 }
 
 func writeTransferErr(w http.ResponseWriter, err error) {

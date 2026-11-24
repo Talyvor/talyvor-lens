@@ -1089,6 +1089,18 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"approvals": list})
 	})
+	// B62.9: one approval, with why a payment it approved was stopped; another workspace's is 404.
+	r.Get("/v1/workspaces/{wsID}/agents/approvals/{approvalID}", func(w http.ResponseWriter, req *http.Request) {
+		a, err := bank.GetAgentApproval(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"))
+		switch {
+		case errors.Is(err, economy.ErrApprovalNotFound):
+			writeJSONErr(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeJSONOK(w, http.StatusOK, a)
+		}
+	})
 	decide := func(approve bool) http.HandlerFunc {
 		return ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 			wsID, approvalID := chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID")
@@ -1127,8 +1139,13 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				writeJSONErr(w, http.StatusForbidden, err.Error())
 			case errors.Is(err, economy.ErrApprovalNotFound):
 				writeJSONErr(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, economy.ErrSameApprover), errors.Is(err, economy.ErrSecondApproverNeeded), errors.Is(err, economy.ErrApproverUnknown):
+				writeSecondApproval(w, err)
 			case err != nil:
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			case in.AlwaysAllow != nil && a.WaitingForSecondApprover:
+				// Over the second-approver line the rule waits too: it is made with the approval that approves the payment.
+				writeJSONOK(w, http.StatusOK, a)
 			case in.AlwaysAllow != nil:
 				// After the decision, so a refused signature saves no rule; the approval stands either way.
 				rules, err := bank.AllowPayee(rulesChange(req, "always allow"), wsID, approvalID, *in.AlwaysAllow)
@@ -1443,16 +1460,22 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			first = *in.FirstRunAt
 		}
 		wsID, agentID := chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID")
+		ctx, ok := keyedMove(w, req) // B28.72: a schedule to an agent or a payee is made once per Idempotency-Key
+		if !ok {
+			return
+		}
 		var sc economy.AgentSchedule
 		switch {
 		case in.ToPayeeID != "":
-			sc, err = bank.CreateStandingOrder(req.Context(), wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
+			sc, err = bank.CreateStandingOrder(ctx, wsID, agentID, in.ToPayeeID, in.AmountMinor, in.Currency, in.Memo, in.Every, first, in.EndAt)
 		case in.ToListingID != "":
 			sc, err = bank.CreateAgentListingSchedule(req.Context(), wsID, agentID, in.ToListingID, in.AmountULXC, in.Memo, in.Every, first)
 		default:
-			sc, err = bank.CreateAgentSchedule(req.Context(), wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
+			sc, err = bank.CreateAgentSchedule(ctx, wsID, agentID, in.ToAgentID, in.AmountULXC, in.Memo, in.Every, first)
 		}
 		switch {
+		case errors.Is(err, economy.ErrIdempotencyKeyReused):
+			writeJSONErr(w, http.StatusConflict, err.Error())
 		case errors.Is(err, economy.ErrAgentNotFound), errors.Is(err, economy.ErrPayeeNotFound):
 			writeJSONErr(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrSameAgent), errors.Is(err, economy.ErrListingPayee):
@@ -1750,6 +1773,8 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, economy.ErrApprovalsChanged), errors.Is(err, economy.ErrApprovalNotFound):
 			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrSameApprover), errors.Is(err, economy.ErrSecondApproverNeeded), errors.Is(err, economy.ErrApproverUnknown):
+			writeSecondApproval(w, err)
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
@@ -1928,7 +1953,27 @@ func declineReason(w http.ResponseWriter, req *http.Request, reason string, appr
 		writeJSONErr(w, http.StatusBadRequest, `reason goes with deny, up to 200 characters`)
 		return nil, false
 	}
-	return economy.WithDenyReason(req.Context(), reason), true
+	// B28.315: and who decides, so a payment over the second-approver line counts two different people's approvals.
+	// Only a person signed in on their own session counts.
+	ctx := economy.WithDenyReason(req.Context(), reason)
+	if actx := auth.GetAuthContext(ctx); actx != nil && actx.AuthMethod == auth.MethodJWT && !actx.IsAdmin {
+		ctx = economy.WithApprover(ctx, actx.UserID)
+	}
+	return ctx, true
+}
+
+// writeSecondApproval answers a refused approval of a payment over the second-approver line (B28.315), with a code the
+// approval sheet keys its words on: same_approver ("Approved by you. Waiting for a second approver."),
+// second_approver_needed and approver_unknown.
+func writeSecondApproval(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, economy.ErrSameApprover):
+		writeJSONOK(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "same_approver"})
+	case errors.Is(err, economy.ErrSecondApproverNeeded):
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "second_approver_needed"})
+	default:
+		writeJSONOK(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "approver_unknown"})
+	}
 }
 
 func writePaused(w http.ResponseWriter, agentID string, paused bool, err error) {

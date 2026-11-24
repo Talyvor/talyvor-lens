@@ -120,6 +120,7 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/workspaces/{}/agents/approvals/{}/challenge":            "a passkey challenge: the approval itself is asked",
 	"POST /v1/money/card-challenges":                                  "a card's challenge: the spend itself is asked",
 	"POST /v1/money/accounts/{}/withdraw/challenge":                   "a passkey challenge: the movement itself is asked",
+	"POST /v1/workspaces/{}/agents/{}/cash-outs/challenge":            "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/convert/challenge":                                "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/payments/challenge":                               "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/people/pay/challenge":                             "a passkey challenge: the movement itself is asked",

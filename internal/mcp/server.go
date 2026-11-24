@@ -90,6 +90,7 @@ type Server struct {
 	recurring       RecurringPlanner  // B45.13: prepare_recurring_payments; nil leaves it out
 	areas           AreaReader        // B59.4: the workspace's areas, whose tools it is offered; nil offers none
 	instant         InstantTransferer // B59.18: instant_transfer_quote, instant_transfer_send, to a hybrid workspace; nil leaves them out
+	cryptoRequests  CryptoRequester   // B48.16: wallet_request in USDC; nil refuses it
 
 	sseMu sync.Mutex
 	sse   map[string]*sseSession // the open 2024-11-05 HTTP+SSE streams, by session id

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,11 @@ const (
 	// key "should only be used for minting".
 	ScopeMint = "mint"
 	ScopeKeys = "keys"
+
+	// ScopeMember marks a token for another person's workspace (B52.35): its UserID is the membership's id, and
+	// Authenticate refuses it on any request but GET or HEAD, and once the membership has ended. It is not in
+	// tenant.ValidScopes: only POST /v1/provision mints one.
+	ScopeMember = "member"
 
 	// ScopeOperatorRead authorises ONE thing: GET on the cross-tenant admin READS the operator
 	// screen is built from. It is the read-side sibling of ScopeMint and exists for the same
@@ -153,6 +159,9 @@ var ErrMissingCredentials = errors.New("auth: missing credentials")
 // hiccup — so the middleware answers 503 with Retry-After instead of 401, and the browser Chat
 // retries rather than telling a signed-in person they are signed out. It reveals nothing about
 // the key: an unknown, expired or revoked key is still ErrInvalidAuth.
+// ErrMemberReadOnly is a member's token (ScopeMember) on a request that is not a read. Answered 403.
+var ErrMemberReadOnly = errors.New("auth: a member's token only reads the workspace")
+
 var ErrAuthUnavailable = errors.New("auth: credential store unavailable")
 
 // AuthUnavailableRetryAfter is the Retry-After, in seconds, sent with an ErrAuthUnavailable 503.
@@ -326,6 +335,8 @@ type Manager struct {
 	moderatorKeys   moderatorKeyValidator
 	partnerKeys     partnerKeyValidator
 	sessionCutoff   sessionCutoff
+	deletions       accountDeletions
+	liveMember      func(ctx context.Context, workspaceID, memberID string) (bool, error)
 
 	mu       sync.RWMutex
 	jwtCache map[string]*jwtCacheEntry
@@ -349,6 +360,13 @@ func (m *Manager) WithConnectMintKey(k string) *Manager { m.connectMintKey = k; 
 // Optional: unset ⇒ the credential does not exist, every admin read stays reachable only by the
 // global key, and a deployment that never sets it is byte-for-byte unchanged by this feature.
 func (m *Manager) WithOperatorReadKey(k string) *Manager { m.operatorReadKey = k; return m }
+
+// WithMemberCheck attaches the live-membership lookup member tokens are checked against on every request (B52.35).
+// Unset ⇒ every member token is refused.
+func (m *Manager) WithMemberCheck(live func(ctx context.Context, workspaceID, memberID string) (bool, error)) *Manager {
+	m.liveMember = live
+	return m
+}
 
 // sessionKeyValidator is the narrow slice of *sessionkey.Store this package needs. An interface
 // rather than the concrete type so auth does not force every consumer of Manager to construct a
@@ -386,6 +404,15 @@ type sessionCutoff interface {
 
 // WithSessionCutoff attaches the lockdown's session cutoff. Unset ⇒ a JWT is valid until it expires, as before.
 func (m *Manager) WithSessionCutoff(c sessionCutoff) *Manager { m.sessionCutoff = c; return m }
+
+// accountDeletions is the slice of *workspace.Manager that says when a workspace's account was deleted (B52.37).
+type accountDeletions interface {
+	AccountDeletedAt(ctx context.Context, workspaceID string) (time.Time, bool, error)
+}
+
+// WithAccountDeletions refuses a session token issued to a workspace before its account was deleted (B52.37):
+// a token has no row of its own to delete. Unset ⇒ no such check.
+func (m *Manager) WithAccountDeletions(v accountDeletions) *Manager { m.deletions = v; return m }
 
 func NewManager(globalKey string, privateKey *ecdsa.PrivateKey, keyStore *KeyStore, tenantStore *tenant.Store) *Manager {
 	var pub *ecdsa.PublicKey
@@ -451,6 +478,18 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		if err != nil {
 			return nil, ErrInvalidAuth
 		}
+		// B52.37 — a deleted account's workspace id is never anyone's again (a re-signup gets the next generation), so
+		// every token naming it is refused, whenever it was issued: before the deletion, or by a sign-in racing it.
+		// Checked before the audience, so a Connect token is refused too.
+		if m.deletions != nil && claims.WorkspaceID != "" {
+			_, deleted, err := m.deletions.AccountDeletedAt(r.Context(), claims.WorkspaceID)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+			}
+			if deleted {
+				return nil, ErrInvalidAuth
+			}
+		}
 		if len(claims.Audience) > 0 {
 			if len(claims.Audience) == 1 && claims.Audience[0] == ConnectAudience {
 				return connectContext(r, claims)
@@ -478,6 +517,22 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 			}
 			if ended {
+				return nil, ErrInvalidAuth
+			}
+		}
+		if slices.Contains(claims.Scopes, ScopeMember) {
+			// Checked on every request, never cached: removing the member ends the token at once.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				return nil, ErrMemberReadOnly
+			}
+			if m.liveMember == nil {
+				return nil, ErrInvalidAuth
+			}
+			live, err := m.liveMember(r.Context(), claims.WorkspaceID, claims.UserID)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
+			}
+			if !live {
 				return nil, ErrInvalidAuth
 			}
 		}

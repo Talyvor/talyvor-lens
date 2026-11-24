@@ -40,8 +40,8 @@ var toolAnnotations = map[string]toolAnnotation{
 	"agent_pay":              {"Pay an agent", moves},
 	"agent_receipt":          {"Receipt", reads},
 
-	"wallet_send":            {"Send credits", moves},
-	"wallet_request":         {"Request credits", moves},
+	"wallet_send":            {"Send credits or USDC", moves},
+	"wallet_request":         {"Request credits or USDC", moves},
 	"wallet_requests":        {"Credit requests", reads},
 	"wallet_answer_request":  {"Answer a credit request", moves},
 	"wallet_refund":          {"Refund a transfer", moves},
@@ -71,6 +71,10 @@ var toolAnnotations = map[string]toolAnnotation{
 	"wallet_invoices":        {"Invoices", reads},
 	"wallet_invoice_pay":     {"Pay an invoice", moves},
 	"wallet_credential":      {"Know Your Agent credential", reads},
+	"wallet_list":            {"Your wallets", reads},
+	"wallet_balance":         {"Your wallets' balances", reads},
+	"wallet_receive_details": {"Where your wallets are paid into", reads},
+	"wallet_history":         {"Your wallets' history", reads},
 
 	"market_search":   {"Search the marketplace", reads},
 	"market_ask":      {"Ask the marketplace", reads},

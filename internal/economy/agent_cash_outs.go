@@ -2,13 +2,17 @@ package economy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/talyvor/lens/internal/passkey"
 )
 
 // agent_cash_outs.go — B22.9: CASH-OUT TO MONEY, BEHIND A LICENSED PARTNER.
@@ -24,6 +28,10 @@ import (
 // which pays nothing. The real one waits for a licensed partner. Cash-out is class RED: until the operator
 // records a clearance it takes test-funded credits only, and a request of live money is refused naming the
 // class. The owner must be verified (B19.11). Marketplace seller payouts (B20.5) are not this.
+//
+// B28.339: once the workspace has a passkey or device key, a cash-out is held only with a signature by one of them over
+// CashOutChallenge's challenge, which names the agent, the amount and the destination; a session alone cashes nothing
+// out, and nothing is posted. The challenge is spent in the transaction that holds the credits, as for a payment.
 
 // CapabilityCashOut is the wallet capability cash-out moves money as.
 const CapabilityCashOut = "cash_out"
@@ -36,6 +44,9 @@ var ErrNoCashOutPartner = errors.New("economy: cash-out needs a partner, and non
 
 // ErrCashOut: a request that is not one.
 var ErrCashOut = errors.New("economy: cash-out")
+
+// ErrCashOutUnsigned: the workspace signs its cash-outs and this one carried no signature.
+var ErrCashOutUnsigned = errors.New("economy: this workspace signs its cash-outs with a passkey or the phone app. Sign this cash-out's challenge (POST /v1/workspaces/{wsID}/agents/{agentID}/cash-outs/challenge)")
 
 // CashOut is one request to turn an agent's credits into money.
 type CashOut struct {
@@ -103,19 +114,56 @@ func scanCashOut(row pgx.Row) (CashOut, error) {
 	return c, err
 }
 
-// RequestCashOut holds amount µLXC of workspaceID's agent to be paid out as money to destination, and hands it
-// to the partner.
-func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentID string, amount int64, destination, requestedBy string) (CashOut, error) {
+// checkCashOut trims destination and refuses a request that is not one.
+func (s *DualTokenStore) checkCashOut(amount int64, destination string) (string, error) {
 	destination = strings.TrimSpace(destination)
 	switch {
 	case amount <= 0:
-		return CashOut{}, fmt.Errorf("%w: the amount must be positive", ErrCashOut)
+		return "", fmt.Errorf("%w: the amount must be positive", ErrCashOut)
 	case destination == "" || len(destination) > 64:
-		return CashOut{}, fmt.Errorf("%w: a destination is a label of up to 64 characters for the account; the partner holds its details", ErrCashOut)
+		return "", fmt.Errorf("%w: a destination is a label of up to 64 characters for the account; the partner holds its details", ErrCashOut)
 	case s.cashOutPartner == nil:
-		return CashOut{}, ErrNoCashOutPartner
+		return "", ErrNoCashOutPartner
 	}
-	c := CashOut{ID: "cash_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: agentID, AmountULXC: amount,
+	return destination, nil
+}
+
+// cashOutPurpose binds a challenge to one cash-out exactly as asked, so a signature for it cashes out no other.
+func cashOutPurpose(agentID string, amount int64, destination string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{agentID, strconv.FormatInt(amount, 10), destination}, "\x00")))
+	return "cash_out:" + hex.EncodeToString(h[:])
+}
+
+// CashOutChallenge issues the challenge cashing amount µLXC of agentID out to destination is signed over, and the
+// workspace's passkeys that may sign it; its device keys sign it too.
+func (s *DualTokenStore) CashOutChallenge(ctx context.Context, workspaceID, agentID string, amount int64, destination string) (challenge string, credentialIDs []string, err error) {
+	destination, err = s.checkCashOut(amount, destination)
+	if err != nil {
+		return "", nil, err
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	c, err := s.newChallenge(ctx, workspaceID, cashOutPurpose(agentID, amount, destination))
+	return c, credentialIDs, err
+}
+
+// RequestCashOut holds amount µLXC of workspaceID's agent to be paid out as money to destination, and hands it
+// to the partner; a is the signature over CashOutChallenge's challenge for it, which a workspace with a passkey or
+// device key needs.
+func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentID string, amount int64, destination, requestedBy string, a *passkey.Assertion) (CashOut, error) {
+	destination, err := s.checkCashOut(amount, destination)
+	if err != nil {
+		return CashOut{}, err
+	}
+	// B28.72: with an Idempotency-Key the cash-out's id is the key's, so a retry finds the cash-out it first asked for.
+	id, keyed := keyedID(ctx, "cash_", "agent_cash_out", workspaceID, agentID)
+	c := CashOut{ID: id, WorkspaceID: workspaceID, AgentID: agentID, AmountULXC: amount,
 		AmountUUSD: amount / ULXCPerUSDMicro, Destination: destination, Partner: s.cashOutPartner.Name(), Status: "held"}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -125,7 +173,26 @@ func (s *DualTokenStore) RequestCashOut(ctx context.Context, workspaceID, agentI
 	if err := lockAgent(ctx, tx, workspaceID, agentID); err != nil {
 		return CashOut{}, err
 	}
+	// B28.72: under the agent's lock, a cash-out already asked for under this id is a retry: the same one answers as
+	// asked and moves nothing, another is refused.
+	if keyed {
+		var amountWas int64
+		var destinationWas string
+		err := tx.QueryRow(ctx, `SELECT amount_ulxc, destination FROM agent_cash_outs WHERE id = $1`, c.ID).Scan(&amountWas, &destinationWas)
+		switch {
+		case err == nil && (amountWas != amount || destinationWas != destination):
+			return CashOut{}, ErrIdempotencyKeyReused
+		case err == nil:
+			_ = tx.Rollback(ctx)
+			return s.getCashOut(ctx, workspaceID, c.ID)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return CashOut{}, fmt.Errorf("economy: earlier cash-out: %w", err)
+		}
+	}
 	if err := refuseIfPaused(ctx, tx, agentID); err != nil {
+		return CashOut{}, err
+	}
+	if err := s.authorizeSignedTx(ctx, tx, workspaceID, cashOutPurpose(agentID, amount, destination), a, ErrCashOutUnsigned); err != nil {
 		return CashOut{}, err
 	}
 	verified := false

@@ -26,13 +26,22 @@ Cash-out is class **RED** (`cash_out`, see [wallet capabilities](wallet-capabili
 records a clearance it takes test-funded credits only, and a request of live money is refused naming the class.
 The owner must be verified, and a paused agent cannot be cashed out.
 
+## Signed
+
+B28.339. Once the workspace has a passkey or the phone's key, a cash-out is held only with a signature by one of
+them over the challenge for exactly that cash-out: the agent, the amount and the destination. Without one the
+request is refused (403) and nothing is posted. Each challenge is signed once.
+
 Marketplace seller payouts through Stripe Connect (B20.5) are a different
 thing and are unchanged.
 
 ## API
 
 ```
-POST /v1/workspaces/{ws}/agents/{agent}/cash-outs   {"amount_ulxc": 40000000, "destination": "Business account ••1234"}
+POST /v1/workspaces/{ws}/agents/{agent}/cash-outs/challenge  {"amount_ulxc": 40000000, "destination": "Business account ••1234"}
+                                                    → {"challenge", "allow_credentials", "user_verification"}
+POST /v1/workspaces/{ws}/agents/{agent}/cash-outs   {"amount_ulxc": 40000000, "destination": "Business account ••1234",
+                                                     "assertion": {…the passkey's or the phone's signature…}}
 GET  /v1/workspaces/{ws}/cash-outs                  every cash-out: held, submitted, paid or failed
 ```
 
