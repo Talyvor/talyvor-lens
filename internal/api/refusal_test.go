@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/talyvor/lens/internal/screening"
 )
 
 // refusal_test.go — B55.51: no refusal a person reads starts with a package name or carries a dash.
@@ -30,6 +32,16 @@ func TestRefusalDropsThePackageName(t *testing.T) {
 	} {
 		if got := Refusal(in); got != want {
 			t.Errorf("Refusal(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestAHeldRefusalStillSaysHeld: B17.210, the words a person reads for a payment held on a compliance case
+// still say it is held once Refusal drops "screening: held: ".
+func TestAHeldRefusalStillSaysHeld(t *testing.T) {
+	for _, err := range []error{screening.ErrHeld, screening.ErrListsStale} {
+		if got := Refusal(err.Error()); !strings.Contains(got, "held") {
+			t.Errorf("Refusal(%q) = %q, which no longer says the payment is held", err, got)
 		}
 	}
 }

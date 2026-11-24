@@ -207,10 +207,11 @@ func safeExtractTar(data []byte, dest string, maxBytes int64) error {
 		if count > 10000 {
 			return errors.New("too many entries")
 		}
-		name := filepath.Clean(hdr.Name)
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		// filepath.IsLocal refuses an empty, absolute or `..`-escaping name (and a reserved one on Windows).
+		if !filepath.IsLocal(hdr.Name) {
 			return fmt.Errorf("unsafe path %q", hdr.Name)
 		}
+		name := filepath.Clean(hdr.Name)
 		target := filepath.Join(cleanDest, name)
 		if target != cleanDest && !strings.HasPrefix(target, cleanDest+string(filepath.Separator)) {
 			return fmt.Errorf("path escapes destination: %q", hdr.Name)

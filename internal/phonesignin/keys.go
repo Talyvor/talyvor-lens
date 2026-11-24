@@ -109,11 +109,17 @@ type KeyProof struct {
 	Passcode string
 }
 
-func (s *Store) passcodeSet(ctx context.Context, tx pgx.Tx, personID string) (bool, error) {
-	if s.Passcodes == nil {
-		return false, nil
+// passcodes is the passcode rule the key rules ask: Store.Passcodes, or the door's own when none is wired (B50.52),
+// so a person with a passcode is never read as having none.
+func (s *Store) passcodes() PasscodeRule {
+	if s.Passcodes != nil {
+		return s.Passcodes
 	}
-	return s.Passcodes.HasPasscode(ctx, tx, personID)
+	return s.PasscodeRule()
+}
+
+func (s *Store) passcodeSet(ctx context.Context, tx pgx.Tx, personID string) (bool, error) {
+	return s.passcodes().HasPasscode(ctx, tx, personID)
 }
 
 func (s *Store) newKeyChallenge(ctx context.Context, q execer, purpose, personID, origin, challenge string) (KeyChallenge, error) {
@@ -166,7 +172,7 @@ func (s *Store) SignInChallenge(ctx context.Context, origin, personID string) (K
 		}
 	}
 	if personID != "" {
-		if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1`, personID)); err != nil {
+		if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1 AND deleted_at IS NULL`, personID)); err != nil {
 			return KeyChallenge{}, err
 		}
 	}
@@ -176,7 +182,7 @@ func (s *Store) SignInChallenge(ctx context.Context, origin, personID string) (K
 // RegisterChallenge is the challenge a new key for personID is made over. challenge, when not empty, is one Lens has
 // just issued for the person's account's approval key, so the one ceremony at sign-up's key step makes both.
 func (s *Store) RegisterChallenge(ctx context.Context, personID, challenge string) (KeyChallenge, error) {
-	if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1`, personID)); err != nil {
+	if err := s.personExists(ctx, s.DB.QueryRow(ctx, `SELECT 1 FROM people WHERE id = $1 AND deleted_at IS NULL`, personID)); err != nil {
 		return KeyChallenge{}, err
 	}
 	c, err := s.newKeyChallenge(ctx, s.DB, "register", personID, "", challenge)
@@ -464,7 +470,7 @@ func (s *Store) useProof(ctx context.Context, tx pgx.Tx, personID, phone, addres
 			return s.refuseEvent(ctx, tx, phone, address, "key_refused", what+" with a ticket that is not the person's, used, old or its key's removed", err)
 		}
 	case proof.Passcode != "" && hasPasscode:
-		if err := s.Passcodes.CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
+		if err := s.passcodes().CheckPasscode(ctx, tx, personID, proof.Passcode, address); err != nil {
 			if aerr := audit(ctx, tx, phone, address, "key_refused", what+" with a passcode that was not right"); aerr != nil {
 				return aerr
 			}
@@ -494,7 +500,7 @@ func scanPersonKey(row pgx.Row) (PersonKey, error) {
 // PersonIdentity is the identity personID holds, the one POST /v1/provision is given for them.
 func (s *Store) PersonIdentity(ctx context.Context, personID string) (string, error) {
 	var identity string
-	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1`, personID).Scan(&identity)
+	err := s.DB.QueryRow(ctx, `SELECT identity FROM people WHERE id = $1 AND deleted_at IS NULL`, personID).Scan(&identity)
 	identity = workspace.IdentityFromStored(identity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNoPerson

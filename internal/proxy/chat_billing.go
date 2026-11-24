@@ -117,6 +117,8 @@ func (p *Proxy) chargeChat(ctx context.Context, workspaceID string, costUSD floa
 		tallyCharge(ctx, 0)
 		return 0, true
 	}
+	ctx, cancel := detachBounded(ctx) // B28.242: a client that hangs up after the answer is still charged
+	defer cancel()
 	inPeriod, charged := p.subscriberCharge(ctx, workspaceID, costULXC)
 	if !inPeriod {
 		if p.lxcSink == nil {
@@ -165,6 +167,8 @@ func (p *Proxy) chargeChatPooled(ctx context.Context, price pooledPrice) (float6
 	if amount <= 0 || workspaceID == "" {
 		return 0, true
 	}
+	ctx, cancel := detachBounded(ctx) // B28.242: see chargeChat
+	defer cancel()
 	var covered int64
 	if p.allowance != nil {
 		c, inPeriod, err := p.allowance.Draw(ctx, workspaceID, amount, time.Now())

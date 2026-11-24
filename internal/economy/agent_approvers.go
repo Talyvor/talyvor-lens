@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -267,6 +268,9 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	if err != nil {
 		return a, fmt.Errorf("economy: approval: %w", err)
 	}
+	if a.PaymentRequestID != "" { // B48.10: its amount is not in LXC, so no approver's limit measures it
+		return a, fmt.Errorf("%w: another agent's request to be paid", ErrAboveApproverLimits)
+	}
 	var mandateID, mandate string
 	var limit int64
 	err = tx.QueryRow(ctx, `SELECT id, mandate, limit_ulxc FROM agent_approvers WHERE agent_id = $1 AND approver_agent_id = $2
@@ -282,6 +286,9 @@ func (s *DualTokenStore) ApproveAsAgent(ctx context.Context, workspaceID, approv
 	}
 	if a.AmountULXC > limit {
 		return a, fmt.Errorf("%w: %s is above the %s it may approve", ErrAboveApproverLimits, LXCMoney(a.AmountULXC), LXCMoney(limit))
+	}
+	if over, _, err := s.overSecondLine(ctx, tx, workspaceID, a); err != nil || over { // B28.315: two people approve it
+		return a, cmp.Or(err, fmt.Errorf("%w: it is over the second approver line", ErrAboveApproverLimits))
 	}
 	if rules.DailyLimitMinor > 0 { // B61.42: what it approved today in its rules' currency, valued in it rounded up
 		tz := rules.Timezone
@@ -371,6 +378,11 @@ func (s *DualTokenStore) DecideAgentApprovalSigned(ctx context.Context, workspac
 // decideInTx decides pending approvalID inside tx; an approval signed by the owner's assertion a keeps the owner's AP2
 // v0.2 closed Payment Mandate. ErrApprovalNotFound when it is not pending.
 func (s *DualTokenStore) decideInTx(ctx context.Context, tx pgx.Tx, workspaceID, approvalID string, approve bool, a *passkey.Assertion) (AgentApproval, error) {
+	if approve { // B28.315: over the second-approver line, the first of two approvals leaves it pending
+		if waiting, ap, err := s.secondApproval(ctx, tx, workspaceID, approvalID); waiting || err != nil {
+			return ap, err
+		}
+	}
 	if !approve || a == nil || s.mandateSigner == nil { // no signer: only a store built without one, as older tests build it
 		ap, err := scanAgentApproval(tx.QueryRow(ctx, `UPDATE agent_approvals SET status = $3, decided_at = now(), expires_at = now() + $4 * interval '1 microsecond',
 			deny_reason = CASE WHEN $3 = 'denied' THEN $5 ELSE '' END

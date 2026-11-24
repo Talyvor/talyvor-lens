@@ -388,7 +388,7 @@ func (s *DualTokenStore) PayEarnings(ctx context.Context, workspaceID string, e 
 		}
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, Kind: "earnings_payout_hold",
 			IdempotencyKey: "earnings_payout:" + p.ID + ":hold", Funding: p.Funding, Memo: p.memo(), Postings: []MoneyPosting{
-				{AccountID: from.id, AmountMinor: -p.AmountMinor}, {AccountID: hold, AmountMinor: p.AmountMinor}}}, s.screener); err != nil {
+				{AccountID: from.id, AmountMinor: -p.AmountMinor}, {AccountID: hold, AmountMinor: p.AmountMinor}}}, noPartnerPostings); err != nil {
 			return nil, err
 		}
 		out[i] = p
@@ -604,6 +604,11 @@ func (s *DualTokenStore) setEarningsPayout(ctx context.Context, p EarningsPayout
 // applyEarningsResult moves p to where res says it stands, once: completed, its held money leaves to the partner;
 // failed, it goes back to the account it came from; returned after completing, it comes back there.
 func (s *DualTokenStore) applyEarningsResult(ctx context.Context, p EarningsPayout, res money.Result) (EarningsPayout, error) {
+	// B50.56: what res moves through the partner is screened before the transaction, on a connection of its own.
+	screened, err := s.screenEarningsResult(ctx, p.ID, res)
+	if err != nil {
+		return p, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
@@ -627,7 +632,7 @@ func (s *DualTokenStore) applyEarningsResult(ctx context.Context, p EarningsPayo
 		if outside {
 			e.Counterparty, e.PartnerRef = p.RecipientWorkspaceID, p.PartnerRef
 		}
-		_, err := postMoneyTx(ctx, tx, e, s.screener)
+		_, err := postMoneyTx(ctx, tx, e, screened)
 		return err
 	}
 	open := p.Status == PayoutHeld || p.Status == PaymentPending
@@ -670,6 +675,32 @@ func (s *DualTokenStore) applyEarningsResult(ctx context.Context, p EarningsPayo
 		return p, fmt.Errorf("economy: earnings payout: %w", err)
 	}
 	return p, tx.Commit(ctx)
+}
+
+// screenEarningsResult screens what applyEarningsResult would move through the partner for payout id, read without a
+// lock, when res completes or returns it (B50.56). A payout that moves on before its transaction reads it is refused
+// as not screened.
+func (s *DualTokenStore) screenEarningsResult(ctx context.Context, id string, res money.Result) (PaymentScreener, error) {
+	if res.Status != money.StatusCompleted && res.Status != money.StatusReturned {
+		return noPartnerPostings, nil
+	}
+	p, err := scanEarningsPayout(s.pool.QueryRow(ctx, `SELECT `+earningsPayoutCols+` FROM money_earnings_payouts WHERE id = $1`, id))
+	if err != nil {
+		return nil, fmt.Errorf("economy: earnings payout: %w", err)
+	}
+	entry := func(kind string, minor int64) firstScreening {
+		return firstScreening{MoneyEntry{WorkspaceID: p.WorkspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: "earnings_payout:" + p.ID + ":" + kind,
+			Funding: p.Funding, Counterparty: p.RecipientWorkspaceID}, []MoneyPosting{{AmountMinor: minor, Currency: p.Currency}}}
+	}
+	var entries []firstScreening
+	open := p.Status == PayoutHeld || p.Status == PaymentPending
+	if open {
+		entries = append(entries, entry("earnings_payout", p.AmountMinor))
+	}
+	if res.Status == money.StatusReturned && (open || p.Status == PaymentCompleted) {
+		entries = append(entries, entry("earnings_payout_returned", -p.AmountMinor))
+	}
+	return s.screenBefore(ctx, entries...), nil
 }
 
 // heldEarningsPayout is whether op is the money layer paying out earnings PayEarnings holds the money for: the payout

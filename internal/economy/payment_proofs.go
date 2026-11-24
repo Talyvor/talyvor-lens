@@ -24,8 +24,8 @@ import (
 //
 // The assistant that picks a product should not be the only one able to show what the owner approved. So the owner's
 // passkey or phone key signs exactly what the approval sheet shows: the challenge of a decision is the SHA-256 of a
-// statement naming each approval, its agent, payee, amount, currency, the rule that asked and the rules version
-// (newStatementChallenge), and an approval keeps the statement, the signature and the key (keepOwnerSignature).
+// statement naming each approval, its agent, payee, amount, currency, the rule that asked, the rules version and the
+// agent's task when there is one (newStatementChallenge), and an approval keeps the statement, the signature and the key (keepOwnerSignature).
 //
 // Before any money moves, the payment about to be sent is compared with what was approved (approvalMatches): another
 // payee, another amount, another currency or another agent stops it in its own transaction, so whatever it held is
@@ -42,10 +42,12 @@ const PaymentProofVersion = "talyvor.payment_proof.v1"
 const (
 	ProofRuleApprovalAbove = "approval_above" // above the amount the rules ask the owner for
 	ProofRulePrepared      = "prepared"       // an assistant's payment, always prepared for the owner (B52.41)
-	ProofRuleWithinRules   = "within_rules"   // inside every rule: no approval needed
-	ProofRuleAlwaysAllow   = "always_allow"   // inside an "always allow" of its payee (B41.104)
-	ProofRuleMandate       = "mandate"        // within a mandate the owner signed in advance (B55.24)
-	ProofRuleNoRules       = "no_rules"       // the agent has no rules
+	// ProofRuleSecondApprover: a Business's payment over its second-approver line, approved by two people (B28.315).
+	ProofRuleSecondApprover = "second_approver"
+	ProofRuleWithinRules    = "within_rules" // inside every rule: no approval needed
+	ProofRuleAlwaysAllow    = "always_allow" // inside an "always allow" of its payee (B41.104)
+	ProofRuleMandate        = "mandate"      // within a mandate the owner signed in advance (B55.24)
+	ProofRuleNoRules        = "no_rules"     // the agent has no rules
 )
 
 // ProofShown is one approval as the owner was shown it and signed it.
@@ -58,6 +60,9 @@ type ProofShown struct {
 	Currency     string `json:"currency"`
 	Rule         string `json:"rule"`
 	RulesVersion *int64 `json:"rules_version"`
+	// Task is the agent's task on the approval, as kept (B62.2): signed with the rest (B62.8), "" for none, and no part
+	// of approvalMatches. Omitted when "", so a statement signed before it carried the task reads it as "".
+	Task string `json:"task,omitempty"`
 }
 
 // DecisionStatement is what an owner's decision signs: its challenge is the SHA-256 of the statement's JSON.
@@ -144,7 +149,7 @@ func latestRulesVersion(ctx context.Context, q pgxDB, agentID string) (*int64, e
 // shownApprovals reads ids of workspaceID as the owner is shown them, in the order of ids.
 func shownApprovals(ctx context.Context, q pgxDB, workspaceID string, ids []string) ([]ProofShown, error) {
 	rows, err := q.Query(ctx, `SELECT a.id, a.agent_id, COALESCE(g.name, ''), a.payee_kind, a.payee_id, a.payee_name,
-		a.paid_from_currency, a.paid_from_amount_minor, a.amount_ulxc, a.rule, a.rules_version::bigint
+		a.paid_from_currency, a.paid_from_amount_minor, a.amount_ulxc, a.rule, a.rules_version::bigint, a.task
 		FROM agent_approvals a LEFT JOIN agent_accounts g ON g.id = a.agent_id WHERE a.id = ANY($1) AND a.workspace_id = $2`, ids, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("economy: approval shown: %w", err)
@@ -156,7 +161,7 @@ func shownApprovals(ctx context.Context, q pgxDB, workspaceID string, ids []stri
 		var minor *int64
 		var ulxc int64
 		if err := rows.Scan(&p.ApprovalID, &p.AgentID, &p.AgentName, &p.Payee.Kind, &p.Payee.ID, &p.Payee.Name,
-			&p.Currency, &minor, &ulxc, &p.Rule, &p.RulesVersion); err != nil {
+			&p.Currency, &minor, &ulxc, &p.Rule, &p.RulesVersion, &p.Task); err != nil {
 			return nil, fmt.Errorf("economy: approval shown: %w", err)
 		}
 		if p.Currency == "" || minor == nil { // filed before what pays it was kept (B57.11): its LXC
@@ -295,9 +300,26 @@ func statementShows(statement, approvalID string) (ProofShown, bool) {
 
 // ApprovalChangedError: the payment about to be sent is not the one the owner approved, so nothing is sent.
 type ApprovalChangedError struct {
-	Shown       ProofShown
-	Sent        ProofSent
+	Shown ProofShown
+	Sent  ProofSent
+	// Changed names what differed, of StoppedPayee, StoppedAmount, StoppedCurrency and StoppedAgent, in that order.
+	Changed     []string
 	workspaceID string
+}
+
+// What a stopped payment changed from the one approved (B62.9), in the order an approval names the first.
+const (
+	StoppedPayee    = "payee"
+	StoppedAmount   = "amount"
+	StoppedCurrency = "currency"
+	StoppedAgent    = "agent"
+)
+
+// ApprovalStopped is the newest payment an approval stopped (B62.9): the first of payee, amount, currency and agent
+// that differed from what the owner approved, and when.
+type ApprovalStopped struct {
+	Changed string    `json:"changed"`
+	At      time.Time `json:"at"`
 }
 
 func amountWords(minor int64, currency string) string {
@@ -323,13 +345,45 @@ func (e *ApprovalChangedError) Error() string {
 // Unwrap makes it a refusal by the agent's rules, answered as one.
 func (e *ApprovalChangedError) Unwrap() error { return ErrAgentRule }
 
-// approvalMatches refuses sent unless it is exactly the payment shown: the same agent, payee, currency and amount.
+// approvalMatches refuses sent unless it is exactly the payment shown: the same agent, payee, currency and amount. The
+// task is not compared: it never decides anything (B62.2).
 func approvalMatches(workspaceID string, shown ProofShown, sent ProofSent) error {
-	if shown.AgentID == sent.AgentID && shown.Payee.Kind == sent.Payee.Kind && shown.Payee.ID == sent.Payee.ID &&
-		shown.Currency == sent.Currency && shown.AmountMinor == sent.AmountMinor {
+	var changed []string
+	if shown.Payee.Kind != sent.Payee.Kind || shown.Payee.ID != sent.Payee.ID {
+		changed = append(changed, StoppedPayee)
+	}
+	if shown.AmountMinor != sent.AmountMinor {
+		changed = append(changed, StoppedAmount)
+	}
+	if shown.Currency != sent.Currency {
+		changed = append(changed, StoppedCurrency)
+	}
+	if shown.AgentID != sent.AgentID {
+		changed = append(changed, StoppedAgent)
+	}
+	if len(changed) == 0 {
 		return nil
 	}
-	return &ApprovalChangedError{Shown: shown, Sent: sent, workspaceID: workspaceID}
+	return &ApprovalChangedError{Shown: shown, Sent: sent, Changed: changed, workspaceID: workspaceID}
+}
+
+// keepStoppedPayment keeps the payment e stopped (B62.9), in its own transaction, after the payment's own rolled back:
+// the approval, what was shown, what would have been sent, what differed, and when. The table is append-only.
+func (s *DualTokenStore) keepStoppedPayment(ctx context.Context, e *ApprovalChangedError) error {
+	sh, err := json.Marshal(e.Shown)
+	if err != nil {
+		return err
+	}
+	se, err := json.Marshal(e.Sent)
+	if err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO stopped_payments (id, workspace_id, agent_id, approval_id, payment_ref, shown, sent, changed)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, "stp_"+uuid.NewString(), e.workspaceID, e.Sent.AgentID, e.Shown.ApprovalID, e.Sent.Reference,
+		string(sh), string(se), e.Changed); err != nil {
+		return fmt.Errorf("economy: keep stopped payment: %w", err)
+	}
+	return nil
 }
 
 // sentOf is workspaceID's payment of amountULXC judged with req, as it is sent, with the task ctx carries for it.
@@ -391,14 +445,16 @@ func jsonText(b []byte) *string {
 const paymentProofColumns = `id, workspace_id, agent_id, payment_ref, approval_id, rule, rules_version::bigint, shown, statement, signature,
 	key_kind, key_id, signed_at, sent, created_at`
 
-// PaymentProof reads workspaceID's record of one payment, by the record's id, the payment's reference or the id of the
-// money entry that moved it, and says whether its signature verifies. Another workspace's is ErrPaymentProofNotFound.
+// PaymentProof reads workspaceID's record of one payment, by the record's id, the payment's reference, the id of the
+// money entry that moved it or the id of the approval it used (B62.9), and says whether its signature verifies.
+// Another workspace's is ErrPaymentProofNotFound.
 func (s *DualTokenStore) PaymentProof(ctx context.Context, workspaceID, id string) (PaymentProof, error) {
 	var p PaymentProof
 	var shown, sent []byte
 	var sig []byte
 	err := s.pool.QueryRow(ctx, `SELECT `+paymentProofColumns+` FROM payment_proofs WHERE workspace_id = $1 AND (id = $2 OR payment_ref = $2
-		OR payment_ref = (SELECT idempotency_key FROM money_entries WHERE id = $2 AND workspace_id = $1)) ORDER BY created_at LIMIT 1`,
+		OR payment_ref = (SELECT idempotency_key FROM money_entries WHERE id = $2 AND workspace_id = $1) OR (approval_id = $2 AND $2 <> ''))
+		ORDER BY created_at LIMIT 1`,
 		workspaceID, id).Scan(&p.ID, &p.WorkspaceID, &p.AgentID, &p.PaymentRef, &p.ApprovalID, &p.Rule, &p.RulesVersion, &shown, &p.Statement,
 		&sig, &p.KeyKind, &p.KeyID, &p.SignedAt, &sent, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -454,7 +510,7 @@ func (s *DualTokenStore) VerifyPaymentProof(ctx context.Context, p PaymentProof)
 func sameShown(a, b ProofShown) bool {
 	va, vb := a.RulesVersion, b.RulesVersion
 	return a.ApprovalID == b.ApprovalID && a.AgentID == b.AgentID && a.AgentName == b.AgentName && a.Payee == b.Payee &&
-		a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && a.Rule == b.Rule &&
+		a.AmountMinor == b.AmountMinor && a.Currency == b.Currency && a.Rule == b.Rule && a.Task == b.Task &&
 		(va == nil) == (vb == nil) && (va == nil || *va == *vb)
 }
 

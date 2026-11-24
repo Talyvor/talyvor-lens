@@ -80,6 +80,8 @@ func (p *Proxy) chargeSubscriberUsage(ctx context.Context, workspaceID string, c
 	if costULXC <= 0 {
 		return false
 	}
+	ctx, cancel := detachBounded(ctx) // B28.242: a client that hangs up after the answer is still charged
+	defer cancel()
 	inPeriod, _ := p.subscriberCharge(ctx, workspaceID, costULXC)
 	return inPeriod
 }

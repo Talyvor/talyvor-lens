@@ -252,6 +252,11 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 		Payee: Payee{Kind: "agent", ID: agentID, Name: "its own " + c.BuyCurrency + " account"},
 		Memo:  Money(c.SellMinor, c.SellCurrency) + " converted to " + c.BuyCurrency + " (" + c.Funding + " money)"})
 
+	// B50.54: screened before the transaction, on a connection of its own.
+	screened, err := s.screenFirst(ctx, c.entry(workspaceID, "", "", ""), c.partnerPostings()...)
+	if err != nil {
+		return Conversion{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("economy: conversion: %w", err)
@@ -301,14 +306,7 @@ func (s *DualTokenStore) Convert(ctx context.Context, workspaceID, agentID, quot
 		return Conversion{}, err
 	}
 	// Posted before the partner is asked: a live conversion fx is not cleared for, or one the ledger refuses, never reaches it.
-	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "fx_conversion",
-		IdempotencyKey: "fx_convert:" + c.ID, Funding: c.Funding, Counterparty: c.Partner, PartnerRef: c.partnerRef,
-		Memo: Money(c.SellMinor, c.SellCurrency) + " to " + Money(c.BuyMinor, c.BuyCurrency) + " at " + c.Rate, Postings: []MoneyPosting{
-			{AccountID: c.FromAccountID, AmountMinor: -c.SellMinor},
-			{AccountID: revenue, AmountMinor: c.MarginMinor},
-			{AccountID: sold, AmountMinor: c.SellMinor - c.MarginMinor},
-			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
-			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}, s.screener)
+	e, err := postMoneyTx(ctx, tx, c.entry(workspaceID, revenue, sold, bought), screened)
 	if err != nil {
 		return Conversion{}, err
 	}
@@ -413,4 +411,22 @@ func (s *DualTokenStore) judgeConversion(ctx context.Context, tx pgx.Tx, c Conve
 			Money(c.SellMinor, c.SellCurrency), LXCMoney(done+value), LXCMoney(limit))
 	}
 	return nil
+}
+
+// entry is c's movement on the ledger: the sold currency to the partner, less Talyvor's margin, and the bought one
+// from it.
+func (c Conversion) entry(workspaceID, revenue, sold, bought string) MoneyEntry {
+	return MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "fx_conversion",
+		IdempotencyKey: "fx_convert:" + c.ID, Funding: c.Funding, Counterparty: c.Partner, PartnerRef: c.partnerRef,
+		Memo: Money(c.SellMinor, c.SellCurrency) + " to " + Money(c.BuyMinor, c.BuyCurrency) + " at " + c.Rate, Postings: []MoneyPosting{
+			{AccountID: c.FromAccountID, AmountMinor: -c.SellMinor},
+			{AccountID: revenue, AmountMinor: c.MarginMinor},
+			{AccountID: sold, AmountMinor: c.SellMinor - c.MarginMinor},
+			{AccountID: bought, AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency},
+			{AccountID: c.ToAccountID, AmountMinor: c.BuyMinor, Currency: c.BuyCurrency}}}
+}
+
+// partnerPostings are the postings of c's entry through its partner, screened before its transaction (B50.54).
+func (c Conversion) partnerPostings() []MoneyPosting {
+	return []MoneyPosting{{AmountMinor: c.SellMinor - c.MarginMinor, Currency: c.SellCurrency}, {AmountMinor: -c.BuyMinor, Currency: c.BuyCurrency}}
 }

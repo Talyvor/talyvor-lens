@@ -213,10 +213,25 @@ func routeAccount(ctx context.Context, tx pgx.Tx, workspaceID, currency, purpose
 	return id, nil
 }
 
+// partnerPostings are the postings of movements through a partner account, out or back, screened before the
+// transaction that posts them (B50.56).
+func (p OutsidePayment) partnerPostings(back bool) []MoneyPosting {
+	toPartner := p.AmountMinor + p.PartnerCostMinor
+	if back {
+		toPartner = -toPartner
+	}
+	through := []MoneyPosting{{AmountMinor: toPartner, Currency: p.Currency}}
+	if p.international() {
+		through = append(through, MoneyPosting{AmountMinor: -p.ArrivesMinor, Currency: p.ArrivesCurrency},
+			MoneyPosting{AmountMinor: p.ArrivesMinor, Currency: p.ArrivesCurrency})
+	}
+	return through
+}
+
 // movements are the postings that take p out (hold → the partner, and Talyvor's fee → revenue) and, for a returned
 // one, back (the partner → the account; the fee stays). An international payment posts the payee's currency too: what
 // arrives comes in from the route's conversion account and goes out through its payments account, each a partner
-// account the reconciliation (B30.11) finds no statement for.
+// account the reconciliation (B30.11) finds no statement for. Their postings through a partner are partnerPostings.
 func (s *DualTokenStore) movements(ctx context.Context, tx pgx.Tx, p OutsidePayment, partnerAccountID string) (out, back []MoneyPosting, err error) {
 	toPartner := p.AmountMinor + p.PartnerCostMinor
 	out = []MoneyPosting{{AccountID: p.holdAccountID, AmountMinor: -p.debit()}, {AccountID: partnerAccountID, AmountMinor: toPartner}}

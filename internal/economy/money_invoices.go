@@ -527,7 +527,7 @@ func (s *DualTokenStore) PayInvoiceByAgent(ctx context.Context, token, workspace
 		e.payeeWorkspaceID = inv.WorkspaceID
 	}
 	out := PaidInvoice{}
-	if out.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if out.Entry, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return PaidInvoice{}, err
 	}
 	if err := acceptInvoicePayment(ctx, tx, inv, out.Entry.ID, "agent", funding, "", inv.DueMinor, 0); err != nil {

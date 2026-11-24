@@ -130,7 +130,7 @@ func (s *DualTokenStore) MoveAgentMoney(ctx context.Context, workspaceID, agentA
 				minorString(has, f.Currency), minorString(amountMinor, f.Currency))
 		}
 	}
-	if f.Entry, err = postMoneyTx(ctx, tx, e, s.screener); err != nil {
+	if f.Entry, err = postMoneyTx(ctx, tx, e, noPartnerPostings); err != nil {
 		return AgentFunding{}, err
 	}
 	if !replay {

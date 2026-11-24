@@ -39,7 +39,7 @@ func TestTestWorkspaces_GrantFundedMovesAreTestMoney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := s.RequestCashOut(ctx, "ws-test-b", b.ID, 130*lxc, "test bank ••1234", "owner")
+	c, err := s.RequestCashOut(ctx, "ws-test-b", b.ID, 130*lxc, "test bank ••1234", "owner", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

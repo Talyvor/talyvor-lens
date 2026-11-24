@@ -78,7 +78,7 @@ type Store struct {
 	RP *passkey.RelyingParty
 	// Devices checks a phone app's device key before it is kept for a person; nil, none is.
 	Devices *devicekey.Verifier
-	// Passcodes is the person's passcode as the key rules ask about it (B61.23); nil, nobody has one.
+	// Passcodes is the person's passcode as the key rules ask about it (B61.23); nil, the door's own (B50.52).
 	Passcodes PasscodeRule
 }
 

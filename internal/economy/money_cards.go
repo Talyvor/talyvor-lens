@@ -334,7 +334,7 @@ func (s *DualTokenStore) holdCardBatch(ctx context.Context, b CardBatch, by stri
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: b.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_hold",
 		IdempotencyKey: "card_hold:" + b.ID, Funding: b.Funding, Memo: b.Purpose, Postings: []MoneyPosting{
-			{AccountID: from.id, AmountMinor: -b.TotalMinor}, {AccountID: hold, AmountMinor: b.TotalMinor}}}, s.screener); err != nil {
+			{AccountID: from.id, AmountMinor: -b.TotalMinor}, {AccountID: hold, AmountMinor: b.TotalMinor}}}, noPartnerPostings); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE money_cards SET status = $2, hold_account_id = $3, updated_at = now() WHERE batch_id = $1 AND status = $4`,
@@ -361,7 +361,7 @@ func (s *DualTokenStore) releaseCard(ctx context.Context, b CardBatch, c MoneyCa
 	}
 	if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: b.WorkspaceID, Capability: CapabilityPaymentsOut, Kind: "card_release",
 		IdempotencyKey: "card_release:" + c.ID, Funding: b.Funding, Memo: c.Merchant, Postings: []MoneyPosting{
-			{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: c.accountID, AmountMinor: c.CapMinor}}}, s.screener); err != nil {
+			{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: c.accountID, AmountMinor: c.CapMinor}}}, noPartnerPostings); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -395,12 +395,17 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
+	// B50.56: the charge's payment to the merchant is screened before the transaction, on a connection of its own.
+	screened, err := s.screenCardCharge(ctx, partner, a)
+	if err != nil {
+		return false, "", err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if done, approved, reason, err := s.authorizeReusableCharge(ctx, tx, partner, a); done { // B53.2
+	if done, approved, reason, err := s.authorizeReusableCharge(ctx, tx, partner, a, screened); done { // B53.2
 		return approved, reason, err
 	}
 	var c MoneyCard
@@ -449,7 +454,7 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		return false, "", fmt.Errorf("economy: card charge: %w", err)
 	}
 	if approved {
-		from, err := s.payingAccount(ctx, ws, OutsidePayment{AccountID: c.accountID, Currency: c.Currency})
+		from, err := payingAccountOn(ctx, tx, ws, OutsidePayment{AccountID: c.accountID, Currency: c.Currency})
 		if err != nil {
 			return false, "", err
 		}
@@ -460,7 +465,7 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		if _, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsOut, Kind: "card_charge",
 			IdempotencyKey: "card_charge:" + c.ID, Funding: funding, Memo: c.Merchant, Counterparty: c.Merchant, PartnerRef: a.ID, Card: &d,
 			Postings: []MoneyPosting{{AccountID: c.holdAccountID, AmountMinor: -c.CapMinor}, {AccountID: from.partnerID, AmountMinor: a.Amount.Minor},
-				{AccountID: c.accountID, AmountMinor: c.CapMinor - a.Amount.Minor}}}, s.screener); err != nil {
+				{AccountID: c.accountID, AmountMinor: c.CapMinor - a.Amount.Minor}}}, screened); err != nil {
 			return false, "", err
 		}
 	}
@@ -471,6 +476,43 @@ func (s *DualTokenStore) AuthorizeCardCharge(ctx context.Context, partner string
 		s.closeIssuedCard(ctx, ws, c.ID, a.Card)
 	}
 	return approved, reason, nil
+}
+
+// screenCardCharge screens a's charge before its transaction begins (B50.56): the payment to the merchant it posts
+// if the card it is on would let it through, read without a lock. A charge its card would not let through is screened
+// as moving nothing, and one whose card changes before its transaction reads it is refused as not screened.
+func (s *DualTokenStore) screenCardCharge(ctx context.Context, partner string, a money.Authorization) (PaymentScreener, error) {
+	var ws, currency, funding, status string
+	var limit int64
+	err := s.pool.QueryRow(ctx, `SELECT workspace_id, currency, funding, status, per_payment_limit_minor FROM money_reusable_cards
+		WHERE partner = $1 AND partner_ref = $2`, partner, a.Card).Scan(&ws, &currency, &funding, &status, &limit)
+	if err == nil {
+		if status != ReusableCardActive || a.Amount.Asset != currency || a.Amount.Minor <= 0 || a.Amount.Minor > limit {
+			return noPartnerPostings, nil
+		}
+		return s.screenBefore(ctx, firstScreening{MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsOut,
+			IdempotencyKey: "card_charge:" + partner + ":" + a.ID, Funding: funding, Counterparty: a.Merchant},
+			[]MoneyPosting{{AmountMinor: a.Amount.Minor, Currency: currency}}}), nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("economy: card charge: %w", err)
+	}
+	var id, merchant string
+	var expires time.Time
+	err = s.pool.QueryRow(ctx, `SELECT c.id, c.workspace_id, c.merchant, c.cap_minor, c.currency, c.status, COALESCE(c.expires_at, now()), b.funding
+		FROM money_cards c JOIN money_card_batches b ON b.id = c.batch_id WHERE c.partner = $1 AND c.partner_ref = $2`, partner, a.Card).
+		Scan(&id, &ws, &merchant, &limit, &currency, &status, &expires, &funding)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return noPartnerPostings, nil
+	case err != nil:
+		return nil, fmt.Errorf("economy: card charge: %w", err)
+	case status != MoneyCardActive || !time.Now().Before(expires) || !sameMerchant(merchant, a.Merchant) || a.Amount.Asset != currency ||
+		a.Amount.Minor <= 0 || a.Amount.Minor > limit:
+		return noPartnerPostings, nil
+	}
+	return s.screenBefore(ctx, firstScreening{MoneyEntry{WorkspaceID: ws, Capability: CapabilityPaymentsOut, IdempotencyKey: "card_charge:" + id,
+		Funding: funding, Counterparty: merchant}, []MoneyPosting{{AmountMinor: a.Amount.Minor, Currency: currency}}}), nil
 }
 
 // closeIssuedCard closes card id at its issuer. Lens declines every later charge on it whether or not the issuer

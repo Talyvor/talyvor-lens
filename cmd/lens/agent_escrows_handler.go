@@ -66,7 +66,11 @@ func mountAgentEscrowRoutes(r chi.Router, bank agentEscrowBank) {
 			writeJSONErr(w, http.StatusBadRequest, `body must be {"to": "<wallet id or @handle>", "amount_ulxc": …, "release_at": "<RFC 3339 time>", "memo": "<optional>"}`)
 			return
 		}
-		e, err := bank.PayIntoEscrow(req.Context(), chi.URLParam(req, "wsID"), agentID, in.To, in.AmountULXC, in.Memo, in.ReleaseAt)
+		ctx, ok := keyedMove(w, req) // B28.72
+		if !ok {
+			return
+		}
+		e, err := bank.PayIntoEscrow(ctx, chi.URLParam(req, "wsID"), agentID, in.To, in.AmountULXC, in.Memo, in.ReleaseAt)
 		if err != nil {
 			writeEscrowErr(w, err)
 			return

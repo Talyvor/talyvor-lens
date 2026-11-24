@@ -324,6 +324,24 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 	if !paidBefore { // a new payee waits for the owner's approval, whatever the rules allow
 		judged = WithConnectPrepareOnly(judged)
 	}
+	// B50.54: the leg through a partner is screened before the transaction, on a connection of its own.
+	id := "itr_" + uuid.NewString()
+	var screened PaymentScreener
+	var partner string
+	if direct {
+		screened, err = s.screenFirst(ctx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: id + ":" + InstantLegPayout,
+			Funding: in.Funding, Counterparty: beneficiary}, MoneyPosting{AmountMinor: q.SendMinor, Currency: q.SendCurrency})
+	} else {
+		if partner, err = s.moneyLayer.Partner(ctx, money.CapConvert, s.instantRoute(workspaceID, agentID, CapabilityFX)); err != nil {
+			return InstantTransfer{}, fmt.Errorf("economy: Instant transfer: %w", err)
+		}
+		screened, err = s.screenFirst(ctx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, IdempotencyKey: id + ":" + InstantLegConvert,
+			Funding: in.Funding, Counterparty: partner}, MoneyPosting{AmountMinor: q.SendMinor - q.FeeMinor, Currency: q.SendCurrency},
+			MoneyPosting{AmountMinor: -q.onchainMinor, Currency: CurrencyUSDC})
+	}
+	if err != nil {
+		return InstantTransfer{}, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -360,7 +378,6 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 		return InstantTransfer{}, fmt.Errorf("%w: the account holds %s of %s money, and this transfer sends %s", ErrAgentFunds,
 			Money(balance, q.SendCurrency), in.Funding, Money(q.SendMinor, q.SendCurrency))
 	}
-	id := "itr_" + uuid.NewString()
 	if err := s.enforceAgentRules(judged, tx, workspaceID, agentID, value, id); err != nil {
 		return InstantTransfer{}, s.refusedMovement(ctx, tx, err)
 	}
@@ -392,15 +409,11 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 			IdempotencyKey: id + ":" + InstantLegPayout, Funding: in.Funding, Counterparty: beneficiary,
 			Memo: "Instant transfer " + id + " to " + beneficiary + ": " + Money(q.SendMinor, q.SendCurrency) + " paid out", Postings: []MoneyPosting{
 				{AccountID: from, AmountMinor: -q.SendMinor},
-				{AccountID: paid, AmountMinor: q.SendMinor}}}, s.screener); err != nil {
+				{AccountID: paid, AmountMinor: q.SendMinor}}}, screened); err != nil {
 			return InstantTransfer{}, err
 		}
 		payoutEntry = e.ID
 	} else {
-		partner, err := s.moneyLayer.Partner(ctx, money.CapConvert, s.instantRoute(workspaceID, agentID, CapabilityFX))
-		if err != nil {
-			return InstantTransfer{}, fmt.Errorf("economy: Instant transfer: %w", err)
-		}
 		// The convert leg is posted before the provider is asked: one the ledger refuses never reaches it.
 		if e, err = postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: workspaceID, Capability: CapabilityFX, Kind: "instant_transfer_convert",
 			IdempotencyKey: id + ":" + InstantLegConvert, Funding: in.Funding, Counterparty: partner,
@@ -409,7 +422,7 @@ func (s *DualTokenStore) SendInstantTransfer(ctx context.Context, workspaceID, a
 				{AccountID: revenue, AmountMinor: q.FeeMinor},
 				{AccountID: sold, AmountMinor: q.SendMinor - q.FeeMinor},
 				{AccountID: bought, AmountMinor: -q.onchainMinor, Currency: CurrencyUSDC},
-				{AccountID: held, AmountMinor: q.onchainMinor, Currency: CurrencyUSDC}}}, s.screener); err != nil {
+				{AccountID: held, AmountMinor: q.onchainMinor, Currency: CurrencyUSDC}}}, screened); err != nil {
 			return InstantTransfer{}, err
 		}
 		convertEntry = e.ID
@@ -676,6 +689,12 @@ func (s *DualTokenStore) instantConvert(ctx context.Context, t InstantTransfer) 
 
 // instantMove is the move leg: the USDC Talyvor holds for t goes on chain to the beneficiary.
 func (s *DualTokenStore) instantMove(ctx context.Context, t InstantTransfer) (string, error) {
+	// B50.54: screened before the transaction, on a connection of its own.
+	screened, err := s.screenFirst(ctx, MoneyEntry{WorkspaceID: t.WorkspaceID, Capability: CapabilityStablecoins, IdempotencyKey: t.ID + ":" + InstantLegMove,
+		Funding: t.Funding, Counterparty: t.BeneficiaryName}, MoneyPosting{AmountMinor: t.onchainMinor, Currency: CurrencyUSDC})
+	if err != nil {
+		return "", err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
@@ -696,7 +715,7 @@ func (s *DualTokenStore) instantMove(ctx context.Context, t InstantTransfer) (st
 		IdempotencyKey: t.ID + ":" + InstantLegMove, Funding: t.Funding, Counterparty: t.BeneficiaryName,
 		Memo: "Instant transfer " + t.ID + " to " + t.BeneficiaryName + ": on its way", Postings: []MoneyPosting{
 			{AccountID: held, AmountMinor: -t.onchainMinor},
-			{AccountID: chain, AmountMinor: t.onchainMinor}}}, s.screener)
+			{AccountID: chain, AmountMinor: t.onchainMinor}}}, screened)
 	if err != nil {
 		return "", err
 	}
@@ -746,6 +765,21 @@ func (s *DualTokenStore) instantCredit(ctx context.Context, t InstantTransfer) (
 	if err != nil {
 		return "", err
 	}
+	var sender string
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(NULLIF((SELECT name FROM workspaces WHERE id = $1), ''), $1)`, t.WorkspaceID).Scan(&sender); err != nil {
+		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
+	}
+	// B50.54: screened before the transaction, on a connection of its own.
+	capability, through := CapabilityStablecoins, []MoneyPosting{{AmountMinor: -t.onchainMinor, Currency: CurrencyUSDC}}
+	if t.ReceiveCurrency != CurrencyUSDC {
+		capability, through = CapabilityFX, append(through, MoneyPosting{AmountMinor: t.onchainMinor, Currency: CurrencyUSDC},
+			MoneyPosting{AmountMinor: -t.ReceiveMinor, Currency: t.ReceiveCurrency})
+	}
+	screened, err := s.screenFirst(ctx, MoneyEntry{WorkspaceID: t.toWorkspaceID, Capability: capability, IdempotencyKey: t.ID + ":" + InstantLegCredit,
+		Funding: t.Funding, Counterparty: sender}, through...)
+	if err != nil {
+		return "", err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
@@ -754,15 +788,11 @@ func (s *DualTokenStore) instantCredit(ctx context.Context, t InstantTransfer) (
 	if ok, err := lockInstantStep(ctx, tx, t, InstantOnItsWay); !ok || err != nil {
 		return t.Status, err
 	}
-	var sender string
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(NULLIF((SELECT name FROM workspaces WHERE id = $1), ''), $1)`, t.WorkspaceID).Scan(&sender); err != nil {
-		return "", fmt.Errorf("%w: %v", errLegUnanswered, err)
-	}
 	chain, err := routeAccount(ctx, tx, t.toWorkspaceID, CurrencyUSDC, MoneyPartner, "instant:onchain", "Instant transfers on chain")
 	if err != nil {
 		return "", err
 	}
-	capability, postings := CapabilityStablecoins, []MoneyPosting{{AccountID: chain, AmountMinor: -t.onchainMinor}}
+	postings := []MoneyPosting{{AccountID: chain, AmountMinor: -t.onchainMinor}}
 	if t.ReceiveCurrency == CurrencyUSDC {
 		postings = append(postings, MoneyPosting{AccountID: t.ToAccountID, AmountMinor: t.onchainMinor, Currency: CurrencyUSDC})
 	} else {
@@ -774,14 +804,14 @@ func (s *DualTokenStore) instantCredit(ctx context.Context, t InstantTransfer) (
 		if err != nil {
 			return "", err
 		}
-		capability, postings = CapabilityFX, append(postings,
+		postings = append(postings,
 			MoneyPosting{AccountID: sold, AmountMinor: t.onchainMinor, Currency: CurrencyUSDC},
 			MoneyPosting{AccountID: bought, AmountMinor: -t.ReceiveMinor, Currency: t.ReceiveCurrency},
 			MoneyPosting{AccountID: t.ToAccountID, AmountMinor: t.ReceiveMinor, Currency: t.ReceiveCurrency})
 	}
 	e, err := postMoneyTx(ctx, tx, MoneyEntry{WorkspaceID: t.toWorkspaceID, Capability: capability, Kind: "instant_transfer_credit",
 		IdempotencyKey: t.ID + ":" + InstantLegCredit, Funding: t.Funding, Counterparty: sender,
-		Memo: "Instant transfer from " + sender + ": " + Money(t.ReceiveMinor, t.ReceiveCurrency) + " received", Postings: postings}, s.screener)
+		Memo: "Instant transfer from " + sender + ": " + Money(t.ReceiveMinor, t.ReceiveCurrency) + " received", Postings: postings}, screened)
 	if err != nil {
 		return "", err
 	}
@@ -829,6 +859,16 @@ func (s *DualTokenStore) instantPayout(ctx context.Context, t InstantTransfer) (
 	payee, err := s.PayableOutsidePayee(ctx, t.WorkspaceID, t.ToPayeeID)
 	if err != nil {
 		return "", err
+	}
+	// B50.54: the payout of a converted transfer is screened before the transaction, on a connection of its own.
+	var screened PaymentScreener
+	if !t.direct() {
+		if screened, err = s.screenFirst(ctx, MoneyEntry{WorkspaceID: t.WorkspaceID, Capability: CapabilityPaymentsOut, IdempotencyKey: t.ID + ":" + InstantLegPayout,
+			Funding: t.Funding, Counterparty: t.BeneficiaryName}, MoneyPosting{AmountMinor: -t.onchainMinor, Currency: CurrencyUSDC},
+			MoneyPosting{AmountMinor: t.onchainMinor, Currency: CurrencyUSDC}, MoneyPosting{AmountMinor: -t.ReceiveMinor, Currency: t.ReceiveCurrency},
+			MoneyPosting{AmountMinor: t.ReceiveMinor, Currency: t.ReceiveCurrency}); err != nil {
+			return "", err
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -883,7 +923,7 @@ func (s *DualTokenStore) instantPayout(ctx context.Context, t InstantTransfer) (
 				{AccountID: chain, AmountMinor: -t.onchainMinor, Currency: CurrencyUSDC},
 				{AccountID: sold, AmountMinor: t.onchainMinor, Currency: CurrencyUSDC},
 				{AccountID: bought, AmountMinor: -t.ReceiveMinor, Currency: t.ReceiveCurrency},
-				{AccountID: paid, AmountMinor: t.ReceiveMinor, Currency: t.ReceiveCurrency}}}, s.screener); err != nil {
+				{AccountID: paid, AmountMinor: t.ReceiveMinor, Currency: t.ReceiveCurrency}}}, screened); err != nil {
 			return "", err
 		}
 		in, err := s.instantHolding(ctx, rt, t.ID+":usdc-in", t.BeneficiaryName, money.USDC)
