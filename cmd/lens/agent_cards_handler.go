@@ -23,8 +23,8 @@ import (
 //	     purchase on a frozen card is declined and nothing leaves the agent
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/draws-on   {draws_on: "credits" | "account"}   (B30.30) what the card
 //	     spends: the agent's credits, or its currency account in the card's currency, which must be open
-//	     old one did; the old one is cancelled: every purchase on it is declined and nothing leaves the agent. 201, the new card
-//	POST /v1/workspaces/{wsID}/agents/{id}/card/cancel    (B28.321) the card, cancelled for good; the agent holds no card
+//	POST /v1/workspaces/{wsID}/agents/{id}/card/replace   (B28.321) a new card to the same cardholder, with the old one's draws_on,
+//	     freeze and merchant lock; the old one is cancelled: every purchase on it is declined and nothing leaves the agent. 201, the new card
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/cancel    (B28.321) the card, cancelled for good; the agent holds no card
 //	     until it is issued a new one. 200, the cancelled card
 //	POST /v1/workspaces/{wsID}/agents/{id}/card/merchant-lock   {lock: "off" | "first" | "merchant", merchant_id}

@@ -219,7 +219,8 @@ func (s *DualTokenStore) CancelAgentCard(ctx context.Context, workspaceID, agent
 
 // ReplaceAgentCard cancels oldCardID, the card agentID holds, and records next, the card issued in its place to the same
 // cardholder (B28.321), in one transaction under the agent's row lock: from its commit every purchase on the old card is
-// declined and the new one is judged by the agent's rules and balance. The new card draws on what the old one did. A
+// declined and the new one is judged by the agent's rules and balance. The new card draws on what the old one did, and
+// keeps its freeze and its merchant lock (B30.31), a first lock that has its merchant still locked to that merchant. A
 // workspace in lockdown gets no working card this way (B41.116): ErrLockedDown, and nothing changes.
 func (s *DualTokenStore) ReplaceAgentCard(ctx context.Context, workspaceID, agentID, oldCardID string, next AgentCard) (AgentCard, error) {
 	if next.Livemode {
@@ -236,18 +237,21 @@ func (s *DualTokenStore) ReplaceAgentCard(ctx context.Context, workspaceID, agen
 	if err := refuseIfLockedDown(ctx, tx, workspaceID); err != nil {
 		return next, err
 	}
-	var drawsOn string
+	var drawsOn, lock string
+	var frozen bool
+	var lockedID *string
 	err = tx.QueryRow(ctx, `UPDATE agent_cards SET cancelled_at = now(), replaced_by = $4 WHERE id = $1 AND agent_id = $2
-		AND workspace_id = $3 AND cancelled_at IS NULL RETURNING draws_on`, oldCardID, agentID, workspaceID, next.ID).Scan(&drawsOn)
+		AND workspace_id = $3 AND cancelled_at IS NULL RETURNING draws_on, frozen, merchant_lock, locked_merchant_id`,
+		oldCardID, agentID, workspaceID, next.ID).Scan(&drawsOn, &frozen, &lock, &lockedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return next, ErrNoAgentCard
 	}
 	if err != nil {
 		return next, fmt.Errorf("economy: replace agent card: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_cards (id, workspace_id, agent_id, stripe_cardholder_id, last4, exp_month, exp_year, currency, draws_on)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, next.ID, workspaceID, agentID, next.StripeCardholderID, next.Last4,
-		next.ExpMonth, next.ExpYear, next.Currency, drawsOn); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_cards (id, workspace_id, agent_id, stripe_cardholder_id, last4, exp_month, exp_year, currency,
+		draws_on, frozen, merchant_lock, locked_merchant_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, next.ID, workspaceID,
+		agentID, next.StripeCardholderID, next.Last4, next.ExpMonth, next.ExpYear, next.Currency, drawsOn, frozen, lock, lockedID); err != nil {
 		return next, fmt.Errorf("economy: save the replacement card: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -316,7 +320,8 @@ func (s *DualTokenStore) SetAgentCardMerchantLock(ctx context.Context, workspace
 			return AgentCard{}, err
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET merchant_lock = $3, locked_merchant_id = $4 WHERE agent_id = $1 AND workspace_id = $2 AND cancelled_at IS NULL`,
+	tag, err := tx.Exec(ctx, `UPDATE agent_cards SET merchant_lock = $3, locked_merchant_id = $4 WHERE agent_id = $1 AND workspace_id = $2
+		AND cancelled_at IS NULL`,
 		agentID, workspaceID, lock, locked)
 	if err != nil {
 		return AgentCard{}, fmt.Errorf("economy: card merchant lock: %w", err)

@@ -775,7 +775,7 @@ func openAPIWalletPaths() map[string]any {
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/card/replace": map[string]any{
 			"post": op("Replace the agent's card",
-				"Owner or admin. A new card is issued to the same cardholder and draws on what the old one did; the old card is cancelled, so every purchase on it is declined and nothing leaves the agent.",
+				"Owner or admin. A new card is issued to the same cardholder; it draws on what the old one did and keeps its freeze and its merchant lock. The old card is cancelled, so every purchase on it is declined and nothing leaves the agent.",
 				[]map[string]any{ws, agent},
 				map[string]any{"201": map[string]any{"description": "the new card"}, "404": map[string]any{"description": "no such agent, or it holds no card"},
 					"403": map[string]any{"description": "the workspace is locked down: no new card is issued"}, "409": map[string]any{"description": "a live Stripe key, or the card was cancelled or replaced meanwhile — nothing is changed"}}),
