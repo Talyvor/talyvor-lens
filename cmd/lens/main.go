@@ -5167,6 +5167,7 @@ func run() error {
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
 		mountWorkspaceMoneyKindRoutes(authed, dualToken)                                // B59.6
 		mountBusinessDetailsRoutes(authed, dualToken)                                   // B59.30
+		mountSecondApproverRoutes(authed, dualToken)                                    // B28.315
 		mountScanWatchRoutes(authed, scanWatcher, dualToken, tenantStore)               // B52.27
 		mountConnectorOwnerRoutes(authed, connectorGrantStore, dualToken)               // B41.178
 		mountAgentApproverRoutes(authed, dualToken, agentCards)                         // B45.28
