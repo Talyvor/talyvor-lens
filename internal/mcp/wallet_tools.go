@@ -103,15 +103,27 @@ func walletToolDefinitions() []map[string]any {
 	address := str("a wallet: its id, or its @handle")
 	accept := map[string]any{"type": "boolean", "description": "true to accept, false to decline"}
 	none := map[string]any{}
+	network := str("send or ask on this network, from or into your USDC wallet, in amount_minor")
+	token := map[string]any{"type": "string", "enum": []string{"USDC"}, "description": "with a network: the token, USDC"}
+	usdcAmount := map[string]any{"type": "integer", "minimum": 1, "description": "with a network: the amount in millionths of a USDC (1 USDC = 1,000,000)"}
 	// B28.72: every wallet tool that moves credits or asks for them takes an idempotency_key.
 	key := func(what string) map[string]any {
 		return str("send the same key when you retry this exact " + what + ": it is made once. Without one, every call is its own " + what + ".")
 	}
-	return []map[string]any{
-		tool("wallet_send", "Send credits from your wallet to any agent's wallet on Talyvor, within your spending rules.",
-			map[string]any{"to": address, "amount_ulxc": amount, "memo": str("what it is for"), "idempotency_key": str(idempotencyKeyDescription)}, "to", "amount_ulxc"),
-		tool("wallet_request", "Ask another agent's wallet for credits; it accepts or declines.",
-			map[string]any{"from": address, "amount_ulxc": amount, "memo": str("what it is for"), "idempotency_key": key("request")}, "from", "amount_ulxc"),
+	return append([]map[string]any{
+		// B48.16: naming a network sends from, or asks to be paid into, your USDC wallet; without one it is credits.
+		tool("wallet_send", "Send credits from your wallet to any agent's wallet on Talyvor, within your spending rules. "+
+			"Or, naming a network, send USDC from your own USDC wallet to an address: within your owner's permission, to an address "+
+			"your workspace has paid, it is sent; to a new address it waits for your owner to approve it, and nothing moves until then.",
+			map[string]any{"to": str("a wallet: its id, or its @handle; with a network, the 0x address to pay"),
+				"amount_ulxc": amount, "network": network, "token": token, "amount_minor": usdcAmount,
+				"memo": str("what it is for"), "idempotency_key": str(idempotencyKeyDescription)}, "to"),
+		tool("wallet_request", "Ask another agent's wallet for credits; it accepts or declines. "+
+			"Or, naming a network, ask to be paid USDC into your own USDC wallet: you get a link to share and the URI a QR code shows.",
+			map[string]any{"from": address, "amount_ulxc": amount, "network": network, "token": token, "amount_minor": usdcAmount,
+				"expires_at":    str("with a network: the RFC 3339 time the request ends"),
+				"payer_address": str("with a network, if one payer only: the 0x address whose payments count"),
+				"memo":          str("what it is for"), "idempotency_key": key("request")}),
 		tool("wallet_requests", "The requests for credits you made and were made.", none),
 		tool("wallet_answer_request", "Accept (pay, within your spending rules) or decline a request made of you.",
 			map[string]any{"request_id": str("the request"), "accept": accept, "idempotency_key": str(idempotencyKeyDescription)}, "request_id", "accept"),
@@ -195,7 +207,7 @@ func walletToolDefinitions() []map[string]any {
 			map[string]any{"pay_token": str("the invoice's pay link, or its token"), "funding": str("test (the default) or live")}, "pay_token"),
 		tool("wallet_credential", "Your Know Your Agent credential: a signed token any platform can check against Talyvor's published keys. "+
 			"It says who you are, who answers for you and how far they are verified, what you may do with live money and your limits.", none),
-	}
+	}, agentWalletToolDefinitions()...) // B48.16
 }
 
 type walletArgs struct {
@@ -241,6 +253,12 @@ type walletArgs struct {
 	SellCurrency   string `json:"sell_currency"`
 	BuyCurrency    string `json:"buy_currency"`
 	QuoteID        string `json:"quote_id"`
+	Network        string `json:"network"` // B48.16: the agent's USDC wallet's, on this network
+	Token          string `json:"token"`
+	Asset          string `json:"asset"`
+	Limit          int    `json:"limit"`
+	ExpiresAt      string `json:"expires_at"`
+	PayerAddress   string `json:"payer_address"`
 
 	raw json.RawMessage // the arguments as sent, for a tool that reads its own
 }
@@ -292,10 +310,19 @@ func (s *Server) walletTool(ctx context.Context, bank WalletBank, name, ws, agen
 		}
 		ctx = economy.WithMoveKey(ctx, a.IdempotencyKey) // B28.72
 	}
+	if res, ok, err := s.agentWalletTool(ctx, name, ws, agent, a); ok { // B48.16
+		return res, err
+	}
 	switch name {
 	case "wallet_send":
+		if a.AmountULXC == 0 { // B48.16: the schema cannot require it, as a send on a network has none
+			return nil, &toolRefusal{`invalid arguments: arguments needs "amount_ulxc", or a network and amount_minor`}
+		}
 		return bank.SendCredits(ctx, ws, agent, a.To, a.AmountULXC, a.Memo)
 	case "wallet_request":
+		if a.From == "" || a.AmountULXC == 0 {
+			return nil, &toolRefusal{`invalid arguments: arguments needs "from" and "amount_ulxc", or a network and amount_minor`}
+		}
 		return bank.RequestCredits(ctx, ws, agent, a.From, a.AmountULXC, a.Memo)
 	case "wallet_requests":
 		all, err := bank.ListMoneyRequests(ctx, ws)
