@@ -67,6 +67,9 @@ func (b2612Bank) SetAgentCardFrozen(context.Context, string, string, bool) (econ
 func (b2612Bank) SetAgentCardDrawsOn(context.Context, string, string, string) (economy.AgentCard, error) {
 	return economy.AgentCard{}, economy.ErrNoAgentCard
 }
+func (b2612Bank) SetAgentCardMerchantLock(context.Context, string, string, string, string) (economy.AgentCard, error) {
+	return economy.AgentCard{}, economy.ErrNoAgentCard
+}
 
 // B26.12 — a cardholder Stripe refuses answers 400 with Stripe's reason, its ids taken out; Stripe refusing
 // Lens's own key stays a 502 that says nothing.
