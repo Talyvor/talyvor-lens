@@ -39,6 +39,7 @@ type agentCardBank interface {
 	AgentBook(ctx context.Context, workspaceID string) (economy.AgentBook, error)
 	GetAgentCard(ctx context.Context, workspaceID, agentID string) (economy.AgentCard, error)
 	SaveAgentCard(ctx context.Context, workspaceID string, c economy.AgentCard) (economy.AgentCard, error)
+	LockdownStatus(ctx context.Context, workspaceID string) (economy.WorkspaceLockdown, error)
 	SetAgentCardFrozen(ctx context.Context, workspaceID, agentID string, frozen bool) (economy.AgentCard, error)
 	SetAgentCardDrawsOn(ctx context.Context, workspaceID, agentID, drawsOn string) (economy.AgentCard, error)
 	CancelAgentCard(ctx context.Context, workspaceID, agentID string) (economy.AgentCard, error)
@@ -72,6 +73,14 @@ func mountAgentCardRoutes(r chi.Router, bank agentCardBank, issuer agentcard.Iss
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// B50.58: nor while the workspace is locked down.
+		if l, err := bank.LockdownStatus(req.Context(), wsID); err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		} else if l.Active {
+			writeJSONErr(w, http.StatusForbidden, economy.ErrLockedDown.Error())
+			return
+		}
 		card, err := issuer.IssueCard(req.Context(), wsID, agentID, agentCardName(req.Context(), bank, wsID, agentID), holder)
 		if writeIssuerErr(w, err) {
 			return
@@ -80,6 +89,9 @@ func mountAgentCardRoutes(r chi.Router, bank agentCardBank, issuer agentcard.Iss
 		switch {
 		case errors.Is(err, economy.ErrAgentHasCard):
 			writeJSONErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, economy.ErrLockedDown): // locked down while this one was issued: no agent holds it
+			cancelAtStripe(req.Context(), issuer, wsID, card.ID)
+			writeJSONErr(w, http.StatusForbidden, err.Error())
 		case err != nil:
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		default:
