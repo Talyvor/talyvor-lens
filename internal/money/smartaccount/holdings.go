@@ -61,6 +61,35 @@ func (c Chain) Holdings(ctx context.Context, address string) ([]holdings.Held, e
 	return out, nil
 }
 
+// Balances is what address holds of the chain's coin (Address "") and of each of tokens, every one read on its own and
+// every read answered: a node that fails is an error, never "holds nothing" (B52.37). No log search, which a live node
+// caps. A token with no contract on this chain answers empty: none.
+func (c Chain) Balances(ctx context.Context, address string, tokens []string) ([]holdings.Held, error) {
+	w, err := addressW(address)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	coin, err := c.quantity(ctx, "eth_getBalance", []any{address, "latest"})
+	if err != nil {
+		return nil, err
+	}
+	out := []holdings.Held{{Address: "", Decimals: 18, Amount: coin}}
+	for _, token := range tokens {
+		bal, err := c.ethCallData(ctx, token, call("balanceOf(address)", w))
+		if err != nil {
+			return nil, err
+		}
+		if len(bal) == 0 {
+			continue
+		}
+		if len(bal) != 32 {
+			return nil, fmt.Errorf("smartaccount: %s answered balanceOf with %d bytes", token, len(bal))
+		}
+		out = append(out, holdings.Held{Address: token, Amount: new(big.Int).SetBytes(bal)})
+	}
+	return out, nil
+}
+
 func (c Chain) ethCallData(ctx context.Context, to string, data []byte) ([]byte, error) {
 	var s string
 	if err := c.rpc(ctx, c.RPCURL, "eth_call", []any{map[string]string{"to": to, "data": hexBytes(data)}, "latest"}, &s); err != nil {
@@ -96,4 +125,22 @@ func abiText(b []byte) string {
 		s = s[:64]
 	}
 	return strings.ToValidUTF8(string(s), "")
+}
+
+// TokenDomain is the EIP-712 domain name and version token signs its transfer authorisations under (EIP-3009, which
+// x402 pays with): what its name() and version() answer, which differ from chain to chain.
+func (c Chain) TokenDomain(ctx context.Context, token string) (name, version string, err error) {
+	for _, f := range []struct {
+		fn  string
+		out *string
+	}{{"name()", &name}, {"version()", &version}} {
+		b, err := c.ethCallData(ctx, token, selector(f.fn))
+		if err != nil {
+			return "", "", err
+		}
+		if *f.out = abiText(b); *f.out == "" {
+			return "", "", fmt.Errorf("%w: %s answers no %s", ErrInvalid, token, f.fn)
+		}
+	}
+	return name, version, nil
 }

@@ -437,8 +437,8 @@ func (s *DualTokenStore) payingAccount(ctx context.Context, workspaceID string, 
 // connection (B50.56).
 func payingAccountOn(ctx context.Context, q pgxDB, workspaceID string, in OutsidePayment) (payingAccount, error) {
 	var a payingAccount
-	var purpose, currency, status string
-	err := q.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.id, c.partner_account_ref,
+	var purpose, currency, status, companyStatus string
+	err := q.QueryRow(ctx, `SELECT a.id, COALESCE(a.agent_id, ''), a.purpose, a.currency, a.status, c.status, c.id, c.partner_account_ref,
 			COALESCE((SELECT p.id FROM money_accounts p WHERE p.workspace_id = c.workspace_id AND p.purpose = 'partner'
 				AND p.partner_account_ref = c.partner_account_ref AND c.partner_account_ref <> '' LIMIT 1), '')
 		FROM money_accounts a JOIN money_accounts c ON c.id = COALESCE(a.parent_account_id, a.id)
@@ -446,7 +446,7 @@ func payingAccountOn(ctx context.Context, q pgxDB, workspaceID string, in Outsid
 		  AND (($3 <> '' AND a.id = $3) OR ($3 = '' AND $4 <> '' AND a.agent_id = $4 AND a.status <> 'closed')
 		    OR ($3 = '' AND $4 = '' AND a.purpose = 'company' AND a.status <> 'closed'))
 		ORDER BY a.created_at DESC LIMIT 1`, workspaceID, in.Currency, in.AccountID, in.AgentID).
-		Scan(&a.id, &a.agentID, &purpose, &currency, &status, &a.companyID, &a.partnerRef, &a.partnerID)
+		Scan(&a.id, &a.agentID, &purpose, &currency, &status, &companyStatus, &a.companyID, &a.partnerRef, &a.partnerID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return a, fmt.Errorf("%w: no %s account to pay from. Open one at /v1/money/accounts", ErrMoneyAccountNotFound, in.Currency)
@@ -456,6 +456,8 @@ func payingAccountOn(ctx context.Context, q pgxDB, workspaceID string, in Outsid
 		return a, fmt.Errorf("%w: an agent pays only from its own account", ErrMoneyAccountNotFound)
 	case status != MoneyOpen:
 		return a, fmt.Errorf("%w: %s is %s", ErrMoneyAccountNotOpen, a.id, status)
+	case companyStatus != MoneyOpen: // B30.24: a frozen company account holds its agents' sub-accounts too
+		return a, fmt.Errorf("%w: the company's %s account %s is %s", ErrMoneyAccountNotOpen, currency, a.companyID, companyStatus)
 	case a.partnerRef == "" || a.partnerID == "":
 		return a, fmt.Errorf("%w: the company's %s account is not held at a partner", ErrMoneyAccountNotOpen, currency)
 	}

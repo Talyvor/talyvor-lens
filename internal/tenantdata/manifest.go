@@ -119,6 +119,7 @@ var Manifest = map[string]Entry{
 	// question or answer is held in either.
 	"deletion_requests":         {Retain, "B21.3: the record that erasure was requested and completed"},
 	"workspace_requests":        {Retain, "B59.27: the record that support, a complaint, closing the account, an export or a deletion was asked for and how Talyvor answered, as B21.3 keeps deletion_requests"},
+	"account_deletions":         {Retain, "B52.37: the record that the person deleted their account, and when; the workspace's tokens issued before it are refused against it"},
 	"stored_answer_deletions":   {Retain, "B21.3: the audit log of each deletion of stored answers"},
 	"answer_removals":           {Retain, "B23.1: who marked a served answer wrong, and what was removed; holds no question or answer"},
 	"agent_postings":            {Retain, "B19.1: audit-guarded (0140, append-only): the agents' double-entry LXC ledger; financial-record retention"},
@@ -126,6 +127,7 @@ var Manifest = map[string]Entry{
 	"agent_payee_payments":      {Retain, "B28.304: audit-guarded (0191, append-only): every payment an agent's rules let through and whom it paid, which its per-payee daily caps count; financial-record retention"},
 	"agent_rule_spends":         {Retain, "B61.41: audit-guarded (2611160734b, append-only): what each movement rules in pounds or euros let through was worth in their currency then, which their period limits count; financial-record retention"},
 	"payment_proofs":            {Retain, "B62.1: audit-guarded (2611162348b, append-only): for each payment an agent's rules let through, what the owner was shown and signed, the rule and rules version, and what was sent; financial-record retention"},
+	"stopped_payments":          {Retain, "B62.9: audit-guarded (2611230421a, append-only): each payment stopped because it was not the one its approval showed, what was shown and would have been sent, and what differed; financial-record retention"},
 	"agent_card_settlements":    {Retain, "B19.25: audit-guarded (0157, append-only): each capture, release and refund that settled an agent card authorisation, and the LXC it moved; financial-record retention"},
 	"agent_transfers":           {Retain, "B22.3: keys `from_workspace_id`+`to_workspace_id`; audit-guarded (0159, append-only): each transfer of credits between two agents and its postings; financial-record retention"},
 	"agent_tool_calls":          {Retain, "B19.9: audit-guarded (0145, append-only): every call an agent made to its wallet tools; the record of what it asked and was refused"},
@@ -191,6 +193,10 @@ var Manifest = map[string]Entry{
 	// B59.30 (0379): their keys are longer than the rest, so they stand apart rather than realign them.
 	"workspace_business_details": {Delete, "B59.30: a Business workspace's company name and who last saved it; its number and country are on workspaces"},
 	"workspace_business_people":  {Delete, "B59.30: the company's people with control — each one's name, role and share; deleting the details row deletes these too (ON DELETE CASCADE)"},
+
+	// B48.10: their keys are longer than the rest, so they stand apart rather than realign them.
+	"crypto_payment_requests":         {Retain, "B48.10: each request to be paid into an agent's crypto wallet — amount, network, the wallet, memo, expiry, the payer's address when named and the owner's decision on an overpayment; it explains why money arrived; financial-record retention"},
+	"crypto_payment_request_payments": {Retain, "B48.10: which chain_movements deposit paid which request, how much and whether it came late; financial-record retention"},
 
 	// B30.9: its key is longer than the rest, so it stands apart rather than realign them.
 	"capability_terms_acceptances": {Retain, "B30.9: audit-guarded (0235, append-only): each acceptance of a capability's terms — the version, the person, when, and an HMAC of the address it came from, never the address; evidence of what the customer agreed to"},
