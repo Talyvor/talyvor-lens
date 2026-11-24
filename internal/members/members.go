@@ -202,6 +202,35 @@ func (s *Store) Accept(ctx context.Context, identity, ownWS, token string) (m Me
 	return m, created, err
 }
 
+// Preview is what an invite link is to, for identity before it joins (B52.45): the workspace's id and name, answered
+// exactly as Accept would answer the link (ErrNotFound, ErrConflict), with nobody added and the link not used.
+func (s *Store) Preview(ctx context.Context, identity, ownWS, token string) (ws string, name string, err error) {
+	var live bool
+	var created time.Time
+	err = s.pool.QueryRow(ctx, `SELECT i.workspace_id, COALESCE(w.name, i.workspace_id), i.created_at,
+			i.revoked_at IS NULL AND i.uses < i.max_uses AND i.expires_at > now()
+		FROM workspace_member_invites i LEFT JOIN workspaces w ON w.id = i.workspace_id WHERE i.token_sha256 = $1`,
+		hashToken(token)).Scan(&ws, &name, &created, &live)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
+		return "", "", fmt.Errorf("%w: no such invite", ErrNotFound)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("members: preview: %w", err)
+	}
+	if ws == ownWS {
+		return "", "", fmt.Errorf("%w: this is your own workspace", ErrConflict)
+	}
+	var removed bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND identity = $2
+		AND removed_at >= $3)`, ws, identity, created).Scan(&removed); err != nil {
+		return "", "", fmt.Errorf("members: preview: %w", err)
+	}
+	if removed {
+		return "", "", fmt.Errorf("%w: no such invite", ErrNotFound)
+	}
+	return ws, name, nil
+}
+
 // MemberID is identity's live membership of ws, or "" when it has none.
 func (s *Store) MemberID(ctx context.Context, ws, identity string) (string, error) {
 	var id string
