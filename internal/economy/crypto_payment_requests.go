@@ -251,18 +251,22 @@ func (x *ChainIndexer) CreatePaymentRequest(ctx context.Context, in CryptoReques
 		if err != nil {
 			return CryptoRequest{}, err
 		}
+		mode, err := x.s.paymentMode(ctx, tx, payerWS, "stablecoin", Payee{Kind: "agent", ID: in.AgentID, Name: name}, "") // B62.7
+		if err != nil {
+			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: %w", err)
+		}
 		approval = "apr_" + uuid.NewString()
 		// No payee: the requester is another workspace's agent, never one this workspace's rules can allow for good. One
 		// open approval per requester and payer (idx_agent_approvals_open on the requester in the fingerprint): a
 		// request made while one waits is kept without another, and answered the same, so no agent fills another
 		// owner's approvals nor learns from the answer whose the address is.
 		tag, err := tx.Exec(ctx, `INSERT INTO agent_approvals (id, workspace_id, agent_id, fingerprint, amount_ulxc, reason, memo,
-			expires_at, payment_request_id, currency, amount_minor, trust)
-			VALUES ($1, $2, $3, $4, 0, $5, $6, LEAST($7, now() + $8 * interval '1 microsecond'), $9, $10, $11, $12)
+			expires_at, payment_request_id, currency, amount_minor, trust, mode)
+			VALUES ($1, $2, $3, $4, 0, $5, $6, LEAST($7, now() + $8 * interval '1 microsecond'), $9, $10, $11, $12, $13)
 			ON CONFLICT (agent_id, fingerprint) WHERE status IN ('pending', 'approved') DO NOTHING`,
 			approval, payerWS, payerAgent, "crypto_request:"+in.AgentID,
 			fmt.Sprintf("%s asks to be paid %s USDC on %s", name, usdcString(in.AmountMinor), in.Network), in.Memo,
-			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, trust)
+			in.ExpiresAt, x.s.approvalLife().Microseconds(), id, money.USDC, in.AmountMinor, trust, mode)
 		if err != nil {
 			return CryptoRequest{}, fmt.Errorf("economy: request to be paid: the payer's approval: %w", err)
 		}

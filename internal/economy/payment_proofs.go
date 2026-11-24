@@ -103,6 +103,7 @@ type PaymentProof struct {
 	KeyID        string          `json:"key_id,omitempty"`
 	SignedAt     *time.Time      `json:"signed_at,omitempty"`
 	Sent         ProofSent       `json:"sent"`
+	Mode         string          `json:"mode"` // sandbox | live, as it was when the payment moved (B62.7)
 	CreatedAt    time.Time       `json:"created_at"`
 	// Verified: the signature is by KeyID over Statement, and Statement shows exactly Shown. False with no signature.
 	Verified bool `json:"verified"`
@@ -397,9 +398,9 @@ func sentOf(ctx context.Context, q pgxDB, workspaceID, agentID, ref string, req 
 		Task: taskIn(ctx, workspaceID)}, nil
 }
 
-// recordPaymentProof writes the record of the payment ref the rules let through by rule, inside its transaction tx:
-// with u, the approval it used; without, the payment as the rules judged it, signed by nobody.
-func recordPaymentProof(ctx context.Context, tx pgx.Tx, workspaceID, agentID, ref, rule string, rulesVersion *int64, sent ProofSent, u *usedApproval) error {
+// recordPaymentProof writes the record of the payment ref the rules let through by rule, in mode (B62.7), inside its
+// transaction tx: with u, the approval it used; without, the payment as the rules judged it, signed by nobody.
+func recordPaymentProof(ctx context.Context, tx pgx.Tx, workspaceID, agentID, ref, rule, mode string, rulesVersion *int64, sent ProofSent, u *usedApproval) error {
 	shown := ProofShown{AgentID: agentID, Payee: sent.Payee, AmountMinor: sent.AmountMinor, Currency: sent.Currency, Rule: rule, RulesVersion: rulesVersion}
 	var approvalID, statement, keyKind, keyID string
 	var signature []byte
@@ -423,10 +424,10 @@ func recordPaymentProof(ctx context.Context, tx pgx.Tx, workspaceID, agentID, re
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO payment_proofs (id, workspace_id, agent_id, payment_ref, approval_id, rule, rules_version, shown,
-			statement, signature, key_kind, key_id, signed_at, sent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (agent_id, payment_ref) DO NOTHING`,
+			statement, signature, key_kind, key_id, signed_at, sent, mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT (agent_id, payment_ref) DO NOTHING`,
 		"prf_"+uuid.NewString(), workspaceID, agentID, ref, approvalID, rule, rulesVersion, string(sh), statement, jsonText(signature), keyKind, keyID,
-		signedAt, string(se)); err != nil {
+		signedAt, string(se), mode); err != nil {
 		return fmt.Errorf("economy: payment record: %w", err)
 	}
 	return nil
@@ -443,7 +444,7 @@ func jsonText(b []byte) *string {
 }
 
 const paymentProofColumns = `id, workspace_id, agent_id, payment_ref, approval_id, rule, rules_version::bigint, shown, statement, signature,
-	key_kind, key_id, signed_at, sent, created_at`
+	key_kind, key_id, signed_at, sent, mode, created_at`
 
 // PaymentProof reads workspaceID's record of one payment, by the record's id, the payment's reference, the id of the
 // money entry that moved it or the id of the approval it used (B62.9), and says whether its signature verifies.
@@ -456,7 +457,7 @@ func (s *DualTokenStore) PaymentProof(ctx context.Context, workspaceID, id strin
 		OR payment_ref = (SELECT idempotency_key FROM money_entries WHERE id = $2 AND workspace_id = $1) OR (approval_id = $2 AND $2 <> ''))
 		ORDER BY created_at LIMIT 1`,
 		workspaceID, id).Scan(&p.ID, &p.WorkspaceID, &p.AgentID, &p.PaymentRef, &p.ApprovalID, &p.Rule, &p.RulesVersion, &shown, &p.Statement,
-		&sig, &p.KeyKind, &p.KeyID, &p.SignedAt, &sent, &p.CreatedAt)
+		&sig, &p.KeyKind, &p.KeyID, &p.SignedAt, &sent, &p.Mode, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPaymentProofNotFound
 	}
