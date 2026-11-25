@@ -185,8 +185,11 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	var sign func(string) *passkey.Assertion // B48.49: the owner's own sends are signed by their passkey, as the app signs them
 	call := func(method, path, key, body string, out any) int {
 		t.Helper()
-		if method == http.MethodPost && strings.HasSuffix(path, "/crypto-sends") && key != "" {
+		switch {
+		case method == http.MethodPost && strings.HasSuffix(path, "/crypto-sends") && key != "":
 			body = b4849Signed(t, r, owner, sign, strings.TrimSuffix(path, "/crypto-sends"), key, body)
+		case method == http.MethodPost && strings.HasSuffix(path, "/approve"):
+			body = b4849SignedApproval(t, r, owner, sign, path, body)
 		}
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))

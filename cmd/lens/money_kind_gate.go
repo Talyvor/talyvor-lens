@@ -144,10 +144,13 @@ var moneyRoutes = map[string]moneySide{
 	// agent_crypto_sends_handler.go
 	"/v1/workspaces/{}/agents/{}/crypto-sends":            moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/crypto-sends/quote":      moneySideOnChain,
-	"/v1/workspaces/{}/agents/{}/crypto-sends/challenge":  moneySideOnChain, // B48.49
 	"/v1/workspaces/{}/agents/{}/crypto-sends/{}":         moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/approve": moneySideOnChain,
 	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/decline": moneySideOnChain,
+
+	// B48.49: the challenges the owner signs their own send, and their yes to the agent's, over.
+	"/v1/workspaces/{}/agents/{}/crypto-sends/challenge":            moneySideOnChain,
+	"/v1/workspaces/{}/agents/{}/crypto-sends/{}/approve/challenge": moneySideOnChain,
 
 	// agent_escrows_handler.go
 	"/v1/workspaces/{}/agents/{}/escrows":  moneySideEither,

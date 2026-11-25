@@ -24,7 +24,8 @@ import (
 //	                                                                     owner, its signed assertion: sends it once
 //	GET  /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends             what the agent sent and was sent
 //	GET  /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}        one send, its receipt read again
-//	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/approve  {test_amount_minor?} — a send to a new address
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/approve  {test_amount_minor?, assertion} — a send to a new address
+//	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/approve/challenge  {test_amount_minor?} — what that yes is signed over
 //	POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{id}/decline
 //
 // `to` is a 0x address, an ENS name (name.eth, read on the network's own registry), the name of an address the owner saved
@@ -32,8 +33,9 @@ import (
 // into on that network (B48.32) and, for anyone else, the one answer for nobody found.
 //
 // B48.49: once the workspace has a passkey or the phone's key, the owner's own send is signed by one of them over its
-// challenge, which names the address `to` resolved to; an agent's own key signs nothing, as its sends go through the
-// owner's signed spend permission.
+// challenge, which names the address `to` resolved to, and so is their yes to a send the agent asked for to a new
+// address, and a test amount sent there first; an agent's own key signs nothing, as its sends go through the owner's
+// signed spend permission.
 //
 // Quoting, sending and reading take the agent's own key or the workspace's owner; only the owner, signed in, says yes
 // or no to a send to a new address, and only their own send there goes without asking. Mounted in the authed group.
@@ -46,7 +48,8 @@ type agentCryptoSendBank interface {
 	SendAgentCryptoSigned(ctx context.Context, workspaceID, agentID, by, key string, in economy.CryptoSendRequest, a *passkey.Assertion) (economy.CryptoSend, error)
 	AgentCryptoSends(ctx context.Context, workspaceID, agentID string) ([]economy.CryptoSend, error)
 	AgentCryptoSend(ctx context.Context, workspaceID, agentID, id string) (economy.CryptoSend, error)
-	AnswerAgentCryptoSend(ctx context.Context, workspaceID, agentID, id, by string, approve bool, testMinor int64) (economy.CryptoSend, error)
+	AnswerAgentCryptoSend(ctx context.Context, workspaceID, agentID, id, by string, approve bool, testMinor int64, a *passkey.Assertion) (economy.CryptoSend, error)
+	CryptoSendApprovalChallenge(ctx context.Context, workspaceID, agentID, id string, testMinor int64) (string, []string, error)
 }
 
 // signedInOwner is the workspace owner's signed-in session, as keyOwnerOnly admits it: never a key, admin-scoped or not.
@@ -169,6 +172,37 @@ func mountAgentCryptoSendRoutes(r chi.Router, bank agentCryptoSendBank) {
 		}
 		writeCryptoSend(w, c)
 	})
+	// answerBody is an answer's {test_amount_minor?, assertion?}; an empty body is a whole yes or no, unsigned.
+	answerBody := func(w http.ResponseWriter, req *http.Request) (testMinor int64, a *passkey.Assertion, ok bool) {
+		var in struct {
+			TestAmountMinor int64              `json:"test_amount_minor"`
+			Assertion       *passkey.Assertion `json:"assertion"`
+		}
+		if req.ContentLength != 0 {
+			if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 16<<10)).Decode(&in); err != nil || in.TestAmountMinor < 0 {
+				writeJSONErr(w, http.StatusBadRequest, `body is empty, or {"test_amount_minor": <positive, less than the send>} to send that much first, with the owner's "assertion"`)
+				return 0, nil, false
+			}
+		}
+		return in.TestAmountMinor, in.Assertion, true
+	}
+	r.Post("/v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{sendID}/approve/challenge", func(w http.ResponseWriter, req *http.Request) {
+		if _, ok := signedInOwner(req); !ok {
+			writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, signed in, answers a send to a new address")
+			return
+		}
+		testMinor, _, ok := answerBody(w, req)
+		if !ok {
+			return
+		}
+		c, creds, err := bank.CryptoSendApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"),
+			chi.URLParam(req, "sendID"), testMinor)
+		if err != nil {
+			writeCryptoSendErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required"})
+	})
 	for _, answer := range []string{"approve", "decline"} {
 		approve := answer == "approve"
 		r.Post("/v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/{sendID}/"+answer, func(w http.ResponseWriter, req *http.Request) {
@@ -177,17 +211,12 @@ func mountAgentCryptoSendRoutes(r chi.Router, bank agentCryptoSendBank) {
 				writeJSONErr(w, http.StatusForbidden, "only the workspace's owner, signed in, answers a send to a new address")
 				return
 			}
-			var in struct {
-				TestAmountMinor int64 `json:"test_amount_minor"`
-			}
-			if req.ContentLength != 0 {
-				if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1<<10)).Decode(&in); err != nil || in.TestAmountMinor < 0 {
-					writeJSONErr(w, http.StatusBadRequest, `body is empty, or {"test_amount_minor": <positive, less than the send>} to send that much first`)
-					return
-				}
+			testMinor, a, ok := answerBody(w, req)
+			if !ok {
+				return
 			}
 			c, err := bank.AnswerAgentCryptoSend(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"),
-				chi.URLParam(req, "sendID"), by, approve, in.TestAmountMinor)
+				chi.URLParam(req, "sendID"), by, approve, testMinor, a)
 			if err != nil {
 				writeCryptoSendErr(w, err)
 				return

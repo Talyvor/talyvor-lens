@@ -892,28 +892,66 @@ func (s *DualTokenStore) AgentCryptoSend(ctx context.Context, workspaceID, agent
 	return c, nil
 }
 
-// AnswerAgentCryptoSend is the owner's answer to a send waiting for them: approve sends it; decline refuses it; a
-// positive testMinor sends that much to the same address first, as the owner's own send, and the send keeps waiting.
-func (s *DualTokenStore) AnswerAgentCryptoSend(ctx context.Context, workspaceID, agentID, id, by string, approve bool, testMinor int64) (CryptoSend, error) {
+// approvalPurpose is what the owner's yes to c is signed over (B48.49): the test amount's own send, under its key,
+// when testMinor is positive; otherwise c itself — its id, amount and address.
+func (c CryptoSend) approvalPurpose(testMinor int64) string {
+	if testMinor > 0 {
+		return cryptoSendPurpose(c.AgentID, c.ID+":test", CryptoSendQuote{Network: c.Network, AmountMinor: testMinor, To: c.To})
+	}
+	return fmt.Sprintf("crypto_send_approve:%s:%d:%s", c.ID, c.AmountMinor, c.To)
+}
+
+// waitingSend is agentID's send id while it waits for the owner, and its network.
+func (s *DualTokenStore) waitingSend(ctx context.Context, workspaceID, agentID, id string, testMinor int64) (CryptoSend, CryptoSendNetwork, error) {
 	c, err := s.cryptoSend(ctx, workspaceID, agentID, id)
 	if err != nil {
-		return c, err
+		return c, CryptoSendNetwork{}, err
 	}
 	if c.Status != "awaiting_owner" {
-		return c, fmt.Errorf("%w: this send is %s, not waiting for you", ErrCryptoSend, c.Status)
+		return c, CryptoSendNetwork{}, fmt.Errorf("%w: this send is %s, not waiting for you", ErrCryptoSend, c.Status)
+	}
+	if testMinor >= c.AmountMinor {
+		return c, CryptoSendNetwork{}, fmt.Errorf("%w: a test amount is less than the send", ErrCryptoSend)
 	}
 	n, err := s.cryptoSendNetwork(c.Network)
+	return c, n, err
+}
+
+// CryptoSendApprovalChallenge issues the challenge the owner signs their yes to the send id over — or, with a positive
+// testMinor, the test amount sent to its address first — and the workspace's passkeys that may sign it (B48.49).
+func (s *DualTokenStore) CryptoSendApprovalChallenge(ctx context.Context, workspaceID, agentID, id string, testMinor int64) (challenge string,
+	credentialIDs []string, err error) {
+	c, _, err := s.waitingSend(ctx, workspaceID, agentID, id, testMinor)
+	if err != nil {
+		return "", nil, err
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	challenge, err = s.newChallenge(ctx, workspaceID, c.approvalPurpose(testMinor))
+	return challenge, credentialIDs, err
+}
+
+// AnswerAgentCryptoSend is the owner's answer to a send waiting for them: approve sends it; decline refuses it; a
+// positive testMinor sends that much to the same address first, as the owner's own send, and the send keeps waiting.
+// B48.49: once the workspace has a passkey or device key, a yes and a test amount are signed by one of them (a, over
+// CryptoSendApprovalChallenge's challenge); a decline moves nothing and is not.
+func (s *DualTokenStore) AnswerAgentCryptoSend(ctx context.Context, workspaceID, agentID, id, by string, approve bool, testMinor int64,
+	a *passkey.Assertion) (CryptoSend, error) {
+	c, n, err := s.waitingSend(ctx, workspaceID, agentID, id, testMinor)
 	if err != nil {
 		return c, err
 	}
 	switch {
 	case testMinor > 0:
-		if testMinor >= c.AmountMinor {
-			return c, fmt.Errorf("%w: a test amount is less than the send", ErrCryptoSend)
-		}
 		in := c.request()
 		in.AmountMinor = testMinor
-		return s.SendAgentCrypto(ctx, workspaceID, agentID, by, true, c.ID+":test", in)
+		return s.sendAgentCrypto(ctx, workspaceID, agentID, by, true, c.ID+":test", in, true, a)
 	case !approve:
 		tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET status = 'refused', reason = 'the owner declined it', approved_by = $2,
 			updated_at = now() WHERE id = $1 AND status = 'awaiting_owner'`, c.ID, by)
@@ -927,12 +965,22 @@ func (s *DualTokenStore) AnswerAgentCryptoSend(ctx context.Context, workspaceID,
 		}
 		return s.cryptoSend(ctx, workspaceID, agentID, c.ID)
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET status = 'sending', approved_by = $2, updated_at = now()
-		WHERE id = $1 AND status = 'awaiting_owner'`, c.ID, by)
-	if err != nil {
+	var approved bool
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE agent_crypto_sends SET status = 'sending', approved_by = $2, updated_at = now()
+			WHERE id = $1 AND status = 'awaiting_owner'`, c.ID, by)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		approved = true
+		return s.authorizeSignedTx(ctx, tx, workspaceID, c.approvalPurpose(0), a, ErrCryptoSendUnsigned)
+	}); err != nil {
+		if errors.Is(err, ErrCryptoSendUnsigned) || errors.Is(err, passkey.ErrInvalid) {
+			return c, err
+		}
 		return c, fmt.Errorf("economy: crypto send: %w", err)
 	}
-	if tag.RowsAffected() == 1 {
+	if approved {
 		if err := s.AppendAudit(ctx, workspaceID, "agent:"+agentID, "agent.crypto_send_approved", map[string]any{"send_id": c.ID, "by": by}); err != nil {
 			return c, err
 		}

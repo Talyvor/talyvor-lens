@@ -70,11 +70,33 @@ func b4849Signed(t *testing.T, r http.Handler, owner *auth.AuthContext, sign fun
 	return string(b)
 }
 
+// b4849SignedApproval is the owner's answer at path (…/crypto-sends/{id}/approve) with their passkey's assertion over
+// its challenge, as the app sends it; body as it is when the challenge route gives none for it.
+func b4849SignedApproval(t *testing.T, r http.Handler, owner *auth.AuthContext, sign func(string) *passkey.Assertion, path, body string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path+"/challenge", strings.NewReader(body))
+	req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		return body
+	}
+	var ch struct{ Challenge string }
+	in := map[string]any{}
+	if err := json.Unmarshal(w.Body.Bytes(), &ch); err != nil || (body != "" && json.Unmarshal([]byte(body), &in) != nil) {
+		t.Fatalf("challenge %s for %s: %v", w.Body.String(), body, err)
+	}
+	in["assertion"] = sign(ch.Challenge)
+	b, _ := json.Marshal(in)
+	return string(b)
+}
+
 // B48.49 — the owner's own send from an agent's crypto wallet, through the real routes on a migrated schema: to an ENS
 // name, read on the network's own registry and shown in the quote with the address it resolved to; to an address the
 // owner saved and named, by its name; and, once the workspace has a passkey, only signed by it over that send's own
 // challenge. An unsigned send, and one signed for another amount, are refused and nothing is sent; the signed one is
-// sent once however often it is asked under its key. Every check is on the rows kept and the operations the bundler
+// sent once however often it is asked under its key. The owner's yes to a send their agent asked for to a new address,
+// and a test amount sent there first, are signed the same way. Every check is on the rows kept and the operations the bundler
 // took.
 func TestB4849_TheOwnerSendsToAnENSNameOrASavedAddressSignedByTheirPasskey(t *testing.T) {
 	pool := agentRoutesDB(t)
@@ -245,11 +267,53 @@ func TestB4849_TheOwnerSendsToAnENSNameOrASavedAddressSignedByTheirPasskey(t *te
 		t.Fatalf("landed owner's sends = %d of %d, %v; want 2 of 12000000", landed, sum, err)
 	}
 
-	// 6. Removed, its name sends to nobody.
+	// 6. The agent asks to pay a new address: the owner's unsigned yes, or test amount, sends nothing; signed, each goes once.
+	const stranger = "0x0000000000000000000000000000000000005a5a"
+	waiting, err := store.SendAgentCrypto(ctx, ws, agent.ID, "agent:"+agent.ID, false, "pay-stranger", economy.CryptoSendRequest{To: stranger,
+		Network: "base-sepolia", Token: "USDC", AmountMinor: 3_000_000})
+	if err != nil || waiting.Status != "awaiting_owner" {
+		t.Fatalf("the agent's send to a new address = %+v %v", waiting, err)
+	}
+	approve := base + "/crypto-sends/" + waiting.ID + "/approve"
+	for _, body := range []string{"", `{"test_amount_minor":100}`} {
+		if code := call(http.MethodPost, approve, "", body, nil); code != http.StatusForbidden || len(chain.payments()) != 2 {
+			t.Fatalf("the owner's unsigned answer %q = %d with %d operations taken, want 403 and nothing sent", body, code, len(chain.payments()))
+		}
+	}
+	// A yes signed for the test amount does not approve the whole send.
+	b, _ = json.Marshal(map[string]any{"assertion": json.RawMessage(mustField(t, b4849SignedApproval(t, r, owner, sign, approve, `{"test_amount_minor":100}`), "assertion"))})
+	if code := call(http.MethodPost, approve, "", string(b), nil); code != http.StatusForbidden || len(chain.payments()) != 2 {
+		t.Fatalf("a yes signed for the test amount = %d with %d operations taken, want 403 and nothing sent", code, len(chain.payments()))
+	}
+	var test, approved economy.CryptoSend
+	if code := call(http.MethodPost, approve, "", b4849SignedApproval(t, r, owner, sign, approve, `{"test_amount_minor":100}`), &test); code != http.StatusOK ||
+		test.Status != "landed" || test.AmountMinor != 100 {
+		t.Fatalf("a signed test amount = %d %+v", code, test)
+	}
+	if code := call(http.MethodPost, approve, "", b4849SignedApproval(t, r, owner, sign, approve, ""), &approved); code != http.StatusOK ||
+		approved.Status != "landed" || approved.ApprovedBy != "user:owner" {
+		t.Fatalf("a signed yes = %d %+v", code, approved)
+	}
+	if p := chain.payments(); len(p) != 4 || !strings.EqualFold(p[2].To, stranger) || p[2].Amount.Int64() != 100 ||
+		!strings.EqualFold(p[3].To, stranger) || p[3].Amount.Int64() != 3_000_000 {
+		t.Fatalf("the bundler took %+v, want 100 then 3000000 of USDC to the new address", p)
+	}
+
+	// 7. Removed, its name sends to nobody.
 	if code := call(http.MethodDelete, "/v1/workspaces/"+ws+"/crypto-addresses/"+saved.ID, "", "", nil); code != http.StatusNoContent {
 		t.Fatalf("remove = %d", code)
 	}
 	if code := call(http.MethodPost, base+"/crypto-sends/quote", "", send("cold storage", 2_000_000), nil); code != http.StatusNotFound {
 		t.Fatalf("quote to a removed name = %d, want 404", code)
 	}
+}
+
+// mustField is the raw JSON of field in body.
+func mustField(t *testing.T, body, field string) string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &m); err != nil || m[field] == nil {
+		t.Fatalf("no %s in %s: %v", field, body, err)
+	}
+	return string(m[field])
 }

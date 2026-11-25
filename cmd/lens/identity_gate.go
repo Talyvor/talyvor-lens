@@ -127,7 +127,10 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/money/people/pay/challenge":                             "a passkey challenge: the movement itself is asked",
 	"POST /v1/money/mandates/challenge":                               "a passkey challenge: the mandate itself is asked",
 	"POST /v1/money/payouts/{}/approve/challenge":                     "a passkey challenge: the movement itself is asked",
-	"POST /v1/workspaces/{}/agents/{}/crypto-sends/challenge":         "a passkey challenge: the send itself is asked", // B48.49
+
+	// B48.49: the challenges the owner signs their own crypto send, and their yes to the agent's, over.
+	"POST /v1/workspaces/{}/agents/{}/crypto-sends/challenge":            "a passkey challenge: the send itself is asked",
+	"POST /v1/workspaces/{}/agents/{}/crypto-sends/{}/approve/challenge": "a passkey challenge: the yes itself is asked",
 
 	// Agents, keys and sign-in.
 	"POST /v1/workspaces/{}/agents":                              "an agent is made with nothing in it",
