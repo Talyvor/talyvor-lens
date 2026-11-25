@@ -40,12 +40,35 @@ type smartAccounts struct {
 	signers  money.Signers
 	provider string
 	factory  smartaccount.Factory
+	// B48.37: when set, the owner's spend permission is held on chain by the SpendPermissionManager at spendManager
+	// ("" is Coinbase's deployment) and the agent's key pays from its own account through spenders.
+	spenders     money.Spenders
+	spendManager string
 }
 
 // SetSmartAccounts makes each crypto agent's wallet its own smart account from factory, its key held by provider's
 // signers. Nothing in cmd/lens calls it until the provider's keys are on the server: until then no agent has one.
 func (s *DualTokenStore) SetSmartAccounts(signers money.Signers, provider string, factory smartaccount.Factory) {
 	s.smartAccounts = &smartAccounts{signers: signers, provider: provider, factory: factory}
+}
+
+// SetAgentSpenders has the owner's spend permissions held on chain too (B48.37): each one the owner signs answers the
+// grant call their passkey signs, the provider's policy for the agent's key is set to match, and the agent pays from
+// its own account through spenders. Set after SetSmartAccounts; like it, nothing in cmd/lens calls it until the
+// provider's keys are on the server.
+func (s *DualTokenStore) SetAgentSpenders(spenders money.Spenders, manager string) {
+	if s.smartAccounts != nil {
+		s.smartAccounts.spenders, s.smartAccounts.spendManager = spenders, manager
+	}
+}
+
+// spendChain is the chain as the owner's on-chain spend permissions need it: its SpendPermissionManager, at the same
+// address on every chain; nil when they are not held on chain.
+func (s *DualTokenStore) spendChain() *smartaccount.Chain {
+	if s.smartAccounts == nil || s.smartAccounts.spenders == nil {
+		return nil
+	}
+	return &smartaccount.Chain{SpendManager: s.smartAccounts.spendManager}
 }
 
 // SmartAccountOwner is one of a smart account's owner signers, at its place in the account.

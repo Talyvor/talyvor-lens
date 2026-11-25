@@ -266,3 +266,18 @@ func (c Chain) ProviderPolicy(p Permission, spender string) money.Policy {
 	}
 	return pol
 }
+
+// RevokeAsSpenderCalls are the agent's own account's calls that revoke each of sps as their spender (B48.37): the
+// freeze its key sends by itself, with no tap from the person, which the provider's policy (ProviderPolicy) accepts as
+// calls to the manager that pay nothing.
+func (c Chain) RevokeAsSpenderCalls(sps []SpendPermission) ([]money.Call, error) {
+	out := make([]money.Call, 0, len(sps))
+	for _, sp := range sps {
+		v, err := sp.value()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, money.Call{To: c.manager(), Value: "0", Data: hexBytes(call("revokeAsSpender("+spendPermissionType+")", v))})
+	}
+	return out, nil
+}
