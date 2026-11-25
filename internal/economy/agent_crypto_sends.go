@@ -69,7 +69,7 @@ func (s *DualTokenStore) SetCryptoSendNetworks(nets []CryptoSendNetwork) {
 
 // CryptoSendRequest is what is asked to be sent.
 type CryptoSendRequest struct {
-	To          string `json:"to"`      // a 0x address
+	To          string `json:"to"`      // a 0x address, or a person's @name, email or phone number (B48.32)
 	Network     string `json:"network"` // one of the networks set
 	Token       string `json:"token"`   // USDC
 	AmountMinor int64  `json:"amount_minor"`
@@ -82,8 +82,8 @@ type CryptoSendQuote struct {
 	TokenAddress   string `json:"token_address"`
 	AmountMinor    int64  `json:"amount_minor"`
 	To             string `json:"to"`
-	ToKind         string `json:"to_kind"`            // agent or address
-	ToLabel        string `json:"to_label,omitempty"` // an agent's trust level
+	ToKind         string `json:"to_kind"`            // agent, person or address
+	ToLabel        string `json:"to_label,omitempty"` // an agent's trust level, or a person's shown name
 	NewAddress     bool   `json:"new_address"`        // the workspace never paid it: the owner is asked first
 	MaxFeeWei      string `json:"max_fee_wei"`
 	FeePaidBy      string `json:"fee_paid_by"`
@@ -106,8 +106,8 @@ type CryptoSend struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 
-	workspaceID, key, toAgentID, signedOp string
-	useID                                 *int64
+	workspaceID, key, toAgentID, signedOp, toHash string
+	useID                                         *int64
 }
 
 func (s *DualTokenStore) cryptoSendNetwork(name string) (CryptoSendNetwork, error) {
@@ -200,7 +200,20 @@ func (s *DualTokenStore) cryptoDestination(ctx context.Context, workspaceID, age
 	case in.AmountMinor <= 0:
 		return q, "", fmt.Errorf("%w: a send is a positive amount in USDC's base units", ErrCryptoSend)
 	}
-	q.To = smartaccount.Checksum(strings.TrimSpace(in.To))
+	to := strings.TrimSpace(in.To)
+	if to == "" {
+		return q, "", fmt.Errorf("%w: send to a 0x address, or a person's Talyvor name or email", ErrCryptoSend)
+	}
+	var person *foundPerson
+	if !isCryptoAddress(to) {
+		// A person on Talyvor: only one who said yes to being found that way, into the wallet they chose (B48.32).
+		p, address, err := s.lookUpPersonWallet(ctx, workspaceID, to, n)
+		if err != nil {
+			return q, "", err
+		}
+		person, to = &p, address
+	}
+	q.To = smartaccount.Checksum(to)
 	if q.To == "" {
 		return q, "", fmt.Errorf("%w: send to a 0x address", ErrCryptoSend)
 	}
@@ -218,6 +231,9 @@ func (s *DualTokenStore) cryptoDestination(ctx context.Context, workspaceID, age
 	err := s.pool.QueryRow(ctx, `SELECT agent_id, workspace_id FROM agent_smart_accounts WHERE lower(address) = lower($1)`, q.To).
 		Scan(&toAgent, &toWorkspace)
 	switch {
+	case err == nil && person != nil:
+		// A person, named by their shown name only.
+		q.ToKind, q.ToLabel = "person", person.ShownName
 	case err == nil:
 		// Another Talyvor agent: named only by the trust its card carries, never by its name or workspace.
 		f, err := s.AgentCardFacts(ctx, toAgent)
@@ -259,13 +275,13 @@ func (s *DualTokenStore) cryptoSendFee(ctx context.Context, n CryptoSendNetwork,
 }
 
 const cryptoSendColumns = `id, workspace_id, agent_id, idempotency_key, network, token, to_address, to_kind, to_label, to_agent_id, amount_minor,
-	max_fee_wei, fee_paid_by, status, reason, requested_by, approved_by, use_id, signed_op, user_op_hash, tx_hash, created_at, updated_at`
+	max_fee_wei, fee_paid_by, status, reason, requested_by, approved_by, use_id, signed_op, user_op_hash, tx_hash, created_at, updated_at, to_hash`
 
 func (s *DualTokenStore) scanCryptoSend(row pgx.Row) (CryptoSend, error) {
 	var c CryptoSend
 	err := row.Scan(&c.ID, &c.workspaceID, &c.AgentID, &c.key, &c.Network, &c.TokenAddress, &c.To, &c.ToKind, &c.ToLabel, &c.toAgentID, &c.AmountMinor,
 		&c.MaxFeeWei, &c.FeePaidBy, &c.Status, &c.Reason, &c.RequestedBy, &c.ApprovedBy, &c.useID, &c.signedOp, &c.UserOpHash, &c.TxHash,
-		&c.CreatedAt, &c.UpdatedAt)
+		&c.CreatedAt, &c.UpdatedAt, &c.toHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrCryptoSendNotFound
 	}
@@ -292,6 +308,14 @@ func (c CryptoSend) request() CryptoSendRequest {
 	return CryptoSendRequest{To: c.To, Network: c.Network, Token: c.Token, AmountMinor: c.AmountMinor}
 }
 
+// asksFor is whether to is where c was asked to go: the same address, or the same person's name, number or email.
+func (c CryptoSend) asksFor(to string) bool {
+	if c.toHash != "" {
+		return cryptoToHash(to) == c.toHash
+	}
+	return strings.EqualFold(c.To, strings.TrimSpace(to))
+}
+
 // SendAgentCrypto sends in from agentID's smart account, once per idempotency key: asking again with the same key
 // answers the same send, never a second one, and a key used for another send is refused. byOwner is whether the owner
 // asks (their command is their say on a new address); otherwise the agent's own key asks, and a first send to a new
@@ -306,7 +330,7 @@ func (s *DualTokenStore) SendAgentCrypto(ctx context.Context, workspaceID, agent
 	}
 	if had, err := s.scanCryptoSend(s.pool.QueryRow(ctx, `SELECT `+cryptoSendColumns+` FROM agent_crypto_sends
 		WHERE workspace_id = $1 AND agent_id = $2 AND idempotency_key = $3`, workspaceID, agentID, key)); err == nil {
-		if r := had.request(); r.Network != in.Network || r.AmountMinor != in.AmountMinor || !strings.EqualFold(r.To, strings.TrimSpace(in.To)) ||
+		if r := had.request(); r.Network != in.Network || r.AmountMinor != in.AmountMinor || !had.asksFor(in.To) ||
 			!strings.EqualFold(in.Token, money.USDC) {
 			return CryptoSend{}, ErrIdempotencyKeyReused
 		}
@@ -330,10 +354,10 @@ func (s *DualTokenStore) SendAgentCrypto(ctx context.Context, workspaceID, agent
 	}
 	id := "csend_" + uuid.NewString()
 	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_crypto_sends (id, workspace_id, agent_id, idempotency_key, network, token, to_address,
-		to_kind, to_label, to_agent_id, to_workspace_id, amount_minor, fee_paid_by, status, requested_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		to_kind, to_label, to_agent_id, to_workspace_id, amount_minor, fee_paid_by, status, requested_by, to_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (workspace_id, agent_id, idempotency_key) DO NOTHING`, id, workspaceID, agentID, key, n.Name, n.USDC, q.To, q.ToKind,
-		q.ToLabel, toAgent, toWorkspace, q.AmountMinor, q.FeePaidBy, status, by); err != nil {
+		q.ToLabel, toAgent, toWorkspace, q.AmountMinor, q.FeePaidBy, status, by, cryptoToHash(in.To)); err != nil {
 		return CryptoSend{}, fmt.Errorf("economy: crypto send: %w", err)
 	}
 	// One asked at the same time under the same key is the send.
