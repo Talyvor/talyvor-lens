@@ -259,6 +259,7 @@ type walletArgs struct {
 	Limit          int    `json:"limit"`
 	ExpiresAt      string `json:"expires_at"`
 	PayerAddress   string `json:"payer_address"`
+	Method         string `json:"method"` // B48.39: how the owner pays a top-up
 
 	raw json.RawMessage // the arguments as sent, for a tool that reads its own
 }

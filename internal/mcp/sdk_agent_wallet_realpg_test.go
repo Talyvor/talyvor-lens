@@ -185,8 +185,9 @@ func walletPasskey(t *testing.T, store *economy.DualTokenStore, ws, rpID, origin
 // reads where each is paid into — the pounds wallet's details and the USDC wallet's smart account address. A send
 // inside the owner's permission, to an address the workspace has paid, lands once however often it is retried under
 // its key; a send to an address the workspace never paid prepares and waits for the owner, and nothing is signed. It
-// asks to be paid, and gets a link and the URI a QR code encodes; the history shows every send. Every call is in the
-// agent's tool log. Needs node and `npm ci` in testdata/sdk-client, as TestOfficialTypeScriptSDKClient does.
+// asks to be paid, and gets a link and the URI a QR code encodes; the history shows every send. B48.39: it asks its
+// owner for a top-up, and gets the link to B48.8's quote, which the owner confirming credits on the ledger. Every call
+// is in the agent's tool log. Needs node and `npm ci` in testdata/sdk-client, as TestOfficialTypeScriptSDKClient does.
 func TestOfficialTypeScriptSDKClient_AgentWallet(t *testing.T) {
 	dir, _ := filepath.Abs("testdata/sdk-client")
 	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err != nil {
@@ -212,6 +213,7 @@ func TestOfficialTypeScriptSDKClient_AgentWallet(t *testing.T) {
 	store.SetMoneyLayer(layer)
 	store.SetApprovalAuth(passkey.RelyingParty{ID: rpID, Origins: []string{origin}}, nil)
 	store.SetSmartAccounts(cdpfake.New(t).Signers(t), "coinbase", smartaccount.CoinbaseV11)
+	store.SetRampPartner(&partners.TestRampPartner{}) // B48.39: a card top-up buys the agent's USDC through it
 	chain := &walletChain{chainID: 84532}
 	node := chain.serve(t)
 	store.SetCryptoSendNetworks([]economy.CryptoSendNetwork{{Name: "base-sepolia", USDC: usdc, Funding: economy.FundingTest,
@@ -434,10 +436,63 @@ func TestOfficialTypeScriptSDKClient_AgentWallet(t *testing.T) {
 		t.Fatalf("wallet_history's sends = %+v, want the waiting one, the shop's, the owner's", history.Sends)
 	}
 
+	// B48.39 — the agent asks its owner to top its USDC wallet up by card: wallet_topup_link quotes it through B48.8,
+	// at the Test ramp's rate and 3% fee, and answers the link the owner opens and B48.8's route that confirms it. Only
+	// the owner's confirm moves money: it credits the agent's USDC wallet on the ledger, once, at the quote.
+	tools, topUps := assistant(call("wallet_topup_link", map[string]any{"amount_minor": 10_000, "currency": "EUR"}))
+	if a := tools["wallet_topup_link"]; a == nil || a["readOnlyHint"] != false || a["destructiveHint"] != false {
+		t.Errorf("wallet_topup_link's annotations = %v, want it to write a quote and move nothing", a)
+	}
+	var topUp struct {
+		Move    economy.WalletMove `json:"move"`
+		Link    string             `json:"link"`
+		Confirm string             `json:"confirm"`
+	}
+	if err := json.Unmarshal(topUps[0].Value, &topUp); err != nil {
+		t.Fatalf("wallet_topup_link answered %s: %v", topUps[0].Value, err)
+	}
+	var q struct {
+		id, route, status, sellCurrency, buyCurrency, rate, by string
+		sell, fee, buy                                         int64
+	}
+	if err := pool.QueryRow(ctx, `SELECT id, route, status, sell_currency, buy_currency, rate, created_by, sell_minor, fee_minor, buy_minor
+		FROM wallet_moves WHERE workspace_id = $1 AND agent_id = $2`, ws, agent.ID).Scan(&q.id, &q.route, &q.status, &q.sellCurrency,
+		&q.buyCurrency, &q.rate, &q.by, &q.sell, &q.fee, &q.buy); err != nil || q.id != topUp.Move.ID || q.route != economy.WalletMoveCard ||
+		q.status != "quoted" || q.sell != 10_000 || q.sellCurrency != "EUR" || q.fee != 300 || q.buy != 106_700_000 || q.buyCurrency != money.USDC ||
+		q.by != "agent:"+agent.ID || topUp.Move.BuyMinor != q.buy || topUp.Move.Rate != q.rate {
+		t.Fatalf("wallet_topup_link = %s; B48.8 keeps %+v (%v), want the one card quote of 100 EUR buying 106.70 USDC, asked by the agent",
+			topUps[0].Value, q, err)
+	}
+	if want := "/v1/workspaces/" + ws + "/agents/" + agent.ID + "/wallet-moves/" + topUp.Move.ID + "/confirm"; topUp.Confirm != want {
+		t.Fatalf("the top-up's confirm = %q, want B48.8's route %q", topUp.Confirm, want)
+	}
+	if want := "https://app.talyvor.com/agents/" + agent.ID + "?top_up=" + topUp.Move.ID; topUp.Link != want {
+		t.Fatalf("the top-up's link = %q, want %q", topUp.Link, want)
+	}
+	usdcHeld := func() int64 {
+		t.Helper()
+		var n int64
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor), 0) FROM money_postings WHERE account_id = $1`,
+			wallets.Wallets[1].AccountID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := usdcHeld()
+	for i := range 2 { // the owner taps it twice: it posts once
+		posted, err := store.ConfirmWalletMove(ctx, ws, agent.ID, topUp.Move.ID, "owner", false, nil)
+		if err != nil || posted.Status != "posted" || posted.EntryID == "" {
+			t.Fatalf("the owner's confirm (%d) = %+v %v, want it posted", i, posted, err)
+		}
+	}
+	if got := usdcHeld() - before; got != 106_700_000 {
+		t.Fatalf("the owner's top-up credited the agent's USDC wallet %d on the ledger, want 106700000 once", got)
+	}
+
 	// Every call is in the agent's tool log.
 	var logged int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_tool_calls WHERE agent_id = $1 AND tool LIKE 'wallet_%' AND outcome = 'ok'`,
-		agent.ID).Scan(&logged); err != nil || logged != len(results) {
-		t.Fatalf("the tool log has %d calls (%v), want %d", logged, err, len(results))
+		agent.ID).Scan(&logged); err != nil || logged != len(results)+len(topUps) {
+		t.Fatalf("the tool log has %d calls (%v), want %d", logged, err, len(results)+len(topUps))
 	}
 }
