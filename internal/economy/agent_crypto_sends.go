@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/talyvor/lens/internal/money"
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/nativepush"
+	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/screening"
 )
 
@@ -416,7 +418,8 @@ func (s *DualTokenStore) endCryptoSend(ctx context.Context, c CryptoSend, status
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		released := c.useID == nil
 		if c.useID != nil {
-			tag, err := tx.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2 AND op IS NULL`, *c.useID, c.AgentID)
+			tag, err := tx.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2 AND op IS NULL AND op_hash IS NULL`,
+				*c.useID, c.AgentID)
 			if err != nil {
 				return err
 			}
@@ -461,6 +464,8 @@ func (s *DualTokenStore) carryOn(ctx context.Context, workspaceID string, n Cryp
 		return s.readCryptoReceipt(ctx, workspaceID, n, c)
 	case c.Status != "sending":
 		return c, nil
+	case c.spendOp() != nil:
+		return s.resendSpend(ctx, workspaceID, n, c, *c.spendOp())
 	case c.signedOp != "":
 		var op smartaccount.UserOp
 		if err := json.Unmarshal([]byte(c.signedOp), &op); err != nil {
@@ -507,6 +512,11 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 	c, err := s.screenCryptoSend(ctx, workspaceID, n, c)
 	if err != nil || c.Status != "sending" {
 		return c, err
+	}
+	if held, err := onChainNow(ctx, s.pool, workspaceID, c.AgentID); err != nil {
+		return c, err
+	} else if held.spender != "" && s.spendChain() != nil {
+		return s.spendAndSend(ctx, workspaceID, n, c, held.spender, held.last)
 	}
 	a, err := s.madeAccount(ctx, workspaceID, c.AgentID)
 	if err != nil {
@@ -579,6 +589,123 @@ func (s *DualTokenStore) signAndSend(ctx context.Context, workspaceID string, n 
 		// Any other error may follow its taking the operation: the send stays to be sent again, as signed.
 		return c, nil
 	}
+	return s.markCryptoSent(ctx, workspaceID, n, c)
+}
+
+// spendOp is a send the agent's own account makes under the owner's spend permission held on chain (B48.37). It is kept
+// on the send once the gate allows it and before the provider is asked, so a retry sends the same calls under the same
+// key, which the provider answers with the same operation: it pays once.
+type spendOp struct {
+	Spender string       `json:"spender"`
+	Calls   []money.Call `json:"calls"`
+}
+
+// spendOp is c's kept spendOp, nil when c is not one.
+func (c CryptoSend) spendOp() *spendOp {
+	var op spendOp
+	if c.signedOp == "" || json.Unmarshal([]byte(c.signedOp), &op) != nil || op.Spender == "" {
+		return nil
+	}
+	return &op
+}
+
+// errAnotherSend: another caller's calls are the send.
+var errAnotherSend = errors.New("economy: crypto send: another caller is sending it")
+
+// spendAndSend has the agent's own account spender pay c under the owner's spend permission held on chain (B48.37):
+// the manager's spend and the payment out, through smartaccount.Chain.SendSpendAsAgent, with Talyvor's gate
+// (AuthoriseAgentCryptoPayment) as its authorise step, so a payment the gate refuses never reaches the provider. The
+// provider's policy and the manager on chain judge it again.
+func (s *DualTokenStore) spendAndSend(ctx context.Context, workspaceID string, n CryptoSendNetwork, c CryptoSend, spender string,
+	sps []smartaccount.SpendPermission) (CryptoSend, error) {
+	ch := n.Chain
+	ch.SpendManager = s.smartAccounts.spendManager
+	i := slices.IndexFunc(sps, func(sp smartaccount.SpendPermission) bool { return strings.EqualFold(sp.Token, n.USDC) })
+	if i < 0 {
+		return s.endCryptoSend(ctx, c, "refused", fmt.Sprintf("%v: it does not allow paying in %s", smartaccount.ErrPermission, n.USDC))
+	}
+	calls, err := ch.SpendCalls(sps[i], c.To, big.NewInt(c.AmountMinor))
+	if err != nil {
+		return s.endCryptoSend(ctx, c, "refused", err.Error())
+	}
+	kept := false
+	r, err := ch.SendSpendAsAgent(partners.WithWorkspace(ctx, workspaceID), s.smartAccounts.spenders, "crypto_send:"+c.ID, spender, calls,
+		func(pay smartaccount.Payment) error {
+			use, err := s.AuthoriseAgentCryptoPayment(ctx, workspaceID, c.AgentID, n.Chain.ID, pay)
+			if err != nil {
+				return err
+			}
+			c.useID = &use
+			raw, err := json.Marshal(spendOp{Spender: spender, Calls: calls})
+			if err != nil {
+				return err
+			}
+			tag, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET signed_op = $2, use_id = $3, updated_at = now()
+				WHERE id = $1 AND status = 'sending' AND signed_op = ''`, c.ID, string(raw), use)
+			if err != nil {
+				return fmt.Errorf("economy: crypto send: %w", err)
+			}
+			if tag.RowsAffected() == 0 { // another caller's calls are the send: this use counts nothing
+				if _, err := s.pool.Exec(ctx, `DELETE FROM agent_spend_permission_uses WHERE id = $1 AND agent_id = $2`, use, c.AgentID); err != nil {
+					return fmt.Errorf("economy: crypto send: %w", err)
+				}
+				return errAnotherSend
+			}
+			kept = true
+			return nil
+		})
+	switch {
+	case err == nil:
+		return s.spendSent(ctx, workspaceID, n, c, r.Ref)
+	case errors.Is(err, errAnotherSend):
+		return s.cryptoSend(ctx, workspaceID, c.AgentID, c.ID)
+	case !kept && (errors.Is(err, smartaccount.ErrPermission) || errors.Is(err, smartaccount.ErrFrozen)):
+		return s.endCryptoSend(ctx, c, "refused", err.Error())
+	case !kept:
+		return s.endCryptoSend(ctx, c, "failed", err.Error())
+	case errors.Is(err, money.ErrRefused): // the provider's policy refused it: nothing was sent, and its use is given back
+		return s.endCryptoSend(ctx, c, "refused", err.Error())
+	case errors.Is(err, money.ErrInvalid), errors.Is(err, money.ErrNotFound), errors.Is(err, smartaccount.ErrGasBudgetSpent):
+		return s.endCryptoSend(ctx, c, "failed", err.Error())
+	}
+	return c, nil // it may have been sent: the send stays to be sent again, under the same key
+}
+
+// resendSpend asks the provider again for c's kept calls, under the same key, unless the owner froze the agent or the
+// workspace is frozen: it may have been sent, so it still counts.
+func (s *DualTokenStore) resendSpend(ctx context.Context, workspaceID string, n CryptoSendNetwork, c CryptoSend, op spendOp) (CryptoSend, error) {
+	var frozen bool
+	if err := s.pool.QueryRow(ctx, `SELECT frozen_at IS NOT NULL FROM agent_smart_accounts WHERE agent_id = $1 AND workspace_id = $2`,
+		c.AgentID, workspaceID).Scan(&frozen); err != nil {
+		return c, fmt.Errorf("economy: crypto send: %w", err)
+	}
+	stablecoins, _ := CapabilityByKey(CapabilityStablecoins)
+	if frozen || refuseFrozen(ctx, s.pool, workspaceID, stablecoins) != nil || s.spendChain() == nil {
+		return c, nil
+	}
+	r, err := s.smartAccounts.spenders.SendCalls(partners.WithWorkspace(ctx, workspaceID), "crypto_send:"+c.ID, op.Spender, op.Calls)
+	if err != nil {
+		return c, nil
+	}
+	return s.spendSent(ctx, workspaceID, n, c, r.Ref)
+}
+
+// spendSent keeps hash, the user operation the provider sent c's calls in, on the send and its use, and reads its
+// receipt.
+//
+// shortcut: a use the agent's own account sent is never settled from finalized blocks (SettleAgentCryptoPayments reads
+// the operations Lens built), so one the chain reverts still counts against the allowance at the gate; the manager on
+// chain counts only what moved. Upgrade by settling these uses by their operation's hash.
+func (s *DualTokenStore) spendSent(ctx context.Context, workspaceID string, n CryptoSendNetwork, c CryptoSend, hash string) (CryptoSend, error) {
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_crypto_sends SET user_op_hash = $2, updated_at = now() WHERE id = $1`, c.ID, hash); err != nil {
+		return c, fmt.Errorf("economy: crypto send: %w", err)
+	}
+	if c.useID != nil {
+		if _, err := s.pool.Exec(ctx, `UPDATE agent_spend_permission_uses SET op_hash = $3 WHERE id = $1 AND agent_id = $2`, *c.useID, c.AgentID, hash); err != nil {
+			return c, fmt.Errorf("economy: crypto send: %w", err)
+		}
+	}
+	c.UserOpHash = hash
 	return s.markCryptoSent(ctx, workspaceID, n, c)
 }
 
