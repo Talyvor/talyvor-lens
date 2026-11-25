@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -76,7 +77,7 @@ func TestB4843_TheOwnerReadsTheTopUpTheirAgentAskedFor(t *testing.T) {
 	}
 	if got.ID != asked.ID || got.Status != "quoted" || got.Route != economy.WalletMoveCard || got.SellMinor != 10_000 ||
 		got.SellCurrency != money.EUR || got.FeeMinor != asked.FeeMinor || got.Rate != asked.Rate || got.BuyMinor != asked.BuyMinor ||
-		got.BuyCurrency != money.USDC || got.BuyMinor <= 0 || got.ExpiresAt == nil || !got.ExpiresAt.Equal(*asked.ExpiresAt) {
+		got.BuyCurrency != money.USDC || got.BuyMinor <= 0 || got.ExpiresAt == nil || got.ExpiresAt.Sub(*asked.ExpiresAt).Abs() >= time.Microsecond { // Postgres keeps microseconds
 		t.Fatalf("the owner reads %+v; want the quote as the agent asked it: %+v", got, asked)
 	}
 
