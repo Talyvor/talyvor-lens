@@ -28,12 +28,14 @@ import (
 // and a bundler that takes each operation once per nonce — a second at a taken nonce is refused, as the EntryPoint
 // refuses it — refuses any paying refuseTo, takes the first paying hangUpTo and then drops the line before answering,
 // and answers each one's receipt with its own transaction; every operation it took is in a finalized block, read
-// from the EntryPoint's logs as SettleAgentCryptoPayments reads them.
+// from the EntryPoint's logs as SettleAgentCryptoPayments reads them. B48.49: its ENS registry, at b4849Registry, names
+// one resolver, b4849Resolver, for each name in ens, which answers that name's address.
 type fakeChain struct {
 	t        *testing.T
 	chainID  int64
 	refuseTo string
 	hangUpTo string
+	ens      map[string]string
 	mu       sync.Mutex
 	paid     []smartaccount.Payment
 	hashes   map[string]string
@@ -60,7 +62,11 @@ func (f *fakeChain) serve() string {
 		switch req.Method {
 		case "eth_getCode":
 			answer(map[bool]string{false: "0x", true: "0x01"}[len(f.paid) > 0], nil)
-		case "eth_call": // getNonce
+		case "eth_call": // getNonce, or an ENS lookup
+			if word, ok := f.ensCall(req.Params[0]); ok {
+				answer(word, nil)
+				return
+			}
 			answer(fmt.Sprintf("0x%x", len(f.paid)), nil)
 		case "eth_gasPrice":
 			answer("0x3b9aca00", nil)
@@ -176,8 +182,15 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
 	mountAgentCryptoSendRoutes(r, store)
 	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	var sign func(string) *passkey.Assertion // B48.49: the owner's own sends are signed by their passkey, as the app signs them
 	call := func(method, path, key, body string, out any) int {
 		t.Helper()
+		switch {
+		case method == http.MethodPost && strings.HasSuffix(path, "/crypto-sends") && key != "":
+			body = b4849Signed(t, r, owner, sign, strings.TrimSuffix(path, "/crypto-sends"), key, body)
+		case method == http.MethodPost && strings.HasSuffix(path, "/approve"):
+			body = b4849SignedApproval(t, r, owner, sign, path, body)
+		}
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
 		if key != "" {
@@ -193,7 +206,7 @@ func TestB489_AnAgentSendsUSDCToAnAgentOrAnyAddress(t *testing.T) {
 		return w.Code
 	}
 
-	sign := b5018Passkey(t, store, ws, rpID, origin)
+	sign = b5018Passkey(t, store, ws, rpID, origin)
 	keys, err := store.ListPasskeys(ctx, ws)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("passkeys = %v %v", keys, err)

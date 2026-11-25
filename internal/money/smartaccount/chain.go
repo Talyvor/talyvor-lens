@@ -122,7 +122,9 @@ type Chain struct {
 	TokenPriceSpreadBps  int64
 	// B48.24: the chain's SpendPermissionManager; "" is Coinbase's deployment (SpendPermissionManager).
 	SpendManager string
-	HTTP         *http.Client
+	// B48.49: the chain's ENS registry, which a send's .eth name is resolved through; "" reads no ENS names there.
+	ENSRegistry string
+	HTTP        *http.Client
 }
 
 func (c Chain) rpc(ctx context.Context, url, method string, params []any, out any) error {

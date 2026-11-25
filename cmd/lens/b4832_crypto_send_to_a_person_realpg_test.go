@@ -60,8 +60,12 @@ func TestB4832_AnAgentSendsUSDCToAPersonByTheirNameOrEmail(t *testing.T) {
 	mountAgentCryptoSendRoutes(r, store)
 	mountPeopleFindingRoutes(r, secret, store)
 	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	var sign func(string) *passkey.Assertion // B48.49: the owner's own sends are signed by their passkey, as the app signs them
 	call := func(method, path, key, body string) (int, string) {
 		t.Helper()
+		if method == http.MethodPost && strings.HasSuffix(path, "/crypto-sends") && key != "" {
+			body = b4849Signed(t, r, owner, sign, strings.TrimSuffix(path, "/crypto-sends"), key, body)
+		}
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		if strings.HasPrefix(path, "/v1/people/") {
 			req.Header.Set(provisionSecretHeader, secret)
@@ -83,7 +87,7 @@ func TestB4832_AnAgentSendsUSDCToAPersonByTheirNameOrEmail(t *testing.T) {
 	}
 
 	// The sending agent: its smart account and the owner's signed spend permission, as B48.9 sets them.
-	sign := b5018Passkey(t, store, ws, rpID, origin)
+	sign = b5018Passkey(t, store, ws, rpID, origin)
 	keys, err := store.ListPasskeys(ctx, ws)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("passkeys = %v %v", keys, err)

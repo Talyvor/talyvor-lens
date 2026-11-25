@@ -5194,6 +5194,7 @@ func run() error {
 		mountWalletCapabilityRoutes(authed, dualToken)                                  // B22.1
 		mountAgentTransferRoutes(authed, dualToken)                                     // B22.3
 		mountAgentCryptoSendRoutes(authed, dualToken)                                   // B48.9
+		mountCryptoAddressBookRoutes(authed, dualToken)                                 // B48.49
 		mountCryptoRequestRoutes(authed, dualToken, chainIdx)                           // B48.10
 		mountCreditLineRoutes(authed, dualToken)                                        // B22.4
 		mountCreditScoreRoutes(authed, dualToken)                                       // B30.39
