@@ -77,6 +77,8 @@ type PersonFinding struct {
 	ByPhone          bool   `json:"by_phone"`
 	ByEmail          bool   `json:"by_email"`
 	ReceiveAccountID string `json:"receive_account_id"`
+	// CryptoWallets are the agent wallets they receive crypto into, a network and a token each (B48.32).
+	CryptoWallets []PersonCryptoWallet `json:"crypto_wallets"`
 }
 
 // PersonFindingChange is a change to a person's settings; a nil field is left as it is, and "" clears a name, an
@@ -88,6 +90,9 @@ type PersonFindingChange struct {
 	ByPhone          *bool   `json:"by_phone"`
 	ByEmail          *bool   `json:"by_email"`
 	ReceiveAccountID *string `json:"receive_account_id"`
+	// CryptoWallet names the agent wallet they receive its token into on its network; an agent_id of "" stops them
+	// receiving there (B48.32).
+	CryptoWallet *PersonCryptoWallet `json:"crypto_wallet"`
 }
 
 // reservedPersonNames are kept for Talyvor, compared folded; a name holding "talyvor" anywhere is kept too.
@@ -217,6 +222,9 @@ func (s *DualTokenStore) PersonFinding(ctx context.Context, personID string) (Pe
 	if email != nil {
 		f.Email = *email
 	}
+	if f.CryptoWallets, err = personCryptoWallets(ctx, s.pool, personID); err != nil {
+		return PersonFinding{}, err
+	}
 	return f, nil
 }
 
@@ -284,6 +292,11 @@ func (s *DualTokenStore) SetPersonFinding(ctx context.Context, personID string, 
 		}
 		if receive != "" && !theirs {
 			return PersonFinding{}, fmt.Errorf("%w: receive_account_id is not one of the person's accounts", ErrPersonFinding)
+		}
+	}
+	if ch.CryptoWallet != nil {
+		if err := s.setPersonCryptoWallet(ctx, tx, personID, personKey, firstID, *ch.CryptoWallet); err != nil {
+			return PersonFinding{}, err
 		}
 	}
 	switch {
