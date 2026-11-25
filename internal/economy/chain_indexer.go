@@ -551,9 +551,69 @@ func (x *ChainIndexer) move(ctx context.Context, m chainMovement, reverse bool) 
 		block_number = CASE WHEN $5 THEN NULL ELSE block_number END, updated_at = now() WHERE id = $1`,
 		m.id, status, posted, entryID, reverse)
 	if err == nil {
-		x.matchRequest(ctx, m, reverse) // B48.10
+		paid := x.matchRequest(ctx, m, reverse) // B48.10
+		if !reverse && m.posted == 0 {
+			x.tellOwnerOfMovement(m, paid) // B48.52: as it first posts, never as a reorg brings it back
+		}
 	}
 	return err
+}
+
+// tellOwnerOfMovement pushes to the owner's phones, as m first posts, that money came into an agent's wallet or left
+// it — or, for a deposit that paid a request in full, that the request was paid (B48.52). A movement that a reorg
+// took back and the chain brought back again, or one looked at again, is not told twice. The other side's address is
+// shortened, never shown in full.
+func (x *ChainIndexer) tellOwnerOfMovement(m chainMovement, paid *CryptoRequest) {
+	if x.s.nativePusher == nil {
+		return
+	}
+	amount, other := x.movementAmount(m), shortAddress(m.counterparty)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		agent := "Your agent"
+		var name string
+		if x.s.pool.QueryRow(ctx, `SELECT name FROM agent_accounts WHERE id = $1 AND workspace_id = $2`, m.agentID, m.workspaceID).Scan(&name) == nil && name != "" {
+			agent = name
+		}
+		data := map[string]string{"agent_id": m.agentID, "workspace_id": m.workspaceID, "movement_id": m.id}
+		msg := nativepush.Message{Data: data}
+		switch {
+		case paid != nil:
+			data["type"], data["request_id"] = "crypto_request_paid", paid.ID
+			msg.Title, msg.Body = "Request paid", agent+"'s request for "+usdcString(paid.AmountMinor)+" USDC was paid by "+other+"."
+		case m.direction == "in":
+			data["type"] = "agent_wallet_money_in"
+			msg.Title, msg.Body = "Money in", agent+" received "+amount+" from "+other+"."
+		default:
+			data["type"] = "agent_wallet_money_out"
+			msg.Title, msg.Body = "Money out", agent+" sent "+amount+" to "+other+"."
+		}
+		x.s.pushDevices(ctx, m.workspaceID, msg)
+	}()
+}
+
+// movementAmount is m's amount in its token, as 40 USDC or 0.5 WETH.
+func (x *ChainIndexer) movementAmount(m chainMovement) string {
+	decimals := 0
+	if n, err := x.network(m.network); err == nil {
+		if t, ok := n.token(m.asset); ok {
+			decimals = t.Decimals
+		}
+	}
+	s := new(big.Rat).SetFrac(m.amount, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)).FloatString(decimals)
+	if decimals > 0 {
+		s = strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
+	}
+	return s + " " + m.asset
+}
+
+// shortAddress is addr's first six and last four characters: 0x1234…abcd.
+func shortAddress(addr string) string {
+	if len(addr) <= 12 {
+		return addr
+	}
+	return addr[:6] + "…" + addr[len(addr)-4:]
 }
 
 // value keeps what m was worth in its owner's currency as it confirms, which a price read later cannot give. A token

@@ -432,19 +432,22 @@ func (s *DualTokenStore) DecideCryptoOverpayment(ctx context.Context, workspaceI
 }
 
 // matchRequest matches deposit m, just posted, to the request it pays — or, reverse, takes back its match. The
-// leader's Confirm is the one caller, network by network, so two deposits are never matched at once.
-func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, reverse bool) {
+// leader's Confirm is the one caller, network by network, so two deposits are never matched at once. paid is the
+// request m paid in full, if it did (B48.52).
+func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, reverse bool) (paid *CryptoRequest) {
 	if m.direction != "in" || m.asset != money.USDC || !m.amount.IsInt64() {
-		return
+		return nil
 	}
 	var err error
+	var requestID string
+	var late bool
 	if reverse {
 		_, err = x.s.pool.Exec(ctx, `DELETE FROM crypto_payment_request_payments WHERE movement_id = $1`, m.id)
 	} else {
 		// A request naming this sender takes any amount (after its expiry, as late); one naming no payer takes only
 		// what is due, exactly, before it expires — so a deposit that merely lands in the wallet pays nothing it does
 		// not match. Unexpired first, naming the sender first, then the oldest. The workspace's own wallets pay none.
-		_, err = x.s.pool.Exec(ctx, `
+		err = x.s.pool.QueryRow(ctx, `
 			WITH mv AS (SELECT seen_at FROM chain_movements WHERE id = $1),
 			due AS (
 				SELECT r.id, r.created_at, r.expires_at <= mv.seen_at AS late, lower(r.payer_address) = lower($6) AS named,
@@ -459,11 +462,26 @@ func (x *ChainIndexer) matchRequest(ctx context.Context, m chainMovement, revers
 			SELECT $1, id, $2, $7::bigint, late FROM due
 			WHERE remaining > 0 AND (named OR (NOT late AND remaining = $7::bigint))
 			ORDER BY late, named DESC, created_at, id LIMIT 1
-			ON CONFLICT (movement_id) DO NOTHING`,
-			m.id, m.workspaceID, m.agentID, m.network, m.token, m.counterparty, m.amount.Int64())
+			ON CONFLICT (movement_id) DO NOTHING
+			RETURNING request_id, late`,
+			m.id, m.workspaceID, m.agentID, m.network, m.token, m.counterparty, m.amount.Int64()).Scan(&requestID, &late)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // it pays no request, or was matched before
+		}
+	}
+	if err == nil && requestID != "" && !late {
+		// B48.52: the deposit that took what was received to the amount asked, or past it, paid the request.
+		var r CryptoRequest
+		err = x.s.pool.QueryRow(ctx, `SELECT r.id, r.amount_minor, COALESCE(sum(p.amount_minor) FILTER (WHERE NOT p.late), 0)::bigint
+			FROM crypto_payment_requests r LEFT JOIN crypto_payment_request_payments p ON p.request_id = r.id
+			WHERE r.id = $1 GROUP BY r.id`, requestID).Scan(&r.ID, &r.AmountMinor, &r.ReceivedMinor)
+		if err == nil && r.ReceivedMinor >= r.AmountMinor && r.ReceivedMinor-m.amount.Int64() < r.AmountMinor {
+			paid = &r
+		}
 	}
 	if err != nil {
 		// The deposit is posted either way; only its request does not show it.
 		slog.Warn("chain indexer: a deposit was not matched to its request", "movement", m.id, "err", err)
 	}
+	return paid
 }
