@@ -43,6 +43,7 @@ type WorkspaceRole struct {
 	Email     string    `json:"email"`
 	Role      string    `json:"role"`
 	SignedIn  bool      `json:"signed_in"` // a person has taken the role up
+	UserID    string    `json:"user_id"`   // the person key of who took it up, their role session's UserID; "" until then
 	GrantedBy string    `json:"granted_by"`
 	GrantedAt time.Time `json:"granted_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -92,8 +93,8 @@ func (m *Manager) SetRole(ctx context.Context, workspaceID, email, role, by stri
 	}
 	err = m.pool.QueryRow(ctx, `INSERT INTO workspace_roles (workspace_id, email, role, granted_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (workspace_id, email) DO UPDATE SET role = EXCLUDED.role, updated_at = now()
-		RETURNING email, role, person_key IS NOT NULL, granted_by, granted_at, updated_at`,
-		workspaceID, email, role, by).Scan(&out.Email, &out.Role, &out.SignedIn, &out.GrantedBy, &out.GrantedAt, &out.UpdatedAt)
+		RETURNING email, role, person_key IS NOT NULL, COALESCE(person_key, ''), granted_by, granted_at, updated_at`,
+		workspaceID, email, role, by).Scan(&out.Email, &out.Role, &out.SignedIn, &out.UserID, &out.GrantedBy, &out.GrantedAt, &out.UpdatedAt)
 	if err != nil {
 		return out, fmt.Errorf("workspace: set a role: %w", err)
 	}
@@ -121,14 +122,14 @@ func (m *Manager) WorkspaceRoles(ctx context.Context, workspaceID string) ([]Wor
 	if err := m.rolesPool(); err != nil {
 		return nil, err
 	}
-	rows, err := m.pool.Query(ctx, `SELECT email, role, person_key IS NOT NULL, granted_by, granted_at, updated_at
+	rows, err := m.pool.Query(ctx, `SELECT email, role, person_key IS NOT NULL, COALESCE(person_key, ''), granted_by, granted_at, updated_at
 		FROM workspace_roles WHERE workspace_id = $1 ORDER BY granted_at, email`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: list roles: %w", err)
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (WorkspaceRole, error) {
 		var r WorkspaceRole
-		return r, row.Scan(&r.Email, &r.Role, &r.SignedIn, &r.GrantedBy, &r.GrantedAt, &r.UpdatedAt)
+		return r, row.Scan(&r.Email, &r.Role, &r.SignedIn, &r.UserID, &r.GrantedBy, &r.GrantedAt, &r.UpdatedAt)
 	})
 }
 
