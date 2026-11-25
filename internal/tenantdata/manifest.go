@@ -425,6 +425,7 @@ var Manifest = map[string]Entry{
 	"workspace_roles":               {Delete, "B28.342: keys `workspace_id`: the roles its owner gave people in the workspace, by email"},
 	"person_accounts":               {Delete, "B61.7: which person (a hash of their identity) opened this workspace after their first account"},
 	"person_lookups":                {Delete, "B61.32: when the account looked a person up, for its limit an hour"},
+	"person_crypto_wallets":         {Delete, "B48.32: the agent wallet a person receives crypto into on each network; it goes with the person (ON DELETE CASCADE)"},
 	"person_payments":               {Retain, "B61.32: audit-guarded (2611160232b, append-only): each payment to a person on Talyvor — both accounts, both sides' shown names, the amount and the note; it explains money_entries; financial-record retention"},
 	"people_found":                  {Delete, "B61.32: the person's Talyvor name, email and switches for being found; it goes with the person (ON DELETE CASCADE)"},
 	"povi_challenges":               {Delete, ""},
