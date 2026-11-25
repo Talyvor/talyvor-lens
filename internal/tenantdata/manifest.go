@@ -367,6 +367,7 @@ var Manifest = map[string]Entry{
 	"scan_rehearsals":              {Delete, "B52.40: each Scan report a test workspace rehearsed, its review and planted outcome"},
 	"spend_plan_income":            {Delete, "B53.15: the owner's expected income — payday, amount, currency and payer — for the month plan"},
 	"money_payees":                 {Delete, "B30.16: the people and companies outside Talyvor the workspace saved to pay — names, account details, country — and what their bank said of each name"},
+	"workspace_crypto_addresses":   {Delete, "B48.49: the crypto addresses the owner saved and named for agents' sends"},
 	"money_bills":                  {Delete, "B41.101: the invoices the workspace received, as read — supplier, amount, due date, invoice number, the bank details printed on them — and the saved payee each was matched to"},
 	"workspace_provider_keys":      {Delete, "B27.26: the workspace's own provider keys (BYOK), sealed; deleting the row is the end of Talyvor's custody"},
 	"workspace_approval_chat":      {Delete, "B56.16: the workspace's Slack or Teams incoming webhook approvals are posted to, sealed; deleting the row disconnects it"},

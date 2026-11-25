@@ -1,13 +1,16 @@
 package economy
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/talyvor/lens/internal/money/smartaccount"
 	"github.com/talyvor/lens/internal/nativepush"
 	"github.com/talyvor/lens/internal/partners"
+	"github.com/talyvor/lens/internal/passkey"
 	"github.com/talyvor/lens/internal/screening"
 )
 
@@ -42,6 +46,11 @@ var (
 	ErrCryptoSend = errors.New("economy: invalid crypto send")
 	// ErrCryptoSendNotFound: no such send of the agent's.
 	ErrCryptoSendNotFound = errors.New("economy: no such crypto send")
+	// ErrCryptoNameNotFound: an ENS name with no address set on the network (B48.49).
+	ErrCryptoNameNotFound = errors.New("economy: no address for that name")
+	// ErrCryptoSendUnsigned: the workspace signs its owner's sends, and this one carried no signature (B48.49).
+	ErrCryptoSendUnsigned = errors.New("economy: this workspace signs the owner's crypto sends with a passkey or the phone app. " +
+		"Sign this send's challenge (POST /v1/workspaces/{wsID}/agents/{agentID}/crypto-sends/challenge)")
 )
 
 // The ways a send's network fee is paid.
@@ -71,7 +80,7 @@ func (s *DualTokenStore) SetCryptoSendNetworks(nets []CryptoSendNetwork) {
 
 // CryptoSendRequest is what is asked to be sent.
 type CryptoSendRequest struct {
-	To          string `json:"to"`      // a 0x address, or a person's @name, email or phone number (B48.32)
+	To          string `json:"to"`      // a 0x address, an ENS name, a saved address's name (B48.49), or a person's @name, email or phone number (B48.32)
 	Network     string `json:"network"` // one of the networks set
 	Token       string `json:"token"`   // USDC
 	AmountMinor int64  `json:"amount_minor"`
@@ -84,9 +93,11 @@ type CryptoSendQuote struct {
 	TokenAddress   string `json:"token_address"`
 	AmountMinor    int64  `json:"amount_minor"`
 	To             string `json:"to"`
-	ToKind         string `json:"to_kind"`            // agent, person or address
-	ToLabel        string `json:"to_label,omitempty"` // an agent's trust level, or a person's shown name
-	NewAddress     bool   `json:"new_address"`        // the workspace never paid it: the owner is asked first
+	ToKind         string `json:"to_kind"`              // agent, person or address
+	ToLabel        string `json:"to_label,omitempty"`   // an agent's trust level, a person's shown name, or an address's ENS or saved name
+	ENSName        string `json:"ens_name,omitempty"`   // B48.49: the ENS name To was resolved from, on the network's own registry
+	SavedName      string `json:"saved_name,omitempty"` // B48.49: the name the owner saved To under
+	NewAddress     bool   `json:"new_address"`          // the workspace never paid it: the owner is asked first
 	MaxFeeWei      string `json:"max_fee_wei"`
 	FeePaidBy      string `json:"fee_paid_by"`
 	ArrivalSeconds int64  `json:"arrival_seconds,omitempty"`
@@ -207,7 +218,29 @@ func (s *DualTokenStore) cryptoDestination(ctx context.Context, workspaceID, age
 		return q, "", fmt.Errorf("%w: send to a 0x address, or a person's Talyvor name or email", ErrCryptoSend)
 	}
 	var person *foundPerson
-	if !isCryptoAddress(to) {
+	switch {
+	case isCryptoAddress(to):
+	case smartaccount.IsENSName(to):
+		// B48.49: an ENS name, read on the network's own registry — never a person's name, whatever they claimed.
+		address, err := n.Chain.ResolveENS(ctx, to)
+		switch {
+		case errors.Is(err, smartaccount.ErrENSNotFound):
+			return q, "", fmt.Errorf("%w: %w on %s", ErrCryptoNameNotFound, err, n.Name)
+		case errors.Is(err, smartaccount.ErrENSOff), errors.Is(err, smartaccount.ErrENSName):
+			return q, "", fmt.Errorf("%w: %w", ErrCryptoSend, err)
+		case err != nil:
+			return q, "", fmt.Errorf("economy: crypto send: resolve %s: %w", to, err)
+		}
+		q.ENSName, _ = smartaccount.ENSName(to)
+		to = address
+	default:
+		// B48.49: a name the owner saved an address under, before anyone on Talyvor of that name.
+		if saved, found, err := s.savedCryptoAddress(ctx, workspaceID, to); err != nil {
+			return q, "", err
+		} else if found {
+			q.SavedName, to = saved.Name, saved.Address
+			break
+		}
 		// A person on Talyvor: only one who said yes to being found that way, into the wallet they chose (B48.32).
 		p, address, err := s.lookUpPersonWallet(ctx, workspaceID, to, n)
 		if err != nil {
@@ -249,7 +282,7 @@ func (s *DualTokenStore) cryptoDestination(ctx context.Context, workspaceID, age
 	case !errors.Is(err, pgx.ErrNoRows):
 		return q, "", fmt.Errorf("economy: crypto send: %w", err)
 	default:
-		q.ToKind = "address"
+		q.ToKind, q.ToLabel = "address", cmp.Or(q.SavedName, q.ENSName)
 	}
 	if toWorkspace == workspaceID {
 		return q, toAgent, nil // one of the workspace's own agents
@@ -318,11 +351,59 @@ func (c CryptoSend) asksFor(to string) bool {
 	return strings.EqualFold(c.To, strings.TrimSpace(to))
 }
 
+// cryptoSendPurpose binds a challenge to one owner's send exactly as it will go: the agent, its idempotency key, the
+// network, the amount and the address its `to` resolved to — so a signature for it sends no other, and an ENS name or a
+// saved name pointed elsewhere after it was signed sends nothing.
+func cryptoSendPurpose(agentID, key string, q CryptoSendQuote) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{agentID, key, q.Network, strconv.FormatInt(q.AmountMinor, 10), q.To}, "\x00")))
+	return "crypto_send:" + hex.EncodeToString(h[:])
+}
+
+// CryptoSendChallenge issues the challenge the owner signs their send in from agentID over, under key, with the quote
+// it is signed for and the workspace's passkeys that may sign it; its device keys sign it too (B48.49).
+func (s *DualTokenStore) CryptoSendChallenge(ctx context.Context, workspaceID, agentID, key string, in CryptoSendRequest) (challenge string,
+	credentialIDs []string, q CryptoSendQuote, err error) {
+	if key == "" || len(key) > 128 {
+		return "", nil, q, fmt.Errorf("%w: an Idempotency-Key of at most 128 characters", ErrCryptoSend)
+	}
+	n, err := s.cryptoSendNetwork(in.Network)
+	if err != nil {
+		return "", nil, q, err
+	}
+	if q, _, err = s.cryptoDestination(ctx, workspaceID, agentID, n, in); err != nil {
+		return "", nil, q, err
+	}
+	keys, err := s.ListPasskeys(ctx, workspaceID)
+	if err != nil {
+		return "", nil, q, err
+	}
+	credentialIDs = []string{}
+	for _, k := range keys {
+		credentialIDs = append(credentialIDs, k.CredentialID)
+	}
+	challenge, err = s.newChallenge(ctx, workspaceID, cryptoSendPurpose(agentID, key, q))
+	return challenge, credentialIDs, q, err
+}
+
+// SendAgentCryptoSigned is SendAgentCrypto at the owner's own command, with a, their signature over
+// CryptoSendChallenge's challenge for it, which a workspace with a passkey or device key needs (B48.49). A send its
+// key already began is answered or carried on with no new signature.
+func (s *DualTokenStore) SendAgentCryptoSigned(ctx context.Context, workspaceID, agentID, by, key string, in CryptoSendRequest,
+	a *passkey.Assertion) (CryptoSend, error) {
+	return s.sendAgentCrypto(ctx, workspaceID, agentID, by, true, key, in, true, a)
+}
+
 // SendAgentCrypto sends in from agentID's smart account, once per idempotency key: asking again with the same key
 // answers the same send, never a second one, and a key used for another send is refused. byOwner is whether the owner
 // asks (their command is their say on a new address); otherwise the agent's own key asks, and a first send to a new
-// address waits for the owner. A send ends landed, failed or refused, or waits; its Reason says why.
+// address waits for the owner. A send ends landed, failed or refused, or waits; its Reason says why. The owner's own
+// send from their app goes through SendAgentCryptoSigned.
 func (s *DualTokenStore) SendAgentCrypto(ctx context.Context, workspaceID, agentID, by string, byOwner bool, key string, in CryptoSendRequest) (CryptoSend, error) {
+	return s.sendAgentCrypto(ctx, workspaceID, agentID, by, byOwner, key, in, false, nil)
+}
+
+func (s *DualTokenStore) sendAgentCrypto(ctx context.Context, workspaceID, agentID, by string, byOwner bool, key string, in CryptoSendRequest,
+	signed bool, a *passkey.Assertion) (CryptoSend, error) {
 	if key == "" || len(key) > 128 {
 		return CryptoSend{}, fmt.Errorf("%w: an Idempotency-Key of at most 128 characters", ErrCryptoSend)
 	}
@@ -355,11 +436,23 @@ func (s *DualTokenStore) SendAgentCrypto(ctx context.Context, workspaceID, agent
 		status = "awaiting_owner"
 	}
 	id := "csend_" + uuid.NewString()
-	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_crypto_sends (id, workspace_id, agent_id, idempotency_key, network, token, to_address,
-		to_kind, to_label, to_agent_id, to_workspace_id, amount_minor, fee_paid_by, status, requested_by, to_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-		ON CONFLICT (workspace_id, agent_id, idempotency_key) DO NOTHING`, id, workspaceID, agentID, key, n.Name, n.USDC, q.To, q.ToKind,
-		q.ToLabel, toAgent, toWorkspace, q.AmountMinor, q.FeePaidBy, status, by, cryptoToHash(in.To)); err != nil {
+	// B48.49: the owner's signature is checked, and its challenge spent, only with the send it is for.
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if signed {
+			if err := s.authorizeSignedTx(ctx, tx, workspaceID, cryptoSendPurpose(agentID, key, q), a, ErrCryptoSendUnsigned); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO agent_crypto_sends (id, workspace_id, agent_id, idempotency_key, network, token, to_address,
+			to_kind, to_label, to_agent_id, to_workspace_id, amount_minor, fee_paid_by, status, requested_by, to_hash)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			ON CONFLICT (workspace_id, agent_id, idempotency_key) DO NOTHING`, id, workspaceID, agentID, key, n.Name, n.USDC, q.To, q.ToKind,
+			q.ToLabel, toAgent, toWorkspace, q.AmountMinor, q.FeePaidBy, status, by, cryptoToHash(in.To))
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrCryptoSendUnsigned) || errors.Is(err, passkey.ErrInvalid) {
+			return CryptoSend{}, err
+		}
 		return CryptoSend{}, fmt.Errorf("economy: crypto send: %w", err)
 	}
 	// One asked at the same time under the same key is the send.

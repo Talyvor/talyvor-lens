@@ -41,6 +41,7 @@ type chainIndexConfig struct {
 		PaymasterURL string `json:"paymaster_url"`
 		ExplorerURL  string `json:"explorer_url"`  // such as https://basescan.org
 		BlockSeconds int64  `json:"block_seconds"` // a block's time there, for when a send is final; 0 when not known
+		ENSRegistry  string `json:"ens_registry"`  // B48.49: the ENS registry a send's name.eth is read from; "" reads none
 	} `json:"networks"`
 }
 
@@ -72,7 +73,8 @@ func newChainIndex(store *economy.DualTokenStore, raw string) (*chainIndex, erro
 		if n.BundlerURL != "" {
 			sends = append(sends, economy.CryptoSendNetwork{Name: n.Name, USDC: n.USDC, Funding: n.Funding, Explorer: n.ExplorerURL,
 				ArrivalSeconds: n.BlockSeconds * n.Confirmations,
-				Chain:          smartaccount.Chain{ID: n.ChainID, RPCURL: n.RPCURL, BundlerURL: n.BundlerURL, PaymasterURL: n.PaymasterURL}})
+				Chain: smartaccount.Chain{ID: n.ChainID, RPCURL: n.RPCURL, BundlerURL: n.BundlerURL, PaymasterURL: n.PaymasterURL,
+					ENSRegistry: n.ENSRegistry}})
 		}
 	}
 	x, err := store.NewChainIndexer(nets)

@@ -166,8 +166,12 @@ func TestB4837_TheOwnersSpendPermissionOnChainThroughTheApp(t *testing.T) {
 	mountAgentAccountRoutes(r, store, tenant.NewStore(pool))
 	mountAgentCryptoSendRoutes(r, store)
 	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "owner", Scopes: []string{auth.ScopeKeys}}
+	var sign func(string) *passkey.Assertion // B48.49: the owner's own sends are signed by their passkey, as the app signs them
 	call := func(method, path, key, body string, out any) int {
 		t.Helper()
+		if method == http.MethodPost && strings.HasSuffix(path, "/crypto-sends") && key != "" {
+			body = b4849Signed(t, r, owner, sign, strings.TrimSuffix(path, "/crypto-sends"), key, body)
+		}
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req = req.WithContext(auth.WithAuthContext(req.Context(), owner))
 		if key != "" {
@@ -183,7 +187,7 @@ func TestB4837_TheOwnersSpendPermissionOnChainThroughTheApp(t *testing.T) {
 		return w.Code
 	}
 
-	sign := b5018Passkey(t, store, ws, rpID, origin)
+	sign = b5018Passkey(t, store, ws, rpID, origin)
 	keys, err := store.ListPasskeys(ctx, ws)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("passkeys = %v %v", keys, err)
