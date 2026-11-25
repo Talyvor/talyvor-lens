@@ -1202,6 +1202,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 				Reason      string                  `json:"reason"`       // B55.18: why the owner declined; the agent is told
 			}
 			_ = json.NewDecoder(req.Body).Decode(&in)
+			if !mayAlwaysAllow(w, req, in.AlwaysAllow) {
+				return
+			}
 			ctx, ok := declineReason(w, req, in.Reason, approve)
 			if !ok {
 				return
@@ -1805,6 +1808,9 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			AlwaysAllow *economy.PayeeAllowance `json:"always_allow"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
+		if !mayAlwaysAllow(w, req, in.AlwaysAllow) {
+			return
+		}
 		c, creds, err := bank.ApprovalChallenge(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "approvalID"), in.AlwaysAllow)
 		var a economy.AgentApproval
 		if err == nil { // B57.11: what is signed for, as the sheet shows it — what pays it and the budget left after

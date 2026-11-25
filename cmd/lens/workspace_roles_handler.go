@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/talyvor/lens/internal/auth"
+	"github.com/talyvor/lens/internal/economy"
 	"github.com/talyvor/lens/internal/storedanswers"
 	"github.com/talyvor/lens/internal/workspace"
 )
@@ -56,6 +57,20 @@ func ownerOrRole(next http.HandlerFunc, roles ...string) http.HandlerFunc {
 		}
 		next(w, req)
 	}
+}
+
+// mayAlwaysAllow refuses 403 an "always allow" from anyone but the owner or an Admin (B50.59): it makes a standing rule
+// for the agent, and changing an agent's rules is adminRoles' as on every other rules route. An Approver still approves
+// or declines without it.
+func mayAlwaysAllow(w http.ResponseWriter, req *http.Request, allow *economy.PayeeAllowance) bool {
+	if allow == nil {
+		return true
+	}
+	if _, ok := storedanswers.OwnerOrRole(req.Context(), adminRoles...); !ok {
+		writeJSONErr(w, http.StatusForbidden, "only the workspace's owner or an admin may change an agent's rules: approve without always allow")
+		return false
+	}
+	return true
 }
 
 // roleTokenMinter mints a role session.
