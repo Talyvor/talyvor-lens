@@ -1095,6 +1095,21 @@ func (s *DualTokenStore) HeldWalletMoves(ctx context.Context) ([]WalletMove, err
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (WalletMove, error) { return scanWalletMove(r) })
 }
 
+// WalletMove is agentID's top-up or cash-out id as it stands — a quote nothing of which has started included, which
+// WalletMoves leaves out — so the agent's owner sees what a top-up their agent asked for costs before confirming it.
+// To anyone but the agent's owner there is no such move.
+func (s *DualTokenStore) WalletMove(ctx context.Context, workspaceID, agentID, id, by string) (WalletMove, error) {
+	owner, err := s.agentOwner(ctx, workspaceID, agentID)
+	if errors.Is(err, ErrAgentNotFound) || errors.Is(err, ErrWalletMove) || (err == nil && (by == "" || by != owner)) {
+		return WalletMove{}, ErrWalletMoveNotFound
+	}
+	if err != nil {
+		return WalletMove{}, err
+	}
+	return scanWalletMove(s.pool.QueryRow(ctx, `SELECT `+walletMoveCols+` FROM wallet_moves WHERE id = $1 AND workspace_id = $2 AND agent_id = $3`,
+		id, workspaceID, agentID))
+}
+
 // WalletMoves is agentID's top-ups and cash-outs, and the moves its wallets paid to the owner's other agents — or, with
 // agentID "", what left the owner's own wallets — newest first; quotes nothing of which has started are not listed.
 func (s *DualTokenStore) WalletMoves(ctx context.Context, workspaceID, agentID string) ([]WalletMove, error) {

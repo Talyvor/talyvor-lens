@@ -293,6 +293,7 @@ type agentBank interface {
 	ConfirmWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool, a *passkey.Assertion) (economy.WalletMove, error)
 	ReturnWalletMove(ctx context.Context, workspaceID, agentID, id, by string, workspaceOwner bool) (economy.WalletMove, error)
 	WalletMoves(ctx context.Context, workspaceID, agentID string) ([]economy.WalletMove, error)
+	WalletMove(ctx context.Context, workspaceID, agentID, id, by string) (economy.WalletMove, error)
 	UpdateAgent(ctx context.Context, workspaceID, agentID string, c economy.AgentChange) (economy.Agent, error)
 	ArchiveAgent(ctx context.Context, workspaceID, agentID string) (economy.AgentArchive, error)
 	ClaimAgent(ctx context.Context, workspaceID, agentID, userID string) error
@@ -935,6 +936,11 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 	}))
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
 		out, err := bank.WalletMoves(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"))
+		writeMove(w, out, err)
+	}))
+	// B48.43: one move by id, a quote nothing of which has started included: what a wallet_topup_link asks the owner.
+	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/wallet-moves/{moveID}", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
+		out, err := bank.WalletMove(req.Context(), chi.URLParam(req, "wsID"), chi.URLParam(req, "agentID"), chi.URLParam(req, "moveID"), actor(req))
 		writeMove(w, out, err)
 	}))
 	r.Get("/v1/workspaces/{wsID}/agents/owner-wallets/moves", ownerOnly(func(w http.ResponseWriter, req *http.Request) {
