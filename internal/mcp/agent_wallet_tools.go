@@ -25,6 +25,11 @@ import (
 // address the workspace never paid it is prepared and waits for the owner's tap, and nothing is signed; over the
 // permission it is refused before anything is signed. Every call is logged with the agent's other tool calls, and every
 // money call is in the money layer's audit trail as the store keeps it.
+//
+// B48.39: wallet_topup_link asks the agent's owner to top its USDC wallet up. It quotes the top-up through B48.8's
+// QuoteWalletMove, as the owner's own quote route does — a card or a bank transfer buying USDC at the ramp's rate and
+// fee — and answers the link the owner opens and the route their confirm goes to. The agent moves nothing: only the
+// owner's confirm charges them and credits the wallet, once, at the quote.
 
 // AgentWalletBank is what the wallet tools need of the economy store for the agent's own wallets.
 type AgentWalletBank interface {
@@ -35,6 +40,14 @@ type AgentWalletBank interface {
 	SendAgentCrypto(ctx context.Context, workspaceID, agentID, by string, byOwner bool, key string, in economy.CryptoSendRequest) (economy.CryptoSend, error)
 	AgentCryptoSends(ctx context.Context, workspaceID, agentID string) ([]economy.CryptoSend, error)
 }
+
+// AgentTopUpBank is B48.8's quote of a top-up of an agent's wallet, which wallet_topup_link asks for.
+type AgentTopUpBank interface {
+	QuoteWalletMove(ctx context.Context, workspaceID, agentID string, r economy.WalletMoveRequest, by string, workspaceOwner bool) (economy.WalletMove, error)
+}
+
+// WalletTopUpLinkBase is the app's page for an agent, where its owner opens a top-up the agent asked for (?top_up=).
+const WalletTopUpLinkBase = "https://app.talyvor.com/agents/"
 
 // CryptoRequester is B48.10's chain indexer: the networks whose deposits it sees, and the requests to be paid
 // wallet_request makes.
@@ -52,6 +65,7 @@ var agentWalletRefusals = []error{
 	economy.ErrAgentWalletsOff, economy.ErrSmartAccountsOff, economy.ErrSmartAccountNotFound, economy.ErrCryptoSendsOff,
 	economy.ErrCryptoSend, economy.ErrSpendPermission, smartaccount.ErrInvalid, smartaccount.ErrRefused,
 	economy.ErrCryptoRequest, economy.ErrCryptoRequestConflict, economy.ErrCryptoRequestLimit, economy.ErrCryptoRequestChain,
+	economy.ErrWalletMove, economy.ErrNoRampPartner,
 }
 
 const (
@@ -73,6 +87,13 @@ func agentWalletToolDefinitions() []map[string]any {
 			"your USDC wallet's address and the networks a payment to it is seen on.", map[string]any{"asset": asset}),
 		tool("wallet_history", "Your wallets' latest movements, newest first, each with the balance after it, and every USDC send you made or were sent.",
 			map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "description": "how many movements, at most 100; 20 when left out"}}),
+		{"name": "wallet_topup_link", "description": "Ask your owner to top your USDC wallet up: a quote of what they pay by card or bank " +
+			"transfer, the fee and the USDC it buys, and the link they open to confirm it. Nothing moves until they do.",
+			"inputSchema": map[string]any{"type": "object", "required": []string{"amount_minor", "currency"}, "properties": map[string]any{
+				"amount_minor": map[string]any{"type": "integer", "minimum": 1, "description": "what your owner pays, in pence or cents, the fee included"},
+				"currency":     map[string]any{"type": "string", "enum": []string{"GBP", "EUR", "USD"}, "description": "what your owner pays in"},
+				"method": map[string]any{"type": "string", "enum": []string{economy.WalletMoveCard, economy.WalletMoveBankTransfer},
+					"description": "how your owner pays: card (the default) or bank_transfer"}}}},
 	}
 }
 
@@ -80,7 +101,7 @@ func agentWalletToolDefinitions() []map[string]any {
 // false for any other call, which stays the credit tools'.
 func (s *Server) agentWalletTool(ctx context.Context, name, ws, agent string, a walletArgs) (res any, ok bool, err error) {
 	switch name {
-	case "wallet_list", "wallet_balance", "wallet_receive_details", "wallet_history":
+	case "wallet_list", "wallet_balance", "wallet_receive_details", "wallet_history", "wallet_topup_link":
 	case "wallet_send", "wallet_request":
 		if a.Network == "" {
 			return nil, false, nil
@@ -103,6 +124,24 @@ func (s *Server) agentWalletTool(ctx context.Context, name, ws, agent string, a 
 
 func (s *Server) runAgentWalletTool(ctx context.Context, bank AgentWalletBank, name, ws, agent string, a walletArgs) (any, error) {
 	switch name {
+	case "wallet_topup_link":
+		quotes, ok := bank.(AgentTopUpBank)
+		if !ok {
+			return nil, errors.New("topping up an agent's wallet is not configured")
+		}
+		method := cmp.Or(a.Method, economy.WalletMoveCard)
+		if method != economy.WalletMoveCard && method != economy.WalletMoveBankTransfer {
+			return nil, &toolRefusal{"method is card or bank_transfer"}
+		}
+		m, err := quotes.QuoteWalletMove(ctx, ws, agent, economy.WalletMoveRequest{Route: method, AmountMinor: a.AmountMinor, Currency: a.Currency},
+			"agent:"+agent, false)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"move": m, "link": WalletTopUpLinkBase + agent + "?top_up=" + m.ID,
+			"confirm": "/v1/workspaces/" + ws + "/agents/" + agent + "/wallet-moves/" + m.ID + "/confirm",
+			"message": "Send your owner this link. They see what they pay, the fee and the USDC it buys, and confirm it before the quote " +
+				"expires. Nothing has moved."}, nil
 	case "wallet_send":
 		if a.AmountULXC != 0 {
 			return nil, &toolRefusal{"a send on a network is in amount_minor (1 USDC = 1,000,000), not amount_ulxc"}

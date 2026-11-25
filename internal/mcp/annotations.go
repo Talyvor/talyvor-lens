@@ -75,6 +75,7 @@ var toolAnnotations = map[string]toolAnnotation{
 	"wallet_balance":         {"Your wallets' balances", reads},
 	"wallet_receive_details": {"Where your wallets are paid into", reads},
 	"wallet_history":         {"Your wallets' history", reads},
+	"wallet_topup_link":      {"Ask your owner for a top-up", writes},
 
 	"market_search":   {"Search the marketplace", reads},
 	"market_ask":      {"Ask the marketplace", reads},
