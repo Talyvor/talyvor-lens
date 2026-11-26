@@ -412,6 +412,25 @@ jobs:
           if out=$(./scripts/check-compose-secrets.sh "$t"); then echo "$out"; echo "the check passed a compose file that defaults POSTGRES_PASSWORD"; exit 1; fi
           echo "$out" | grep -q "secret-shaped variable 'POSTGRES_PASSWORD'" || { echo "$out"; echo "the check failed without naming POSTGRES_PASSWORD"; exit 1; }
 
+  # B28.259: no committed file may hold a secret. gitleaks' default ruleset over the whole tree,
+  # pinned by digest in scripts/secret-scan.sh; a made-up test value is allowlisted in .gitleaks.toml
+  # by its exact value, never by path. The second step plants a fresh Stripe-shaped key in a test
+  # file and requires the same scan to fail on it, so the job cannot go green by seeing nothing.
+  secret-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: no committed file may hold a secret
+        run: ./scripts/secret-scan.sh
+      - name: the scan catches a planted secret
+        run: |
+          f=cmd/lens/zz_planted_secret_test.go
+          printf 'package main\n\nconst plantedKey = "%s"\n' "sk_live_$(openssl rand -hex 16)" > "$f"
+          if out=$(./scripts/secret-scan.sh 2>&1); then echo "$out"; echo "the scan passed a tree holding a planted Stripe live key"; exit 1; fi
+          echo "$out" | grep -q "$f" || { echo "$out"; echo "the scan failed without naming $f"; exit 1; }
+
   build:
     runs-on: ubuntu-latest
     needs: test

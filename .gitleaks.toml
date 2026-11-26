@@ -1,0 +1,37 @@
+# gitleaks config (B28.259). The maintained default ruleset, plus an allowlist that names each
+# fixture value exactly. A value is listed here only after it was read and found to be a made-up
+# test string; a path is never allowlisted, so a real key pasted into any file, a test included,
+# still fails the secret-scan job. A new fixture that trips a rule is added here by its value.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Example files with placeholder values, and named test fixtures"
+paths = [
+  '''.*\.example$''',
+]
+regexes = [
+  # Stripe-shaped test keys
+  '''^sk_live_51Habcdefghijklmnop$''',
+  '''^sk_live_B503notarealkey00000000$''',
+  '''^sk_live_SUPERSECRET$''',
+  '''^(sk_live|sk_test|rk_test)_b512secretpart$''',
+  # webhook secrets and synthetic keys in real-Postgres tests
+  '''^whsec_(b28439|b253_issuing|test_secret_0123456789)$''',
+  '''^b(17170|17171|17175|257|32102|3299)-synthetic-key$''',
+  '''^b5014-route-fuzz-synthetic$''',
+  '''^b4810-routes$''',
+  '''^zq-operator-key-0123456789abcdef$''',
+  # a JWT-shaped session token in the log-redaction test
+  '''^eyJhbGciOiJFZERTQSJ9\.eyJzdWIiOiJ3cy0xIn0\.c2lnbmF0dXJlLXZhbHVl$''',
+  # device push tokens built from a repeating hex counter
+  '''^a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90$''',
+  '''^5a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071$''',
+  '''^ac1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9$''',
+  # the placeholder workspace key in docs/quickstart.md
+  '''^tlv_ws_1a2b3c4d5e6f7a8b9c0d1e2f30$''',
+  # public values, not secrets: Base Sepolia's USDC contract address, a Stripe event id, a Go field
+  '''^0x036CbD53842c5426634e7929541eC2318f3dCF7e$''',
+  '''^evt_b1742_cancel$''',
+  '''^cfg\.H5BondsEnabled$''',
+]
