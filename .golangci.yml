@@ -6,14 +6,107 @@ linters:
   enable:
     - errcheck # unchecked errors
     - govet # suspicious constructs (already a CI step; pinned here too)
+    - gosec # security checks (B28.258); every finding on the tree was triaged below
     - ineffassign # ineffectual assignments
     - staticcheck # the staticcheck suite (incl. gosimple, stylecheck)
     - unused # unused code
+  settings:
+    gosec:
+      excludes:
+        # errcheck (above) owns unchecked errors; gosec's copy re-reports the deferred
+        # Close() calls the std-error-handling preset already judged unactionable.
+        - G104
   exclusions:
     # golangci-lint's curated exclusions: deferred Close()/Flush()/print() errors on
     # cleanup are conventionally unactionable. errcheck still checks every other return.
     presets:
       - std-error-handling
+    # gosec triage (B28.258). gosec (golangci-lint v2.12.2) reported 373 findings on main
+    # 30c7d822: 257 in tests and 116 in shipped code (1 in a Linux-only file, so lint with
+    # GOOS=linux to see it, and 3 only once another finding on the same line was excluded).
+    # Each shipped one was read and is a false positive for the reason given on its rule
+    # below. A rule names its files, never a whole package, so the same kind of finding in
+    # any other file still fails the gate and is triaged afresh.
+    rules:
+      # Tests do not ship: fixture credentials, testdata paths, test servers and helpers.
+      - path: _test\.go$
+        linters: [gosec]
+      - path: ^internal/testschema/
+        linters: [gosec]
+      # G101 matches a NAME containing secret/token/pass/cred. These are usage text, SQL,
+      # header names, a hashing-parameter label, a file name and the Circle fake's fixed key.
+      - path: ^(cmd/lens/(credit_lines_cli|credit_scores_cli|identity_gate|phone_signin_routes|provision_handler)|internal/(a2acard/a2acard|brand/brand|economy/credit_line|economy/credit_score|kya/idtoken|money/circle/circlefake/fake|phonesignin/passcode|proxy/proxy|tare/kompress/reducer))\.go$
+        linters: [gosec]
+        text: G101
+      # G115, WebAuthn sign counts: the stored count came from the authenticator's uint32.
+      - path: ^internal/(economy/(agent_approval_auth|agent_spend_permissions|negotiation_mandates|payment_approvals|permission_mandates)|phonesignin/keys)\.go$
+        linters: [gosec]
+        text: G115
+      # G115, a × b ÷ c on 128 bits for 0 ≤ a and 0 ≤ b ≤ c (documented on the function):
+      # the quotient is never more than a, so it fits back in int64.
+      - path: ^internal/(economy/money_invoices|market/royalties)\.go$
+        linters: [gosec]
+        text: G115
+      # G115, values in range by construction: length prefixes and Unix times hashed or
+      # encoded as bytes, hash bits, a round-robin cursor, colour channels 0–255, Latin-1
+      # runes, currency decimal places, smart-account indexes, GRIB bit widths and the page
+      # size (positive; memlimit_linux.go builds on Linux only, so lint there to see it).
+      - path: ^internal/(ab/engine|coderun/memlimit_linux|economy/spend_plan|localrouter/multi|market/(receipt_render|similarity|statement_pdf)|money/smartaccount/spendpermission|outputverify/identity|povi/(challenge|nodeauth|receipt)|scan/grib|stepup/stepup|webpush/webpush)\.go$
+        linters: [gosec]
+        text: G115
+      # G118: deliberately detached background work (health checks, key enrolment,
+      # indexers, last-used stamps) that must outlive the request that started it.
+      - path: ^(cmd/node/server|internal/(auth/apikeys|controlplane/syncer|economy/(chain_indexer|crypto_travel_rule|key_enrolments)|mining/(compute_mining|embedding_mining)))\.go$
+        linters: [gosec]
+        text: G118
+      # G120: the body is already capped by http.MaxBytesReader on the line above.
+      - path: ^internal/proxy/speech\.go$
+        linters: [gosec]
+        text: G120
+      # G204/G702: the docker binary, Lens's own binary, the worker binary and the node's
+      # attestation tool, all from operator config; untrusted input goes in on stdin, a mounted
+      # directory or a discrete integer argument, never as the program name and never a shell.
+      - path: ^(cmd/node/attestation|internal/(buildverify/sandbox|coderun/coderun|distill/isolator))\.go$
+        linters: [gosec]
+        text: G(204|702)
+      # G122: the walk is over a tree safeExtractTar wrote into a fresh private directory,
+      # which never creates a symlink, and non-regular entries are skipped.
+      - path: ^internal/outputverify/artifact\.go$
+        linters: [gosec]
+        text: G122
+      # G301/G302/G304: operator-configured paths (cache files, model directories, key
+      # files) and attest's tar extraction, which confines every entry to its destination.
+      - path: ^(cmd/(cachenode|embednode|node)/client|internal/(attest/attest|buildverify/class|nativepush/nativepush|outputverify/artifact|tare/kompress/(model|tokenizer)))\.go$
+        linters: [gosec]
+        text: G30[124]
+      # G404: retry jitter and a fixed-seed negotiation gym, where predictability is harmless
+      # (the gym is seeded on purpose so a playbook scores the same every time).
+      - path: ^internal/(economy/(agent_subbudget|negotiation_playbooks)|retry/(policy|retry))\.go$
+        linters: [gosec]
+        text: G404
+      # G602: every index is guarded by the len(args) case that dispatches to it.
+      - path: ^cmd/lens/tax_cli\.go$
+        linters: [gosec]
+        text: G602
+      # G703: the Tare model directory is operator configuration, and the tax-rates file is
+      # the operator's own command-line argument.
+      - path: ^cmd/lens/(main|tax_cli)\.go$
+        linters: [gosec]
+        text: G703
+      # G704: requests go to configured upstreams (providers, nodes, control plane); the
+      # agent key-directory fetch takes only an https origin and uses safehttp's client.
+      - path: ^(cmd/(cachenode/client|embednode/(backend|client)|node/(client|providers))|internal/(agentsig/agentsig|proxy/stream))\.go$
+        linters: [gosec]
+        text: G704
+      # G705: the writes are text/plain, JSON, Markdown and text/event-stream bodies (each
+      # already carries its nosemgrep reason), never HTML built from request input.
+      - path: ^(cmd/lens/(chat_listing|compliance_handler|main)|internal/proxy/(proxy|stream|web_search))\.go$
+        linters: [gosec]
+        text: G705
+      # G710: the redirect's host is the configured TLS domain; only the path is the request's.
+      - path: ^cmd/lens/serve\.go$
+        linters: [gosec]
+        text: G710
 
 # Formatting gate. This block is the reason 37 files were able to drift
 # unformatted behind a green `golangci-lint run` (swept in #360): golangci-lint
