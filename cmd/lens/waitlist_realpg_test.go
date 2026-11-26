@@ -89,7 +89,7 @@ func TestWaitlist_OneRowPerEmail_OnlyOnTheProvisionSecret_ReadByTheOperator(t *t
 }
 
 // B45.35 — a signup through a code adds exactly one referral to that code's row; the same email again, and an email
-// using its own code, add none; each email's code is random, distinct, and carries nothing of the email.
+// using its own code, add none; each email's code is random, distinct, and not made from the email.
 func TestWaitlist_ReferralCode_CountsOnceAndRevealsNothing(t *testing.T) {
 	pool := agentRoutesDB(t)
 	post := newWaitlistSignupHandler("prov-secret", pool)
@@ -152,11 +152,20 @@ func TestWaitlist_ReferralCode_CountsOnceAndRevealsNothing(t *testing.T) {
 	if ada.RefCode == bob.RefCode {
 		t.Fatalf("two emails share the code %s", ada.RefCode)
 	}
-	for email, code := range map[string]string{"ada@example.com": ada.RefCode, "bob@example.com": bob.RefCode} {
-		for _, part := range []string{"ada", "bob", "example", "com"} {
-			if strings.Contains(email, part) && strings.Contains(code, part) {
-				t.Errorf("%s's code %s contains %q", email, code, part)
-			}
+	// The code is not made from the email: the same email signed up again after its row is gone gets another code,
+	// and a local part of 5 letters or more is never in it. (A shorter part, like "ada", turns up in a random code by
+	// chance, so it proves nothing.)
+	grace := signup("grace@example.com", "")
+	if _, err := pool.Exec(context.Background(), `DELETE FROM waitlist_signups WHERE email = 'grace@example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	again := signup("grace@example.com", "")
+	if !again.Stored || again.RefCode == grace.RefCode {
+		t.Fatalf("grace signed up again after her row was deleted: %+v, first code %s; want a new code", again, grace.RefCode)
+	}
+	for _, code := range []string{grace.RefCode, again.RefCode} {
+		if strings.Contains(code, "grace") {
+			t.Errorf("grace@example.com's code %s contains its local part", code)
 		}
 	}
 }
