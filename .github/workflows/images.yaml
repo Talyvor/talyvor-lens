@@ -120,3 +120,33 @@ jobs:
             ghcr.io/${{ env.OWNER }}/talyvor-lens:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # B28.255: each platform's image carries its SBOM (SPDX, made by syft) in the registry, next to
+          # the image. The scanner is pinned by digest (docker/buildkit-syft-scanner 1.12.1), so a new
+          # release cannot change the SBOM without a commit. Read it with
+          #   docker buildx imagetools inspect ghcr.io/talyvor/talyvor-lens:<sha> --format '{{ json .SBOM }}'
+          attests: type=sbom,generator=docker/buildkit-syft-scanner@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
+      # Read the SBOMs back from the registry: a push that attached none, or an empty one, fails here.
+      # The same SBOMs are kept on the run as the lens-image-sbom artifact.
+      - name: The pushed image carries its SBOM
+        # Only a push has an image in the registry to read back.
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p sbom
+          docker buildx imagetools inspect "ghcr.io/${OWNER}/talyvor-lens:${GITHUB_SHA}" --format '{{ json .SBOM }}' > sbom/all.json
+          for p in linux/amd64 linux/arm64; do
+            f="sbom/talyvor-lens-${GITHUB_SHA}-${p#linux/}.spdx.json"
+            jq --arg p "$p" '.[$p].SPDX' sbom/all.json > "$f"
+            n="$(jq '.packages | length' "$f")"
+            jq -e '[.packages[].name] | index("github.com/jackc/pgx/v5")' "$f" > /dev/null || {
+              echo "::error::the $p image has no SBOM attached, or its SBOM does not list the Go modules in the lens binary ($n packages)"
+              exit 1
+            }
+            echo "$p: SBOM attached, $n packages"
+          done
+          rm sbom/all.json
+      - name: Keep the SBOMs on the run
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lens-image-sbom
+          path: sbom/
