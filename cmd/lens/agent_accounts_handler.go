@@ -1281,7 +1281,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 			return
 		}
 		// A workspace's agents may keep different zones: its days are UTC's.
-		writeStatementView(w, req, st, format, func() (*time.Location, error) { return time.UTC, nil })
+		writeStatementView(w, req, st, format, func() (*time.Location, error) { return time.UTC, nil }, statementWho(req, bank, st.WorkspaceID))
 	})
 	r.Get("/v1/workspaces/{wsID}/agents/{agentID}/statement", func(w http.ResponseWriter, req *http.Request) {
 		if q := req.URL.Query(); q.Has("from") || q.Has("to") || q.Has("format") || q.Has("group") || q.Has("cursor") || q.Has("kind") || q.Has("q") {
@@ -1304,7 +1304,7 @@ func mountAgentAccountRoutes(r chi.Router, bank agentBank, keys agentKeyIssuer) 
 						return nil, err
 					}
 					return time.LoadLocation(rules.Timezone)
-				})
+				}, statementWho(req, bank, st.WorkspaceID))
 			}
 			return
 		}
@@ -2219,7 +2219,8 @@ func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, form
 // a day of zone's into one line, ?kind= (one or more, comma-separated) and ?q= keep only the lines of those kinds whose
 // words hold q (B28.51), and ?limit= and ?cursor= page what is left newest first. The CSV is never grouped, filtered or
 // paged: it is one row per posting, the audit file; and so are the PDF (B28.328) and the journal (B28.329).
-func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, format string, zone func() (*time.Location, error)) {
+func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Statement, format string, zone func() (*time.Location, error),
+	who func() economy.StatementWho) {
 	q := req.URL.Query()
 	switch format {
 	case "csv":
@@ -2229,7 +2230,7 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
 			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-		_, _ = w.Write(agentStatementPDF(st)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		_, _ = w.Write(agentStatementPDF(st, who(), time.Now())) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		return
 	case "journal":
 		writeStatementJournal(w, economy.StatementJournal(st))
@@ -2314,34 +2315,44 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 	cw.Flush()
 }
 
-// agentStatementPDF is the period as a document (B28.328), row for row the CSV: each account's opening balance, every
-// line, each account's closing balance, then what went on the marketplace bill.
-func agentStatementPDF(st economy.Statement) []byte {
-	day := func(t time.Time) string { return t.UTC().Format("2 Jan 15:04") }
-	t := market.PDFTable{Label: "AGENT STATEMENT",
-		Title: st.From.UTC().Format("2 Jan 2006") + " – " + st.To.UTC().Format("2 Jan 2006"),
-		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04"))},
-		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 70},
-			{Name: "WITH", Width: 99}, {Name: "AMOUNT", Width: 88, Right: true}, {Name: "BALANCE", Width: 88.28, Right: true}},
-		Footer: "Times are UTC. Amounts are in US dollars."}
-	if st.AgentID != "" {
-		t.Lines = append(t.Lines, "Agent "+st.AgentID)
+// agentStatementPDF is the period as the branded statement (B28.328, B61.131): a section for the company's wallet and
+// for each agent's, each from its opening balance through every line to its closing balance, in US dollars. Talyvor's
+// side of a payment (spend, an escrow, a pot) is the other account of a line, not a balance of the owner's.
+func agentStatementPDF(st economy.Statement, who economy.StatementWho, now time.Time) []byte {
+	doc := market.BrandedStatement{Sandbox: who.Sandbox}
+	accounts := st.Accounts
+	if len(accounts) == 0 {
+		accounts = []economy.StatementAccount{{Account: "workspace"}}
 	}
-	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.From), a.Account, "opening", "", "", economy.LXCMoney(a.OpeningULXC)})
+	for _, a := range accounts {
+		agentID, isAgent := strings.CutPrefix(a.Account, "agent:")
+		if a.Account != "workspace" && !isAgent {
+			continue
+		}
+		sec := brandedSection(who, "LXC", st.From, st.To, now)
+		sec.Source = economy.BalanceName(economy.CurrencyUSD)
+		sec.WhoName = sec.Source
+		if isAgent {
+			brandedAgent(&sec, who, agentID, economy.CurrencyUSD)
+		}
+		sec.Opening, sec.In, sec.Out, sec.Closing = a.OpeningULXC, a.InULXC, a.OutULXC, a.ClosingULXC
+		for _, l := range st.Lines {
+			if l.Account != a.Account {
+				continue
+			}
+			kind := l.Kind
+			if l.Label != "" { // a platform fee, with its rate
+				kind = ""
+			}
+			r := brandedRow(l.At, kind, brandedWith(l.Counterparty, who), []string{l.Memo, l.Model}, "", l.Task, l.AmountULXC, l.BalanceAfterULXC)
+			if l.Label != "" {
+				r = brandedRow(l.At, "platform_fee", "", []string{l.Label, l.Memo}, "", l.Task, l.AmountULXC, l.BalanceAfterULXC)
+			}
+			sec.Rows = append(sec.Rows, r)
+		}
+		doc.Sections = append(doc.Sections, sec)
 	}
-	for _, l := range st.Lines {
-		t.Rows = append(t.Rows, []string{day(l.At), l.Account, cmp.Or(l.Label, l.Kind), cmp.Or(l.Counterparty, l.Memo),
-			economy.LXCMoney(l.AmountULXC), economy.LXCMoney(l.BalanceAfterULXC)})
-	}
-	for _, a := range st.Accounts {
-		t.Rows = append(t.Rows, []string{day(st.To), a.Account, "closing", "", "", economy.LXCMoney(a.ClosingULXC)})
-	}
-	for _, l := range st.MarketplaceBill {
-		t.Rows = append(t.Rows, []string{day(l.At), economy.OnMarketplaceBill, l.Kind, cmp.Or(l.PayeeAgentID, l.ListingID, l.Memo),
-			economy.LXCMoney(l.AmountULXC), ""})
-	}
-	return t.PDF()
+	return doc.PDF()
 }
 
 // writeStatementJournal is the period as a CSV of journal lines an accounting package imports (B28.329): Xero's

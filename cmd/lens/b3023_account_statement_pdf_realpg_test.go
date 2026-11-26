@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,25 +65,26 @@ func TestMoneyAccountRoutes_AMonthsPDFClosesAtTheLedgerBalance(t *testing.T) {
 	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/pdf" || !strings.HasPrefix(w.Body.String(), "%PDF-") {
 		t.Fatalf("the month's PDF = %d %q %.80q; want 200, a PDF", w.Code, w.Header().Get("Content-Type"), w.Body.String())
 	}
-	// Each cell is one string shown on the page, in row order; £ arrives as its WinAnsi octal escape.
-	var cells []string
-	for _, m := range regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\) Tj`).FindAllStringSubmatch(w.Body.String(), -1) {
-		cells = append(cells, strings.NewReplacer(`\(`, "(", `\)`, ")", `\243`, "£", `\267`, "·").Replace(m[1]))
-	}
+	// B61.131: the closing row is the words, money out, money in, then the balance; a line shows where its money
+	// stands only when it is not complete.
+	cells := pdfTexts(w.Body.Bytes())
 	closing, states := "", 0
 	for i, c := range cells {
-		if c == "closing" && i+5 < len(cells) {
-			closing = cells[i+5]
+		if c == "Closing balance" && i+3 < len(cells) {
+			closing = cells[i+3]
 		}
-		if c == "completed" {
+		if c == "Pending" || c == "Failed" || c == "Returned" {
 			states++
 		}
 	}
-	if want := economy.Money(ledger, "GBP"); ledger != 125_45 || closing != want {
+	if want := economy.MoneyFigure(ledger, "GBP"); ledger != 125_45 || closing != want {
 		t.Fatalf("the PDF closes at %q; the ledger holds %d for the account (%s), want 12545. Cells: %q", closing, ledger, want, cells)
 	}
-	if states != 3 {
-		t.Errorf("%d lines read completed; want the two payments in and the move to the agent. Cells: %q", states, cells)
+	if sums := addsUp(t, cells); len(sums) != 1 || sums[0][3] != economy.Money(ledger, "GBP") {
+		t.Errorf("the PDF adds up as %v; want one closing at %s", sums, economy.Money(ledger, "GBP"))
+	}
+	if states != 0 || !slices.Contains(cells, "3 lines") {
+		t.Errorf("%d lines read as not complete, or the statement does not count 3 lines: the two payments in and the move to the agent are complete. Cells: %q", states, cells)
 	}
 	body := strings.Join(cells, "\n")
 	for _, never := range []string{"Sort code", "Account number", "IBAN", "test money", "Preview"} {
