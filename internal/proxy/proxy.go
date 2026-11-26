@@ -1871,7 +1871,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, cfg providerConfig
 		// Anthropic", so every other provider's stream was sent to Anthropic's URL with its key.
 		streamCfg := cfg
 		if byok {
-			streamCfg, _ = p.ownKeyConfig(own, cfg.ProviderName())
+			streamCfg, _ = p.ownKeyConfig(ctx, own, cfg.ProviderName())
 			sc.byok = true
 		}
 		ops, oerr := providerStreamOps(streamCfg, upstreamModel, streamBody)
@@ -3637,7 +3637,7 @@ func (p *Proxy) forwardWithFallback(
 	)
 
 	for i, a := range attempts {
-		cfg := p.configForProvider(a.provider)
+		cfg := p.configFor(ctx, a.provider)
 		if cfg.ProviderName() == "" {
 			// Unknown provider name in the chain — treat as a no-op and move on.
 			continue
@@ -3645,7 +3645,7 @@ func (p *Proxy) forwardWithFallback(
 		// B27.26: a BYOK request goes only to providers the workspace holds a key for, on that key — never on
 		// Talyvor's, which it is not charged for.
 		if own != nil {
-			ownCfg, ok := p.ownKeyConfig(own, a.provider)
+			ownCfg, ok := p.ownKeyConfig(ctx, own, a.provider)
 			if !ok {
 				continue
 			}
@@ -3660,7 +3660,7 @@ func (p *Proxy) forwardWithFallback(
 		var poolKey *keypool.PoolKey
 		if p.keyPool != nil && own == nil {
 			if pk, perr := p.keyPool.Get(a.provider); perr == nil && pk != nil {
-				cfg = p.applyKey(cfg, pk.Key)
+				cfg = p.applyKey(ctx, cfg, pk.Key)
 				poolKey = pk
 			}
 		}
@@ -3784,6 +3784,11 @@ func (p *Proxy) configForProvider(name string) providerConfig {
 	return inference.ConfigFor(name, p.endpoints())
 }
 
+// configFor is configForProvider for one request: its Bedrock Region, when HandleBedrock resolved one (B28.244).
+func (p *Proxy) configFor(ctx context.Context, name string) providerConfig {
+	return inference.ConfigFor(name, p.endpointsFor(ctx))
+}
+
 // Endpoints exposes the gateway's configured provider URLs + keys (by value) so the routing-prediction
 // scorer's provider-backed Inferer can call the SAME providers with the SAME credentials the gateway uses
 // — without importing the serve path. Returns a copy; mutating it does not affect the proxy.
@@ -3811,13 +3816,22 @@ func (p *Proxy) endpoints() inference.Endpoints {
 	}
 }
 
+// endpointsFor is endpoints with the Bedrock Region the request in ctx asked for (B28.244).
+func (p *Proxy) endpointsFor(ctx context.Context) inference.Endpoints {
+	ep := p.endpoints()
+	if region, _ := ctx.Value(bedrockRegionKey{}).(string); region != "" {
+		ep.BedrockConfig.Region = region
+	}
+	return ep
+}
+
 // applyKey returns a providerConfig identical to cfg except that the
 // auth and (for Google) URL closures use the supplied key instead of
 // the Proxy's single configured value. Used when keyPool.Get returns a
 // pooled credential; the original closures stay untouched in cfg's
 // source so each call gets a fresh closure capturing the right key.
-func (p *Proxy) applyKey(cfg providerConfig, key string) providerConfig {
-	return inference.ConfigForKey(cfg.ProviderName(), p.endpoints(), key)
+func (p *Proxy) applyKey(ctx context.Context, cfg providerConfig, key string) providerConfig {
+	return inference.ConfigForKey(cfg.ProviderName(), p.endpointsFor(ctx), key)
 }
 
 // setModelInBody re-emits the JSON body with the model field swapped.

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -66,10 +67,14 @@ func (p *Proxy) HandleBedrock(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 
-	// Persist the resolved region so configForProvider("bedrock") picks up the per-request override.
-	p.bedrockConfig = cfg
+	// B28.244: the resolved Region rides on this request, never on the shared p.bedrockConfig — writing it
+	// there raced concurrent requests and let one be signed for another's Region.
+	r = r.WithContext(context.WithValue(r.Context(), bedrockRegionKey{}, region))
 
-	// serve() owns the rest — caching, scoring, fallback, spend. configForProvider("bedrock") builds the
+	// serve() owns the rest — caching, scoring, fallback, spend. configFor(ctx, "bedrock") builds the
 	// actual per-attempt closures (URL, SigV4, translate), which now call into internal/inference.
-	p.serve(w, r, p.configForProvider("bedrock"))
+	p.serve(w, r, p.configFor(r.Context(), "bedrock"))
 }
+
+// bedrockRegionKey carries a request's resolved Bedrock Region from HandleBedrock to every config built for it.
+type bedrockRegionKey struct{}
