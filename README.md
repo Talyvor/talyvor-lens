@@ -227,6 +227,11 @@ Lens is now running at `http://localhost:8080`.
 > or build locally from a checkout (`docker compose build`, which the
 > compose file supports out of the box).
 
+> **Verify the image:** every image `.github/workflows/images.yaml` pushes from main
+> carries a keyless cosign signature from that workflow. Before you run one:
+> `bash scripts/image-signature.sh install ./bin && PATH=./bin:$PATH bash scripts/image-signature.sh verify ghcr.io/talyvor/talyvor-lens:<sha>`.
+> It passes only for an image signed by `Talyvor/talyvor-lens`'s images workflow on main.
+
 Open `http://localhost:8080/` for the service page (what this host is, live health,
 where to go next), or `http://localhost:8080/status` for per-component health.
 
