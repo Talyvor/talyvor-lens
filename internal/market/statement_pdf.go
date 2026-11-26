@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"strings"
+	"time"
 )
 
 // statement_pdf.go — B61.131: the branded statement (DESIGN.md 16.3; statement.css holds every measure, in points).
@@ -19,13 +20,16 @@ import (
 
 // BrandedRow is one line of a statement.
 type BrandedRow struct {
-	Day, Time string // "03 Oct", "10:41"
-	Name      string // who it was with, or what it was
-	State     string // "Pending", "Failed" or "Returned"; "" for a completed line
-	Detail    string // "Card payment · Ref INV-2034"
-	Task      string // "The agent says: …", or ""
-	Amount    int64  // money in positive, money out negative
-	Balance   int64  // the balance after it
+	Day, Time string    // "03 Oct", "10:41"
+	Name      string    // who it was with, or what it was
+	State     string    // "Pending", "Failed" or "Returned"; "" for a completed line
+	Detail    string    // "Card payment · Ref INV-2034"
+	Task      string    // "The agent says: …", or ""
+	Amount    int64     // money in positive, money out negative
+	Balance   int64     // the balance after it
+	At        time.Time // when it moved (the Excel sheet's Date and Time)
+	What      string    // what it was, "Card payment"
+	Reference string    // the rest of Detail after What: "Ref INV-2034"
 }
 
 // BrandedSection is one balance's statement over one period: Opening + In − Out = Closing.
@@ -41,6 +45,8 @@ type BrandedSection struct {
 	Closing              int64
 	Money                func(int64) string // "$13,315.97", "-$4.00"
 	Figure               func(int64) string // a non-negative amount with no sign or currency: "13,315.97"
+	Number               func(int64) string // an amount as a plain decimal a spreadsheet reads: "-13315.97"
+	From, Last           time.Time          // the period's first and last days (the Excel sheet's dates)
 	Rows                 []BrandedRow
 }
 

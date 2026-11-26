@@ -2181,14 +2181,14 @@ func keyOwnerOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv, pdf or journal. Times are
+// statementPeriod reads a statement's ?from=, ?to= and ?format=: json (the default), csv, pdf, xlsx or journal. Times are
 // cut to the microsecond Postgres keeps, so the period a statement echoes is exactly the one it was built from.
 func statementPeriod(req *http.Request, now time.Time) (from, to time.Time, format string, err error) {
 	q := req.URL.Query()
 	switch format = cmp.Or(q.Get("format"), "json"); format {
-	case "json", "csv", "pdf", "journal":
+	case "json", "csv", "pdf", "xlsx", "journal":
 	default:
-		return from, to, "", errors.New("format must be json, csv, pdf or journal")
+		return from, to, "", errors.New("format must be json, csv, pdf, xlsx or journal")
 	}
 	now = now.UTC()
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -2227,10 +2227,12 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		writeStatement(w, st, true)
 		return
 	case "pdf":
-		w.Header().Set("Content-Type", "application/pdf")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
-			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-		_, _ = w.Write(agentStatementPDF(st, who(), time.Now())) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		writeStatementFile(w, "application/pdf", fmt.Sprintf("agent-statement-%s-%s.pdf",
+			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)), agentStatementPDF(st, who(), time.Now()))
+		return
+	case "xlsx":
+		wh := who()
+		writeStatementXLSX(w, statementFileName(wh.Agents[st.AgentID], economy.CurrencyUSD, st.From, st.To), agentStatementDoc(st, wh, time.Now()))
 		return
 	case "journal":
 		writeStatementJournal(w, economy.StatementJournal(st))
@@ -2319,6 +2321,11 @@ func writeStatement(w http.ResponseWriter, st economy.Statement, asCSV bool) {
 // for each agent's, each from its opening balance through every line to its closing balance, in US dollars. Talyvor's
 // side of a payment (spend, an escrow, a pot) is the other account of a line, not a balance of the owner's.
 func agentStatementPDF(st economy.Statement, who economy.StatementWho, now time.Time) []byte {
+	return agentStatementDoc(st, who, now).PDF()
+}
+
+// agentStatementDoc is the statement document the PDF and the Excel sheet are made from (B61.132).
+func agentStatementDoc(st economy.Statement, who economy.StatementWho, now time.Time) market.BrandedStatement {
 	doc := market.BrandedStatement{Sandbox: who.Sandbox}
 	accounts := st.Accounts
 	if len(accounts) == 0 {
@@ -2352,7 +2359,7 @@ func agentStatementPDF(st economy.Statement, who economy.StatementWho, now time.
 		}
 		doc.Sections = append(doc.Sections, sec)
 	}
-	return doc.PDF()
+	return doc
 }
 
 // writeStatementJournal is the period as a CSV of journal lines an accounting package imports (B28.329): Xero's

@@ -142,3 +142,25 @@ func (s *DualTokenStore) StatementWho(ctx context.Context, workspaceID, capabili
 	}
 	return who, nil
 }
+
+// MoneyNumber is an amount as a plain decimal a spreadsheet reads as a number, to its last minor unit and with no
+// grouping or currency: "-13315.97", "0.0000001" (B61.132).
+func MoneyNumber(minor int64, currency string) string {
+	sign := ""
+	if minor < 0 {
+		sign, minor = "-", -minor
+	}
+	places, ok := MoneyCurrencies[currency]
+	switch {
+	case currency == "LXC":
+		minor, places = minor*usdTenMillionthsPerULXC, 7
+	case !ok:
+		places = 2
+	}
+	digits := fmt.Sprintf("%0*d", places+1, minor)
+	whole, frac := digits[:len(digits)-places], strings.TrimRight(digits[len(digits)-places:], "0")
+	if frac == "" {
+		return sign + whole
+	}
+	return sign + whole + "." + frac
+}

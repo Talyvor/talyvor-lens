@@ -39,12 +39,14 @@ func brandedPeriod(sec *market.BrandedSection, from, to time.Time, now time.Time
 	sec.Period = day(from) + " to " + day(last)
 	sec.Issued = "Issued " + day(now.UTC())
 	sec.OpenDay, sec.CloseDay = from.Format("02 Jan"), last.Format("02 Jan")
+	sec.From, sec.Last = from, last
 }
 
 // brandedMoney is a section's way of writing currency's amounts.
 func brandedMoney(sec *market.BrandedSection, currency string) {
 	sec.Money = func(v int64) string { return economy.Money(v, currency) }
 	sec.Figure = func(v int64) string { return economy.MoneyFigure(v, currency) }
+	sec.Number = func(v int64) string { return economy.MoneyNumber(v, currency) }
 	sec.CurrencyWords = economy.CurrencyWords(currency)
 	if currency == "LXC" {
 		sec.CurrencyWords = economy.CurrencyWords(economy.CurrencyUSD)
@@ -83,17 +85,18 @@ func brandedRef(ref string) string {
 func brandedRow(at time.Time, kind, with string, details []string, state, task string, amount, balance int64) market.BrandedRow {
 	what := economy.KindWords(kind, amount)
 	name := cmp.Or(with, what)
-	var parts []string
+	var parts, refs []string
 	if with != "" {
 		parts = append(parts, what)
 	}
 	for _, d := range details {
 		if d != "" && d != name {
-			parts = append(parts, d)
+			parts, refs = append(parts, d), append(refs, strings.TrimPrefix(d, "Ref ")) // under a Reference head
 		}
 	}
 	return market.BrandedRow{Day: at.UTC().Format("02 Jan"), Time: at.UTC().Format("15:04"), Name: name, State: economy.StateWords(state),
-		Detail: strings.Join(parts, " · "), Task: economy.TaskShown(task), Amount: amount, Balance: balance}
+		Detail: strings.Join(parts, " · "), Task: economy.TaskShown(task), Amount: amount, Balance: balance,
+		At: at.UTC(), What: what, Reference: strings.Join(refs, " · ")}
 }
 
 // brandedSection is a section for who over [from, to), in currency.

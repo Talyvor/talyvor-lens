@@ -103,6 +103,11 @@ linters:
       - path: ^(cmd/lens/(chat_listing|compliance_handler|main)|internal/proxy/(proxy|stream|web_search))\.go$
         linters: [gosec]
         text: G705
+      # G705: the one write of statement_xlsx.go is a statement PDF or Excel workbook Lens
+      # rendered, sent as an attachment with its own content type, never HTML (B61.132).
+      - path: ^cmd/lens/statement_xlsx\.go$
+        linters: [gosec]
+        text: G705
       # G710: the redirect's host is the configured TLS domain; only the path is the request's.
       - path: ^cmd/lens/serve\.go$
         linters: [gosec]
