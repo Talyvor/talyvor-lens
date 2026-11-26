@@ -55,9 +55,9 @@ func (p *Proxy) byokAgentRules(ctx context.Context, apiKeyID string) error {
 }
 
 // ownKeyConfig is provider's config on the workspace's own key, or ok=false when it holds none for it.
-func (p *Proxy) ownKeyConfig(own map[string]string, provider string) (providerConfig, bool) {
+func (p *Proxy) ownKeyConfig(ctx context.Context, own map[string]string, provider string) (providerConfig, bool) {
 	if own[provider] == "" {
 		return providerConfig{}, false
 	}
-	return inference.ConfigForOwnKey(provider, p.endpoints(), own[provider])
+	return inference.ConfigForOwnKey(provider, p.endpointsFor(ctx), own[provider])
 }
