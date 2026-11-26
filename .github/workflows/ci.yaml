@@ -444,3 +444,21 @@ jobs:
         with:
           name: lens-binary
           path: bin/lens
+      # B28.255: the binary's SBOM (SPDX, syft pinned) rides beside it as the lens-binary-sbom artifact.
+      - name: SBOM of the binary
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          file: bin/lens
+          format: spdx-json
+          syft-version: v1.57.2
+          output-file: bin/lens.spdx.json
+          artifact-name: lens-binary-sbom.spdx.json
+          upload-release-assets: false
+      - name: The SBOM lists the Go modules the binary is built from
+        run: |
+          n="$(jq '.packages | length' bin/lens.spdx.json)"
+          jq -e '[.packages[].name] | index("github.com/jackc/pgx/v5")' bin/lens.spdx.json > /dev/null || {
+            echo "::error::the binary's SBOM does not list github.com/jackc/pgx/v5 ($n packages): syft did not read the module list"
+            exit 1
+          }
+          echo "SBOM of bin/lens: $n packages"
