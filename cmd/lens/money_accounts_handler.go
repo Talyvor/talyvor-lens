@@ -238,10 +238,8 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 				writeStatementXLSX(w, statementFileName(who.Agents[st.AgentID], st.Currency, st.From, st.To), moneyStatementDoc(st, d, who, now))
 				return
 			}
-			w.Header().Set("Content-Type", "application/pdf")
-			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.pdf"`,
-				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-			_, _ = w.Write(moneyStatementPDF(st, d, who, now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+			writeStatementFile(w, "application/pdf", fmt.Sprintf("account-statement-%s-%s-%s.pdf",
+				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)), moneyStatementPDF(st, d, who, now))
 		default:
 			writeMoneyStatement(w, st)
 		}

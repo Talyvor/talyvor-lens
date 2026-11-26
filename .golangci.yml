@@ -99,8 +99,10 @@ linters:
         linters: [gosec]
         text: G704
       # G705: the writes are text/plain, JSON, Markdown and text/event-stream bodies (each
-      # already carries its nosemgrep reason), never HTML built from request input.
-      - path: ^(cmd/lens/(chat_listing|compliance_handler|main)|internal/proxy/(proxy|stream|web_search))\.go$
+      # already carries its nosemgrep reason), never HTML built from request input; and
+      # statement_xlsx.go's one write, a statement PDF or Excel workbook Lens rendered,
+      # sent as an attachment with its own content type (B61.132).
+      - path: ^(cmd/lens/(chat_listing|compliance_handler|main|statement_xlsx)|internal/proxy/(proxy|stream|web_search))\.go$
         linters: [gosec]
         text: G705
       # G710: the redirect's host is the configured TLS domain; only the path is the request's.

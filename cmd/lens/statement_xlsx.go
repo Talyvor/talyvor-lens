@@ -47,7 +47,12 @@ func statementFileName(agent, currency string, from, to time.Time) string {
 
 // writeStatementXLSX answers with doc as an Excel workbook named name.xlsx.
 func writeStatementXLSX(w http.ResponseWriter, name string, doc market.BrandedStatement) {
-	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.xlsx"`)
-	_, _ = w.Write(doc.XLSX()) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- an Excel workbook rendered by Lens
+	writeStatementFile(w, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name+".xlsx", doc.XLSX())
+}
+
+// writeStatementFile answers with a statement document Lens rendered, a PDF or an Excel workbook, to download as filename.
+func writeStatementFile(w http.ResponseWriter, contentType, filename string, body []byte) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	_, _ = w.Write(body) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf or an Excel workbook rendered by Lens
 }

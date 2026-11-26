@@ -74,9 +74,8 @@ func mountWalletStatementRoutes(r chi.Router, bank agentBank) {
 		case "csv":
 			writeCSV(w, name+".csv", walletStatementCSV(st))
 		case "pdf":
-			w.Header().Set("Content-Type", "application/pdf")
-			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.pdf"`)
-			_, _ = w.Write(walletStatementPDF(st, statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts), now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+			writeStatementFile(w, "application/pdf", name+".pdf",
+				walletStatementPDF(st, statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts), now))
 		case "xlsx":
 			who := statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts)
 			currency := economy.CurrencyUSD

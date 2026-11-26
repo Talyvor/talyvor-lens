@@ -2227,10 +2227,8 @@ func writeStatementView(w http.ResponseWriter, req *http.Request, st economy.Sta
 		writeStatement(w, st, true)
 		return
 	case "pdf":
-		w.Header().Set("Content-Type", "application/pdf")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="agent-statement-%s-%s.pdf"`,
-			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-		_, _ = w.Write(agentStatementPDF(st, who(), time.Now())) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		writeStatementFile(w, "application/pdf", fmt.Sprintf("agent-statement-%s-%s.pdf",
+			st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)), agentStatementPDF(st, who(), time.Now()))
 		return
 	case "xlsx":
 		wh := who()
