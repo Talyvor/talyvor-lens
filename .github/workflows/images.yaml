@@ -35,6 +35,10 @@ concurrency:
   group: images-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# B28.262: least privilege. The default token is read-only; build-push names packages: write in its own block.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   # Written out, in lowercase. Since 12 Oct 2026 this repository belongs to the GitHub organisation
