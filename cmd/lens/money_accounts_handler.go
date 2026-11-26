@@ -236,7 +236,8 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.pdf"`,
 				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-			_, _ = w.Write(moneyStatementPDF(st, d)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+			who := statementWhoFor(req.Context(), bank, ws, economy.CapabilityCurrencyAccounts)
+			_, _ = w.Write(moneyStatementPDF(st, d, who, now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		default:
 			writeMoneyStatement(w, st)
 		}
@@ -368,42 +369,31 @@ func statementMonth(month string, withPeriod bool, now time.Time) (from, to time
 	return from, to, nil
 }
 
-// moneyStatementPDF is a currency account's period as a document (B30.23): the account and, once a partner has given
-// them, its details; its opening, in, out and closing; then row for row the CSV, each line with who it was with, its
-// reference, where it stands and the balance after it.
-func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetails) []byte {
-	money := func(minor int64) string { return economy.Money(minor, st.Currency) }
-	title := st.From.UTC().Format("2 Jan 2006") + " – " + st.To.UTC().Format("2 Jan 2006")
-	if st.From.Equal(time.Date(st.From.Year(), st.From.Month(), 1, 0, 0, 0, 0, time.UTC)) && !st.To.After(st.From.AddDate(0, 1, 0)) {
-		title = st.From.UTC().Format("January 2006")
+// moneyStatementPDF is a currency account's period as the branded statement (B30.23, B61.131): the account and, once
+// a partner has given them, its details; its opening, in, out and closing; then each line with who it was with, what it
+// was, its reference, where it stands when it is not complete, what the agent said, and the balance after it.
+func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetails, who economy.StatementWho, now time.Time) []byte {
+	sec := brandedSection(who, st.Currency, st.From, st.To, now)
+	sec.Source = economy.BalanceName(st.Currency)
+	if sec.Holder = cmp.Or(who.Holder, d.Holder); sec.Holder == "" && st.AgentID == "" {
+		sec.Holder = st.Name // a company account is named for its holder when it opens
 	}
-	name := cmp.Or(st.Name, "Company")
-	if st.Name == "" && st.AgentID != "" {
-		name = "Agent " + st.AgentID
-	}
-	t := market.PDFTable{Label: "ACCOUNT STATEMENT", Title: title,
-		Lines: []string{fmt.Sprintf("%s · %s account %s", name, st.Currency, st.AccountID)},
-		Columns: []market.PDFColumn{{Name: "DATE", Width: 58}, {Name: "WHAT", Width: 66}, {Name: "WITH", Width: 92},
-			{Name: "REFERENCE", Width: 82}, {Name: "STATE", Width: 52}, {Name: "AMOUNT", Width: 74, Right: true},
-			{Name: "BALANCE", Width: 75.28, Right: true}},
-		Footer: "Times are UTC. Amounts are in " + st.Currency + "."}
-	for _, l := range [][2]string{{"Account holder", d.Holder}, {"Sort code", d.SortCode}, {"Account number", d.AccountNumber},
-		{"IBAN", d.IBAN}, {"BIC", d.BIC}, {"Routing number", d.RoutingNumber}, {"Payment reference", d.PaymentReference}} {
+	sec.WhoName = sec.Source
+	for _, l := range [][2]string{{"Sort code", d.SortCode}, {"Account number", d.AccountNumber}, {"IBAN", d.IBAN}, {"BIC", d.BIC},
+		{"Routing number", d.RoutingNumber}, {"Payment reference", d.PaymentReference}} {
 		if l[1] != "" {
-			t.Lines = append(t.Lines, l[0]+" "+l[1])
+			sec.WhoLines = append(sec.WhoLines, l[0]+" "+l[1])
 		}
 	}
-	t.Lines = append(t.Lines,
-		fmt.Sprintf("From %s to %s (UTC)", st.From.UTC().Format("2 January 2006 15:04"), st.To.UTC().Format("2 January 2006 15:04")),
-		fmt.Sprintf("Opening %s · In %s · Out %s · Closing %s", money(st.OpeningMinor), money(st.InMinor), money(-st.OutMinor), money(st.ClosingMinor)))
-	day := func(at time.Time) string { return at.UTC().Format("2 Jan 15:04") }
-	t.Rows = append(t.Rows, []string{day(st.From), "opening", "", "", "", "", money(st.OpeningMinor)})
-	for _, l := range st.Lines {
-		t.Rows = append(t.Rows, []string{day(l.At), l.Kind, l.Counterparty, cmp.Or(l.Memo, l.PartnerRef), l.State,
-			money(l.AmountMinor), money(l.BalanceAfterMinor)})
+	if st.AgentID != "" {
+		brandedAgent(&sec, who, st.AgentID, st.Currency)
 	}
-	t.Rows = append(t.Rows, []string{day(st.To), "closing", "", "", "", "", money(st.ClosingMinor)})
-	return t.PDF()
+	sec.Opening, sec.In, sec.Out, sec.Closing = st.OpeningMinor, st.InMinor, st.OutMinor, st.ClosingMinor
+	for _, l := range st.Lines {
+		sec.Rows = append(sec.Rows, brandedRow(l.At, l.Kind, brandedWith(l.Counterparty, who), []string{l.Memo, brandedRef(l.PartnerRef)}, l.State, l.Task,
+			l.AmountMinor, l.BalanceAfterMinor))
+	}
+	return market.BrandedStatement{Sandbox: who.Sandbox, Sections: []market.BrandedSection{sec}}.PDF()
 }
 
 // writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,

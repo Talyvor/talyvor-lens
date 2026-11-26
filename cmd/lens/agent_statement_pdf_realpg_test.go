@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -67,25 +66,26 @@ func TestAgentStatementRoutes_PDFForAnyPeriod(t *testing.T) {
 		w.Header().Get("Content-Disposition") != `attachment; filename="agent-statement-2026-09-01-2026-10-01.pdf"` {
 		t.Fatalf("the PDF statement: %q, %q, %.40q", w.Header().Get("Content-Type"), w.Header().Get("Content-Disposition"), w.Body.String())
 	}
-	// Each cell is one string shown in the page's content, in row order: an opening or closing row is its date, its
-	// account, the word, two empty cells, then the balance, one per account in the JSON's order.
-	var cells []string
-	for _, m := range regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\) Tj`).FindAllStringSubmatch(w.Body.String(), -1) {
-		cells = append(cells, strings.NewReplacer(`\(`, "(", `\)`, ")").Replace(m[1]))
-	}
+	// B61.131: each balance's section shows its opening row (the words, then the balance) and its closing row (the
+	// words, money out, money in, then the balance), one section per account in the JSON's order, and adds up.
+	cells := pdfTexts(w.Body.Bytes())
 	balances := map[string][]string{}
 	for i := 0; i+3 < len(cells); i++ {
-		if cells[i] == "opening" || cells[i] == "closing" {
-			balances[cells[i]] = append(balances[cells[i]], cells[i+3])
+		switch cells[i] {
+		case "Opening balance":
+			balances["opening"] = append(balances["opening"], cells[i+1])
+		case "Closing balance":
+			balances["closing"] = append(balances["closing"], cells[i+3])
 		}
 	}
+	addsUp(t, cells)
 	if len(balances["opening"]) != len(st.Accounts) || len(balances["closing"]) != len(st.Accounts) {
 		t.Fatalf("the PDF's balances %v are not one opening and one closing for each of the JSON's %+v", balances, st.Accounts)
 	}
 	agentAccount := false
 	for i, acc := range st.Accounts {
 		agentAccount = agentAccount || acc.Account == "agent:"+a.ID && acc.OpeningULXC == 15_500_001 && acc.ClosingULXC == 17_098_767
-		if balances["opening"][i] != economy.LXCMoney(acc.OpeningULXC) || balances["closing"][i] != economy.LXCMoney(acc.ClosingULXC) {
+		if balances["opening"][i] != economy.MoneyFigure(acc.OpeningULXC, "LXC") || balances["closing"][i] != economy.MoneyFigure(acc.ClosingULXC, "LXC") {
 			t.Fatalf("the PDF's balances %v are not the JSON statement's %+v", balances, acc)
 		}
 	}

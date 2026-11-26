@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -75,7 +76,7 @@ func mountWalletStatementRoutes(r chi.Router, bank agentBank) {
 		case "pdf":
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.pdf"`)
-			_, _ = w.Write(walletStatementPDF(st)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+			_, _ = w.Write(walletStatementPDF(st, statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts), now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		default:
 			writeJSONOK(w, http.StatusOK, st)
 		}
@@ -142,14 +143,6 @@ func writeCSV(w http.ResponseWriter, filename string, rows [][]string) {
 	_ = cw.WriteAll(rows)
 }
 
-// walletAccountName is how a statement names an account: its own name, or its purpose and currency.
-func walletAccountName(name, purpose, currency string) string {
-	if name != "" {
-		return name + " " + currency
-	}
-	return purpose + " " + currency
-}
-
 // walletStatementCSV is a header, each account's opening balance, every line, then each account's closing balance.
 func walletStatementCSV(st economy.WalletStatement) [][]string {
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
@@ -168,32 +161,34 @@ func walletStatementCSV(st economy.WalletStatement) [][]string {
 	return rows
 }
 
-// walletStatementPDF is the month as a document: each account's opening, in, out and closing, then every line.
-func walletStatementPDF(st economy.WalletStatement) []byte {
-	names := map[string]string{}
-	t := market.PDFTable{Label: "WALLET STATEMENT", Title: st.From.Format("January 2006"),
-		Lines: []string{fmt.Sprintf("From %s to %s (UTC)", st.From.Format("2 January 2006 15:04"), st.To.Format("2 January 2006 15:04"))},
-		Columns: []market.PDFColumn{{Name: "DATE", Width: 62}, {Name: "ACCOUNT", Width: 92}, {Name: "WHAT", Width: 84},
-			{Name: "WITH", Width: 107}, {Name: "AMOUNT", Width: 77, Right: true}, {Name: "BALANCE", Width: 77.28, Right: true}},
-		Footer: "Amounts are in each account's own currency."}
-	if st.AgentID != "" {
-		t.Lines = append(t.Lines, "Agent "+st.AgentID)
+// walletStatementPDF is the month as the branded statement (B61.131): a section for each of the wallets' accounts,
+// in its own currency, from its opening balance through every line to its closing balance.
+func walletStatementPDF(st economy.WalletStatement, who economy.StatementWho, now time.Time) []byte {
+	doc := market.BrandedStatement{Sandbox: who.Sandbox}
+	accounts := st.Accounts
+	if len(accounts) == 0 {
+		accounts = []economy.WalletAccount{{AgentID: st.AgentID, Currency: economy.CurrencyUSD}}
 	}
-	for _, a := range st.Accounts {
-		names[a.AccountID] = walletAccountName(a.AccountName, a.Purpose, a.Currency)
-		t.Lines = append(t.Lines, fmt.Sprintf("%s: opening %s, in %s, out %s, closing %s", names[a.AccountID],
-			economy.FormatMinor(a.OpeningMinor, a.Currency), economy.FormatMinor(a.InMinor, a.Currency),
-			economy.FormatMinor(a.OutMinor, a.Currency), economy.FormatMinor(a.ClosingMinor, a.Currency)))
-	}
-	for _, l := range st.Lines {
-		with := l.Counterparty
-		if with == "" {
-			with = l.Memo
+	for _, a := range accounts {
+		sec := brandedSection(who, a.Currency, st.From, st.To, now)
+		sec.Source = economy.BalanceName(a.Currency)
+		if a.AccountName != "" && !strings.HasPrefix(a.AccountName, "chain:") {
+			sec.Source = a.AccountName
 		}
-		t.Rows = append(t.Rows, []string{l.At.Format("2 Jan 15:04"), names[l.AccountID], l.Kind, with,
-			economy.FormatMinor(l.AmountMinor, l.Currency), economy.FormatMinor(l.BalanceAfterMinor, l.Currency)})
+		sec.WhoName = sec.Source
+		if a.AgentID != "" {
+			brandedAgent(&sec, who, a.AgentID, a.Currency)
+		}
+		sec.Opening, sec.In, sec.Out, sec.Closing = a.OpeningMinor, a.InMinor, a.OutMinor, a.ClosingMinor
+		for _, l := range st.Lines {
+			if l.AccountID == a.AccountID {
+				sec.Rows = append(sec.Rows, brandedRow(l.At, l.Kind, brandedWith(l.Counterparty, who), []string{l.Memo}, "", "",
+					l.AmountMinor, l.BalanceAfterMinor))
+			}
+		}
+		doc.Sections = append(doc.Sections, sec)
 	}
-	return t.PDF()
+	return doc.PDF()
 }
 
 // walletTaxCSV is each disposal with its cost basis and gain, each unpriced movement, and the totals.
