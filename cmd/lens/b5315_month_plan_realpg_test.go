@@ -97,9 +97,12 @@ func TestB5315_MonthPlan(t *testing.T) {
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	day := func(n int) time.Time { return today.AddDate(0, 0, n) }
-	// Netflix, monthly: £10.99 three times, the last 26 days ago, so its next charge falls in the next nine days.
-	for _, ago := range []int{86, 56, 26} {
-		charge("Netflix", 1099, now.AddDate(0, 0, -ago))
+	// Netflix, monthly: £10.99 three times on one day of the month, so its next charge falls in four days. (Thirty
+	// days apart drifts off that day across a 31-day month, and the plan then reads it as stopped on some dates.)
+	renews := day(4).Add(now.Sub(today))
+	for k := 3; k >= 1; k-- {
+		at := time.Date(renews.Year(), renews.Month()-time.Month(k), 1, renews.Hour(), renews.Minute(), renews.Second(), 0, time.UTC)
+		charge("Netflix", 1099, at.AddDate(0, 0, min(renews.Day(), at.AddDate(0, 1, -1).Day())-1))
 	}
 	// Three bills due before payday — energy in 2 days, the phone in 4, the rent in 9 — and last quarter's energy bill.
 	bill := func(id, supplier string, minor int64, due time.Time, status string, created time.Time) {
