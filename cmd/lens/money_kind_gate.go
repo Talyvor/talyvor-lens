@@ -347,6 +347,7 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/payments/challenge": moneySideEither,
 	"/v1/money/payments/quote":     moneySideEither,
 	"/v1/money/payments/{}":        moneySideEither,
+	"/v1/money/payments/{}/entry":  moneySideEither,
 
 	// money_payouts_handler.go
 	"/v1/money/payouts":            moneySideEither,
