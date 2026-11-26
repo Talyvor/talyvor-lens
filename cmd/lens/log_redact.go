@@ -11,7 +11,8 @@ import (
 
 // B50.2 — what may never reach the logs. redactLogAttr is the logger's ReplaceAttr: an attribute named like a
 // credential loses its value, and every string value and message (log.Printf arrives as one) has keys, bearer
-// tokens, IBANs and card numbers cut out. Numbers logged as numbers are left alone.
+// tokens, IBANs and card numbers cut out. Numbers logged as numbers are left alone. B28.265: so are email addresses and
+// phone numbers, the personal details a log line most often carries.
 
 const redacted = redact.Mark
 
@@ -19,6 +20,8 @@ var (
 	secretAttrName = regexp.MustCompile(`(?i)(pass(word|wd|phrase)?|secret|token|authorization|api_?key|cookie|private_?key)$`)
 	ibanValue      = regexp.MustCompile(`\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]){11,30}\b`)
 	cardValue      = regexp.MustCompile(`\b[2-6](?:[ -]?[0-9]){12,18}\b`)
+	emailValue     = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+	phoneValue     = regexp.MustCompile(`\+[1-9][0-9]{0,2}(?:[ -]?[0-9]{2,4}){2,4}\b|\([0-9]{3}\) ?[0-9]{3}[-. ][0-9]{4}\b`)
 )
 
 func redactLogAttr(_ []string, a slog.Attr) slog.Attr {
@@ -43,6 +46,8 @@ func redactLogAttr(_ []string, a slog.Attr) slog.Attr {
 func redactLogText(s string) string {
 	s = redact.Secrets(s)
 	s = ibanValue.ReplaceAllString(s, redacted)
+	s = emailValue.ReplaceAllString(s, redacted)
+	s = phoneValue.ReplaceAllString(s, redacted)
 	return cardValue.ReplaceAllStringFunc(s, func(m string) string {
 		if luhn(m) {
 			return redacted
