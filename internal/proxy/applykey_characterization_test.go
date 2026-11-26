@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,7 +51,7 @@ func TestApplyKey_CredentialSubstitution_Characterization(t *testing.T) {
 
 	// 1 · openai → Authorization: Bearer <pooled> (the pooled key, NOT the configured one).
 	t.Run("openai_Authorization_Bearer_pooled", func(t *testing.T) {
-		got := authHeaders(p.applyKey(p.configForProvider("openai"), pooled)).Get("Authorization")
+		got := authHeaders(p.applyKey(context.Background(), p.configForProvider("openai"), pooled)).Get("Authorization")
 		t.Logf("PINNED openai   Authorization = %q", got)
 		if got != "Bearer "+pooled {
 			t.Fatalf("openai Authorization = %q, want %q", got, "Bearer "+pooled)
@@ -63,7 +64,7 @@ func TestApplyKey_CredentialSubstitution_Characterization(t *testing.T) {
 	// 2 · anthropic → x-api-key: <pooled>, and (surprising truth) applyKey ALSO re-sets anthropic-version;
 	// it sets NO Authorization header (anthropic auth is x-api-key, not Bearer).
 	t.Run("anthropic_xapikey_pooled_plus_version", func(t *testing.T) {
-		h := authHeaders(p.applyKey(p.configForProvider("anthropic"), pooled))
+		h := authHeaders(p.applyKey(context.Background(), p.configForProvider("anthropic"), pooled))
 		t.Logf("PINNED anthropic x-api-key = %q  anthropic-version = %q  Authorization = %q",
 			h.Get("x-api-key"), h.Get("anthropic-version"), h.Get("Authorization"))
 		if got := h.Get("x-api-key"); got != pooled {
@@ -79,7 +80,7 @@ func TestApplyKey_CredentialSubstitution_Characterization(t *testing.T) {
 
 	// 3 · google → the pooled key goes in the URL QUERY (key=<pooled>), not a header; setAuth stays a no-op.
 	t.Run("google_url_query_pooled_no_header", func(t *testing.T) {
-		cfg := p.applyKey(p.configForProvider("google"), pooled)
+		cfg := p.applyKey(context.Background(), p.configForProvider("google"), pooled)
 		gotURL := cfg.UpstreamURL("gemini-2.5-flash")
 		t.Logf("PINNED google   upstreamURL = %q", gotURL)
 		if !strings.Contains(gotURL, "key="+pooled) {
@@ -97,7 +98,7 @@ func TestApplyKey_CredentialSubstitution_Characterization(t *testing.T) {
 	// CONFIGURED key still flows. (groq/vllm/bedrock are likewise absent from applyKey's switch.)
 	t.Run("mistral_passthrough_pooled_NOT_applied", func(t *testing.T) {
 		base := p.configForProvider("mistral")
-		after := p.applyKey(base, pooled)
+		after := p.applyKey(context.Background(), base, pooled)
 		beforeAuth := authHeaders(base).Get("Authorization")
 		afterAuth := authHeaders(after).Get("Authorization")
 		t.Logf("PINNED mistral  before=%q  after=%q (pass-through: pooled key NOT applied)", beforeAuth, afterAuth)
