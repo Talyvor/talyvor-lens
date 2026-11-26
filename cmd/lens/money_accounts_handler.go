@@ -208,8 +208,8 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		}
 		now := time.Now()
 		from, to, format, err := statementPeriod(req, now)
-		if err == nil && format != "json" && format != "csv" && format != "pdf" {
-			err = errors.New("format must be json, csv or pdf")
+		if err == nil && format != "json" && format != "csv" && format != "pdf" && format != "xlsx" {
+			err = errors.New("format must be json, csv, pdf or xlsx")
 		}
 		if m := req.URL.Query().Get("month"); err == nil && m != "" {
 			from, to, err = statementMonth(m, req.URL.Query().Has("from") || req.URL.Query().Has("to"), now)
@@ -226,18 +226,20 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
-		case format == "pdf":
+		case format == "pdf" || format == "xlsx":
 			// The details a payer pays into, only once a partner has given real ones: an account it cannot give them for
 			// (the Test partner's, a closed one) is still stated, without them.
 			d, derr := bank.CurrencyAccountDetails(req.Context(), ws, agentID, st.AccountID)
 			if derr != nil || d.Mode != economy.DetailsLive {
 				d = economy.CurrencyAccountDetails{}
 			}
-			w.Header().Set("Content-Type", "application/pdf")
-			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.pdf"`,
-				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
 			who := statementWhoFor(req.Context(), bank, ws, economy.CapabilityCurrencyAccounts)
-			_, _ = w.Write(moneyStatementPDF(st, d, who, now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+			if format == "xlsx" {
+				writeStatementXLSX(w, statementFileName(who.Agents[st.AgentID], st.Currency, st.From, st.To), moneyStatementDoc(st, d, who, now))
+				return
+			}
+			writeStatementFile(w, "application/pdf", fmt.Sprintf("account-statement-%s-%s-%s.pdf",
+				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)), moneyStatementPDF(st, d, who, now))
 		default:
 			writeMoneyStatement(w, st)
 		}
@@ -373,6 +375,11 @@ func statementMonth(month string, withPeriod bool, now time.Time) (from, to time
 // a partner has given them, its details; its opening, in, out and closing; then each line with who it was with, what it
 // was, its reference, where it stands when it is not complete, what the agent said, and the balance after it.
 func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetails, who economy.StatementWho, now time.Time) []byte {
+	return moneyStatementDoc(st, d, who, now).PDF()
+}
+
+// moneyStatementDoc is the statement document the PDF and the Excel sheet are made from (B61.132).
+func moneyStatementDoc(st economy.MoneyStatement, d economy.CurrencyAccountDetails, who economy.StatementWho, now time.Time) market.BrandedStatement {
 	sec := brandedSection(who, st.Currency, st.From, st.To, now)
 	sec.Source = economy.BalanceName(st.Currency)
 	if sec.Holder = cmp.Or(who.Holder, d.Holder); sec.Holder == "" && st.AgentID == "" {
@@ -393,11 +400,12 @@ func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetai
 		sec.Rows = append(sec.Rows, brandedRow(l.At, l.Kind, brandedWith(l.Counterparty, who), []string{l.Memo, brandedRef(l.PartnerRef)}, l.State, l.Task,
 			l.AmountMinor, l.BalanceAfterMinor))
 	}
-	return market.BrandedStatement{Sandbox: who.Sandbox, Sections: []market.BrandedSection{sec}}.PDF()
+	return market.BrandedStatement{Sandbox: who.Sandbox, Sections: []market.BrandedSection{sec}}
 }
 
 // writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,
-// then the closing balance, in the currency's minor units.
+// then the closing balance, in the currency's minor units. Three columns at the end are for a person (B61.133,
+// DESIGN.md 16.5): what, the line in words, and amount and balance_after as decimals, a minus for money out.
 func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.csv"`,
@@ -406,13 +414,26 @@ func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
 	cw := csv.NewWriter(w)
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor", "task", "state"})
-	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor), "", ""})
+	dec := func(v int64) string { return statementDecimal(v, st.Currency) }
+	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor", "task", "state",
+		"what", "amount", "balance_after"})
+	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor), "", "",
+		"Opening balance", "", dec(st.OpeningMinor)})
 	for _, l := range st.Lines {
 		_ = cw.Write([]string{l.EntryID, strconv.Itoa(l.Line), at(l.At), l.Kind, i64(l.AmountMinor), st.Currency, l.Funding,
 			csvText(l.Counterparty), csvText(l.Memo), csvText(l.PartnerRef), i64(l.BalanceAfterMinor),
-			csvText(economy.TaskShown(l.Task)), l.State}) // B62.2: what the agent said, never as a fact
+			csvText(economy.TaskShown(l.Task)), l.State, // B62.2: what the agent said, never as a fact
+			economy.KindWords(l.Kind, l.AmountMinor), dec(l.AmountMinor), dec(l.BalanceAfterMinor)})
 	}
-	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor), "", ""})
+	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor), "", "",
+		"Closing balance", "", dec(st.ClosingMinor)})
 	cw.Flush()
+}
+
+// statementDecimal is minor in currency as a plain decimal to every one of its places, a minus for money out: "-291.00".
+func statementDecimal(minor int64, currency string) string {
+	if minor < 0 {
+		return "-" + economy.MinorDecimal(-minor, currency)
+	}
+	return economy.MinorDecimal(minor, currency)
 }

@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// B50.2: API keys, tokens, passwords, IBANs and card numbers never reach Lens's logs — in a message, an
+// B50.2: API keys, tokens, passwords, IBANs, card numbers, emails and phone numbers (B28.265) never reach Lens's logs — in a message, an
 // attribute, an error, or a line from the standard log package — and a CR/LF in logged text cannot forge a line.
 func TestLogsNeverCarrySecretsOrForgedLines(t *testing.T) {
 	var buf bytes.Buffer
@@ -33,13 +33,18 @@ func TestLogsNeverCarrySecretsOrForgedLines(t *testing.T) {
 		"DE89 3704 0044 0532 0130 00",                                   // an IBAN, spaced
 		"4242424242424242",                                              // a card number
 		"5555-5555-5555-4444",                                           // a card number, dashed
+		"ana.popescu@example.md",                                        // an email address (B28.265)
+		"+373 69 123 456",                                               // a phone number
+		"(555) 010-4477",                                                // a phone number, US shape
 	}
 	logger.Info("calling upstream with Authorization: Bearer "+secrets[0], slog.String("stripe", secrets[1]))
 	logger.Warn("webhook", slog.Any("err", errors.New("bad signature for "+secrets[2])), slog.String("note", "key "+secrets[3]))
 	logger.Info("login", slog.String("session_token", secrets[4]), slog.String("password", secrets[5]))
 	logger.Info("payout to "+secrets[6]+" and "+secrets[7], slog.String("card", "paid with "+secrets[8]))
 	log.Printf("legacy line: card %s", secrets[9])
-	logger.Info("ledger", slog.Int64("amount_minor", 4111111111111111), slog.String("id", "1700000000000000001"), slog.Int("input_tokens", 913))
+	logger.Info("invite sent to "+secrets[10], slog.String("phone", secrets[11]), slog.Any("err", errors.New("no answer at "+secrets[12])))
+	logger.Info("ledger", slog.Int64("amount_minor", 4111111111111111), slog.String("id", "1700000000000000001"), slog.Int("input_tokens", 913),
+		slog.String("at", "2026-11-26T22:47:33+02:00"))
 	logger.Info("user said: hi\r\n{\"level\":\"ERROR\",\"msg\":\"forged\"}")
 
 	out := buf.String()
@@ -48,7 +53,8 @@ func TestLogsNeverCarrySecretsOrForgedLines(t *testing.T) {
 			t.Errorf("the logs carry %q:\n%s", s, out)
 		}
 	}
-	if !strings.Contains(out, "4111111111111111") || !strings.Contains(out, "1700000000000000001") || !strings.Contains(out, `"input_tokens":913`) {
+	if !strings.Contains(out, "4111111111111111") || !strings.Contains(out, "1700000000000000001") || !strings.Contains(out, `"input_tokens":913`) ||
+		!strings.Contains(out, "2026-11-26T22:47:33+02:00") {
 		t.Errorf("a number logged as a number, or an id failing the card checksum, was cut:\n%s", out)
 	}
 	lines := 0
@@ -57,8 +63,8 @@ func TestLogsNeverCarrySecretsOrForgedLines(t *testing.T) {
 			t.Errorf("a CR/LF in logged text forged a line: %s", sc.Text())
 		}
 	}
-	if lines != 7 {
-		t.Errorf("7 records wrote %d lines", lines)
+	if lines != 8 {
+		t.Errorf("8 records wrote %d lines", lines)
 	}
 }
 
