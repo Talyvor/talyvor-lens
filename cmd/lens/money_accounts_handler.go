@@ -404,7 +404,8 @@ func moneyStatementDoc(st economy.MoneyStatement, d economy.CurrencyAccountDetai
 }
 
 // writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,
-// then the closing balance, in the currency's minor units.
+// then the closing balance, in the currency's minor units. Three columns at the end are for a person (B61.133,
+// DESIGN.md 16.5): what, the line in words, and amount and balance_after as decimals, a minus for money out.
 func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.csv"`,
@@ -413,13 +414,26 @@ func writeMoneyStatement(w http.ResponseWriter, st economy.MoneyStatement) {
 	cw := csv.NewWriter(w)
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor", "task", "state"})
-	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor), "", ""})
+	dec := func(v int64) string { return statementDecimal(v, st.Currency) }
+	_ = cw.Write([]string{"entry_id", "line", "at", "kind", "amount_minor", "currency", "funding", "counterparty", "memo", "partner_ref", "balance_after_minor", "task", "state",
+		"what", "amount", "balance_after"})
+	_ = cw.Write([]string{"", "", at(st.From), "opening", "", st.Currency, "", "", "", "", i64(st.OpeningMinor), "", "",
+		"Opening balance", "", dec(st.OpeningMinor)})
 	for _, l := range st.Lines {
 		_ = cw.Write([]string{l.EntryID, strconv.Itoa(l.Line), at(l.At), l.Kind, i64(l.AmountMinor), st.Currency, l.Funding,
 			csvText(l.Counterparty), csvText(l.Memo), csvText(l.PartnerRef), i64(l.BalanceAfterMinor),
-			csvText(economy.TaskShown(l.Task)), l.State}) // B62.2: what the agent said, never as a fact
+			csvText(economy.TaskShown(l.Task)), l.State, // B62.2: what the agent said, never as a fact
+			economy.KindWords(l.Kind, l.AmountMinor), dec(l.AmountMinor), dec(l.BalanceAfterMinor)})
 	}
-	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor), "", ""})
+	_ = cw.Write([]string{"", "", at(st.To), "closing", "", st.Currency, "", "", "", "", i64(st.ClosingMinor), "", "",
+		"Closing balance", "", dec(st.ClosingMinor)})
 	cw.Flush()
+}
+
+// statementDecimal is minor in currency as a plain decimal to every one of its places, a minus for money out: "-291.00".
+func statementDecimal(minor int64, currency string) string {
+	if minor < 0 {
+		return "-" + economy.MinorDecimal(-minor, currency)
+	}
+	return economy.MinorDecimal(minor, currency)
 }
