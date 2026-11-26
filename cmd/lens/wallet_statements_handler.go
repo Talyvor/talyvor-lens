@@ -143,14 +143,6 @@ func writeCSV(w http.ResponseWriter, filename string, rows [][]string) {
 	_ = cw.WriteAll(rows)
 }
 
-// walletAccountName is how a statement names an account: its own name, or its purpose and currency.
-func walletAccountName(name, purpose, currency string) string {
-	if name != "" {
-		return name + " " + currency
-	}
-	return purpose + " " + currency
-}
-
 // walletStatementCSV is a header, each account's opening balance, every line, then each account's closing balance.
 func walletStatementCSV(st economy.WalletStatement) [][]string {
 	i64 := func(v int64) string { return strconv.FormatInt(v, 10) }
