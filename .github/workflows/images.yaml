@@ -14,7 +14,26 @@ on:
       - 'go.sum'
       - 'Dockerfile'
       - '.github/workflows/images.yaml'
+  # B28.254: a pull request that changes the image builds and scans it too, so a HIGH or CRITICAL
+  # finding fails before the merge, not after. It never pushes.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      # migrations are //go:embed-ded into the lens binary — without this
+      # path a migrations-only merge never reaches :latest and the image's
+      # embedded migration set silently lags the repo (#125 aftermath).
+      - 'migrations/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.github/workflows/images.yaml'
   workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -34,12 +53,57 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # B28.254: nothing is pushed until the image has been scanned. The scan image is the same
+      # Dockerfile and build args as the push below (linux/amd64; arm64 carries the same packages and
+      # the same Go modules), loaded into the runner's docker and never pushed.
+      - name: Build the image to scan
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          build-args: |
+            LENS_VERSION=${{ github.sha }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: talyvor-lens-scan:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Trivy pinned by digest (0.76.2), so a new release cannot change the verdict without a commit; its
+      # vulnerability database is fetched fresh at scan time. Exit code 3 means "found HIGH or CRITICAL",
+      # so the control below can tell a finding from a scanner that failed to run (exit 1).
+      - name: The scan fails an image with a known CRITICAL
+        run: |
+          mkdir -p "$HOME/.cache/trivy"
+          set +e
+          docker run --rm -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            image --no-progress --scanners vuln --severity HIGH,CRITICAL --exit-code 3 \
+            alpine@sha256:adab3844f497ab9171f070d4cae4114b5aec565ac772e2f2579405b78be67c96
+          rc=$?
+          set -e
+          # alpine 3.14.0 ships apk-tools 2.12.5-r1 (CVE-2021-36159, CRITICAL).
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::the scan exited $rc on alpine 3.14.0 (CRITICAL CVE-2021-36159), not 3: it would not fail a vulnerable image"
+            exit 1
+          fi
+      # A HIGH or CRITICAL finding with no fix yet still fails: the one way past it is a line in
+      # .trivyignore at the repo root naming the CVE, why it does not reach us, and an exp: date.
+      - name: Scan the built image (a HIGH or CRITICAL finding fails the build)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" -v "$PWD:/src:ro" -w /src \
+            aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            image --no-progress --scanners vuln --severity HIGH,CRITICAL --exit-code 3 \
+            talyvor-lens-scan:${{ github.sha }}
       - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        if: github.event_name != 'pull_request'
         with:
           context: .
           file: Dockerfile
