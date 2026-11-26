@@ -21,11 +21,12 @@ linters:
     # cleanup are conventionally unactionable. errcheck still checks every other return.
     presets:
       - std-error-handling
-    # gosec triage (B28.258). gosec (golangci-lint v2.12.2) reported 372 findings on main
-    # 30c7d822: 257 in tests and 115 in shipped code (3 of them only once another finding on
-    # the same line was excluded). Each shipped one was read and is a false positive for the
-    # reason given on its rule below. A rule names its files, never a whole package, so
-    # the same kind of finding in any other file still fails the gate and is triaged afresh.
+    # gosec triage (B28.258). gosec (golangci-lint v2.12.2) reported 373 findings on main
+    # 30c7d822: 257 in tests and 116 in shipped code (1 in a Linux-only file, so lint with
+    # GOOS=linux to see it, and 3 only once another finding on the same line was excluded).
+    # Each shipped one was read and is a false positive for the reason given on its rule
+    # below. A rule names its files, never a whole package, so the same kind of finding in
+    # any other file still fails the gate and is triaged afresh.
     rules:
       # Tests do not ship: fixture credentials, testdata paths, test servers and helpers.
       - path: _test\.go$
@@ -48,8 +49,9 @@ linters:
         text: G115
       # G115, values in range by construction: length prefixes and Unix times hashed or
       # encoded as bytes, hash bits, a round-robin cursor, colour channels 0–255, Latin-1
-      # runes, currency decimal places, smart-account indexes and GRIB bit widths.
-      - path: ^internal/(ab/engine|economy/spend_plan|localrouter/multi|market/(receipt_render|similarity|statement_pdf)|money/smartaccount/spendpermission|outputverify/identity|povi/(challenge|nodeauth|receipt)|scan/grib|stepup/stepup|webpush/webpush)\.go$
+      # runes, currency decimal places, smart-account indexes, GRIB bit widths and the page
+      # size (positive; memlimit_linux.go builds on Linux only, so lint there to see it).
+      - path: ^internal/(ab/engine|coderun/memlimit_linux|economy/spend_plan|localrouter/multi|market/(receipt_render|similarity|statement_pdf)|money/smartaccount/spendpermission|outputverify/identity|povi/(challenge|nodeauth|receipt)|scan/grib|stepup/stepup|webpush/webpush)\.go$
         linters: [gosec]
         text: G115
       # G118: deliberately detached background work (health checks, key enrolment,
