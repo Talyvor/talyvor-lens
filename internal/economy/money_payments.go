@@ -81,6 +81,8 @@ type OutsidePayment struct {
 	ArrivesMinor     int64  `json:"arrives_minor,omitempty"`
 	ArrivesCurrency  string `json:"arrives_currency,omitempty"`
 	Rate             string `json:"rate,omitempty"`
+	// B30.147: the entry that took its money out once it completed — GET /v1/money/payments/{id}/entry reads it.
+	EntryID string `json:"entry_id,omitempty"`
 
 	holdAccountID string
 	quoteRef      string             // the partner's reference for the quote
@@ -205,15 +207,18 @@ func minorString(minor int64, currency string) string {
 	return currency + " " + s[:len(s)-d] + "." + s[len(s)-d:]
 }
 
+// outsidePaymentCols ends with the payment's entry (B30.147): the one posted under its screenKey when it completed.
 const outsidePaymentCols = `id, workspace_id, account_id, hold_account_id, agent_id, payee_id, payee_name, amount_minor, currency, funding,
 	reference, idempotency_key, value_ulxc, status, partner, partner_ref, detail, created_at, updated_at,
-	quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate`
+	quote_id, quote_ref, partner_cost_minor, fee_minor, arrives_minor, arrives_currency, rate,
+	COALESCE((SELECT e.id FROM money_entries e WHERE e.workspace_id = money_payments.workspace_id
+		AND e.idempotency_key = 'payment_out:' || money_payments.idempotency_key), '')`
 
 func scanOutsidePayment(row pgx.Row) (OutsidePayment, error) {
 	var p OutsidePayment
 	err := row.Scan(&p.ID, &p.WorkspaceID, &p.AccountID, &p.holdAccountID, &p.AgentID, &p.PayeeID, &p.PayeeName, &p.AmountMinor,
 		&p.Currency, &p.Funding, &p.Reference, &p.IdempotencyKey, &p.ValueULXC, &p.Status, &p.Partner, &p.PartnerRef, &p.Detail,
-		&p.CreatedAt, &p.UpdatedAt, &p.QuoteID, &p.quoteRef, &p.PartnerCostMinor, &p.FeeMinor, &p.ArrivesMinor, &p.ArrivesCurrency, &p.Rate)
+		&p.CreatedAt, &p.UpdatedAt, &p.QuoteID, &p.quoteRef, &p.PartnerCostMinor, &p.FeeMinor, &p.ArrivesMinor, &p.ArrivesCurrency, &p.Rate, &p.EntryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrOutsidePaymentNotFound
 	}

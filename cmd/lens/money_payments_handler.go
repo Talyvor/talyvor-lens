@@ -37,6 +37,9 @@ import (
 //	                          total that leaves the account, the rate and what arrives, good until expires_at.
 //	GET  /v1/money/payments   ?agent_id= — the payments out, newest first
 //	GET  /v1/money/payments/{id} — one payment, after asking the partner where it stands now
+//	GET  /v1/money/payments/{id}/entry — B30.147: the entry that took a completed payment's money out (its entry_id):
+//	                          every posting with its account's purpose (company, agent, hold, partner, revenue),
+//	                          amount_minor and currency, and the sums per currency. 409 while it is not posted.
 //
 // The workspace is the key's. Its owner or an admin pays from and reads any of its accounts; an agent's own key only
 // its own. Mounted in the authed group.
@@ -50,6 +53,7 @@ type moneyPaymentBank interface {
 	QuoteInternational(ctx context.Context, workspaceID string, in economy.OutsidePayment) (economy.InternationalQuote, error)
 	OutsidePayments(ctx context.Context, workspaceID, agentID string) ([]economy.OutsidePayment, error)
 	RefreshOutsidePayment(ctx context.Context, workspaceID, agentID, id string) (economy.OutsidePayment, error)
+	OutsidePaymentEntry(ctx context.Context, workspaceID, agentID, id string) (economy.PaymentEntry, error)
 }
 
 // moneyCaller is the key's workspace and the agent it may act for: "" for the owner or an admin, who may act for any,
@@ -206,6 +210,18 @@ func mountMoneyPaymentRoutes(r chi.Router, bank moneyPaymentBank) {
 		}
 		writeJSONOK(w, http.StatusOK, p)
 	})
+	r.Get("/v1/money/payments/{id}/entry", func(w http.ResponseWriter, req *http.Request) {
+		ws, agentID, ok := caller(w, req)
+		if !ok {
+			return
+		}
+		e, err := bank.OutsidePaymentEntry(req.Context(), ws, agentID, chi.URLParam(req, "id"))
+		if err != nil {
+			writePaymentErr(w, err)
+			return
+		}
+		writeJSONOK(w, http.StatusOK, e)
+	})
 }
 
 func writePaymentErr(w http.ResponseWriter, err error) {
@@ -217,7 +233,8 @@ func writePaymentErr(w http.ResponseWriter, err error) {
 		errors.Is(err, economy.ErrMoneyAccountNotFound), errors.Is(err, economy.ErrAgentNotFound):
 		writeJSONErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, economy.ErrPayeeUnconfirmed), errors.Is(err, economy.ErrPayeeCoolingOff), errors.Is(err, economy.ErrAddressProofNeeded), errors.Is(err, economy.ErrAgentFunds), errors.Is(err, economy.ErrIdempotencyKeyReused),
-		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote), errors.Is(err, economy.ErrPayeeNameShared):
+		errors.Is(err, economy.ErrMoneyAccountNotOpen), errors.Is(err, economy.ErrQuote), errors.Is(err, economy.ErrPayeeNameShared),
+		errors.Is(err, economy.ErrPaymentNotPosted):
 		writeJSONErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, economy.ErrAgentRule), errors.Is(err, economy.ErrApprovalRequired), errors.Is(err, economy.ErrCapabilityNotCleared),
 		errors.Is(err, economy.ErrPaymentUnsigned), errors.Is(err, economy.ErrKeyBeforeLivePayment), errors.Is(err, passkey.ErrInvalid),
