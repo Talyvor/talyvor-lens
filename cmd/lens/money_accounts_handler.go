@@ -208,8 +208,8 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 		}
 		now := time.Now()
 		from, to, format, err := statementPeriod(req, now)
-		if err == nil && format != "json" && format != "csv" && format != "pdf" {
-			err = errors.New("format must be json, csv or pdf")
+		if err == nil && format != "json" && format != "csv" && format != "pdf" && format != "xlsx" {
+			err = errors.New("format must be json, csv, pdf or xlsx")
 		}
 		if m := req.URL.Query().Get("month"); err == nil && m != "" {
 			from, to, err = statementMonth(m, req.URL.Query().Has("from") || req.URL.Query().Has("to"), now)
@@ -226,17 +226,21 @@ func mountMoneyAccountRoutes(r chi.Router, bank moneyAccountBank) {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		case format == "json":
 			writeJSONOK(w, http.StatusOK, st)
-		case format == "pdf":
+		case format == "pdf" || format == "xlsx":
 			// The details a payer pays into, only once a partner has given real ones: an account it cannot give them for
 			// (the Test partner's, a closed one) is still stated, without them.
 			d, derr := bank.CurrencyAccountDetails(req.Context(), ws, agentID, st.AccountID)
 			if derr != nil || d.Mode != economy.DetailsLive {
 				d = economy.CurrencyAccountDetails{}
 			}
+			who := statementWhoFor(req.Context(), bank, ws, economy.CapabilityCurrencyAccounts)
+			if format == "xlsx" {
+				writeStatementXLSX(w, statementFileName(who.Agents[st.AgentID], st.Currency, st.From, st.To), moneyStatementDoc(st, d, who, now))
+				return
+			}
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account-statement-%s-%s-%s.pdf"`,
 				st.Currency, st.From.Format(time.DateOnly), st.To.Format(time.DateOnly)))
-			who := statementWhoFor(req.Context(), bank, ws, economy.CapabilityCurrencyAccounts)
 			_, _ = w.Write(moneyStatementPDF(st, d, who, now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
 		default:
 			writeMoneyStatement(w, st)
@@ -373,6 +377,11 @@ func statementMonth(month string, withPeriod bool, now time.Time) (from, to time
 // a partner has given them, its details; its opening, in, out and closing; then each line with who it was with, what it
 // was, its reference, where it stands when it is not complete, what the agent said, and the balance after it.
 func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetails, who economy.StatementWho, now time.Time) []byte {
+	return moneyStatementDoc(st, d, who, now).PDF()
+}
+
+// moneyStatementDoc is the statement document the PDF and the Excel sheet are made from (B61.132).
+func moneyStatementDoc(st economy.MoneyStatement, d economy.CurrencyAccountDetails, who economy.StatementWho, now time.Time) market.BrandedStatement {
 	sec := brandedSection(who, st.Currency, st.From, st.To, now)
 	sec.Source = economy.BalanceName(st.Currency)
 	if sec.Holder = cmp.Or(who.Holder, d.Holder); sec.Holder == "" && st.AgentID == "" {
@@ -393,7 +402,7 @@ func moneyStatementPDF(st economy.MoneyStatement, d economy.CurrencyAccountDetai
 		sec.Rows = append(sec.Rows, brandedRow(l.At, l.Kind, brandedWith(l.Counterparty, who), []string{l.Memo, brandedRef(l.PartnerRef)}, l.State, l.Task,
 			l.AmountMinor, l.BalanceAfterMinor))
 	}
-	return market.BrandedStatement{Sandbox: who.Sandbox, Sections: []market.BrandedSection{sec}}.PDF()
+	return market.BrandedStatement{Sandbox: who.Sandbox, Sections: []market.BrandedSection{sec}}
 }
 
 // writeMoneyStatement answers with a currency account's statement as CSV: a header, the opening balance, every line,

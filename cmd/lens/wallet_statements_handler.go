@@ -57,8 +57,8 @@ func mountWalletStatementRoutes(r chi.Router, bank agentBank) {
 			from = t.UTC()
 		}
 		format := q.Get("format")
-		if format != "" && format != "json" && format != "csv" && format != "pdf" {
-			writeJSONErr(w, http.StatusBadRequest, "format must be json, csv or pdf")
+		if format != "" && format != "json" && format != "csv" && format != "pdf" && format != "xlsx" {
+			writeJSONErr(w, http.StatusBadRequest, "format must be json, csv, pdf or xlsx")
 			return
 		}
 		to := from.AddDate(0, 1, 0)
@@ -77,6 +77,18 @@ func mountWalletStatementRoutes(r chi.Router, bank agentBank) {
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.pdf"`)
 			_, _ = w.Write(walletStatementPDF(st, statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts), now)) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- application/pdf rendered by Lens
+		case "xlsx":
+			who := statementWhoFor(req.Context(), bank, chi.URLParam(req, "wsID"), economy.CapabilityCurrencyAccounts)
+			currency := economy.CurrencyUSD
+			for i, a := range st.Accounts {
+				if i == 0 || a.Currency == currency {
+					currency = a.Currency
+					continue
+				}
+				currency = "" // balances in more than one currency: the name says none of them
+				break
+			}
+			writeStatementXLSX(w, statementFileName(who.Agents[st.AgentID], currency, st.From, st.To), walletStatementDoc(st, who, now))
 		default:
 			writeJSONOK(w, http.StatusOK, st)
 		}
@@ -164,6 +176,11 @@ func walletStatementCSV(st economy.WalletStatement) [][]string {
 // walletStatementPDF is the month as the branded statement (B61.131): a section for each of the wallets' accounts,
 // in its own currency, from its opening balance through every line to its closing balance.
 func walletStatementPDF(st economy.WalletStatement, who economy.StatementWho, now time.Time) []byte {
+	return walletStatementDoc(st, who, now).PDF()
+}
+
+// walletStatementDoc is the statement document the PDF and the Excel sheet are made from (B61.132).
+func walletStatementDoc(st economy.WalletStatement, who economy.StatementWho, now time.Time) market.BrandedStatement {
 	doc := market.BrandedStatement{Sandbox: who.Sandbox}
 	accounts := st.Accounts
 	if len(accounts) == 0 {
@@ -188,7 +205,7 @@ func walletStatementPDF(st economy.WalletStatement, who economy.StatementWho, no
 		}
 		doc.Sections = append(doc.Sections, sec)
 	}
-	return doc.PDF()
+	return doc
 }
 
 // walletTaxCSV is each disposal with its cost basis and gain, each unpriced movement, and the totals.
