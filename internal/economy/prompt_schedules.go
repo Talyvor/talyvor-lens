@@ -56,8 +56,8 @@ type PromptSchedule struct {
 // line it paid on, or refused with Lens's sentence and no charge.
 type PromptRun struct {
 	RanAt       time.Time `json:"ran_at"`
-	Outcome     string    `json:"outcome"` // answered | refused
-	Answer      string    `json:"answer,omitempty"`
+	Outcome     string    `json:"outcome"`          // answered | refused
+	Answer      string    `json:"answer,omitempty"` // never kept for a workspace whose logging policy is none (B28.265)
 	Detail      string    `json:"detail,omitempty"`
 	RequestID   string    `json:"request_id,omitempty"`
 	ChargedULXC int64     `json:"charged_ulxc"`
@@ -172,6 +172,7 @@ func (s *DualTokenStore) StopPromptSchedule(ctx context.Context, workspaceID, sc
 // duePrompt is a schedule's time claimed by this tick, with the agent key it is asked as.
 type duePrompt struct {
 	id, workspaceID, keyID, prompt, provider, model string
+	loggingNone                                     bool // the workspace's logging policy is none: no answer is kept (B28.265)
 }
 
 // RunPromptSchedules asks every prompt schedule due at now, each time once, and returns how many were answered and
@@ -193,6 +194,9 @@ func (s *DualTokenStore) RunPromptSchedules(ctx context.Context, now time.Time, 
 				run.Outcome, run.Detail = "refused", aerr.Error()
 			} else {
 				run.Outcome, run.Answer = "answered", answer
+				if due.loggingNone {
+					run.Answer = ""
+				}
 			}
 		}
 		if err := s.recordPromptRun(ctx, due, &run); err != nil {
@@ -218,9 +222,10 @@ func (s *DualTokenStore) claimDuePrompt(ctx context.Context, now time.Time) (due
 	var d duePrompt
 	var agentID, every string
 	var at time.Time
-	err = tx.QueryRow(ctx, `SELECT id, workspace_id, agent_id, prompt, provider, model, every, next_run_at FROM prompt_schedules
-		WHERE active AND next_run_at <= $1 ORDER BY next_run_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`, now).
-		Scan(&d.id, &d.workspaceID, &agentID, &d.prompt, &d.provider, &d.model, &every, &at)
+	err = tx.QueryRow(ctx, `SELECT id, workspace_id, agent_id, prompt, provider, model, every, next_run_at,
+		COALESCE((SELECT w.logging_policy = 'none' FROM workspaces w WHERE w.id = prompt_schedules.workspace_id), false)
+		FROM prompt_schedules WHERE active AND next_run_at <= $1 ORDER BY next_run_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`, now).
+		Scan(&d.id, &d.workspaceID, &agentID, &d.prompt, &d.provider, &d.model, &every, &at, &d.loggingNone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
