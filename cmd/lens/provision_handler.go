@@ -70,6 +70,9 @@ func newWorkspaceStarterNamed(bank *economy.DualTokenStore, name string, adjust 
 // tokenMinter mints the workspace-scoped session JWT.
 type tokenMinter func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error)
 
+// sessionMinter mints /v1/provision's session JWT, its sign-in time signedInAt (auth.GenerateTokenSignedInAt, B50.61).
+type sessionMinter func(workspaceID, userID string, scopes []string, ttl time.Duration, signedInAt time.Time) (string, error)
+
 // provisionScopes is what a provisioned session token may do.
 var provisionScopes = []string{auth.ScopeAnalytics, auth.ScopeKeys}
 
@@ -98,6 +101,9 @@ type provisionRequest struct {
 	RegistrationNumber string `json:"registration_number"`
 	// WorkspaceID, when set and not the identity's own, asks for a member's token for that workspace (B52.35).
 	WorkspaceID string `json:"workspace_id"`
+	// SignedInAt (RFC 3339) is when the session the BFF re-mints a token for signed in (B50.61), and the token's
+	// sign-in time; left out, the token signed in now, as on a real sign-in.
+	SignedInAt string `json:"signed_in_at"`
 }
 
 type provisionResponse struct {
@@ -145,14 +151,14 @@ func currentWorkspaceID(ctx context.Context, identity string, d accountDeletionL
 	}
 }
 
-func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) {
+func mountProvisionRoute(r chi.Router, secret string, p provisioner, start workspaceStarter, mint sessionMinter, isMember memberCheck) {
 	if secret == "" {
 		return
 	}
 	r.Post("/v1/provision", newProvisionHandler(secret, p, start, mint, isMember))
 }
 
-func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint tokenMinter, isMember memberCheck) http.HandlerFunc {
+func newProvisionHandler(secret string, p provisioner, start workspaceStarter, mint sessionMinter, isMember memberCheck) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(req.Header.Get(provisionSecretHeader)), []byte(secret)) != 1 {
 			writeJSONErr(w, http.StatusUnauthorized, "provisioning credentials required")
@@ -165,6 +171,11 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 		}
 		if in.Identity == "" {
 			writeJSONErr(w, http.StatusBadRequest, "identity required")
+			return
+		}
+		signedInAt, err := provisionSignedInAt(in.SignedInAt)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		deletions, _ := p.(accountDeletionLookup)
@@ -199,7 +210,7 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 				writeJSONErr(w, http.StatusNotFound, "no such account")
 				return
 			}
-			writeProvisioned(w, p, mint, in.AccountID, in.TTLHours, false, nil)
+			writeProvisioned(w, p, mint, in.AccountID, in.TTLHours, signedInAt, false, nil)
 			return
 		default:
 			writeJSONErr(w, http.StatusBadRequest, "mode must be list, open or session")
@@ -237,10 +248,10 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 				return
 			}
 			if owned {
-				writeProvisioned(w, p, mint, in.WorkspaceID, in.TTLHours, false, nil)
+				writeProvisioned(w, p, mint, in.WorkspaceID, in.TTLHours, signedInAt, false, nil)
 				return
 			}
-			provisionMember(w, req, p, mint, isMember, in)
+			provisionMember(w, req, p, mint, isMember, in, signedInAt)
 			return
 		}
 		// B61.53: an account is opened only in a country Talyvor serves. A sign-in to an account that exists makes
@@ -334,15 +345,31 @@ func newProvisionHandler(secret string, p provisioner, start workspaceStarter, m
 			}
 		}
 
-		writeProvisioned(w, p, mint, wsID, in.TTLHours, !existed, first)
+		writeProvisioned(w, p, mint, wsID, in.TTLHours, signedInAt, !existed, first)
 	}
 }
 
-// writeProvisioned answers a session token for wsID, and for no other workspace.
-func writeProvisioned(w http.ResponseWriter, p provisioner, mint tokenMinter, wsID string, ttlHours int, created bool, first *economy.WorkspaceStart) {
+// provisionSignedInAt reads signed_in_at: zero when it is left out (the token signs in now), and refused when it is not
+// RFC 3339 or is more than a minute in the future (B50.61). One within that minute is now (auth.GenerateTokenSignedInAt).
+func provisionSignedInAt(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, errors.New("signed_in_at must be an RFC 3339 time")
+	}
+	if time.Until(at) > time.Minute {
+		return time.Time{}, errors.New("signed_in_at is in the future")
+	}
+	return at, nil
+}
+
+// writeProvisioned answers a session token for wsID, and for no other workspace, signed in at signedInAt (zero: now).
+func writeProvisioned(w http.ResponseWriter, p provisioner, mint sessionMinter, wsID string, ttlHours int, signedInAt time.Time, created bool, first *economy.WorkspaceStart) {
 	poolable, _ := p.CachePoolableConsent(wsID)
 	ttl := auth.ClampTTL(time.Duration(ttlHours) * time.Hour)
-	tok, err := mint(wsID, wsID, provisionScopes, ttl)
+	tok, err := mint(wsID, wsID, provisionScopes, ttl, signedInAt)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -359,7 +386,7 @@ func writeProvisioned(w http.ResponseWriter, p provisioner, mint tokenMinter, ws
 
 // provisionMember mints a read-only token for another person's workspace, naming the membership, only while identity
 // is a live member of it: otherwise 403 and nothing is minted. It never creates or changes a workspace.
-func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint tokenMinter, isMember memberCheck, in provisionRequest) {
+func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mint sessionMinter, isMember memberCheck, in provisionRequest, signedInAt time.Time) {
 	memberID := ""
 	if isMember != nil {
 		var err error
@@ -374,7 +401,7 @@ func provisionMember(w http.ResponseWriter, req *http.Request, p provisioner, mi
 	}
 	poolable, _ := p.CachePoolableConsent(in.WorkspaceID)
 	ttl := auth.ClampTTL(time.Duration(in.TTLHours) * time.Hour)
-	tok, err := mint(in.WorkspaceID, memberID, memberScopes, ttl)
+	tok, err := mint(in.WorkspaceID, memberID, memberScopes, ttl, signedInAt)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		return

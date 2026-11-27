@@ -3304,8 +3304,8 @@ func run() error {
 	})
 	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
-		func(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
-			return auth.GenerateToken(workspaceID, userID, scopes, authManager.PrivateKey(), ttl)
+		func(workspaceID, userID string, scopes []string, ttl time.Duration, signedInAt time.Time) (string, error) {
+			return auth.GenerateTokenSignedInAt(workspaceID, userID, scopes, authManager.PrivateKey(), ttl, signedInAt)
 		}, workspaceMembers.MemberID)
 	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B28.342 — a person signs in to a workspace they hold a role in, with a session that does what the role may.
