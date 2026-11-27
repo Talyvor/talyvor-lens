@@ -55,7 +55,8 @@ func b5548NewEnv(t *testing.T) (b5548Env, *economy.DualTokenStore) {
 	mountDeviceKeyRoutes(r, store)
 	mountKeyRecoveryRoutes(r, store)
 	return b5548Env{t: t, r: r, pool: pool, owner: func(ws string) *auth.AuthContext {
-		return &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}}
+		return &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys},
+			AuthTime: time.Now().Add(-time.Minute)}
 	}}, store
 }
 
@@ -423,7 +424,7 @@ func TestB5548_RecoveryAfter72Hours(t *testing.T) {
 	base := "/v1/workspaces/" + ws + "/keys/recover"
 	e.lockedOut(ctx, store, ws)
 	admin := &auth.AuthContext{AuthMethod: auth.MethodGlobalKey, IsAdmin: true, Scopes: []string{auth.ScopeAdmin, auth.ScopeKeys}}
-	bob := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "bob", Scopes: []string{auth.ScopeKeys}}
+	bob := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "bob", Scopes: []string{auth.ScopeKeys}, AuthTime: time.Now()}
 
 	code, out, _ := e.call(owner, ip, time.Minute, http.MethodPost, base+"/start", nil)
 	if code != http.StatusCreated {

@@ -179,6 +179,9 @@ type TokenClaims struct {
 	ClientID string `json:"client_id,omitempty"`
 	// Role is a role session's role (B28.342, roles.go); empty on every other JWT.
 	Role string `json:"role,omitempty"`
+	// AuthTime is when the person signed in (B50.60): set when Lens mints a token, carried unchanged by
+	// /v1/auth/refresh (RefreshToken), so a token's own iat never stands in for a sign-in it did not have.
+	AuthTime *jwt.NumericDate `json:"auth_time,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -223,6 +226,9 @@ type AuthContext struct {
 	// Role is the role a role session holds in the workspace now (B28.342): viewer, finance, approver or admin.
 	// EMPTY for the owner's own session and every other method.
 	Role string `json:"role,omitempty"`
+	// AuthTime is a JWT's signed sign-in time (TokenClaims.AuthTime); ZERO for every other method and for a JWT
+	// minted before tokens carried one. Key recovery reads it (cmd/lens/key_recovery_handler.go, B50.60).
+	AuthTime time.Time `json:"-"`
 }
 
 // Session names the sign-in a request came from — a JWT's own id, or the scoped API key's — and is "" when the
@@ -262,6 +268,17 @@ func (a *AuthContext) HasScope(scope string) bool {
 // Caller controls TTL — Manager.GenerateTokenWithCap caps it
 // against MaxTokenTTL at the API-endpoint boundary.
 func GenerateToken(workspaceID, userID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration) (string, error) {
+	return generateToken(workspaceID, userID, scopes, key, ttl, time.Now())
+}
+
+// RefreshToken mints actx's JWT again with a new lifetime and the same sign-in time (B50.60): a refresh is not a
+// sign-in, so a token that signed in hours ago stays hours old however often it is refreshed. A token with no sign-in
+// time gets none.
+func RefreshToken(actx *AuthContext, key *ecdsa.PrivateKey, ttl time.Duration) (string, error) {
+	return generateToken(actx.WorkspaceID, actx.UserID, actx.Scopes, key, ttl, actx.AuthTime)
+}
+
+func generateToken(workspaceID, userID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration, authTime time.Time) (string, error) {
 	if key == nil {
 		return "", errors.New("auth: jwt signing key not configured")
 	}
@@ -278,6 +295,9 @@ func GenerateToken(workspaceID, userID string, scopes []string, key *ecdsa.Priva
 			Subject:   userID,
 			ID:        uuid.NewString(), // one per sign-in: what a lockdown keeps or ends (B41.116)
 		},
+	}
+	if !authTime.IsZero() {
+		claims.AuthTime = jwt.NewNumericDate(authTime)
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	t.Header["kid"] = JWTKid
@@ -512,6 +532,9 @@ func (m *Manager) Authenticate(r *http.Request) (*AuthContext, error) {
 		}
 		if claims.ExpiresAt != nil {
 			actx.ExpiresAt = claims.ExpiresAt.Time
+		}
+		if claims.AuthTime != nil {
+			actx.AuthTime = claims.AuthTime.Time
 		}
 		if claims.Role != "" {
 			if _, err := m.roleContext(r, actx); err != nil {
