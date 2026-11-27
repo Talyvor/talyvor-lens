@@ -53,7 +53,8 @@ func TestB28340_ARemovedPasskeyCannotApproveAndARecoveryPasskeyCan(t *testing.T)
 	mountKeyRecoveryRoutes(r, store)
 	mountVerificationRoutes(r, store, partners.OneVerifier(&partners.TestKYCProvider{}))
 	mountLockdownRoutes(r, store)
-	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}, TokenID: "ada-laptop"}
+	owner := &auth.AuthContext{WorkspaceID: ws, AuthMethod: auth.MethodJWT, UserID: "ada", Scopes: []string{auth.ScopeKeys}, TokenID: "ada-laptop",
+		AuthTime: time.Now()}
 	call := func(method, path string, body any) (int, map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(body)

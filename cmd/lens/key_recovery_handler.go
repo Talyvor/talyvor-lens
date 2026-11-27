@@ -53,7 +53,9 @@ const signInAgainSentence = "Sign in again, then try again."
 
 // recoveryOwner admits only the workspace's owner on their own session (a person's token carrying auth.ScopeKeys for
 // this workspace): never the operator, an API key, an agent's key or a Connect token. The BFF sends the session's
-// sign-in time as X-Talyvor-Signed-In-At (RFC 3339), and one older than recoverySignInAge, or none, is refused.
+// sign-in time as X-Talyvor-Signed-In-At (RFC 3339), and one older than recoverySignInAge, or none, is refused. The
+// header is the caller's own word, so the token's signed sign-in time (auth.AuthContext.AuthTime, B50.60) must be
+// within recoverySignInAge too: a session signed in hours ago is refused whatever header it sends.
 func recoveryOwner(next func(w http.ResponseWriter, req *http.Request, userID string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		actx := auth.GetAuthContext(req.Context())
@@ -63,7 +65,8 @@ func recoveryOwner(next func(w http.ResponseWriter, req *http.Request, userID st
 			return
 		}
 		at, err := time.Parse(time.RFC3339Nano, req.Header.Get("X-Talyvor-Signed-In-At"))
-		if age := time.Since(at); err != nil || age > recoverySignInAge || age < -time.Minute {
+		if age, tokenAge := time.Since(at), time.Since(actx.AuthTime); err != nil || age > recoverySignInAge || age < -time.Minute ||
+			actx.AuthTime.IsZero() || tokenAge > recoverySignInAge || tokenAge < -time.Minute {
 			writeJSONErr(w, http.StatusForbidden, signInAgainSentence)
 			return
 		}

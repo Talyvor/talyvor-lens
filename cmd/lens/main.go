@@ -3692,7 +3692,7 @@ func run() error {
 				return
 			}
 			ttl := auth.ClampTTL(cfg.TokenTTL)
-			tok, err := auth.GenerateToken(actx.WorkspaceID, actx.UserID, actx.Scopes, authManager.PrivateKey(), ttl)
+			tok, err := auth.RefreshToken(actx, authManager.PrivateKey(), ttl)
 			if err != nil {
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return
