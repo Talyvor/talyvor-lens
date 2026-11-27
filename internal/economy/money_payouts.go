@@ -17,8 +17,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/talyvor/lens/internal/fees"
 	"github.com/talyvor/lens/internal/partners"
 	"github.com/talyvor/lens/internal/passkey"
+	"github.com/talyvor/lens/internal/plans"
 	"github.com/talyvor/lens/internal/screening"
 )
 
@@ -28,7 +30,9 @@ import (
 // and a reference — paid from the company's accounts, or with an agent's key from that agent's. Every row is validated
 // when the batch arrives: its payee must be payable (saved, confirmed and screened), its amount positive in GBP, EUR or
 // USD, its reference up to 140 characters, the payment screened, and the paying account must hold enough money for it
-// and the valid rows before it. A row that fails is reported with the reason and never paid; the rest wait, moving
+// and its fee, and the valid rows before it and theirs. B17.564: each valid row is priced as its payment out will be
+// charged — free while the plan's local payments this month last, then the plan's fee — and the batch states the
+// fees beside its totals, so an approval is signed over what leaves the account, and no row is paid at a higher fee. A row that fails is reported with the reason and never paid; the rest wait, moving
 // nothing, for one approval. When the owner or an admin approves the batch, each valid row is paid as a payment out
 // under its own idempotency key, so approving twice — or again after a crash half-way — pays nothing twice. An agent's
 // rows are judged by its rules as any payment is; a row they refuse is reported failed with the reason.
@@ -58,6 +62,7 @@ type PayoutRow struct {
 	AmountMinor int64  `json:"amount_minor"`
 	Currency    string `json:"currency"`
 	Reference   string `json:"reference"`
+	FeeMinor    int64  `json:"fee_minor"`            // B17.564: what its payment out is charged on top, priced at upload; never more at approval
 	Status      string `json:"status"`               // valid or invalid at upload; then its payment's: pending, sent, completed, failed, returned
 	PaymentID   string `json:"payment_id,omitempty"` // the payment out it became
 	Detail      string `json:"detail,omitempty"`     // why it is invalid or failed; a row uploaded with one is invalid for that reason
@@ -76,6 +81,7 @@ type PayoutBatch struct {
 	RowsValid      int              `json:"rows_valid"` // valid at upload: what an approval pays
 	RowsInvalid    int              `json:"rows_invalid"`
 	TotalsMinor    map[string]int64 `json:"totals_minor"` // of the valid rows, by currency
+	FeesMinor      map[string]int64 `json:"fees_minor"`   // B17.564: the valid rows' fees, by currency, on top of their totals
 	ApprovedBy     string           `json:"approved_by,omitempty"`
 	ApprovedAt     *time.Time       `json:"approved_at,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
@@ -89,13 +95,13 @@ func payoutRowKey(batchID string, line int) string {
 	return "payout:" + batchID + ":" + strconv.Itoa(line)
 }
 
-const payoutBatchCols = `id, workspace_id, agent_id, funding, idempotency_key, status, rows_total, rows_valid, totals_minor, approved_by,
-	approved_at, created_at, updated_at, rows_sha256`
+const payoutBatchCols = `id, workspace_id, agent_id, funding, idempotency_key, status, rows_total, rows_valid, totals_minor, fees_minor,
+	approved_by, approved_at, created_at, updated_at, rows_sha256`
 
 func scanPayoutBatch(row pgx.Row, withRows bool) (PayoutBatch, error) {
 	var b PayoutBatch
 	dest := []any{&b.ID, &b.WorkspaceID, &b.AgentID, &b.Funding, &b.IdempotencyKey, &b.Status, &b.RowsTotal, &b.RowsValid, &b.TotalsMinor,
-		&b.ApprovedBy, &b.ApprovedAt, &b.CreatedAt, &b.UpdatedAt, &b.rowsSHA256}
+		&b.FeesMinor, &b.ApprovedBy, &b.ApprovedAt, &b.CreatedAt, &b.UpdatedAt, &b.rowsSHA256}
 	if withRows {
 		dest = append(dest, &b.Rows)
 	}
@@ -144,11 +150,13 @@ func (s *DualTokenStore) CreatePayoutBatch(ctx context.Context, workspaceID stri
 	}
 
 	b := PayoutBatch{ID: "mpob_" + uuid.NewString(), WorkspaceID: workspaceID, AgentID: in.AgentID, Funding: in.Funding,
-		IdempotencyKey: in.IdempotencyKey, Status: PayoutAwaitingApproval, Rows: rows, RowsTotal: len(rows), TotalsMinor: map[string]int64{}}
-	held := map[string]int64{} // what the paying account in each currency holds, less the valid rows before this one
+		IdempotencyKey: in.IdempotencyKey, Status: PayoutAwaitingApproval, Rows: rows, RowsTotal: len(rows), TotalsMinor: map[string]int64{},
+		FeesMinor: map[string]int64{}}
+	held := map[string]int64{} // what the paying account in each currency holds, less the valid rows before this one and their fees
+	pricing := &payoutPricing{}
 	for i := range b.Rows {
 		r := &b.Rows[i]
-		reason, err := s.validatePayoutRow(ctx, b, r, held)
+		reason, err := s.validatePayoutRow(ctx, b, r, held, pricing)
 		if err != nil {
 			return PayoutBatch{}, err
 		}
@@ -159,7 +167,9 @@ func (s *DualTokenStore) CreatePayoutBatch(ctx context.Context, workspaceID stri
 		}
 		b.RowsValid++
 		b.TotalsMinor[r.Currency] += r.AmountMinor
-		held[r.Currency] -= r.AmountMinor
+		b.FeesMinor[r.Currency] += r.FeeMinor
+		held[r.Currency] -= r.AmountMinor + r.FeeMinor
+		pricing.took()
 	}
 	// JSON text, not the Go values: PgBouncer's simple protocol cannot encode a struct slice or map for jsonb (#133).
 	rowsJSON, err := json.Marshal(b.Rows)
@@ -170,10 +180,14 @@ func (s *DualTokenStore) CreatePayoutBatch(ctx context.Context, workspaceID stri
 	if err != nil {
 		return PayoutBatch{}, fmt.Errorf("economy: payout batch: %w", err)
 	}
+	feesJSON, err := json.Marshal(b.FeesMinor)
+	if err != nil {
+		return PayoutBatch{}, fmt.Errorf("economy: payout batch: %w", err)
+	}
 	b, err = scanPayoutBatch(s.pool.QueryRow(ctx, `INSERT INTO money_payout_batches (id, workspace_id, idempotency_key, rows_sha256, agent_id,
-		funding, status, rows, rows_total, rows_valid, totals_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		funding, status, rows, rows_total, rows_valid, totals_minor, fees_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING `+payoutBatchCols+`, rows`, b.ID, workspaceID, b.IdempotencyKey, hash, b.AgentID, b.Funding, b.Status, string(rowsJSON), b.RowsTotal,
-		b.RowsValid, string(totalsJSON)), true)
+		b.RowsValid, string(totalsJSON), string(feesJSON)), true)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // the same key, uploaded at the same moment: answer as that one did
 		return s.CreatePayoutBatch(ctx, workspaceID, in)
@@ -184,9 +198,50 @@ func (s *DualTokenStore) CreatePayoutBatch(ctx context.Context, workspaceID stri
 	return b, nil
 }
 
+// payoutPricing prices a batch's rows in order as takePaymentAllowance will charge their payments out (B17.564): each
+// is a local payment, free while the plan's local payments this month last, then the plan's fee in its currency.
+type payoutPricing struct {
+	read bool
+	left int64 // the free payments left this month after the valid rows before this one; fees.Unlimited for no limit
+	fee  int64 // the row being priced's, kept by took once the row is valid
+}
+
+// took keeps the row just priced as valid: a free one uses one of the free payments left.
+func (p *payoutPricing) took() {
+	if p.fee == 0 && p.left != fees.Unlimited && p.left > 0 {
+		p.left--
+	}
+}
+
+// pricePayoutRow is r's fee, and why r cannot be priced ("" when it can), as the rows before it leave b's workspace's plan.
+func (s *DualTokenStore) pricePayoutRow(ctx context.Context, b PayoutBatch, r *PayoutRow, p *payoutPricing) (string, error) {
+	if !p.read {
+		plan, err := plans.PlanOf(ctx, s.pool, b.WorkspaceID)
+		if err != nil {
+			return "", err
+		}
+		used, err := allowanceUsed(ctx, s.pool, b.WorkspaceID, AllowanceLocal, "", time.Now())
+		if err != nil {
+			return "", err
+		}
+		p.read, p.left = true, allowanceLeft(fees.Current().LocalFreePerMonth[plan], used)
+	}
+	p.fee = 0
+	if p.left != 0 {
+		return "", nil
+	}
+	fee, ok := fees.Current().LocalPaymentFeeMinor[r.Currency]
+	if !ok {
+		return fmt.Sprintf("no local payment fee is set for %s (LENS_LOCAL_PAYMENT_FEE_MINOR), and one is never sent free", r.Currency), nil
+	}
+	p.fee = fee
+	return "", nil
+}
+
 // validatePayoutRow is why r may not be paid — "" when it may — and an error only when nothing can be validated
-// (screening unavailable). held caches each currency's balance less the valid rows before r.
-func (s *DualTokenStore) validatePayoutRow(ctx context.Context, b PayoutBatch, r *PayoutRow, held map[string]int64) (string, error) {
+// (screening unavailable). held caches each currency's balance less the valid rows before r and their fees; pricing
+// sets r's fee.
+func (s *DualTokenStore) validatePayoutRow(ctx context.Context, b PayoutBatch, r *PayoutRow, held map[string]int64, pricing *payoutPricing) (string, error) {
 	switch {
 	case r.Detail != "":
 		return r.Detail, nil
@@ -230,9 +285,13 @@ func (s *DualTokenStore) validatePayoutRow(ctx context.Context, b PayoutBatch, r
 		}
 		held[r.Currency] = balance
 	}
-	if balance < r.AmountMinor {
-		return fmt.Sprintf("the account holds %s of %s money after the rows before this one, and this row is %s",
-			minorString(balance, r.Currency), b.Funding, minorString(r.AmountMinor, r.Currency)), nil
+	if reason, err := s.pricePayoutRow(ctx, b, r, pricing); reason != "" || err != nil {
+		return reason, err
+	}
+	r.FeeMinor = pricing.fee
+	if balance < r.AmountMinor+r.FeeMinor {
+		return fmt.Sprintf("the account holds %s of %s money after the rows before this one, and this row is %s with its fee",
+			minorString(balance, r.Currency), b.Funding, minorString(r.AmountMinor+r.FeeMinor, r.Currency)), nil
 	}
 	return "", nil
 }
@@ -240,17 +299,20 @@ func (s *DualTokenStore) validatePayoutRow(ctx context.Context, b PayoutBatch, r
 // ErrPayoutBatchDecided (B58.5): the batch is no longer awaiting approval, so there is nothing to sign.
 var ErrPayoutBatchDecided = errors.New("economy: this payout batch is no longer awaiting approval")
 
-// payoutBatchPurpose (B58.5) binds a challenge to batch b as it stands: its id, its row count, its totals by currency
-// and every row it pays, from which account, so a signature over it approves no other batch, nor this one once a row
-// changed.
+// payoutBatchPurpose (B58.5) binds a challenge to batch b as it stands: its id, its row count, its totals and (B17.564)
+// fees by currency and every row it pays at its fee, from which account, so a signature over it approves no other
+// batch, nor this one once a row or a fee changed.
 func payoutBatchPurpose(b PayoutBatch) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%d", b.ID, b.AgentID, b.Funding, b.RowsTotal, b.RowsValid)
 	for _, c := range slices.Sorted(maps.Keys(b.TotalsMinor)) {
 		fmt.Fprintf(h, "\x00%s=%d", c, b.TotalsMinor[c])
 	}
+	for _, c := range slices.Sorted(maps.Keys(b.FeesMinor)) {
+		fmt.Fprintf(h, "\x00fee:%s=%d", c, b.FeesMinor[c])
+	}
 	for _, r := range b.Rows {
-		fmt.Fprintf(h, "\x00%d\x00%s\x00%d\x00%s\x00%s\x00%s", r.Line, r.PayeeID, r.AmountMinor, r.Currency, r.Reference, r.Status)
+		fmt.Fprintf(h, "\x00%d\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d", r.Line, r.PayeeID, r.AmountMinor, r.Currency, r.Reference, r.Status, r.FeeMinor)
 	}
 	return "payout_batch:" + b.ID + ":" + hex.EncodeToString(h.Sum(nil))
 }
@@ -319,7 +381,8 @@ func (s *DualTokenStore) ApprovePayoutBatch(ctx context.Context, workspaceID, id
 			continue
 		}
 		p, err := s.PayOutside(ctx, workspaceID, OutsidePayment{AgentID: b.AgentID, PayeeID: r.PayeeID, AmountMinor: r.AmountMinor,
-			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line), lensKey: true})
+			Currency: r.Currency, Funding: b.Funding, Reference: r.Reference, IdempotencyKey: payoutRowKey(b.ID, r.Line), lensKey: true,
+			feeCap: &r.FeeMinor})
 		if err != nil {
 			r.Status, r.Detail = PaymentFailed, err.Error()
 			continue

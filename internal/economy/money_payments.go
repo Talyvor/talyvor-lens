@@ -90,6 +90,7 @@ type OutsidePayment struct {
 	signed        bool               // B54.33: a person's payment, made only with the signature its workspace needs
 	assertion     *passkey.Assertion // that signature
 	lensKey       bool               // B50.48: Lens pays it under a key of its own (lensPaymentKeyPrefixes)
+	feeCap        *int64             // B17.564: the fee it was approved at (a payout batch's row), above which it is not paid
 }
 
 // lensPaymentKeyPrefixes start the keys Lens pays its own payments under — a request's item, a standing order's tick, a
@@ -145,6 +146,9 @@ func (s *DualTokenStore) takePaymentAllowance(ctx context.Context, tx pgx.Tx, p 
 			ErrQuote, p.QuoteID, minorString(p.FeeMinor, p.Currency), minorString(fee, p.Currency))
 	case allowance == AllowanceInternational:
 		fee, free = p.FeeMinor, free && p.FeeMinor == 0
+	case p.feeCap != nil && fee > *p.feeCap:
+		return fmt.Errorf("%w: this payment was approved with a fee of %s, and the plan's free payments this month, taken since, now make it %s. Upload it again",
+			ErrOutsidePayment, minorString(*p.feeCap, p.Currency), minorString(fee, p.Currency))
 	}
 	p.FeeMinor = fee
 	if !free {

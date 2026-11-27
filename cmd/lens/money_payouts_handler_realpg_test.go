@@ -110,6 +110,16 @@ func TestMoneyPayoutRoutes_FiftyRowsTwoBadOneApproval(t *testing.T) {
 	if rows[0]["status"] != "valid" || rows[0]["payee_name"] != "Ada Lovelace" || rows[0]["amount_minor"] != float64(2000) {
 		t.Errorf("row 1 = %v, want valid, £20.00 to Ada Lovelace", rows[0])
 	}
+	// B17.564: a Studio account sends 10 payments free each month, then pays 0.20 each, so the batch states the fee of
+	// each row and of the 38 rows past the tenth, 7.60 in all, and an approval signs over it.
+	if fees, _ := out["fees_minor"].(map[string]any); fees["GBP"] != float64(38*20) || rows[9]["fee_minor"] != float64(0) || rows[10]["fee_minor"] != float64(20) {
+		t.Errorf("upload states fees %v, row 10 a fee of %v and row 11 of %v, want 760 in all, 0 and 20", out["fees_minor"], rows[9]["fee_minor"], rows[10]["fee_minor"])
+	}
+	code, c := call(http.MethodPost, "/v1/money/payouts/"+batch+"/approve/challenge", "application/json", "")
+	signed, _ := c["payout"].(map[string]any)
+	if fees, _ := signed["fees_minor"].(map[string]any); code != http.StatusOK || fees["GBP"] != float64(38*20) {
+		t.Errorf("the approval's challenge = %d %v, want it to show the 7.60 of fees it approves", code, c)
+	}
 	if n, _ := paymentsOut(); n != 0 {
 		t.Fatalf("before approval %d payments went out, want none", n)
 	}

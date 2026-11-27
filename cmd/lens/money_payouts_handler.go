@@ -118,7 +118,8 @@ func mountMoneyPayoutRoutes(r chi.Router, bank moneyPayoutBank) {
 			return
 		}
 		writeJSONOK(w, http.StatusOK, map[string]any{"challenge": c, "allow_credentials": creds, "user_verification": "required",
-			"payout": map[string]any{"id": b.ID, "rows_total": b.RowsTotal, "rows_valid": b.RowsValid, "totals_minor": b.TotalsMinor}})
+			"payout": map[string]any{"id": b.ID, "rows_total": b.RowsTotal, "rows_valid": b.RowsValid, "totals_minor": b.TotalsMinor,
+				"fees_minor": b.FeesMinor}})
 	})
 	r.Get("/v1/money/payouts", func(w http.ResponseWriter, req *http.Request) {
 		ws, agentID, ok := caller(w, req)
