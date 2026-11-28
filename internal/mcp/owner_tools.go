@@ -34,8 +34,6 @@ type OwnerBank interface {
 // SetOwnerBank offers the owner tools; nil leaves them out.
 func (s *Server) SetOwnerBank(b OwnerBank) { s.ownerBank = b }
 
-func isOwnerTool(name string) bool { return strings.HasPrefix(name, "owner_") }
-
 func ownerToolDefinitions() []map[string]any {
 	agent := map[string]any{"type": "string", "description": "the agent's id"}
 	return []map[string]any{
