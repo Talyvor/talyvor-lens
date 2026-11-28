@@ -248,6 +248,11 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/money/allowances/{}":      moneySideEither,
 	"/v1/money/allowances/{}/runs": moneySideEither,
 
+	// money_task_budgets_handler.go
+	"/v1/money/task-budgets":        moneySideEither,
+	"/v1/money/task-budgets/{}":     moneySideEither,
+	"/v1/money/task-budgets/{}/end": moneySideEither,
+
 	// money_banks_handler.go
 	"/v1/money/banks":            moneySideFiat,
 	"/v1/money/banks/{}":         moneySideFiat,
