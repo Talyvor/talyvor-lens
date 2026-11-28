@@ -27,7 +27,8 @@ func TestSyntheticRoleSession_AViewerReadsButCannotFundAndOnlyATestWorkspaceIsSe
 	pool := agentRoutesDB(t)
 	ctx := context.Background()
 	const testWS, realWS = "s-b17584-roles", "ws-b17584-real"
-	const synthKey, secret = "b17584-synthetic-key", "b17584-provision-secret"
+	const syntheticKey = "b17584-synthetic-key"
+	const secret = "b17584-provision-secret"
 	wsm := workspace.New(pool)
 	if err := wsm.CreateSynthetic(ctx, testWS, "Test roles", "business"); err != nil {
 		t.Fatal(err)
@@ -56,7 +57,7 @@ func TestSyntheticRoleSession_AViewerReadsButCannotFundAndOnlyATestWorkspaceIsSe
 		mountAgentAccountRoutes(authed, economy.NewDualTokenStore(nil, pool, nil), tenant.NewStore(pool))
 		mountWorkspaceRoleRoutes(authed, wsm)
 	})
-	mountSyntheticRoutes(r, synthKey, syntheticDeps{workspaces: wsm, audit: pool, plans: pool, roles: wsm, roleMint: mint})
+	mountSyntheticRoutes(r, syntheticKey, syntheticDeps{workspaces: wsm, audit: pool, plans: pool, roles: wsm, roleMint: mint})
 	mountRoleSessionRoute(r, secret, wsm, mint)
 
 	call := func(token, method, path, body string, hdr ...string) (int, map[string]any) {
@@ -103,7 +104,7 @@ func TestSyntheticRoleSession_AViewerReadsButCannotFundAndOnlyATestWorkspaceIsSe
 	}
 
 	// The test workspace's Viewer signs in on the synthetic key, reads the wallet, and its fund writes no posting.
-	code, out := roleSession(testWS, `{"email":"Vera@roles.test","role":"viewer","ttl_hours":100000}`, synthKey)
+	code, out := roleSession(testWS, `{"email":"Vera@roles.test","role":"viewer","ttl_hours":100000}`, syntheticKey)
 	viewer, _ := out["token"].(string)
 	if code != http.StatusOK || viewer == "" || out["role"] != "viewer" || out["workspace_id"] != testWS {
 		t.Fatalf("the test viewer's synthetic role session = %d %v, want 200 with a viewer token", code, out)
@@ -122,13 +123,13 @@ func TestSyntheticRoleSession_AViewerReadsButCannotFundAndOnlyATestWorkspaceIsSe
 	}
 
 	// Refused: a real workspace, an email with no role, a role the email was not given, and a wrong or missing key.
-	if code, out := roleSession(realWS, `{"email":"vera@roles.test","role":"viewer"}`, synthKey); code != http.StatusNotFound || out["token"] != nil {
+	if code, out := roleSession(realWS, `{"email":"vera@roles.test","role":"viewer"}`, syntheticKey); code != http.StatusNotFound || out["token"] != nil {
 		t.Fatalf("a real workspace's viewer on the synthetic key = %d %v, want 404 and no token", code, out)
 	}
-	if code, out := roleSession(testWS, `{"email":"nobody@roles.test","role":"viewer"}`, synthKey); code != http.StatusNotFound || out["token"] != nil {
+	if code, out := roleSession(testWS, `{"email":"nobody@roles.test","role":"viewer"}`, syntheticKey); code != http.StatusNotFound || out["token"] != nil {
 		t.Fatalf("an email with no role = %d %v, want 404 and no token", code, out)
 	}
-	if code, out := roleSession(testWS, `{"email":"vera@roles.test","role":"admin"}`, synthKey); code != http.StatusForbidden || out["token"] != nil {
+	if code, out := roleSession(testWS, `{"email":"vera@roles.test","role":"admin"}`, syntheticKey); code != http.StatusForbidden || out["token"] != nil {
 		t.Fatalf("the viewer asking for admin = %d %v, want 403 and no token", code, out)
 	}
 	for _, k := range []string{"wrong-key", ""} {
