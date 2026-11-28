@@ -2348,6 +2348,12 @@ func run() error {
 				} else if funded+refused > 0 {
 					slog.Info("agents: allowances paid", slog.Int("funded", funded), slog.Int("refused", refused))
 				}
+				// B28.310: task budgets whose time has come, what is left of each paid back to the company.
+				if returned, refused, err := dualToken.RunMoneyTaskBudgets(ctx, now); err != nil {
+					slog.Warn("agents: task budgets failed", slog.String("err", err.Error()))
+				} else if returned+refused > 0 {
+					slog.Info("agents: task budgets ended", slog.Int("returned", returned), slog.Int("refused", refused))
+				}
 				// B46.10: single-use cards unused 24 hours after issue, closed and their caps given back.
 				if n, err := dualToken.RunCardExpiries(ctx, now); err != nil {
 					slog.Warn("agents: card expiries failed", slog.String("err", err.Error()))
@@ -5209,6 +5215,7 @@ func run() error {
 		mountCashOutRoutes(authed, dualToken)                                           // B22.9
 		mountMoneyAccountRoutes(authed, dualToken)                                      // B30.13
 		mountMoneyAllowanceRoutes(authed, dualToken)                                    // B30.27
+		mountMoneyTaskBudgetRoutes(authed, dualToken)                                   // B28.310
 		mountMoneyPayeeRoutes(authed, dualToken)                                        // B30.16
 		mountMoneyBillRoutes(authed, dualToken, billReader)                             // B41.101
 		mountMoneySearchRoutes(authed, dualToken)                                       // B41.107

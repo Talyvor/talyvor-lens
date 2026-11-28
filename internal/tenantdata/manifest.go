@@ -184,6 +184,7 @@ var Manifest = map[string]Entry{
 	"agent_crypto_sends":        {Retain, "B48.9: keys `workspace_id`+`to_workspace_id`: each USDC send from an agent's smart account — the address paid, amount, network, who asked and approved it, and its transaction; it explains chain_movements; financial-record retention"},
 	"crypto_address_proofs":     {Delete, "B48.7: each self-hosted address the owner proved they hold the key of, with the signed message; nothing to keep once the workspace is gone"},
 	"money_allowances":          {Retain, "B30.27: each agent's monthly allowance in a currency — amount, day, sweep-back; its money_allowance_runs name the money_entries each month posted; financial-record retention"},
+	"money_task_budgets":        {Retain, "B28.310: each agent's budget for one task — amount, end, what was spent and returned; it names the money_entries that funded and returned it; financial-record retention"},
 	"wallet_moves":              {Retain, "B48.8: each top-up or cash-out of an agent's wallet — route, what it sold, the partner's fee, the rate, what it bought, the bank account it paid — and the money_entries row it posted; it explains money_entries; financial-record retention"},
 	"money_earnings_payouts":    {Retain, "B46.11: keys `workspace_id`+`recipient_workspace_id`: each payout of earnings — a sale, a Room's split or a royalty — its source, agreement, amount and where it stood with the partner; it explains money_entries; financial-record retention"},
 
