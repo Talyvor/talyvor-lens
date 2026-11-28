@@ -47,6 +47,8 @@ import (
 //	                                     credits restored. Set-based (B26.1): a handful of statements and
 //	                                     one Redis pass however many there are.
 //
+// B17.584 adds one that signs a test workspace's role person in (synthetic_role_session_handler.go).
+//
 // And, while the key is set, synthetic workspaces older than seven days are deleted every six hours
 // (runSyntheticPurge, B26.1).
 //
@@ -108,6 +110,8 @@ type syntheticDeps struct {
 	plans      plans.Querier      // B35.1: sets and reads a synthetic workspace's plan
 	due        syntheticDueDeps   // B25.7; unset, its routes are not registered
 	dkim       *syntheticDKIMKeys // B54.45; unset, its route is not registered
+	roles      roleSessions       // B17.584: a test role person's session; unset, its route is not registered
+	roleMint   roleTokenMinter
 }
 
 // callLimiter admits at most max calls in any window of per.
@@ -143,6 +147,10 @@ func mountSyntheticRoutes(r chi.Router, key string, d syntheticDeps) {
 	r.Post("/v1/synthetic/workspaces", syntheticGuard(key, "create", limit, d, d.create))
 	r.Post("/v1/synthetic/workspaces/reset", syntheticGuard(key, "reset", limit, d, d.reset))
 	r.Post("/v1/synthetic/workspaces/{wsID}/plan", syntheticGuard(key, "plan", &callLimiter{max: syntheticMaxDueCalls, per: syntheticCallsPer}, d, d.setPlan))
+	if d.roles != nil && d.roleMint != nil && d.plans != nil {
+		r.Post("/v1/synthetic/workspaces/{wsID}/role-session", syntheticGuard(key, "role-session",
+			&callLimiter{max: syntheticMaxDueCalls, per: syntheticCallsPer}, d, d.roleSession))
+	}
 	mountSyntheticDueRoutes(r, key, d)
 	if d.dkim != nil {
 		r.Post("/v1/synthetic/dkim-keys", syntheticGuard(key, "dkim-key", &callLimiter{max: syntheticMaxCalls, per: syntheticCallsPer}, d, d.dkim.publish))
