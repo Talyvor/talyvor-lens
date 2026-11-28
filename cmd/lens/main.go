@@ -5217,6 +5217,7 @@ func run() error {
 		mountMoneySpendingRoutes(authed, dualToken)                                     // B53.3
 		mountMoneyBudgetRoutes(authed, dualToken)                                       // B53.4
 		mountAlertChannelRoutes(authed, dualToken)                                      // B28.338
+		mountWalletWebhookRoutes(authed, dualToken)                                     // B28.344
 		mountMoneyLowBalanceRoutes(authed, dualToken)                                   // B28.334
 		mountMoneyCoachRoutes(authed, dualToken, routingInferer, cfg.CoachModel)        // B53.6
 		mountMoneyBankRoutes(authed, dualToken)                                         // B53.13
@@ -5313,6 +5314,10 @@ func run() error {
 		// B28.338: one replica queues and sends the alerts to each channel; the unique key keeps each delivery once.
 		go haComps.leader.Run(ctx, "alert-channels", 30*time.Second, func(lctx context.Context) {
 			sweepAlertChannels(lctx, dualToken)
+		})
+		// B28.344: one replica queues and sends the wallet events to each webhook; the unique key keeps each event once.
+		go haComps.leader.Run(ctx, "wallet-webhooks", 30*time.Second, func(lctx context.Context) {
+			sweepWalletWebhooks(lctx, dualToken)
 		})
 		// B53.13: one replica reads the connected bank accounts in the background.
 		go haComps.leader.Run(ctx, "bank-connections", 30*time.Second, func(lctx context.Context) {
