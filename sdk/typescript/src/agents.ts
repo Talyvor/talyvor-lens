@@ -2,18 +2,26 @@
  * Agents — the workspace owner's side of Agent Wallets at Talyvor Lens.
  *
  * Called with the owner's key (a workspace key with the keys or admin scope):
- * create an agent, fund its wallet from the workspace's LXC, issue the agent
- * a key of its own, and read its statement. The agent then calls through Lens
- * with that key, and every model call is charged to its wallet, within its
- * spending rules, before the provider is called.
+ * create an agent, ask to fund its wallet from the workspace's LXC, set its
+ * spending rules, issue the agent a key of its own, and read its page and
+ * statement. The agent then calls through Lens with that key, and every model
+ * call is charged to its wallet, within its spending rules, before the
+ * provider is called.
+ *
+ * Funding moves nothing by itself (B28.73): ``fund`` answers an approval link,
+ * and the agent is funded once a person signed in to the workspace approves it
+ * there — one posting, its ref the request's idempotency key. A key never
+ * approves its own request. Creating an agent needs its owner signed in: a
+ * workspace key cannot create one.
  *
  * They are Lens's REST routes under ``/v1/workspaces/{ws}/agents``, in the
  * client's workspace. A non-2xx answer rejects with ``AgentWalletError``
  * carrying Lens's status and message.
  */
 
+import { randomUUID } from "crypto";
 import { AgentWalletError } from "./agentWallet";
-import type { AgentAccount, AgentKey, AgentStatement } from "./types";
+import type { AgentAccount, AgentFundRequest, AgentKey, AgentRules, AgentStatement, FiledRules } from "./types";
 
 /**
  * Reach it as ``new LensClient({...}).agents``. Amounts are in µLXC
@@ -22,7 +30,8 @@ import type { AgentAccount, AgentKey, AgentStatement } from "./types";
  * Usage:
  *   const agents = new LensClient({ lensUrl, apiKey: ownerKey, workspaceId: "acme" }).agents;
  *   const agent = await agents.create("researcher");
- *   await agents.fund(agent.id, 10_000_000);
+ *   const request = await agents.fund(agent.id, 10_000_000);
+ *   // ...a person opens request.approval_url and approves it; then:
  *   const { key } = await agents.issueKey(agent.id);
  *   // ...the agent calls through Lens with `key`, then:
  *   const { lines } = await agents.statement(agent.id);
@@ -47,12 +56,40 @@ export class Agents {
     return this.send("POST", "", { name });
   }
 
+  /** One agent's page: balance, safe to spend, this month, approvals waiting, latest statement lines. */
+  get(agentId: string): Promise<Record<string, unknown>> {
+    return this.send("GET", `/${encodeURIComponent(agentId)}/summary`);
+  }
+
   /**
-   * Move µLXC from the workspace to the agent's wallet. Resolves to its new
-   * balance. Sent again with the same ``idempotencyKey``, the move lands once.
+   * Ask to move µLXC from the workspace to the agent's wallet. Nothing moves
+   * yet: resolves to the request with its ``approval_url``, and the agent is
+   * funded once a person approves it there. The request is filed under
+   * ``idempotencyKey`` (one is made when none is given): the same key again is
+   * the same request and, once approved, one posting whose ref is that key.
    */
-  fund(agentId: string, amountUlxc: number, opts: { idempotencyKey?: string } = {}): Promise<{ agent_id: string; balance_ulxc: number }> {
-    return this.send("POST", `/${encodeURIComponent(agentId)}/fund`, { amount_ulxc: amountUlxc }, opts.idempotencyKey);
+  fund(agentId: string, amountUlxc: number, opts: { idempotencyKey?: string } = {}): Promise<AgentFundRequest> {
+    const key = opts.idempotencyKey || `sdk-fund-${randomUUID()}`;
+    return this.send("POST", `/${encodeURIComponent(agentId)}/fund-requests`, { amount_ulxc: amountUlxc }, key);
+  }
+
+  /** A request to fund an agent, as it stands: pending, approved (with the agent's balance) or declined. */
+  fundRequest(requestId: string): Promise<AgentFundRequest> {
+    return this.send("GET", `/fund-requests/${encodeURIComponent(requestId)}`);
+  }
+
+  /** The agent's spending rules in force. */
+  rules(agentId: string): Promise<AgentRules> {
+    return this.send("GET", `/${encodeURIComponent(agentId)}/rules`);
+  }
+
+  /**
+   * Set the agent's spending rules. Rules that only tighten what is in force
+   * apply at once (``status: "applied"``); rules that loosen any of it wait for
+   * the owner's passkey (``status: "pending"``).
+   */
+  setRules(agentId: string, rules: Partial<AgentRules>): Promise<FiledRules> {
+    return this.send("POST", `/${encodeURIComponent(agentId)}/rules/proposals`, { rules });
   }
 
   /** Take µLXC back from the agent's wallet to the workspace. */

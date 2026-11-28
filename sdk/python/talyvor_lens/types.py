@@ -168,3 +168,28 @@ class AgentStatementLine(TypedDict, total=False):
 class AgentStatement(TypedDict):
     agent_id: str
     lines: list[AgentStatementLine]
+
+
+class AgentFundRequest(TypedDict, total=False):
+    """A request to fund an agent (B28.73): nothing moves until a person approves it at ``approval_url``."""
+
+    id: str
+    agent_id: str
+    amount_ulxc: int
+    idempotency_key: str  # the key it was filed under: once approved, the fund posting's ref
+    status: str  # pending | approved | declined
+    requested_by: str
+    created_at: str
+    decided_at: str
+    decided_by: str
+    approval_url: str  # where a person signed in to the workspace approves or declines it
+    balance_ulxc: Optional[int]  # the agent's balance once the approval funded it
+
+
+class FiledRules(TypedDict, total=False):
+    """Rules filed for an agent: applied at once when they only tighten, pending the owner's passkey when they loosen."""
+
+    id: str
+    status: str  # pending | applied
+    changes: list[str]
+    rules: AgentRules

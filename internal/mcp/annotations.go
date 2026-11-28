@@ -35,6 +35,13 @@ var toolAnnotations = map[string]toolAnnotation{
 	"get_request_status":           {"Payment request status", reads},
 	"prepare_recurring_payments":   {"Prepare recurring payments for approval", moves},
 
+	"owner_agents":        {"Your agents", reads},
+	"owner_agent":         {"An agent's page", reads},
+	"owner_create_agent":  {"Create an agent", writes},
+	"owner_fund_agent":    {"Ask to fund an agent", moves},
+	"owner_fund_request":  {"A request to fund an agent", reads},
+	"owner_propose_rules": {"Set an agent's spending rules", writes},
+
 	"agent_balance":          {"Your balance and rules", reads},
 	"agent_request_approval": {"Ask a person to approve a payment", moves},
 	"agent_pay":              {"Pay an agent", moves},

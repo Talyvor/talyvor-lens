@@ -14,9 +14,10 @@ import { LensClient } from "talyvor-lens";
 const lensUrl = "https://lens.talyvor.com";
 const owner = new LensClient({ lensUrl, apiKey: process.env.TALYVOR_OWNER_TOKEN!, workspaceId: "acme" });
 
-// 1. Create an agent. 2. Fund its wallet from the workspace (10 LXC = 10,000,000 µLXC).
+// 1. Create an agent (signed in as its owner). 2. Ask to fund its wallet from the workspace (10 LXC = 10,000,000 µLXC).
 const agent = await owner.agents.create("researcher");
-await owner.agents.fund(agent.id, 10_000_000, { idempotencyKey: "fund-researcher-oct" });
+const request = await owner.agents.fund(agent.id, 10_000_000, { idempotencyKey: "fund-researcher-oct" });
+// Nothing moves yet: a person signed in to the workspace approves it at request.approval_url.
 
 // 3. Issue the agent its own key (shown once).
 const { key } = await owner.agents.issueKey(agent.id);

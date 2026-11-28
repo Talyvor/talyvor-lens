@@ -78,6 +78,7 @@ type Server struct {
 	router         *router.Router
 	version        string
 	agentBank      AgentBank        // B19.9: the agent tools; nil leaves them out
+	ownerBank      OwnerBank        // B28.73: the owner tools; nil leaves them out
 	credentials    CredentialIssuer // B30.5: wallet_credential; nil refuses it
 	market         *market.Store    // B32.23: the market tools; nil leaves them out
 	marketDeps     MarketDeps
@@ -412,6 +413,9 @@ func (s *Server) tools() []map[string]any {
 	if s.recurring != nil {
 		all = append(all, recurringToolDefinitions()...)
 	}
+	if s.ownerBank != nil {
+		all = append(all, ownerToolDefinitions()...)
+	}
 	if s.agentBank == nil {
 		return annotate(all)
 	}
@@ -565,6 +569,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id, paramsRaw json.RawMess
 			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
 		}
 		result, err = s.toolPrepareRecurringPayments(ctx, params.Arguments)
+	case "owner_agents", "owner_agent", "owner_create_agent", "owner_fund_agent", "owner_fund_request", "owner_propose_rules":
+		if s.ownerBank == nil {
+			return rpcErr(id, rpcErrMethodNotFnd, "unknown tool: "+params.Name)
+		}
+		result, err = s.callOwnerTool(ctx, params.Name, params.Arguments)
 	default:
 		known := isWalletTool(params.Name) || (isMarketTool(params.Name) && s.market != nil) || (isRoomTool(params.Name) && s.rooms != nil) ||
 			(isInstantTool(params.Name) && s.instant != nil)

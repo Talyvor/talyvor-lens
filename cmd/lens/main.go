@@ -3060,6 +3060,7 @@ func run() error {
 	// additionally force the acted-on workspace to the verified caller (effectiveWorkspace).
 	mcpServer := mcp.New(pool, l, alertManager, wsManager, sessionTracker, lensVersion)
 	mcpServer.SetAgentBank(dualToken)         // B19.9: agents use their wallets with their own keys
+	mcpServer.SetOwnerBank(dualToken)         // B28.73: and their owner creates, funds (from an approval link), rules and reads them
 	mcpServer.SetCredentials(kyaSvc)          // B30.5: and show their Know Your Agent credential
 	mcpServer.SetMandates(dualToken)          // B40.2: get_mandates
 	mcpServer.SetSearcher(dualToken)          // B41.107: search_workspace
@@ -5187,6 +5188,7 @@ func run() error {
 
 		// B19.1 — agent accounts, each with its own balance and keys, on a double-entry ledger.
 		mountAgentAccountRoutes(authed, dualToken, tenantStore)
+		mountAgentFundRequestRoutes(authed, dualToken)                                  // B28.73: the owner's SDK asks to fund an agent; a person funds it
 		mountWorkspaceRoleRoutes(authed, wsManager)                                     // B28.342: the owner gives people a role in the workspace
 		mountWorkspaceMoneyKindRoutes(authed, dualToken)                                // B59.6
 		mountBusinessDetailsRoutes(authed, dualToken)                                   // B59.30

@@ -386,6 +386,13 @@ func openAPIWalletPaths() map[string]any {
 	idempotency := map[string]any{"name": "Idempotency-Key", "in": "header", "required": false,
 		"description": "sent again with the same key, the move lands once (at most 128 characters)",
 		"schema":      map[string]any{"type": "string", "maxLength": 128}}
+	fundKey := map[string]any{"name": "Idempotency-Key", "in": "header", "required": true,
+		"description": "names the request: the same key is one request and, once approved, one posting (at most 128 characters)",
+		"schema":      map[string]any{"type": "string", "maxLength": 128}}
+	fundRequest := obj(nil, map[string]any{"id": str, "agent_id": str, "amount_ulxc": ulxc, "idempotency_key": str,
+		"status": map[string]any{"type": "string", "enum": []string{"pending", "approved", "declined"}}, "requested_by": str,
+		"created_at": map[string]any{"type": "string", "format": "date-time"}, "decided_at": map[string]any{"type": "string", "format": "date-time"},
+		"decided_by": str, "approval_url": str, "balance_ulxc": map[string]any{"type": "integer", "format": "int64", "nullable": true}})
 	// op builds one wallet operation; every one carries the wallet tag.
 	op := func(summary, description string, params []map[string]any, responses map[string]any) map[string]any {
 		o := map[string]any{"tags": []string{walletTag}, "summary": summary, "parameters": params, "responses": responses}
@@ -491,6 +498,33 @@ func openAPIWalletPaths() map[string]any {
 				[]map[string]any{ws, agent, idempotency},
 				map[string]any{"200": balance, "404": map[string]any{"description": "no such agent"}, "409": map[string]any{"description": "the workspace cannot cover it, or the agent has no owner"}}),
 				body(obj([]string{"amount_ulxc"}, map[string]any{"amount_ulxc": ulxc}))),
+		},
+		// B28.73: the owner's SDK and MCP tools ask to fund an agent; a person funds it from the approval link.
+		"/v1/workspaces/{wsID}/agents/{agentID}/fund-requests": map[string]any{
+			"post": withBody(op("Ask to fund the agent, for a person to approve",
+				"Owner, admin or Finance, a workspace key included. Nothing moves: the answer is the request with its approval_url, where a person signed in to the workspace approves it. Once approved the agent is funded once, its posting's ref this Idempotency-Key. The same key and amount again answer the same request (200); the same key for another agent or amount is 409.",
+				[]map[string]any{ws, agent, fundKey},
+				map[string]any{"201": ok("the request, pending", fundRequest), "200": ok("the request filed earlier under this key", fundRequest),
+					"400": map[string]any{"description": "no Idempotency-Key, or not a positive amount"}, "404": map[string]any{"description": "no such agent"},
+					"409": map[string]any{"description": "the key was used for another request, or the agent is archived"}}),
+				body(obj([]string{"amount_ulxc"}, map[string]any{"amount_ulxc": ulxc}))),
+		},
+		"/v1/workspaces/{wsID}/agents/fund-requests/{requestID}": map[string]any{
+			"get": op("Read a request to fund an agent", "Owner, admin or Finance.", []map[string]any{ws, param("requestID", "path")},
+				map[string]any{"200": ok("the request", fundRequest), "404": map[string]any{"description": "no such request"}}),
+		},
+		"/v1/workspaces/{wsID}/agents/fund-requests/{requestID}/approve": map[string]any{
+			"post": op("Approve a request to fund an agent",
+				"A person signed in to the workspace — the owner, an admin or Finance — never a key. The agent is funded once under the request's key: approving again moves nothing more.",
+				[]map[string]any{ws, param("requestID", "path")},
+				map[string]any{"200": ok("the request, approved, with the agent's balance", fundRequest), "403": map[string]any{"description": "not a person signed in"},
+					"404": map[string]any{"description": "no such request"}, "409": map[string]any{"description": "it was declined, the workspace cannot cover it, or the agent has no owner"}}),
+		},
+		"/v1/workspaces/{wsID}/agents/fund-requests/{requestID}/decline": map[string]any{
+			"post": op("Decline a request to fund an agent", "A person signed in to the workspace — the owner, an admin or Finance — never a key. Nothing moves.",
+				[]map[string]any{ws, param("requestID", "path")},
+				map[string]any{"200": ok("the request, declined", fundRequest), "403": map[string]any{"description": "not a person signed in"},
+					"404": map[string]any{"description": "no such request"}, "409": map[string]any{"description": "it was already decided"}}),
 		},
 		"/v1/workspaces/{wsID}/agents/{agentID}/withdraw": map[string]any{
 			"post": withBody(op("Move credit from the agent back to the workspace",

@@ -141,3 +141,31 @@ export interface AgentStatement {
   agent_id: string;
   lines: AgentStatementLine[];
 }
+
+/** A request to fund an agent (B28.73): nothing moves until a person approves it at ``approval_url``. */
+export interface AgentFundRequest {
+  id: string;
+  agent_id: string;
+  amount_ulxc: number;
+  /** The key it was filed under: once approved, the fund posting's ref. */
+  idempotency_key: string;
+  /** pending | approved | declined */
+  status: string;
+  requested_by: string;
+  created_at: string;
+  decided_at?: string;
+  decided_by?: string;
+  /** Where a person signed in to the workspace approves or declines it. */
+  approval_url: string;
+  /** The agent's balance once the approval funded it; null otherwise. */
+  balance_ulxc: number | null;
+}
+
+/** Rules filed for an agent: applied at once when they only tighten, pending the owner's passkey when they loosen. */
+export interface FiledRules {
+  id?: string;
+  /** pending | applied */
+  status: string;
+  changes: string[];
+  rules: AgentRules;
+}
