@@ -101,6 +101,9 @@ var ownerOnlySegments = []string{
 // agents. "*" is one segment.
 var financeRoutes = []string{
 	"/v1/workspaces/*/agents/*/fund",
+	"/v1/workspaces/*/agents/*/fund-requests",
+	"/v1/workspaces/*/agents/fund-requests/*/approve",
+	"/v1/workspaces/*/agents/fund-requests/*/decline",
 	"/v1/workspaces/*/agents/*/withdraw",
 	"/v1/workspaces/*/agents/*/cash-outs",
 	"/v1/workspaces/*/agents/*/cash-outs/challenge",

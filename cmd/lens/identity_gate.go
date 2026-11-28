@@ -43,6 +43,8 @@ var identityOpenRoutes = map[string]string{
 	"POST /v1/workspaces/{}/agents/{}/card/unfreeze":           "a control on a card already made",
 	"PUT /v1/workspaces/{}/agents/{}/pots/{}/lock":             "a control: it holds a pot",
 	"POST /v1/workspaces/{}/agents/approvals/{}/deny":          "a refusal: nothing moves",
+	"POST /v1/workspaces/{}/agents/fund-requests/{}/decline":   "a refusal: nothing moves",
+	"POST /v1/workspaces/{}/agents/{}/fund-requests":           "a request: the money moves only when a person approves it",
 	"POST /v1/workspaces/{}/money-requests/{}/decline":         "a refusal: nothing moves",
 	"POST /v1/workspaces/{}/agents/{}/crypto-sends/{}/decline": "a refusal: nothing moves",
 	"POST /v1/money/mandates/{}/decline":                       "a refusal: nothing moves",

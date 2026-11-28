@@ -15,9 +15,10 @@ from talyvor_lens import LensClient
 lens_url = "https://lens.talyvor.com"
 owner = LensClient(lens_url=lens_url, api_key=os.environ["TALYVOR_OWNER_TOKEN"], workspace_id="acme")
 
-# 1. Create an agent. 2. Fund its wallet from the workspace (10 LXC = 10,000,000 µLXC).
+# 1. Create an agent (signed in as its owner). 2. Ask to fund its wallet from the workspace (10 LXC = 10,000,000 µLXC).
 agent = owner.agents.create("researcher")
-owner.agents.fund(agent["id"], 10_000_000, idempotency_key="fund-researcher-oct")
+request = owner.agents.fund(agent["id"], 10_000_000, idempotency_key="fund-researcher-oct")
+# Nothing moves yet: a person signed in to the workspace approves it at request["approval_url"].
 
 # 3. Issue the agent its own key (shown once).
 key = owner.agents.issue_key(agent["id"])["key"]

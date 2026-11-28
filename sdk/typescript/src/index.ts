@@ -13,11 +13,13 @@ export type {
   AgentAccount,
   AgentApproval,
   AgentBalance,
+  AgentFundRequest,
   AgentKey,
   AgentPayment,
   AgentReceipt,
   AgentRules,
   AgentStatement,
   AgentStatementLine,
+  FiledRules,
   ReceiptPosting,
 } from "./types";
