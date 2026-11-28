@@ -18,7 +18,7 @@ regexes = [
   '''^(sk_live|sk_test|rk_test)_b512secretpart$''',
   # webhook secrets and synthetic keys in real-Postgres tests
   '''^whsec_(b28439|b253_issuing|test_secret_0123456789)$''',
-  '''^b(17170|17171|17175|257|32102|3299)-synthetic-key$''',
+  '''^b(17170|17171|17175|17584|257|32102|3299)-synthetic-key$''',
   '''^b5014-route-fuzz-synthetic$''',
   '''^b4810-routes$''',
   '''^zq-operator-key-0123456789abcdef$''',

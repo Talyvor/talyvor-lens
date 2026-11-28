@@ -3260,6 +3260,11 @@ func run() error {
 	// B52.35 — a person joins another workspace by invite; POST /v1/provision mints a member's read-only token for it.
 	workspaceMembers := members.New(pool)
 	authManager.WithMemberCheck(workspaceMembers.LiveMember)
+	// B28.342 — a role session, minted for POST /v1/provision/roles and (B17.584) a test workspace's role person on
+	// the synthetic key.
+	roleMint := func(workspaceID, personKey, role string, ttl time.Duration) (string, error) {
+		return auth.GenerateRoleToken(workspaceID, personKey, role, authManager.PrivateKey(), ttl)
+	}
 
 	// U-signup provisioning — turns an authenticated identity into a tenant. Mounted on the BARE
 	// router, OUTSIDE the authed group, because it carries its own credential
@@ -3300,7 +3305,9 @@ func run() error {
 		// B25.7 — a test user's loan instalment, bill, refund and card purchase brought due now.
 		due: syntheticDue,
 		// B54.45 — a .test domain's DKIM key, for an email confirming a deal.
-		dkim: syntheticDKIM,
+		dkim:     syntheticDKIM,
+		roles:    wsManager,
+		roleMint: roleMint,
 	})
 	mountProvisionRoute(limited, cfg.ProvisionSecret, wsManager,
 		newWorkspaceStarter(dualToken, cfg.StarterTestMoneyULXC),
@@ -3309,10 +3316,7 @@ func run() error {
 		}, workspaceMembers.MemberID)
 	mountMemberProvisionRoutes(limited, cfg.ProvisionSecret, workspaceMembers)
 	// B28.342 — a person signs in to a workspace they hold a role in, with a session that does what the role may.
-	mountRoleSessionRoute(limited, cfg.ProvisionSecret, wsManager,
-		func(workspaceID, personKey, role string, ttl time.Duration) (string, error) {
-			return auth.GenerateRoleToken(workspaceID, personKey, role, authManager.PrivateKey(), ttl)
-		})
+	mountRoleSessionRoute(limited, cfg.ProvisionSecret, wsManager, roleMint)
 	// B61.22 — a person joins and signs in with a phone number and a texted code, for the suite BFF on the same secret.
 	mountPhoneSignInRoutes(limited, cfg.ProvisionSecret, phoneDoor)
 	// B61.107 — and a forgotten passcode is set again with the number's code and one of the person's keys.
