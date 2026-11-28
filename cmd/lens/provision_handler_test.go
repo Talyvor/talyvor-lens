@@ -139,8 +139,8 @@ func newKeyFixture(t *testing.T) *ecdsaKeyFixture {
 	return &ecdsaKeyFixture{mgr: auth.NewManager("the-global-admin-key", key, nil, nil)}
 }
 
-func (f *ecdsaKeyFixture) mint(workspaceID, userID string, scopes []string, ttl time.Duration) (string, error) {
-	return auth.GenerateToken(workspaceID, userID, scopes, f.mgr.PrivateKey(), ttl)
+func (f *ecdsaKeyFixture) mint(workspaceID, userID string, scopes []string, ttl time.Duration, signedInAt time.Time) (string, error) {
+	return auth.GenerateTokenSignedInAt(workspaceID, userID, scopes, f.mgr.PrivateKey(), ttl, signedInAt)
 }
 
 type provisionResponseBody struct {

@@ -271,6 +271,16 @@ func GenerateToken(workspaceID, userID string, scopes []string, key *ecdsa.Priva
 	return generateToken(workspaceID, userID, scopes, key, ttl, time.Now())
 }
 
+// GenerateTokenSignedInAt is GenerateToken for a session that signed in at signedInAt (B50.61): the BFF re-minting a
+// session's token through /v1/provision, so the new token keeps the person's real sign-in time. A zero signedInAt, or
+// one after now, is now.
+func GenerateTokenSignedInAt(workspaceID, userID string, scopes []string, key *ecdsa.PrivateKey, ttl time.Duration, signedInAt time.Time) (string, error) {
+	if now := time.Now(); signedInAt.IsZero() || signedInAt.After(now) {
+		signedInAt = now
+	}
+	return generateToken(workspaceID, userID, scopes, key, ttl, signedInAt)
+}
+
 // RefreshToken mints actx's JWT again with a new lifetime and the same sign-in time (B50.60): a refresh is not a
 // sign-in, so a token that signed in hours ago stays hours old however often it is refreshed. A token with no sign-in
 // time gets none.

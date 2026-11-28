@@ -49,8 +49,8 @@ func accountDeleteLens(t *testing.T, pool *pgxpool.Pool, jwtKey *ecdsa.PrivateKe
 	wsMembers := members.New(app)
 	am := auth.NewManager("", jwtKey, keys, tenant.NewStore(app)).WithAccountDeletions(wsm).WithMemberCheck(wsMembers.LiveMember)
 	r := chi.NewRouter()
-	mountProvisionRoute(r, accountDeleteSecret, wsm, nil, func(ws, user string, scopes []string, ttl time.Duration) (string, error) {
-		return auth.GenerateToken(ws, user, scopes, am.PrivateKey(), ttl)
+	mountProvisionRoute(r, accountDeleteSecret, wsm, nil, func(ws, user string, scopes []string, ttl time.Duration, signedInAt time.Time) (string, error) {
+		return auth.GenerateTokenSignedInAt(ws, user, scopes, am.PrivateKey(), ttl, signedInAt)
 	}, wsMembers.MemberID)
 	d.accounts, d.keys = wsm, keys.EvictWorkspace
 	mountAccountDeleteRoute(r, accountDeleteSecret, d)
