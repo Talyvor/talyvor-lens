@@ -422,6 +422,12 @@ var moneyRoutes = map[string]moneySide{
 	"/v1/workspaces/{}/wallet/statement":           moneySideEither,
 	"/v1/workspaces/{}/wallet/tax":                 moneySideEither,
 
+	// wallet_webhooks_handler.go
+	"/v1/money/event-webhooks":           moneySideEither,
+	"/v1/money/event-webhooks/events":    moneySideEither,
+	"/v1/money/event-webhooks/{}":        moneySideEither,
+	"/v1/money/event-webhooks/{}/rotate": moneySideEither,
+
 	// workspace_money_kind_handler.go
 	"/v1/workspaces/{}/account":                      moneySideEither,
 	"/v1/workspaces/{}/account/money-kind":           moneySideEither,
