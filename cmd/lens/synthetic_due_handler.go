@@ -58,6 +58,9 @@ import (
 //	POST /v1/synthetic/workspaces/{wsID}/card-link                    B32.102: {"workspace_id":"<another test workspace>"}
 //	                                                                   the two linked as though both paid with one
 //	                                                                   card, so a trust panel's linked buyer is testable
+//	POST /v1/synthetic/workspaces/{wsID}/agents/approvals/{approvalID}/payee
+//	                                                                   B62.12: {"payee_id"} a test approved payment's
+//	                                                                   payee changed (synthetic_approval_payee_handler.go)
 //	…/scan/reports, …/scan/reports/{id}/approve, …/scan/reports/{id}/outcome, GET …/scan/track-record
 //	                                                                   B52.40: a Scan report rehearsed on recorded data
 //	                                                                   (synthetic_scan_handler.go)
@@ -123,7 +126,8 @@ type syntheticDueDeps struct {
 	authorizer syntheticCardAuthorizer
 	moneyCards syntheticMoneyCards
 	schedules  syntheticSchedules
-	scan       syntheticScan // B52.40
+	scan       syntheticScan      // B52.40
+	approvals  syntheticApprovals // B62.12
 	// physicalCards is set only while LENS_PHYSICAL_CARDS is on.
 	physicalCards syntheticPhysicalCards
 }
@@ -156,6 +160,9 @@ func mountSyntheticDueRoutes(r chi.Router, key string, d syntheticDeps) {
 			syntheticGuard(key, "physical-card-delivery", limit, d, due.testOnly(due.physicalCardDelivery)))
 	}
 	r.Post("/v1/synthetic/workspaces/{wsID}/card-link", syntheticGuard(key, "card-link", limit, d, due.testOnly(due.cardLink)))
+	if due.approvals != nil { // it answers 404, not 403, for a workspace that is not a test one, so it is not under testOnly
+		r.Post("/v1/synthetic/workspaces/{wsID}/agents/approvals/{approvalID}/payee", syntheticGuard(key, "approval-payee", limit, d, due.approvalPayee))
+	}
 	if due.scan != nil {
 		r.Post("/v1/synthetic/workspaces/{wsID}/scan/reports", syntheticGuard(key, "scan-rehearse", limit, d, due.testOnly(due.scanRehearse)))
 		r.Post("/v1/synthetic/workspaces/{wsID}/scan/reports/{id}/approve",

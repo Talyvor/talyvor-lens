@@ -196,6 +196,19 @@ func (p OutsidePayment) key(step string) string {
 	return "payment_out_" + step + ":" + p.IdempotencyKey
 }
 
+// paymentOutFingerprint is what an agent's payment p to payeeID is bound to its approval by: the agent, the account, the
+// payee, the amount, the currency, the funding and the reference.
+func paymentOutFingerprint(p OutsidePayment, payeeID string) string {
+	fp := sha256.Sum256([]byte("payment_out\x00" + p.AgentID + "\x00" + p.AccountID + "\x00" + payeeID + "\x00" +
+		strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
+	return hex.EncodeToString(fp[:])
+}
+
+// paymentOutMemo is how the approval of an agent's payment p to payeeName reads it.
+func paymentOutMemo(p OutsidePayment, payeeName string) string {
+	return strings.TrimSuffix(Money(p.AmountMinor, p.Currency)+" to "+payeeName+" ("+p.Funding+" money) — "+p.Reference, " — ")
+}
+
 func (p OutsidePayment) screenKey() string { return "payment_out:" + p.IdempotencyKey }
 
 func (p OutsidePayment) same(q OutsidePayment) bool {
@@ -320,11 +333,9 @@ func (s *DualTokenStore) PayOutside(ctx context.Context, workspaceID string, in 
 		if p.ValueULXC, err = s.paymentValue(ctx, p); err != nil {
 			return OutsidePayment{}, err
 		}
-		fp := sha256.Sum256([]byte("payment_out\x00" + p.AgentID + "\x00" + p.AccountID + "\x00" + p.PayeeID + "\x00" +
-			strconv.FormatInt(p.AmountMinor, 10) + "\x00" + p.Currency + "\x00" + p.Funding + "\x00" + p.Reference))
-		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: hex.EncodeToString(fp[:]),
+		ctx = WithAgentRequest(ctx, AgentRequest{Payment: true, At: in.at, Fingerprint: paymentOutFingerprint(p, p.PayeeID),
 			Payee:    Payee{Kind: "outside", ID: payee.ID, Name: payee.Name},
-			Memo:     strings.TrimSuffix(Money(p.AmountMinor, p.Currency)+" to "+payee.Name+" ("+p.Funding+" money) — "+p.Reference, " — "),
+			Memo:     paymentOutMemo(p, payee.Name),
 			PaidFrom: PaidFrom{Kind: "account", AccountID: from.id, Currency: p.Currency, AmountMinor: p.AmountMinor, funding: p.Funding}})
 	}
 

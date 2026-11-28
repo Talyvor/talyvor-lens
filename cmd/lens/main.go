@@ -3252,7 +3252,7 @@ func run() error {
 	// B25.7 and B32.99 — the synthetic routes' slow money (mounted below with the synthetic routes).
 	syntheticDue := syntheticDueDeps{db: pool, loans: dualToken, bills: marketStore, payouts: marketStore, sellerTax: sellerTax, cards: dualToken,
 		authorizer: agentcard.NewHandler(cfg.StripeIssuingWebhookSecret, dualToken, ecbRates), moneyCards: dualToken, schedules: dualToken,
-		scan: scanWriter}
+		scan: scanWriter, approvals: dualToken}
 	if cfg.PhysicalCards {
 		syntheticDue.physicalCards = dualToken // B53.19
 	}
